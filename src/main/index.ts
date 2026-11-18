@@ -12,6 +12,7 @@ const ShowInFolderPath = z.string().min(1)
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand } from './app-menu'
+import { agentStatusSource, isAgentStatusEvent, startAgentStatus } from './agent-status-source'
 import {
   handleSpotlightActivity,
   requestSpotlightSync,
@@ -869,6 +870,14 @@ ipcMain.handle('set-badge-count', (_event, count: number) => {
   }
 })
 
+// The main window's agent list, which the tray and the Agents menu are drawn
+// from while it is open instead of polling the API (agent-status-source.ts).
+// Only the main window's: a dashboard popout or the launcher has no say.
+ipcMain.handle('push-agent-status', (event, payload: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false
+  return agentStatusSource.acceptPush(event.sender, payload)
+})
+
 // IPC handler for detecting host browser availability
 ipcMain.handle('detect-host-browser', async () => {
   return { providers: await detectAllProviders() }
@@ -1522,6 +1531,10 @@ function startNotificationListener(): void {
       // relies on Spotlight's own poll.
       if (data.type === 'os_notification') requestSpotlightSync()
 
+      // An agent's activity may have moved. With a window open this is a
+      // no-op: the renderer heard the same event and pushes its list.
+      if (isAgentStatusEvent(data.type)) agentStatusSource.requestRefresh()
+
       if (data.type === 'os_notification') {
         // Only show notification if window is closed/destroyed.
         // When the window is open the renderer drives this via IPC (with the
@@ -1737,15 +1750,17 @@ async function startApp() {
 
   createWindow()
 
-  // Create the application menu (macOS menu bar). The getter re-resolves the
-  // effective base URL on every poll, so the Agents menu and the tray follow a
-  // target switch (via the keyed cloud proxy) instead of always listing this
-  // machine's agents.
-  createAppMenu(mainWindow, async () => (await activeApiTarget()).baseUrl)
+  // The Agents menu and the tray share one agent list. The getter re-resolves
+  // the effective base URL on every fetch, so they follow a target switch (via
+  // the keyed cloud proxy) instead of always listing this machine's agents.
+  startAgentStatus({ activeTarget: activeApiTarget })
+
+  // Create the application menu (macOS menu bar)
+  createAppMenu(mainWindow)
 
   // Create system tray if enabled in settings
   if ((await getSettings()).app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, async () => (await activeApiTarget()).baseUrl)
+    createTray(mainWindow)
   }
 
   // Spotlight indexes both Superagents, not just the active one, so each is

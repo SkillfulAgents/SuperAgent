@@ -5,6 +5,7 @@ import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
 import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
+import type { AgentStatusPush } from '../shared/lib/types/agent-status-push'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -311,6 +312,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('set-badge-count', count)
   },
 
+  // Hand main this window's agent list, for the tray and the Agents menu.
+  // Null withdraws it. Resolves to whether main is now using it.
+  pushAgentStatus: (payload: AgentStatusPush): Promise<boolean> => {
+    return ipcRenderer.invoke('push-agent-status', payload)
+  },
+
   // Detect host browser availability
   detectHostBrowser: (): Promise<{ available: boolean; browser: string | null; path: string | null }> => {
     return ipcRenderer.invoke('detect-host-browser')
@@ -608,6 +615,7 @@ declare global {
         >
       >
       setBadgeCount: (count: number) => Promise<void>
+      pushAgentStatus: (payload: AgentStatusPush) => Promise<boolean>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
       popupAppMenu: (x: number, y: number) => Promise<void>

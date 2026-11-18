@@ -38,6 +38,7 @@ type ExposedApi = {
   revealInFolder: (hostPath: string) => Promise<string | null>
   createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
   getPathForFile: (file: File) => string
+  pushAgentStatus: (payload: unknown) => Promise<boolean>
   showNotification: (
     title: string,
     body: string,
@@ -121,6 +122,13 @@ describe('preload electronAPI bridge', () => {
       dashboardName: 'Dashboard',
       iconPng: [1, 2, 3],
     })
+
+    const agentStatus = { target: 'local', agents: [{ slug: 'agent-one', name: 'One', activityStatus: 'working' }] }
+    electronMocks.invoke.mockResolvedValueOnce(true)
+    await expect(api.pushAgentStatus(agentStatus)).resolves.toBe(true)
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith('push-agent-status', agentStatus)
+    await api.pushAgentStatus(null)
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith('push-agent-status', null)
 
     expect(api.platform).toBe(process.platform)
     expect(api.osVersion).toBe('14.4.1')
