@@ -5313,7 +5313,14 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     const response = await res.json()
     expect((query ? response.messages : response)[0].sender).toBeUndefined()
     expect(annotateMessageAuthors).toHaveBeenCalledTimes(1)
-    expect(annotateMessageAuthors).toHaveBeenCalledWith('test-agent', 'sess-1', messages, { senders: false, scope })
+    // By id and type, not by reference: the read annotates the items in place, and through
+    // the actor transport the route holds copies of the ones this test made.
+    expect(annotateMessageAuthors).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      messages.map(({ id, type }) => expect.objectContaining({ id, type })),
+      { senders: false, scope },
+    )
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
   })
 
@@ -5346,7 +5353,14 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     // Assistant message should not have sender
     expect(body[1].sender).toBeUndefined()
     expect(annotateMessageAuthors).toHaveBeenCalledTimes(1)
-    expect(annotateMessageAuthors).toHaveBeenCalledWith('test-agent', 'sess-1', messages, { senders: true, scope })
+    // By id and type, not by reference: the read annotates the items in place, and through
+    // the actor transport the route holds copies of the ones this test made.
+    expect(annotateMessageAuthors).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      messages.map(({ id, type }) => expect.objectContaining({ id, type })),
+      { senders: true, scope },
+    )
     // Cards, senders and profiles come from that one read: no select here, no profile lookup.
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
     expect(getUserSummaries).not.toHaveBeenCalled()
