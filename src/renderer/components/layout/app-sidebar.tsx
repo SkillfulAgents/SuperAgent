@@ -832,7 +832,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-8')}>
+              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-12')}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -856,7 +856,7 @@ const AgentMenuItemInner = React.forwardRef<
                     {hasMore && (
                       // `!` beats the tree connectors' `[&>li]` rules; pinned, the row covers their gutter and its ::before becomes a blurred fade.
                       <SidebarMenuSubItem
-                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
+                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 mt-4 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
                       >
                         <SidebarMenuSubButton
                           asChild
