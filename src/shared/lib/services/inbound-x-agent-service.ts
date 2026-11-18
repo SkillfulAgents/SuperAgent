@@ -1,11 +1,11 @@
-import { inArray } from 'drizzle-orm'
+import { and, eq, inArray, or } from 'drizzle-orm'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
+import { agentAcl, xAgentPolicies } from '@shared/lib/db/schema'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentRole, SessionMetadataMap } from '@shared/lib/types/agent'
 import { hasMinRole } from '@shared/lib/types/agent'
-import type { InboundXAgentDetails, InboundXAgentSession } from '@shared/lib/types/inbound-x-agent-schema'
+import type { InboundXAgentBlockedAgent, InboundXAgentCaller, InboundXAgentDetails, InboundXAgentSession } from '@shared/lib/types/inbound-x-agent-schema'
 import { listAgentsWithStatus } from './agent-service'
 import {
   evaluate as evaluateXAgentPolicy,
@@ -18,6 +18,12 @@ interface AgentAclRow {
   role: string
 }
 
+interface BlockRow {
+  caller: string
+  target: string
+  operation: 'read' | 'invoke'
+}
+
 interface BuildInboundXAgentDetailsInput {
   targetSlug: string
   metadata: SessionMetadataMap
@@ -26,7 +32,9 @@ interface BuildInboundXAgentDetailsInput {
   viewerUserId?: string
   viewerCanAccessAll?: boolean
   aclRows: AgentAclRow[]
-  evaluatePolicy?: (callerSlug: string, targetSlug: string) => XAgentDecision | Promise<XAgentDecision>
+  /** Stored block rows between the target and another agent, either direction. */
+  blockRows?: BlockRow[]
+  evaluatePolicy?: (callerSlug: string, operation: 'invoke' | 'read', targetSlug: string) => XAgentDecision | Promise<XAgentDecision>
 }
 
 /**
@@ -42,7 +50,8 @@ export async function buildInboundXAgentDetails({
   viewerUserId,
   viewerCanAccessAll = false,
   aclRows,
-  evaluatePolicy = (callerSlug, target) => evaluateXAgentPolicy(callerSlug, 'invoke', target),
+  blockRows = [],
+  evaluatePolicy = evaluateXAgentPolicy,
 }: BuildInboundXAgentDetailsInput): Promise<InboundXAgentDetails> {
   const agentBySlug = new Map(agents.map((agent) => [agent.slug, agent]))
   const sessions = Object.entries(metadata)
@@ -89,37 +98,53 @@ export async function buildInboundXAgentDetails({
     ownerUsersByAgent.set(row.agentSlug, owners)
   }
 
-  const callers = (await Promise.all(agents
+  const callers: InboundXAgentCaller[] = []
+  const blocked: InboundXAgentBlockedAgent[] = []
+  await Promise.all(agents
     .filter((agent) => agent.slug !== targetSlug)
     .map(async (agent) => {
       if (authMode) {
         const callerOwners = ownerUsersByAgent.get(agent.slug)
-        if (!callerOwners || ![...callerOwners].some((userId) => targetUsers.has(userId))) return []
+        if (!callerOwners || ![...callerOwners].some((userId) => targetUsers.has(userId))) return
       }
 
-      const decision = await evaluatePolicy(agent.slug, targetSlug)
-      if (decision === 'block') return []
-      return [{
-        slug: agent.slug,
-        displaySlug: agent.displaySlug,
-        name: agent.name,
-        decision,
-        canAccess: !authMode || viewerCanAccessAll || viewerAgents.has(agent.slug),
-      }]
-    })))
-    .flat()
-    .sort((a, b) => a.name.localeCompare(b.name))
+      const canAccess = !authMode || viewerCanAccessAll || viewerAgents.has(agent.slug)
+      const avatar = agent.avatar ?? null
+      const blocks = blockRows
+        .filter((row) => row.caller === agent.slug || row.target === agent.slug)
+        .map(({ caller, operation }) => ({ callerSlug: caller, operation }))
+      const [decision, readDecision] = await Promise.all([
+        evaluatePolicy(agent.slug, 'invoke', targetSlug),
+        evaluatePolicy(agent.slug, 'read', targetSlug),
+      ])
+      if (blocks.length > 0) {
+        blocked.push({ slug: agent.slug, displaySlug: agent.displaySlug, name: agent.name, avatar, canAccess, decision, readDecision, blocks })
+      }
+      if (decision === 'block') return
+      callers.push({ slug: agent.slug, displaySlug: agent.displaySlug, name: agent.name, decision, readDecision, avatar, canAccess })
+    }))
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)
 
-  return { sessions, callers }
+  return { sessions, callers: callers.sort(byName), blocked: blocked.sort(byName) }
 }
 
 export async function getInboundXAgentDetails(
   targetSlug: string,
   options: { authMode: boolean; viewerUserId?: string; viewerCanAccessAll?: boolean },
 ): Promise<InboundXAgentDetails> {
-  const [metadata, agents] = await Promise.all([
+  const [metadata, agents, blockRows] = await Promise.all([
     agentRegistry.get(targetSlug).sessions.readMetadata(),
     listAgentsWithStatus(),
+    db
+      .select({ caller: xAgentPolicies.callerAgentSlug, target: xAgentPolicies.targetAgentSlug, operation: xAgentPolicies.operation })
+      .from(xAgentPolicies)
+      .where(and(
+        eq(xAgentPolicies.decision, 'block'),
+        or(
+          eq(xAgentPolicies.targetAgentSlug, targetSlug),
+          eq(xAgentPolicies.callerAgentSlug, targetSlug),
+        ),
+      )),
   ])
 
   const agentSlugs = agents.map((agent) => agent.slug)
@@ -142,5 +167,7 @@ export async function getInboundXAgentDetails(
     viewerUserId: options.viewerUserId,
     viewerCanAccessAll: options.viewerCanAccessAll,
     aclRows,
+    blockRows: blockRows.flatMap(({ caller, target, operation }) =>
+      target && (operation === 'read' || operation === 'invoke') ? [{ caller, target, operation }] : []),
   })
 }

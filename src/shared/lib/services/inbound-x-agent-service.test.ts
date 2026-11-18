@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { inboundXAgentDetailsSchema } from '@shared/lib/types/inbound-x-agent-schema'
+import { agentAccessRole, inboundXAgentDetailsSchema } from '@shared/lib/types/inbound-x-agent-schema'
 import { buildInboundXAgentDetails } from './inbound-x-agent-service'
 
 function agent(slug: string, name: string): ApiAgent {
@@ -37,8 +37,55 @@ describe('buildInboundXAgentDetails', () => {
       displaySlug: 'alpha-caller-a',
       name: 'Alpha',
       decision: 'review',
+      readDecision: 'review',
+      avatar: { color: 'tonal-blue', shape: 'circle' },
       canAccess: true,
     }])
+  })
+
+  it('reports what each agent may read, so its access reads as a role', async () => {
+    const result = await buildInboundXAgentDetails({
+      targetSlug: 'target',
+      metadata: {},
+      agents: [agent('target', 'Target'), agent('sender', 'Sender'), agent('reader', 'Reader'), agent('asker', 'Asker'), agent('walled', 'Walled')],
+      authMode: false,
+      aclRows: [],
+      evaluatePolicy: (caller, operation) => {
+        if (caller === 'sender') return operation === 'invoke' ? 'allow' : 'review'
+        if (caller === 'reader') return operation === 'read' ? 'allow' : 'review'
+        if (caller === 'walled') return operation === 'read' ? 'block' : 'allow'
+        return 'review'
+      },
+    })
+
+    expect(result.callers.map((caller) => [caller.slug, agentAccessRole(caller)])).toEqual([
+      ['asker', null],
+      ['reader', 'viewer'],
+      ['sender', 'user'],
+      ['walled', null],
+    ])
+  })
+
+  it('lists agents with a stored block either way, with the blocks to lift', async () => {
+    const result = await buildInboundXAgentDetails({
+      targetSlug: 'target',
+      metadata: {},
+      agents: [agent('target', 'Target'), agent('inbound', 'Inbound'), agent('outbound', 'Outbound'), agent('free', 'Free')],
+      authMode: false,
+      aclRows: [],
+      blockRows: [
+        { caller: 'inbound', target: 'target', operation: 'invoke' },
+        { caller: 'target', target: 'outbound', operation: 'read' },
+      ],
+      evaluatePolicy: (caller, operation) => (caller === 'inbound' && operation === 'invoke' ? 'block' : 'review'),
+    })
+
+    // Each carries what it may still do here, so lifting the block can take that away first.
+    expect(inboundXAgentDetailsSchema.parse(result).blocked?.map(({ slug, decision, readDecision, blocks }) => [slug, decision, readDecision, blocks])).toEqual([
+      ['inbound', 'block', 'review', [{ callerSlug: 'inbound', operation: 'invoke' }]],
+      ['outbound', 'review', 'review', [{ callerSlug: 'target', operation: 'read' }]],
+    ])
+    expect(result.callers.map((caller) => caller.slug)).toEqual(['free', 'outbound'])
   })
 
   it('includes running, settled, and legacy repairs without inventing caller permissions', async () => {

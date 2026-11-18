@@ -330,6 +330,7 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['agent-members', change.agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', change.agentSlug] })
             }
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
             invalidateNotificationCaches(queryClient)

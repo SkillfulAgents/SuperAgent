@@ -427,6 +427,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   agentRemoteMcps: {},
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
+  xAgentPolicies: { callerAgentSlug: 'caller_agent_slug', targetAgentSlug: 'target_agent_slug', operation: 'operation', decision: 'decision' },
   user: { id: 'id', name: 'name', email: 'email' },
   messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
   apiScopePolicies: { accountId: 'account_id', scope: 'scope' },
@@ -7677,6 +7678,8 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
       },
     })
 
+    mockDbSelectFrom.mockReturnValue({ where: async () => [] })
+
     const res = await getReq(createApp(), '/api/agents/target/inbound-x-agent')
 
     expect(res.status).toBe(200)
@@ -7692,6 +7695,7 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
         triggeredBy: { slug: 'deleted-caller', name: 'deleted-caller' },
       }],
       callers: [],
+      blocked: [],
     })
   })
 })
