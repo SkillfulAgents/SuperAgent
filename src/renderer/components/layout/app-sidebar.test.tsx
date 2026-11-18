@@ -64,13 +64,17 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   // Resolve the route param to the canonical id the way the real hook does,
   // using the mocked params + agents so active-state tests behave faithfully.
-  useRouteAgentId: () => {
-    const slug = mockRouteParams.slug
-    if (!slug) return undefined
-    const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
-    return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
-  },
+  useRouteAgentId: () => mockResolveAgentId(mockRouteParams.slug),
+  useResolvedAgentId: (slug: string | undefined) => mockResolveAgentId(slug),
 }))
+function mockResolveAgentId(slug: string | undefined) {
+  if (!slug) return undefined
+  const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
+  return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
+}
+// The rows' route selection is the real one (the shared setup stubs it),
+// running over the mocked router state below.
+vi.mock('@renderer/router/use-route-agent', async (importOriginal) => importOriginal())
 
 const mockCreateUntitledAgent = vi.fn()
 vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
@@ -146,6 +150,8 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
 // (matches the global setup mock, which this file-level mock replaces).
 let mockRouteParams: Record<string, string | undefined> = {}
 let mockRoutePathname = '/'
+// The deepest match's path template; the rows read the view kind from it.
+let mockRouteFullPath = '/'
 let mockHistorySubscribers: Array<(opts: { action: { type: string } }) => void> = []
 const mockHistory = {
   location: { state: { __TSR_index: 0 } },
@@ -165,9 +171,15 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     ...actual,
     useRouter: () => ({ history: mockHistory }),
     useNavigate: () => mockNavigate,
-    useParams: () => mockRouteParams,
-    useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
-      opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
+    useParams: (opts?: { select?: (params: Record<string, string | undefined>) => unknown }) =>
+      opts?.select ? opts.select(mockRouteParams) : mockRouteParams,
+    useRouterState: (opts?: { select?: (s: unknown) => unknown }) =>
+      opts?.select
+        ? opts.select({
+            location: { pathname: mockRoutePathname },
+            matches: [{ fullPath: mockRouteFullPath, params: mockRouteParams, search: {} }],
+          })
+        : undefined,
   }
 })
 
@@ -456,6 +468,7 @@ beforeEach(() => {
   mockGetPlatform.mockReturnValue('web')
   mockRouteParams = {}
   mockRoutePathname = '/'
+  mockRouteFullPath = '/'
   mockHistorySubscribers = []
   setMockHistoryIndex(0)
   _resetApiTargetForTest()
