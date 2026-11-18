@@ -854,13 +854,13 @@ const AgentMenuItemInner = React.forwardRef<
                       />
                     ))}
                     {hasMore && (
-                      // `!sticky` beats the tree connectors' `[&>li]:relative`; the pinned pill covers their gutter.
+                      // `!` beats the tree connectors' `[&>li]` rules; pinned, the row covers their gutter and its ::before becomes a blurred fade.
                       <SidebarMenuSubItem
-                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 rounded-item bg-black/[0.06] pl-2 backdrop-blur-xl before:!hidden after:!hidden dark:bg-white/10')}
+                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
                       >
                         <SidebarMenuSubButton
                           asChild
-                          className={cn('text-muted-foreground', showAll && 'hover:bg-sidebar-foreground/10 active:bg-sidebar-foreground/10')}
+                          className="text-muted-foreground"
                         >
                           <button
                             onClick={toggleShowAll}
