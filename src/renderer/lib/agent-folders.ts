@@ -51,7 +51,7 @@ export interface FolderSection {
 export const ROOT_FOLDER_ID = 'root'
 export const ROOT_FOLDER_NAME = 'Your Agents'
 
-export const DEFAULT_FOLDER_NAME = 'New Folder'
+export const DEFAULT_FOLDER_NAME = 'New Section'
 
 /**
  * Ids for a folder's two drag roles. The `::` separator cannot occur in an
@@ -357,7 +357,7 @@ export function assignAgentToFolder(
   return next
 }
 
-/** A name that does not collide with an existing folder ("New Folder 2", …). */
+/** A name that does not collide with an existing folder ("New Section 2", …). */
 export function uniqueFolderName(folders: AgentFolder[], base = DEFAULT_FOLDER_NAME): string {
   const taken = new Set(folders.map((f) => f.name))
   if (!taken.has(base)) return base

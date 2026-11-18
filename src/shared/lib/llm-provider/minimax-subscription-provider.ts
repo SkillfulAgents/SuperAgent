@@ -19,9 +19,9 @@ Videos: prefer the v2 endpoint, which is what M Plan and Token Plan both expose.
 Save each result under /workspace/media/ with a unique filename and an extension matching its bytes (.mp3 for speech, .mp4 for video), print only the saved paths, and deliver them with the existing file-delivery tool. Reuse saved files instead of regenerating.`
 // The Messages API does not advertise effort tiers. One level satisfies the catalog.
 const MINIMAX_EFFORTS: EffortLevel[] = ['high']
-// Both have a documented 1M context. M3.1 Flash Preview is Token Plan only and always thinks.
+// Both have a documented 1M context. M3.1 Flash always thinks.
 const MINIMAX_MODELS: ModelDefinition[] = [
-  { id: 'MiniMax-M3.1-Flash-Preview', label: 'MiniMax M3.1 Flash Preview', contextWindow: 1_000_000, supportsImageInput: true, isLatest: true, isDefault: true },
+  { id: 'MiniMax-M3.1-Flash', label: 'MiniMax M3.1 Flash', contextWindow: 1_000_000, supportsImageInput: true, isLatest: true, isDefault: true },
   { id: 'MiniMax-M3', label: 'MiniMax M3', contextWindow: 1_000_000, supportsImageInput: true },
 ].map(model => ({
   ...model, family: 'minimax', icon: 'minimax', blurb: 'Uses your MiniMax Token Plan', supportedEfforts: MINIMAX_EFFORTS, supportsWebSearch: false,
@@ -40,14 +40,16 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = MINIMAX_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override async toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = MINIMAX_MEDIA_PROMPT
   override readonly supportsModelSearch = true
   override readonly supportsUsage = true
 
-  override getEffectiveApiKey() { return this.configuration?.oauth?.accessToken }
-  override getApiKeyStatus() {
-    return this.getEffectiveApiKey() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
+  // Credentials come only from the connection, never from global settings.
+  protected override async ambientSettings() { return undefined }
+  protected override effectiveApiKeyFrom() { return this.configuration?.oauth?.accessToken }
+  override apiKeyStatusFrom() {
+    return this.effectiveApiKeyFrom() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
   }
   private get apiBase() { return MINIMAX_HOSTS[minimaxRegion(this.configuration?.oauth?.region)].api }
   private async credential(rejectedGeneration?: number) {
@@ -83,8 +85,8 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     }
     return response
   }
-  createClient(): Anthropic {
-    return new Anthropic({ apiKey: '', authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
+  async createClientFrom(): Promise<Anthropic> {
+    return new Anthropic({ authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
   }
   private async allowance(accessToken: string) {
     const response = await fetch(`${this.apiBase}/v1/token_plan/remains`, {
@@ -109,7 +111,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     const needle = query.toLowerCase()
     return MINIMAX_SEARCH_MODELS.filter(model => model.id.toLowerCase().includes(needle) || model.label.toLowerCase().includes(needle))
   }
-  protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
+  protected override async parseErrorResponseOverride(status: number | undefined, body: unknown) {
     const actual = status ?? inferErrorStatus(extractErrorMessage(body))
     if (actual === 401) return { severity: 'error' as const, icon: 'info' as const, message: '**MiniMax sign-in expired or invalid.** Reconnect in Settings → Model Providers.' }
     if (actual === 402 || actual === 403) return { severity: 'error' as const, icon: 'info' as const, message: '**MiniMax subscription access was denied.** Check the connected account’s Token Plan.' }

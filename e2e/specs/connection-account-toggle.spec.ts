@@ -9,6 +9,7 @@
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { createAgent, openAgentHome, type TestAgent } from '../helpers/agents'
+import { openHomeSection } from '../helpers/agent-home'
 
 interface TestConnectedAccount {
   id: string
@@ -139,6 +140,7 @@ async function openAgentConnectionsPage(page: Page, agent: Pick<TestAgent, 'slug
   await appPage.goto()
   await appPage.waitForAgentsLoaded()
   await openAgentHome(page, agent)
+  await openHomeSection(page, 'Connections')
   await page.locator('[data-testid="home-connections-open-page"]').click()
   await expect(page.locator('[data-testid="connections-add-button"]')).toBeVisible()
 }

@@ -95,11 +95,13 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 vi.mock('./mcp-server', () => ({
   createUserInputMcpServer: () => ({ type: 'sdk', name: 'user-input' }),
   createBrowserMcpServer: () => ({ type: 'sdk', name: 'browser' }),
-  createComputerUseMcpServer: () => ({ type: 'sdk', name: 'computer-use' }),
+  createComputerUseMcpServer: () => ({ type: 'sdk', name: 'agent-desktop' }),
   createDashboardsMcpServer: () => ({ type: 'sdk', name: 'dashboards' }),
   createWidgetsMcpServer: () => ({ type: 'sdk', name: 'widgets' }),
   createAgentsMcpServer: () => ({ type: 'sdk', name: 'agents' }),
   createChatMcpServer: () => ({ type: 'sdk', name: 'chat' }),
+  createMeetingsMcpServer: () => ({ type: 'sdk', name: 'meetings' }),
+  createRulesMcpServer: () => ({ type: 'sdk', name: 'rules' }),
 }))
 
 vi.mock('./tools/browser', () => ({
@@ -107,6 +109,8 @@ vi.mock('./tools/browser', () => ({
 }))
 
 vi.mock('./tools/computer-use', () => ({
+  COMPUTER_USE_SERVER: 'agent-desktop',
+  COMPUTER_USE_TOOL_PREFIX: 'mcp__agent-desktop__',
   computerUseTools: [],
 }))
 

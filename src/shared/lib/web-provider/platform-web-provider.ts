@@ -1,8 +1,8 @@
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import type { ApiKeySettings, ApiKeyStatus } from '../config/settings'
 import { NonRetryableError } from '../utils/retry'
-import { BaseWebProvider } from './base-web-provider'
+import { BaseWebProvider, type WebProviderSettings } from './base-web-provider'
 import {
   buildExaContentsBody,
   buildExaSearchBody,
@@ -38,18 +38,28 @@ export class PlatformWebProvider extends BaseWebProvider {
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'
   protected readonly envVarName = 'PLATFORM_TOKEN'
 
-  override getApiKeyStatus(): ApiKeyStatus {
-    if (getPlatformAccessToken()) return { isConfigured: true, source: 'settings' }
+  override async getApiKeyStatus(): Promise<ApiKeyStatus> {
+    if (await getPlatformAccessToken()) return { isConfigured: true, source: 'settings' }
     if (process.env[this.envVarName]) return { isConfigured: true, source: 'env' }
     return { isConfigured: false, source: 'none' }
   }
 
-  override getEffectiveApiKey(): string | undefined {
-    return getPlatformAccessToken() ?? process.env[this.envVarName] ?? undefined
+  override apiKeyStatusFrom(settings: WebProviderSettings): ApiKeyStatus {
+    if (platformAccessTokenFrom(settings)) return { isConfigured: true, source: 'settings' }
+    if (process.env[this.envVarName]) return { isConfigured: true, source: 'env' }
+    return { isConfigured: false, source: 'none' }
   }
 
-  private requireToken(surface: 'search' | 'fetch'): string {
-    const token = this.getEffectiveApiKey()
+  override async getEffectiveApiKey(): Promise<string | undefined> {
+    return (await getPlatformAccessToken()) ?? process.env[this.envVarName] ?? undefined
+  }
+
+  override effectiveApiKeyFrom(settings: WebProviderSettings): string | undefined {
+    return platformAccessTokenFrom(settings) ?? process.env[this.envVarName] ?? undefined
+  }
+
+  private async requireToken(surface: 'search' | 'fetch', settings?: WebProviderSettings): Promise<string> {
+    const token = await this.apiKeyFor(settings)
     if (!token) {
       throw new Error(
         `Platform web ${surface} is unavailable: you are not signed into Gamut. Sign in, or pick a different provider under the Web provider setting in Settings.`,
@@ -66,8 +76,8 @@ export class PlatformWebProvider extends BaseWebProvider {
     })
   }
 
-  async search(query: string, opts: WebSearchOptions): Promise<WebSearchResponse> {
-    const token = this.requireToken('search')
+  async search(query: string, opts: WebSearchOptions, settings?: WebProviderSettings): Promise<WebSearchResponse> {
+    const token = await this.requireToken('search', settings)
     const body = buildExaSearchBody(query, opts, this.clampNumResults(opts.numResults))
     try {
       return mapExaSearchResponse(await this.postToProxy('/v1/exa/search', token, body))
@@ -76,8 +86,8 @@ export class PlatformWebProvider extends BaseWebProvider {
     }
   }
 
-  async fetch(url: string, opts: WebFetchOptions): Promise<WebFetchResult> {
-    const token = this.requireToken('fetch')
+  async fetch(url: string, opts: WebFetchOptions, settings?: WebProviderSettings): Promise<WebFetchResult> {
+    const token = await this.requireToken('fetch', settings)
     const body = buildExaContentsBody(url, this.clampMaxChars(opts.maxChars))
     try {
       const json = await this.postToProxy('/v1/exa/contents', token, body)

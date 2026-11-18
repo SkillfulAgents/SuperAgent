@@ -4,7 +4,8 @@ import type { FolderTab } from '@renderer/context/file-preview-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { copyLazyTextToClipboard } from '@renderer/lib/clipboard'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
+import { isMountPath } from '@shared/lib/utils/workspace-path'
 
 interface FolderHostActionsProps {
   folder: FolderTab
@@ -34,7 +35,8 @@ async function getResponseError(response: Response, fallback: string): Promise<s
  */
 export function FolderHostActions({ folder }: FolderHostActionsProps) {
   const { canAdminAgent } = useUser()
-  if (!canAdminAgent(folder.agentSlug)) return null
+  // A drive folder's path is not on this host, and the endpoint resolves workspace folders only.
+  if (!canAdminAgent(folder.agentSlug) || isMountPath(folder.rootPath)) return null
 
   const electronRevealAvailable = canUseHostFeatures() && !!window.electronAPI?.revealInFolder
 
@@ -81,7 +83,7 @@ export function FolderHostActions({ folder }: FolderHostActionsProps) {
       <button
         type="button"
         onClick={handleCopyPath}
-        className="p-0.5 rounded hover:bg-muted transition-colors"
+        className="p-0.5 rounded-icon hover:bg-muted transition-colors"
         title="Copy folder path"
         aria-label="Copy folder path"
         data-testid="folder-copy-path"
@@ -92,7 +94,7 @@ export function FolderHostActions({ folder }: FolderHostActionsProps) {
         <button
           type="button"
           onClick={handleReveal}
-          className="p-0.5 rounded hover:bg-muted transition-colors"
+          className="p-0.5 rounded-icon hover:bg-muted transition-colors"
           title={revealFolderLabel()}
           aria-label={revealFolderLabel()}
           data-testid="folder-reveal"

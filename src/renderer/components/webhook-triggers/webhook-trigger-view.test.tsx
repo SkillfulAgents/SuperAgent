@@ -6,13 +6,18 @@ import { WebhookTriggerView } from './webhook-trigger-view'
 
 const capabilityUrl = 'https://hooks.example.test/private-capability'
 const userState = vi.hoisted(() => ({ canAdmin: true }))
+const relayState = vi.hoisted(() => ({
+  status: { available: true, unavailableReason: null, transport: 'realtime', lastClaimAt: null } as Record<string, unknown>,
+  kind: 'custom',
+  personalComposioKey: false,
+}))
 
 vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
   useWebhookTrigger: () => ({
     data: {
       id: 'trigger-1',
       agentSlug: 'agent-1',
-      kind: 'custom',
+      kind: relayState.kind,
       triggerType: 'CUSTOM_WEBHOOK',
       triggerConfig: JSON.stringify({ url: 'https://hooks.example.test/private-capability' }),
       prompt: 'Handle the event',
@@ -20,7 +25,8 @@ vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
       status: 'active',
       fireCount: 0,
       lastFiredAt: null,
-      model: null,
+      llmProviderId: 'conn-claude-subscription',
+      model: 'claude-opus-4-5',
       effort: null,
       speed: null,
       createdAt: new Date('2026-07-17T00:00:00Z'),
@@ -49,12 +55,14 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({ data: { apiKeyStatus: {} } }),
+  useSettings: () => ({
+    data: { apiKeyStatus: { composio: { isConfigured: relayState.personalComposioKey } } },
+  }),
   useModelSettings: () => ({ data: undefined }),
 }))
 
-vi.mock('@renderer/hooks/use-platform-auth', () => ({
-  usePlatformAuthStatus: () => ({ data: { connected: true } }),
+vi.mock('@renderer/hooks/use-webhook-relay', () => ({
+  useWebhookRelay: () => ({ data: relayState.status }),
 }))
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
@@ -76,7 +84,13 @@ vi.mock('@renderer/components/triggers/collapsible-prompt-text', () => ({
   CollapsiblePromptText: ({ text }: { text: string }) => <span>{text}</span>,
 }))
 vi.mock('@renderer/components/triggers/edit-prompt-dialog', () => ({ EditPromptDialog: () => null }))
-vi.mock('@renderer/components/triggers/runtime-options-card', () => ({ RuntimeOptionsCard: () => null }))
+const runtimeCardProps = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }))
+vi.mock('@renderer/components/triggers/runtime-options-card', () => ({
+  RuntimeOptionsCard: (props: Record<string, unknown>) => {
+    runtimeCardProps.current = props
+    return null
+  },
+}))
 
 vi.mock('@renderer/components/ui/popover', () => ({
   Popover: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -97,6 +111,9 @@ vi.mock('@renderer/components/ui/alert-dialog', () => ({
 
 afterEach(() => {
   userState.canAdmin = true
+  relayState.status = { available: true, unavailableReason: null, transport: 'realtime', lastClaimAt: null }
+  relayState.kind = 'custom'
+  relayState.personalComposioKey = false
 })
 
 describe('WebhookTriggerView owner-only details', () => {
@@ -114,5 +131,51 @@ describe('WebhookTriggerView owner-only details', () => {
 
     expect(screen.getByText('Endpoint URL')).toBeInTheDocument()
     expect(screen.getByText(capabilityUrl)).toBeInTheDocument()
+  })
+})
+
+describe('WebhookTriggerView relay notices', () => {
+  it('says nothing while the relay is receiving', () => {
+    render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
+
+    expect(screen.queryByTestId('webhook-relay-notice')).not.toBeInTheDocument()
+  })
+
+  it('asks for a platform connection when the relay is unavailable for that reason', () => {
+    relayState.status = { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null }
+
+    render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
+
+    expect(screen.getByTestId('webhook-relay-notice')).toHaveTextContent('require a platform connection')
+  })
+
+  it('says claiming is failing while the relay is unreachable', () => {
+    relayState.status = { available: true, unavailableReason: null, transport: 'unreachable', lastClaimAt: null }
+
+    render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
+
+    expect(screen.getByTestId('webhook-relay-notice')).toHaveTextContent('Claiming webhook events from the relay is failing')
+  })
+
+  it('warns about a personal Composio key only on Composio triggers', () => {
+    relayState.personalComposioKey = true
+
+    const { unmount } = render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
+    expect(screen.queryByText(/personal Composio API key/)).not.toBeInTheDocument()
+    unmount()
+
+    relayState.kind = 'composio'
+    render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
+    expect(screen.getByText(/personal Composio API key/)).toBeInTheDocument()
+  })
+})
+
+describe('WebhookTriggerView runtime options', () => {
+  it('passes the saved connection to the model card', () => {
+    render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
+    expect(runtimeCardProps.current).toMatchObject({
+      llmProviderId: 'conn-claude-subscription',
+      model: 'claude-opus-4-5',
+    })
   })
 })

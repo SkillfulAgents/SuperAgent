@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { TodoView } from '@shared/lib/todos/todo-schema'
+import { HttpError } from '@renderer/lib/http-error'
 
 const state = vi.hoisted(() => ({
   todos: [] as TodoView[],
@@ -10,9 +11,12 @@ const state = vi.hoisted(() => ({
   setStatus: vi.fn(),
   move: vi.fn(),
   update: vi.fn(),
+  create: vi.fn(),
   start: vi.fn(),
   rename: vi.fn(),
   starting: new Set<string>(),
+  // Agents the person may read but not use.
+  viewerOf: new Set<string>(),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
@@ -22,14 +26,18 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => ({ data: [{ slug: 'analyst', name: 'Analyst' }, { slug: 'ops', name: 'Ops' }] }),
 }))
+vi.mock('@renderer/context/user-context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/context/user-context')>()
+  return { ...actual, useUser: () => ({ ...actual.useUser(), canUseAgent: (slug: string) => !state.viewerOf.has(slug) }) }
+})
 vi.mock('@renderer/hooks/use-user-settings', () => ({ useUserSettings: () => ({ data: undefined }) }))
 vi.mock('@renderer/hooks/use-todos', () => ({
   useTodos: () => ({ data: state.todos, isPending: false, error: null }),
   useStartingTodoIds: () => state.starting,
   useStartTodo: () => ({ mutate: state.start }),
-  useSetTodoStatus: () => ({ mutate: state.setStatus }),
+  useSetTodoStatus: () => ({ mutate: state.setStatus, mutateAsync: state.setStatus }),
   useMoveTodo: () => ({ mutate: state.move }),
-  useCreateTodo: () => ({ mutateAsync: vi.fn() }),
+  useCreateTodo: () => ({ mutateAsync: state.create }),
   useUpdateTodo: () => ({ mutateAsync: state.update }),
   useDeleteTodo: () => ({ mutate: vi.fn() }),
   useRenameTodo: () => ({ mutateAsync: state.rename, isPending: false }),
@@ -56,6 +64,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     updatedAt: Date.now(),
     startedAt: null,
     completedAt: null,
+    attachments: [],
     ask: null,
     pendingWakeAt: null,
     ...partial,
@@ -68,8 +77,10 @@ beforeEach(() => {
   state.setStatus.mockReset()
   state.move.mockReset()
   state.update.mockReset()
+  state.create.mockReset()
   state.start.mockReset()
   state.rename.mockReset().mockResolvedValue(undefined)
+  state.viewerOf = new Set()
   state.starting = new Set()
 })
 
@@ -164,6 +175,7 @@ describe('TodoBoard', () => {
     expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
 
     fireEvent.contextMenu(screen.getByText('Summarize the weekly sales numbers'))
+    expect(screen.queryByTestId('todo-action-reopen')).not.toBeInTheDocument()
     fireEvent.click(await screen.findByTestId('todo-rename-item'))
     const input = await screen.findByTestId('todo-rename-input')
     expect(input).toHaveValue('Summarize the weekly sales numbers')
@@ -171,6 +183,27 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByTestId('todo-rename-submit'))
     await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
     expect(state.navigate).not.toHaveBeenCalled()
+  })
+
+  it('offers no rename on work whose agent the person can only view', async () => {
+    state.viewerOf = new Set(['analyst'])
+    state.todos = [todo({ id: 'b', column: 'has_updates' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Task b'))
+    expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
+  })
+
+  it('still offers reopen on done work whose agent the person can only view', async () => {
+    state.viewerOf = new Set(['analyst'])
+    state.todos = [todo({ id: 'b', column: 'done' })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.contextMenu(screen.getByText('Task b'))
+    expect(screen.queryByTestId('todo-rename-item')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('todo-action-reopen'))
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'b', status: 'active' })
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Done' }))
   })
 
   it.each(['has_updates', 'needs_input'] as const)('keeps an unsaved rename when working moves to %s', async (column) => {
@@ -199,6 +232,52 @@ describe('TodoBoard', () => {
     expect(state.navigate).not.toHaveBeenCalled()
   })
 
+  it.each([403, 404, 409])('does not retry a rejected draft save on Close or unmount after HTTP %i', async (status) => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    state.update.mockRejectedValue(new HttpError(status, 'The draft is no longer editable'))
+    const { unmount } = renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Unsaved edit' } })
+    await screen.findByTestId('todo-draft-save-error')
+    expect(screen.getByTestId('todo-draft-save')).toBeDisabled()
+    expect(state.update).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('todo-draft-close'))
+    await waitFor(() => expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument())
+    unmount()
+    expect(state.update).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([new HttpError(503, 'Temporarily unavailable'), new TypeError('Failed to fetch')])('keeps edits for a retry after $message', async (error) => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    state.update.mockRejectedValueOnce(error).mockResolvedValue(undefined)
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    await act(async () => {})
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Keep this edit' } })
+    fireEvent.click(screen.getByTestId('todo-draft-close'))
+    expect(await screen.findByTestId('todo-draft-save-error')).toHaveTextContent(error.message)
+    expect(screen.getByTestId('todo-draft-title')).toHaveValue('Keep this edit')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry save' }))
+    await waitFor(() => expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument())
+    expect(state.update).toHaveBeenCalledTimes(2)
+    expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Keep this edit' }))
+  })
+
+  it('allows correcting an invalid draft without retrying the rejected input', async () => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    state.update.mockRejectedValueOnce(new HttpError(422, 'Invalid todo')).mockResolvedValue(undefined)
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Invalid input' } })
+    await screen.findByTestId('todo-draft-save-error')
+    expect(state.update).toHaveBeenCalledTimes(1)
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Corrected input' } })
+    fireEvent.click(screen.getByTestId('todo-draft-save'))
+    await waitFor(() => expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument())
+    expect(state.update).toHaveBeenCalledTimes(2)
+    expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Corrected input' }))
+  })
+
   it('marks work done and archives what is done', () => {
     state.todos = [todo({ id: 'b', column: 'has_updates' })]
     const { unmount } = renderWithProviders(<TodoBoard />)
@@ -211,6 +290,41 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show Done, 1 items' }))
     fireEvent.click(screen.getByTestId('todo-action-archive'))
     expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'archived' })
+  })
+
+  it('reopens done work from its right-click menu or with R', async () => {
+    state.todos = [todo({ id: 'e', column: 'done' }), todo({ id: 'gone', column: 'done', sessionId: null })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.contextMenu(screen.getByText('Task e'))
+    fireEvent.click(await screen.findByTestId('todo-action-reopen'))
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'active' })
+
+    state.setStatus.mockReset()
+    fireEvent.mouseEnter(document.querySelector('[data-todo-id="e"]')!)
+    fireEvent.keyDown(window, { key: 'r' })
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'active' })
+
+    // Work whose session was deleted can't be reopened.
+    state.setStatus.mockReset()
+    fireEvent.mouseEnter(document.querySelector('[data-todo-id="gone"]')!)
+    fireEvent.keyDown(window, { key: 'r' })
+    fireEvent.contextMenu(screen.getByText('Task gone'))
+    await screen.findByTestId('todo-card-menu')
+    expect(screen.queryByTestId('todo-action-reopen')).not.toBeInTheDocument()
+    expect(state.setStatus).not.toHaveBeenCalled()
+  })
+
+  it('a key typed in a card menu does not run the board shortcut', async () => {
+    state.todos = [todo({ id: 'e', column: 'done' })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.mouseEnter(screen.getByTestId('todo-card'))
+    fireEvent.contextMenu(screen.getByText('Task e'))
+    fireEvent.keyDown(await screen.findByTestId('todo-card-menu'), { key: 'r' })
+    expect(state.setStatus).not.toHaveBeenCalled()
   })
 
   it('starts a draft that has an agent from its card', () => {

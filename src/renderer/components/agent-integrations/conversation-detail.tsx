@@ -5,6 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
+import { ArrowUpRight } from 'lucide-react'
 import { DialogTitle } from '@renderer/components/ui/dialog'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
@@ -37,6 +38,8 @@ interface ConversationDetailProps {
   /** Open a window by sessionId, or pass null to close back to the inbox list. */
   onSelectWindow: (sessionId: string | null) => void
   onNewConversation: (externalChatId: string) => void
+  /** Leave the dialog for the window's full session view. */
+  onOpenSession: (sessionId: string) => void
 }
 
 /**
@@ -55,6 +58,7 @@ export function ConversationDetail({
   canManageAccess,
   onSelectWindow,
   onNewConversation,
+  onOpenSession,
 }: ConversationDetailProps) {
   const blank = openWindowId == null
 
@@ -74,10 +78,10 @@ export function ConversationDetail({
           </span>
         </div>
 
-        <div className="mt-3 rounded-xl border bg-muted/30 p-4">
+        <div className="mt-3 rounded-card border bg-muted/30 p-4">
           {row.firstMessagePreview ? (
             <div className="flex justify-end">
-              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-zinc-100 px-4 py-2 text-sm dark:bg-zinc-800/70">
+              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-card bg-zinc-100 px-4 py-2 text-sm dark:bg-zinc-800/70">
                 {row.firstMessagePreview}
               </div>
             </div>
@@ -115,27 +119,39 @@ export function ConversationDetail({
           <span className="shrink-0 text-xs text-muted-foreground">Conversation history (read-only)</span>
         </div>
 
-        {switcherOptions.length > 1 && (
-          <Select
-            value={switcherValue}
-            onValueChange={(v) => (v === NEW_WINDOW ? onNewConversation(row.externalChatId) : onSelectWindow(v))}
-          >
-            <SelectTrigger className="h-8 w-[170px] shrink-0" aria-label="Switch conversation">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {switcherOptions.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {switcherOptions.length > 1 && (
+            <Select
+              value={switcherValue}
+              onValueChange={(v) => (v === NEW_WINDOW ? onNewConversation(row.externalChatId) : onSelectWindow(v))}
+            >
+              <SelectTrigger className="h-8 w-[170px] shrink-0" aria-label="Switch conversation">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {switcherOptions.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {!blank && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-0.5 rounded-sm text-sm text-blue-500 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onClick={() => onOpenSession(openWindowId as string)}
+            >
+              Open Session
+              <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
 
       {blank ? (
-        <div className="mt-3 flex min-h-[180px] items-center justify-center rounded-xl border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
+        <div className="mt-3 flex min-h-[180px] items-center justify-center rounded-card border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
           No messages yet. The next message from {row.title} on {providerName} starts a new conversation.
         </div>
       ) : (
@@ -147,7 +163,7 @@ export function ConversationDetail({
                 chat". The opacity wash only works in light mode (it lightens content
                 toward the page); in dark mode it muddies contrast and hides bubbles,
                 so we drop it there and lean on the muted panel instead. */}
-            <div className={`reader-scrollbar mt-3 overflow-hidden rounded-xl border bg-muted/30 ${CONVERSATION_PANEL_SCROLL}`}>
+            <div className={`reader-scrollbar mt-3 overflow-hidden rounded-card border bg-muted/30 ${CONVERSATION_PANEL_SCROLL}`}>
               <div className="cursor-default opacity-75 dark:opacity-100">
                 <SessionThread
                   sessionId={openWindowId as string}

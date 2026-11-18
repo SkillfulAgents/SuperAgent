@@ -1,3 +1,4 @@
+import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
@@ -6,7 +7,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
 import { useSendMessage } from '@renderer/hooks/use-messages'
-import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useResolvedAgentId, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -21,12 +22,11 @@ export type { ApiSession }
 // (`{name}-{id}`) while the sidebar, mutations and SSE invalidations all key on
 // the bare id. Resolving every slug form through the loaded agents list before it
 // reaches a query key is what stops the same session list/entry from splitting in
-// two (one stale half that invalidations never reach). `useAgents` is shared
-// (deduped) so this adds no real fetch cost.
+// two (one stale half that invalidations never reach). The agents query is
+// shared (deduped) so this adds no real fetch cost, and the resolution is a
+// narrow subscription: every sidebar row calls `useSessions`, collapsed or not.
 function useResolvedAgentSlug(agentSlug: string | null): string | null {
-  const { data: agents } = useAgents()
-  if (!agentSlug) return null
-  return resolveRouteAgentId(agentSlug, agents) ?? agentSlug
+  return useResolvedAgentId(agentSlug ?? undefined) ?? null
 }
 
 /** One-shot resolution for mutation invalidations, reading the cached agents list. */
@@ -45,15 +45,16 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
       return res.json()
     },
     enabled: !!resolvedSlug,
-    staleTime: options?.staleTime,
+    // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
+    ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
 }
 
 /**
  * Notable-only slice (live or carrying unread notifications) for badge and
- * toolbar consumers. The full list makes the server stat every transcript in
- * the agent's directory — 20k stats for a 20k-session agent — where this
- * path stats only the handful of notable ids. Keyed under the same
+ * toolbar consumers. The full list makes the server read every entry of the
+ * agent's session index — 20k rows for a 20k-session agent — where this
+ * path reads only the handful of notable ids. Keyed under the same
  * ['sessions', slug] prefix so SSE-driven invalidations reach it too.
  */
 export function useNotableSessions(agentSlug: string | null, options?: { limit?: number; staleTime?: number }) {
@@ -67,7 +68,8 @@ export function useNotableSessions(agentSlug: string | null, options?: { limit?:
       return res.json()
     },
     enabled: !!resolvedSlug,
-    staleTime: options?.staleTime,
+    // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
+    ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
 }
 
@@ -90,24 +92,30 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
 export function useCreateSession(options: {
   /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
   agentRuntimeErrorsShownInline?: boolean
+  /** The caller shows every failure itself, so skip the global error toast. */
+  skipGlobalErrorToast?: boolean
 } = {}) {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
+    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline, skipGlobalErrorToast: options.skipGlobalErrorToast },
     mutationFn: async (data: {
       agentSlug: string
       message: string
+      // Names the session instead of generating a name from the message.
+      name?: string
       effort?: EffortLevel
       speed?: SpeedLevel
       llmProviderId?: string | null
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
-      // Analytics-only: distinguishes auto-started sessions (template onboarding)
-      // from user-typed ones. Not sent to the server.
-      origin?: 'user' | 'onboarding'
+      // The launcher's computer-use toggle: the session may use any app without asking.
+      computerUse?: boolean
+      // Analytics-only: distinguishes auto-started sessions (template onboarding,
+      // todo dispatch) from user-typed ones. Not sent to the server.
+      origin?: 'user' | 'onboarding' | 'todo'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
     }) => {
@@ -116,26 +124,30 @@ export function useCreateSession(options: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: data.message,
+          ...(data.name ? { name: data.name } : {}),
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
           ...(data.llmProviderId !== undefined ? { llmProviderId: data.llmProviderId } : {}),
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
+          ...(data.computerUse ? { computerUse: true } : {}),
         }),
       })
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
-      return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
+      return res.json() as Promise<ApiSession & { initialMessageUuid: string; credentialSource?: string }>
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
-      // Onboarding auto-sends are neither typed nor spoken, so they stay unstamped.
+      // Onboarding and todo auto-sends are neither typed nor spoken, so they stay unstamped.
       const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
       track('session_created', { origin, ...(inputMode ? { input_mode: inputMode } : {}) })
       // A voice-started session's first message is the entry marker, not something the person said.
       track('message_sent', {
         origin,
+        session_id: created.id,
+        credential_source: created.credentialSource ?? 'unknown',
         ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
       })
       const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
@@ -174,9 +186,7 @@ export function useDeleteSession() {
       // 204 No Content - no body to parse
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
-      })
+      invalidateNotificationCaches(queryClient, resolveAgentSlugFromCache(queryClient, variables.agentSlug))
       // A Todo item started in it lets go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
@@ -209,6 +219,8 @@ export function useUpdateSessionName() {
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
+      // A started Todo card shows its session's name.
+      queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
   })
 }
@@ -235,8 +247,8 @@ export function useSetSessionMarkedUnread() {
     },
     onSuccess: (data, variables) => {
       // The clear fires on every session open, and almost always clears a flag
-      // that was never set. Refetching on that no-op would re-stat every
-      // session in the agent's directory (the sessions list) and re-enrich
+      // that was never set. Refetching on that no-op would re-read every
+      // session of the agent (the sessions list) and re-enrich
       // every agent (the agents list) for nothing, so the server reports
       // whether it actually wrote and we invalidate only then.
       if (!data.changed) return
@@ -271,6 +283,7 @@ export function clearSessionUnreadInCache(
 ): boolean {
   return applySessionActivityStatus(queryClient, agentSlug, sessionId, {
     hasUnreadNotifications: false,
+    hasUnreadMention: false,
   })
 }
 

@@ -13,7 +13,8 @@ export const ProxyExecuteBinaryBodySchema = z.union([
 
 export const ProxyExecuteResponseSchema = z.object({
   status: z.number(),
-  data: z.unknown(),
+  // Binary and empty responses may carry no JSON body at all.
+  data: z.unknown().optional(),
   headers: z.record(z.string(), z.string()).default({}),
   binary_data: z
     .object({

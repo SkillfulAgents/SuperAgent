@@ -13,9 +13,12 @@ vi.mock('../db', () => ({
     return testDb
   },
 }))
-vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
+const auth = vi.hoisted(() => ({ on: false }))
+const record = vi.hoisted(() => ({ teamBrain: null as { agentSlug: string; volumeId: string } | null }))
+vi.mock('@shared/lib/config/settings', () => ({ getTeamBrain: () => record.teamBrain }))
+vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => auth.on }))
 
-import { changeMemberRole, countMembersWithMinRole, removeMember } from './agent-members-service'
+import { addAgentUsers, addTeamBrainUser, changeMemberRole, countMembersWithMinRole, countOtherMembers, removeMember } from './agent-members-service'
 
 const { agentAcl, user } = schema
 const AGENT = 'shared-agent'
@@ -55,6 +58,22 @@ describe('countMembersWithMinRole', () => {
     testDb.insert(agentAcl).values({ id: 'acl-elsewhere', userId: 'bob', agentSlug: 'other-agent', role: 'owner', createdAt: new Date() }).run()
     expect(await countMembersWithMinRole(AGENT, 'user')).toBe(2)
     expect(await countMembersWithMinRole(AGENT, 'owner')).toBe(1)
+  })
+})
+
+describe('countOtherMembers', () => {
+  it('counts who can have the agent act for them besides the caller: members who may message it, and every admin', async () => {
+    seed([{ id: 'ann', role: 'owner' }, { id: 'bob', role: 'viewer' }, { id: 'cy', role: 'user' }])
+    testDb.insert(user).values({ id: 'admin', name: 'admin', email: 'admin@example.test', role: 'admin' }).run()
+    testDb.insert(user).values({ id: 'gone', name: 'gone', email: 'gone@example.test', role: 'admin', banned: true }).run()
+    testDb.insert(user).values({ id: 'dee', name: 'dee', email: 'dee@example.test' }).run()
+    // cy and the admin; bob only views it, and dee is not on it.
+    expect(await countOtherMembers(AGENT, 'ann')).toBe(2)
+    expect(await countOtherMembers(AGENT, 'admin')).toBe(2)
+    expect(await countOtherMembers(AGENT, null)).toBe(3)
+    // An agent with no members of its own: the admin can still drive it.
+    expect(await countOtherMembers('other-agent', 'ann')).toBe(1)
+    expect(await countOtherMembers('other-agent', 'admin')).toBe(0)
   })
 })
 
@@ -138,5 +157,43 @@ describe('changeMemberRole', () => {
 
     expect(outcomes.sort()).toEqual(['done', 'last-owner'])
     expect(owners()).toHaveLength(1)
+  })
+})
+
+describe('addAgentUsers', () => {
+  afterEach(() => { auth.on = false })
+
+  it('makes every user a user of the agent, keeps a higher role, and adds no one twice', async () => {
+    auth.on = true
+    seed([{ id: 'admin', role: 'owner' }])
+    testDb.insert(user).values([{ id: 'ana', name: 'ana', email: 'ana@example.test' }, { id: 'bo', name: 'bo', email: 'bo@example.test' }]).run()
+    await addAgentUsers(AGENT)
+    await addAgentUsers(AGENT)
+    expect([roleOf('admin'), roleOf('ana'), roleOf('bo')]).toEqual(['owner', 'user', 'user'])
+    expect(testDb.select().from(agentAcl).where(eq(agentAcl.agentSlug, AGENT)).all()).toHaveLength(3)
+  })
+
+  it('adds only the users named, when it is given some', async () => {
+    auth.on = true
+    testDb.insert(user).values([{ id: 'ana', name: 'ana', email: 'ana@example.test' }, { id: 'bo', name: 'bo', email: 'bo@example.test' }]).run()
+    await addAgentUsers(AGENT, ['bo'])
+    expect([roleOf('ana'), roleOf('bo')]).toEqual([null, 'user'])
+  })
+
+  it('gives someone new the Team Brain when the workspace has one, and nothing when it has none', async () => {
+    auth.on = true
+    testDb.insert(user).values({ id: 'new', name: 'new', email: 'new@example.test' }).run()
+    await addTeamBrainUser('new')
+    expect(roleOf('new')).toBeNull()
+    record.teamBrain = { agentSlug: AGENT, volumeId: 'vol-1' }
+    await addTeamBrainUser('new')
+    expect(roleOf('new')).toBe('user')
+    record.teamBrain = null
+  })
+
+  it('does nothing outside auth mode, where agents have no members', async () => {
+    testDb.insert(user).values({ id: 'ana', name: 'ana', email: 'ana@example.test' }).run()
+    await addAgentUsers(AGENT)
+    expect(roleOf('ana')).toBeNull()
   })
 })

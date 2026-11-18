@@ -1,6 +1,7 @@
 import os from 'os'
 import fs from 'fs'
 import { execSync } from 'child_process'
+import type { AppSettings } from '../config/settings'
 
 function safeExec(cmd: string, timeout = 5000): string {
   try {
@@ -43,8 +44,7 @@ function getDiskSpaceGB(dir: string): { total: number; free: number } | null {
  * Collect environment fingerprint data for error reports.
  *
  * This function MUST never throw — every individual check is wrapped
- * so a failure in one (e.g., getSettings() on corrupt config) doesn't
- * prevent the rest from being collected.
+ * so a failure in one doesn't prevent the rest from being collected.
  */
 export function collectEnvironmentData(): Record<string, unknown> {
   const data: Record<string, unknown> = {}
@@ -74,11 +74,31 @@ export function collectEnvironmentData(): Record<string, unknown> {
     data.chrome_version = process.versions.chrome ?? 'N/A'
   } catch { /* partial data is fine */ }
 
-  // App settings — may fail if data dir isn't set or settings are corrupt
+  // macOS-specific
+  if (process.platform === 'darwin') {
+    data.macos_version = safeExec('sw_vers -productVersion')
+    data.macos_build = safeExec('sw_vers -buildVersion')
+    data.rosetta = safeExec('sysctl -n sysctl.proc_translated') === '1'
+  }
+
+  // Windows-specific
+  if (process.platform === 'win32') {
+    data.windows_build = safeExec('cmd /c ver')
+  }
+
+  return data
+}
+
+/**
+ * The part of the fingerprint that comes from settings (container runner,
+ * image, limits) and the data dir. Separate from {@link collectEnvironmentData}
+ * because settings live in the database, which error reporting starts before:
+ * the entry point adds this once the database is open. Never throws.
+ */
+export function collectSettingsEnvironmentData(settings: Pick<AppSettings, 'container'>): Record<string, unknown> {
+  const data: Record<string, unknown> = {}
   try {
     const { getDataDir } = require('../config/data-dir')
-    const { getSettings } = require('../config/settings')
-    const settings = getSettings()
     const dataDir = getDataDir()
     const disk = getDiskSpaceGB(dataDir)
 
@@ -109,19 +129,7 @@ export function collectEnvironmentData(): Record<string, unknown> {
     } else if (runner === 'wsl2') {
       data.wsl_version = safeExec('wsl --version')
     }
-  } catch { /* settings not available yet — that's ok */ }
-
-  // macOS-specific
-  if (process.platform === 'darwin') {
-    data.macos_version = safeExec('sw_vers -productVersion')
-    data.macos_build = safeExec('sw_vers -buildVersion')
-    data.rosetta = safeExec('sysctl -n sysctl.proc_translated') === '1'
-  }
-
-  // Windows-specific
-  if (process.platform === 'win32') {
-    data.windows_build = safeExec('cmd /c ver')
-  }
+  } catch { /* partial data is fine */ }
 
   return data
 }

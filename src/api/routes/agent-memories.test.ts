@@ -22,8 +22,10 @@ vi.mock('../middleware/auth', () => ({
   getAgentId: () => 'resolved-agent-slug',
 }))
 import { agentMemoryRoutes } from './agent-memories'
+import { apiErrorHandler } from '../error-handler'
 
-const app = new Hono().route('/api/agents', agentMemoryRoutes)
+// Mounted like the real app: under the agents router, with the global handler.
+const app = new Hono().route('/api/agents', new Hono().route('/', agentMemoryRoutes)).onError(apiErrorHandler)
 const url = '/api/agents/display-name/memories'
 const headers = { 'x-test-role': 'admin', 'Content-Type': 'application/json' }
 
@@ -68,6 +70,13 @@ describe('memory API', () => {
     expect((await app.request(url + '/content', { method: 'PUT', headers, body: JSON.stringify({ path: 'example.md', content: 'draft' }) })).status).toBe(400)
     expect((await app.request(url + '/content?path=..%2Fprivate.md', { headers })).status).toBe(400)
     expect((await app.request(url + '/content?path=missing.md', { headers })).status).toBe(404)
+  })
+
+  it('answers malformed JSON with 400, not the memory 500', async () => {
+    const res = await app.request(url + '/content', { method: 'PUT', headers, body: '{"path":' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Malformed JSON in request body' })
+    expect(get).not.toHaveBeenCalled()
   })
   it('returns a helpful validation error and leaves stored content untouched', async () => {
     await files.putDoc(`${AGENT_MEMORY_DIR}/example.md`, '# Existing memory')

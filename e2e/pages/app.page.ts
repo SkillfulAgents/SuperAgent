@@ -32,11 +32,22 @@ export class AppPage {
   async dismissWizardIfVisible(timeout = 2000) {
     const wizard = this.page.locator('[data-testid="wizard-container"]')
 
-    try {
-      await wizard.waitFor({ state: 'visible', timeout })
-    } catch {
-      return
-    }
+    // The app opens the wizard only once its lazy chunk has loaded, which a cold
+    // dev server can take many seconds to compile: the shell shows first and the
+    // wizard replaces it later. Past `timeout`, keep waiting while the server says
+    // this user is still owed the wizard, so a late one is dismissed here rather
+    // than covering whatever the test does next.
+    const started = Date.now()
+    await expect.poll(async () => {
+      if (await wizard.isVisible()) return 'wizard'
+      if (Date.now() - started < timeout) return 'waiting'
+      return (await this.wizardOwed()) ? 'waiting' : 'none'
+    }, {
+      message: 'the getting-started wizard the server says this user is owed never opened',
+      timeout: Math.max(timeout, 20_000),
+      intervals: [100, 250, 500],
+    }).not.toBe('waiting')
+    if (!(await wizard.isVisible())) return
 
     const manualSetup = this.page.locator('[data-testid="wizard-manual-setup"]')
     const agentOnlyHeading = wizard.getByRole('heading', { name: /describe your first ai teammate/i })
@@ -76,6 +87,40 @@ export class AppPage {
     }
 
     await expect(wizard).not.toBeVisible({ timeout: 15000 })
+  }
+
+  /**
+   * Whether the app will open the getting-started wizard for whoever this page is
+   * signed in as, from the server's view of what the app's auto-open reads
+   * (route-layouts.tsx): the user's own setup and, with sign-in, the workspace's
+   * setup and the user's role. Signed out, nobody is owed it. A template handoff
+   * opens no wizard and completes the user's setup instead, so it reads as done.
+   */
+  private async wizardOwed(): Promise<boolean> {
+    const api = await this.apiBaseUrl()
+    if (api === null) return false
+    const userSettings = await this.page.request.get(`${api}/api/user-settings`)
+    if (!userSettings.ok()) return false
+    if ((await userSettings.json() as { setupCompleted?: boolean }).setupCompleted) return false
+    // Local mode mounts no session endpoint, and there everyone gets the wizard.
+    const session = await this.page.request.get(`${api}/api/auth/get-session`)
+    const body = session.ok() ? await session.json().catch(() => null) as { user?: { role?: string } } | null : null
+    const role = body?.user?.role
+    if (role === undefined) return true
+    const settings = await this.page.request.get(`${api}/api/settings`)
+    const workspaceDone = settings.ok() && !!(await settings.json() as { setupCompleted?: boolean }).setupCompleted
+    return workspaceDone || role === 'admin'
+  }
+
+  /**
+   * Where this page's app sends its API calls: its own origin on the web, or, in
+   * Electron's built file:// renderer, the address its preload bridge gives the
+   * app. Null when the page has neither, so no app is loaded.
+   */
+  private async apiBaseUrl(): Promise<string | null> {
+    const origin = /^https?:\/\/[^/?#]+/.exec(this.page.url())?.[0]
+    if (origin) return origin
+    return this.page.evaluate(() => window.electronAPI?.getApiUrl() ?? null)
   }
 
   /**

@@ -7,14 +7,14 @@ let updateInterval: NodeJS.Timeout | null = null
 let mainWindowRef: BrowserWindow | null = null
 // A getter rather than a stored URL: in cloud mode the effective base is the
 // keyed proxy prefix, and which one is in force can change on a target switch.
-let getApiBaseUrlRef: (() => string) | null = null
+let getApiBaseUrlRef: (() => Promise<string>) | null = null
 
 /**
  * Create the system tray with menu
  */
 export function createTray(
   mainWindow: BrowserWindow | null,
-  getApiBaseUrl: () => string
+  getApiBaseUrl: () => Promise<string>
 ): Tray {
   mainWindowRef = mainWindow
   getApiBaseUrlRef = getApiBaseUrl
@@ -207,7 +207,11 @@ async function updateTrayMenu(): Promise<void> {
   if (!tray || !getApiBaseUrlRef) return
 
   const generation = ++menuGeneration
-  const agents = await fetchAgentsWithStatus(getApiBaseUrlRef())
+  const agents = await getApiBaseUrlRef().then(fetchAgentsWithStatus, (error: unknown) => {
+    // Listed as no agents, like an unreachable API: the poll must not reject.
+    console.error('Failed to resolve the API base URL for the tray:', error)
+    return []
+  })
   if (generation !== menuGeneration) return
 
   // Group agents by status

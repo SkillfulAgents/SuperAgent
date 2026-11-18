@@ -27,6 +27,11 @@ let mockContainerClient: any
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('../db', () => ({
   get db() { return testDb },
 }))
@@ -47,6 +52,7 @@ const containerManager = vi.hoisted(() => ({
   ensureRunning: vi.fn(),
   // The actor reaches the client through getClient after start().
   getClient: () => mockContainerClient,
+  getCachedInfo: vi.fn(() => ({ status: 'running', port: null })),
 }))
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
@@ -70,14 +76,19 @@ vi.mock('@shared/lib/services/session-service', () => ({
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('not-automation')),
 }))
 
-// Mock settings. The capability + script-type reads belong to the persister's
-// request path, which the wire-contract suite below drives for real.
+// Mock settings. The capability + script-type reads belong to the live
+// sessions' request path, which the wire-contract suite below drives for real.
 const mockAgentCapabilities: Record<'subagents' | 'workflows', 'allow' | 'review' | 'block'> = {
   subagents: 'allow',
   workflows: 'allow',
 }
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
+    agentModel: 'claude-sonnet-4-5',
+    browserModel: 'claude-sonnet-4-5',
+    summarizerModel: 'claude-haiku-4-5',
+  }),
+  effectiveModelsFrom: () => ({
     agentModel: 'claude-sonnet-4-5',
     browserModel: 'claude-sonnet-4-5',
     summarizerModel: 'claude-haiku-4-5',
@@ -97,7 +108,7 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn().mockResolvedValue([]),
 }))
 
-// Use the real messagePersister — it handles the complex stream→SSE transformation
+// Use the real live sessions — they handle the complex stream→SSE transformation
 
 // Mock telegram connector to return our MockChatAgentIntegration. Keep the REAL
 // statics: the manager resolves the connector CLASS through this module, so
@@ -120,6 +131,9 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
@@ -340,12 +354,13 @@ describe('Chat integration E2E', () => {
       // The user's message was carried into the fresh session as its first message.
       expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('Still there?')
 
-      // The dead row is archived; a fresh non-archived row now serves this chat.
-      const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
-      const dead = rows.find((r) => r.sessionId === deadSessionId)
-      const fresh = rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)
-      expect(dead?.archivedAt).toBeTruthy()
-      expect(fresh).toBeDefined()
+      // The dead row is archived; a fresh non-archived row now serves this chat,
+      // written once the new session is registered, after its create.
+      await vi.waitFor(async () => {
+        const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
+        expect(rows.find((r) => r.sessionId === deadSessionId)?.archivedAt).toBeTruthy()
+        expect(rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)).toBeDefined()
+      })
     })
 
     it('answers a reply to an agent-initiated message whose session the container never had', async () => {
@@ -546,13 +561,13 @@ describe('Chat integration E2E', () => {
   // Every other chat test around user-input requests hands processSSEEvent a
   // hand-built event and asserts what the connector does with it — which stays
   // green even if the host stops emitting the event entirely. These rows drive
-  // a REAL tool_use through the REAL MessagePersister and assert on the card
+  // a REAL tool_use through the agent's REAL LiveSessions and assert on the card
   // that comes out the far end of the chat manager. If the registry stops
   // registering a kind, stops broadcasting it, or maps it to the wrong card,
   // exactly one row goes red and it names the kind.
   // ────────────────────────────────────────────────────────────────────
 
-  describe('unified wire contract (persister → registry → chat card)', () => {
+  describe('unified wire contract (live sessions → registry → chat card)', () => {
     interface WireRow {
       kind: string
       trigger: string
@@ -590,11 +605,6 @@ describe('Chat integration E2E', () => {
       vi.mocked(containerManager.ensureRunning).mockReset()
       vi.mocked(containerManager.ensureRunning).mockResolvedValue(mockContainerClient)
 
-      // start() arms this in production; this harness drives addIntegration
-      // directly, and without it the review card has no wire to arrive on.
-      ;(agentIntegrationManager as unknown as { subscribeGlobalNotifications(): void })
-        .subscribeGlobalNotifications()
-
       // Two kinds the shared scenario table has no trigger for.
       MockContainerClient.registerScenario('need a file', new UserInputRequestScenario([
         { name: 'mcp__user-input__request_file', input: { description: 'A CSV of last quarter' } },
@@ -630,19 +640,16 @@ describe('Chat integration E2E', () => {
       // the user to the wrong place.
       expect(sent.sessionId).toBeTruthy()
       // …and it must be the id the registry holds, not a chat-side invention.
-      const open = userInputRequestManager.getOpenRequest(
-        (sent.event as { toolUseId: string }).toolUseId,
-      )
+      const open = userInputRequestManager.getOpenRequest('test-agent', (sent.event as { toolUseId: string }).toolUseId)
       expect(open?.kind).toBe(row.kind)
       expect(open?.scope.sessionId).toBe(sent.sessionId)
       if (row.expect) expect(sent.event).toMatchObject(row.expect)
     })
 
-    it('a parked proxy review reaches chat as the Allow/Deny card off the global wire', async () => {
-      // Reviews are agent-scoped, so they never touch a session SSE stream —
-      // this is the only path that carries them, and it is a different one from
-      // every row above.
-      const sent = await cardFor('proxy review please')
+    it("a proxy review from the chat's session reaches chat as the Allow/Deny card, and takes the received mark off", async () => {
+      const removed = vi.spyOn(mockConnector as any, 'removeAcknowledgement')
+      const sent = await cardFor('proxy review please scope=session')
+      await waitForCondition(() => removed.mock.calls.some(([chatId]) => chatId === 'chat-1'), 3000)
 
       expect(sent.event.type).toBe('question_request')
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId
@@ -653,7 +660,20 @@ describe('Chat integration E2E', () => {
       // The id in the card is the registry's review id, so the decision routes
       // back to the entry that is actually parked.
       const reviewId = toolUseId.split(':')[1]
-      expect(userInputRequestManager.getOpenRequest(reviewId)?.kind).toBe('proxy_review')
+      expect(userInputRequestManager.getOpenRequest('test-agent', reviewId)?.kind).toBe('proxy_review')
+    })
+
+    it('an agent-wide proxy review stays in the app and never reaches chat', async () => {
+      const integrationId = await createTestIntegration()
+      await agentIntegrationManager.addIntegration(integrationId)
+      mockConnector.simulateIncomingMessage('proxy review please', 'chat-1', 'user-1')
+      await waitForCondition(
+        () => userInputRequestManager.getOpenRequestsForAgent('test-agent').some((r) => r.kind === 'proxy_review'),
+        8000,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      expect(mockConnector.sentCards).toHaveLength(0)
     })
 
     it('a press on a card settled elsewhere is refused instead of buffered in the container', async () => {
@@ -661,7 +681,7 @@ describe('Chat integration E2E', () => {
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId
 
       // Settled in the app while the chat card still shows live buttons.
-      expect(userInputRequestManager.resolve(toolUseId, 'answered')).not.toBeNull()
+      expect(userInputRequestManager.resolve('test-agent', toolUseId, 'answered')).not.toBeNull()
 
       const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
       mockConnector.sentMessages = []
@@ -681,7 +701,7 @@ describe('Chat integration E2E', () => {
 
       // Same id, re-parked under a different agent — the shape a forged or
       // crossed-wires payload takes. Still open, still not this chat's to decide.
-      userInputRequestManager.resolve(toolUseId, 'cancelled')
+      userInputRequestManager.resolve('test-agent', toolUseId, 'cancelled')
       userInputRequestManager.register({
         id: toolUseId,
         kind: 'secret',
@@ -698,7 +718,7 @@ describe('Chat integration E2E', () => {
 
       expect(mockConnector.sentMessages[0].message.text).toContain('already handled')
       expect(fetchSpy.mock.calls.filter(([p]) => String(p).includes('/resolve'))).toHaveLength(0)
-      expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('other-agent', toolUseId)).not.toBeNull()
       fetchSpy.mockRestore()
     })
 
@@ -725,7 +745,7 @@ describe('Chat integration E2E', () => {
 
       // Settle in the app while the press is parked on the container lookup.
       await waitForCondition(() => vi.mocked(containerManager.ensureRunning).mock.calls.length > 0, 3000)
-      expect(userInputRequestManager.resolve(toolUseId, 'answered')).not.toBeNull()
+      expect(userInputRequestManager.resolve('test-agent', toolUseId, 'answered')).not.toBeNull()
       releaseContainer()
 
       // Wait on something BOTH outcomes produce, so the assertion below is what
@@ -757,13 +777,47 @@ describe('Chat integration E2E', () => {
 
       await waitForCondition(() => userInputRequestManager.stats.claimed === 0, 3000)
       // Still open, and the next press gets through.
-      expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('test-agent', toolUseId)).not.toBeNull()
       const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
       mockConnector.simulateInteractiveResponse(toolUseId, 'hunter2', 'chat-1')
       await waitForCondition(
         () => fetchSpy.mock.calls.some(([p]) => String(p).includes('/resolve')),
         3000,
       )
+      fetchSpy.mockRestore()
+    })
+
+    it('a press after a host restart is recovered from the container, not refused', async () => {
+      // A restarted host has forgotten what the container still waits on, and
+      // a relay delivers the presses it held through the restart.
+      const sent = await cardFor('ask question')
+      const toolUseId = (sent.event as { toolUseId: string }).toolUseId
+      userInputRequestManager.reset()
+
+      const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
+      mockConnector.sentMessages = []
+      mockConnector.simulateInteractiveResponse(toolUseId, { question: 'Pick one', answer: 'Blue' }, 'chat-1')
+      await waitForCondition(() => fetchSpy.mock.calls.some(([p]) => String(p).includes('/resolve')), 3000)
+
+      expect(userInputRequestManager.getRecentResolution('test-agent', toolUseId)?.outcome).toBe('answered')
+      expect(mockConnector.sentMessages.map(m => m.message.text).join('\n')).not.toContain('already handled')
+      fetchSpy.mockRestore()
+    })
+
+    it('after a host restart, a press the container no longer waits on is still refused', async () => {
+      const sent = await cardFor('ask question')
+      const toolUseId = (sent.event as { toolUseId: string }).toolUseId
+      // Answered before the restart: the container moved on, the host forgot.
+      await mockContainerClient.fetch(`/inputs/${toolUseId}/resolve`, { method: 'POST', body: JSON.stringify({ value: {} }) })
+      userInputRequestManager.reset()
+
+      const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
+      mockConnector.sentMessages = []
+      mockConnector.simulateInteractiveResponse(toolUseId, { question: 'Pick one', answer: 'Blue' }, 'chat-1')
+      await waitForCondition(() => mockConnector.sentMessages.length > 0, 3000)
+
+      expect(mockConnector.sentMessages[0].message.text).toContain('already handled')
+      expect(fetchSpy.mock.calls.filter(([p]) => String(p).includes('/resolve'))).toHaveLength(0)
       fetchSpy.mockRestore()
     })
 

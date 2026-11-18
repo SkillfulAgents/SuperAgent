@@ -6,7 +6,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { dismissReauthRequest } from '@renderer/lib/reauth-dismiss'
-import { getProvider } from '@shared/lib/account-providers/service-catalog'
+import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
 import { DeclineButton } from '../requests/decline-button'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { RequestItemShell } from '../requests/request-item-shell'
@@ -42,8 +42,7 @@ export function AccountReauthRequestItem({
   // Cancel makes reconnect report false; that is not a failure to show. Cancel
   // and a retry both move past the attempt, which then reports nothing.
   const attemptRef = useRef(0)
-  const providerName = getProvider(toolkit)?.displayName
-    ?? `${toolkit.charAt(0).toUpperCase()}${toolkit.slice(1)}`
+  const providerName = getProviderDisplayName(toolkit)
   const statusLabel = accountStatus === 'expired' ? 'expired' : 'been revoked'
   const ownsAccount = connectedAccounts?.accounts.some((account) => account.id === accountId)
   const canReconnect = !readOnly && ownsAccount === true

@@ -135,7 +135,7 @@ describe('appendToSessionDraft', () => {
 describe('seedAgentTemplatePrompt', () => {
   it('stores the template prompt under the new agent home draft key', () => {
     const { result } = renderHook(() => ({
-      draft: useDraft<string>('agent:new-agent'),
+      draft: useDraft<string>('session:agent-home:new-agent'),
       store: useDraftsStore(),
     }), { wrapper })
 
@@ -150,7 +150,7 @@ describe('seedAgentTemplatePrompt', () => {
     const { result } = renderHook(() => useDraftsStore(), { wrapper })
 
     expect(seedAgentTemplatePrompt(result.current, 'new-agent', undefined)).toBe(false)
-    expect(result.current.get('agent:new-agent')).toBeUndefined()
+    expect(result.current.get('session:agent-home:new-agent')).toBeUndefined()
   })
 })
 
@@ -163,25 +163,21 @@ function memoryStore(): Pick<DraftsStore, 'get' | 'set'> {
 }
 
 describe('snapshotSessionDraft / seedSessionDraft', () => {
-  it('captures text and secured secrets at snapshot time and seeds them on the target, source untouched', () => {
+  it('captures text at snapshot time and seeds it on the target, source untouched', () => {
     const store = memoryStore()
     store.set('session:src', 'unsent text')
-    store.set('session:src:secured-secrets', [{ id: 's1' }])
 
     const snapshot = snapshotSessionDraft(store, 'src')
     store.set('session:src', 'edited after click') // click-time values must win
     seedSessionDraft(store, 'fork', snapshot)
 
     expect(store.get('session:fork')).toBe('unsent text')
-    expect(store.get('session:fork:secured-secrets')).toEqual([{ id: 's1' }])
     expect(store.get('session:src')).toBe('edited after click')
-    expect(store.get('session:src:secured-secrets')).toEqual([{ id: 's1' }])
   })
 
   it('seeds nothing when the source had no draft', () => {
     const store = memoryStore()
     seedSessionDraft(store, 'fork', snapshotSessionDraft(store, 'src'))
     expect(store.get('session:fork')).toBeUndefined()
-    expect(store.get('session:fork:secured-secrets')).toBeUndefined()
   })
 })

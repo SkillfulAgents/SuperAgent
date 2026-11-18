@@ -2,7 +2,7 @@ import { defineConfig, devices, chromium } from '@playwright/test'
 import path from 'path'
 
 // Quarantine config for specs that mutate GLOBAL server state (onboarding
-// flags, the provider API key): single worker, own server/data directory,
+// flags, provider credentials/defaults): single worker, own server/data directory,
 // separate from the fully-parallel main web suite.
 const defaultE2eDataDir = path.join(__dirname, '.e2e-data', 'wizard')
 if (!process.env.SUPERAGENT_DATA_DIR) {
@@ -48,6 +48,7 @@ export default defineConfig({
   testMatch: [
     '**/getting-started-wizard.spec.ts',
     '**/provider-api-key.spec.ts',
+    '**/paywall-subscriptions.spec.ts',
   ],
   outputDir: playwrightOutputDir,
   fullyParallel: false,

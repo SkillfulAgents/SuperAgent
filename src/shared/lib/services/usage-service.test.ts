@@ -263,6 +263,32 @@ describe('usage-service', () => {
       }
     })
 
+    it("does not bill a fork subagent's copy of the parent's launching response", async () => {
+      // A fork transcript (CLI 2.1.302+) opens with a copy of the parent's
+      // assistant entry that launched it: same requestId and message id, a
+      // partial usage snapshot, isSidechain. Real capture: sdk303-fork-subagent.
+      const fixture = path.resolve(__dirname, '../container/__fixtures__/sdk303-fork-subagent')
+      const forkName = (await fsPromises.readdir(path.join(fixture, 'fs-snapshot'))).find((n) => n.endsWith('.jsonl'))!
+      const forkLines = (await fsPromises.readFile(path.join(fixture, 'fs-snapshot', forkName), 'utf8')).trim().split('\n')
+      const launchCopy = forkLines.findIndex((line) => JSON.parse(line).type === 'assistant')
+      const totalsWith = async (fork: string[]) => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'usage-fork-'))
+        try {
+          await fsPromises.copyFile(path.join(fixture, 'lead-transcript.jsonl'), path.join(dir, 'session.jsonl'))
+          mkdirSync(path.join(dir, 'session', 'subagents'), { recursive: true })
+          writeFileSync(path.join(dir, 'session', 'subagents', forkName), fork.join('\n') + '\n')
+          return await loadSessionUsageTotals({ ...sessionOptions(path.join(dir, 'session.jsonl')) })
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+
+      const withCopy = await totalsWith(forkLines)
+      const withoutCopy = await totalsWith(forkLines.filter((_, i) => i !== launchCopy))
+      expect(withCopy).toEqual(withoutCopy)
+      expect(withCopy.totalTokens).toBeGreaterThan(0)
+    })
+
     it('deduplicates snapshots when requestId presence differs', async () => {
       const dir = mkdtempSync(path.join(tmpdir(), 'usage-mixed-request-id-'))
       const transcript = path.join(dir, 'mixed-request-id.jsonl')
@@ -749,55 +775,55 @@ describe('usage-service', () => {
   })
 
   describe('calculateCost — GPT pricing + 272K long-context cliff', () => {
-    it('prices GPT models that are absent from the old Claude-only table (was $0)', () => {
+    it('prices GPT models that are absent from the old Claude-only table (was $0)', async () => {
       // 100K input, 1K output, below the cliff: $5 input / $30 output per 1M.
-      expect(calculateCost('gpt-5.5', 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('gpt-5.5', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 5 + 1_000 * 30) / 1_000_000,
         9,
       )
       // OpenRouter-prefixed id resolves too.
-      expect(calculateCost('openai/gpt-5.4', 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('openai/gpt-5.4', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 2.5 + 1_000 * 15) / 1_000_000,
         9,
       )
     })
 
-    it('reprices the whole request above 272K input (2x input / 1.5x output)', () => {
-      expect(calculateCost('gpt-5.5', 300_000, 2_000, 0, 0)).toBeCloseTo(
+    it('reprices the whole request above 272K input (2x input / 1.5x output)', async () => {
+      expect(await calculateCost('gpt-5.5', 300_000, 2_000, 0, 0)).toBeCloseTo(
         (300_000 * 10 + 2_000 * 45) / 1_000_000,
         9,
       )
-      expect(calculateCost('gpt-5.4', 300_000, 2_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('gpt-5.4', 300_000, 2_000, 0, 0)).toBeCloseTo(
         (300_000 * 5 + 2_000 * 22.5) / 1_000_000,
         9,
       )
     })
 
-    it('counts cache reads toward the threshold (cliff is on full prompt input)', () => {
+    it('counts cache reads toward the threshold (cliff is on full prompt input)', async () => {
       // 50K fresh + 250K cache reads = 300K prompt input → over 272K.
-      expect(calculateCost('gpt-5.5', 50_000, 0, 0, 250_000)).toBeCloseTo(
+      expect(await calculateCost('gpt-5.5', 50_000, 0, 0, 250_000)).toBeCloseTo(
         (50_000 * 10 + 250_000 * 1) / 1_000_000,
         9,
       )
     })
 
-    it('stays on the short rate exactly at 272K (cliff is strictly >)', () => {
-      expect(calculateCost('gpt-5.5', 272_000, 0, 0, 0)).toBeCloseTo(
+    it('stays on the short rate exactly at 272K (cliff is strictly >)', async () => {
+      expect(await calculateCost('gpt-5.5', 272_000, 0, 0, 0)).toBeCloseTo(
         (272_000 * 5) / 1_000_000,
         9,
       )
     })
 
-    it('bills the whole claude-haiku-5-5 request at 5x once the prompt passes 100K', () => {
+    it('bills the whole claude-haiku-5-5 request at 5x once the prompt passes 100K', async () => {
       // 50K fresh + 60K cache writes = 110K prompt → over 100K.
-      expect(calculateCost('claude-haiku-5-5', 50_000, 1_000, 60_000, 0)).toBeCloseTo(
+      expect(await calculateCost('claude-haiku-5-5', 50_000, 1_000, 60_000, 0)).toBeCloseTo(
         (50_000 * 0.5 + 1_000 * 2.5 + 60_000 * 0.625) / 1_000_000,
         9,
       )
     })
 
-    it('Claude models have no cliff — large prompts stay linear', () => {
-      expect(calculateCost('claude-opus-4-6', 500_000, 10_000, 0, 0)).toBeCloseTo(
+    it('Claude models have no cliff — large prompts stay linear', async () => {
+      expect(await calculateCost('claude-opus-4-6', 500_000, 10_000, 0, 0)).toBeCloseTo(
         (500_000 * 5 + 10_000 * 25) / 1_000_000,
         9,
       )
@@ -805,33 +831,33 @@ describe('usage-service', () => {
   })
 
   describe('calculateCost — Grok 200K long-context cliff', () => {
-    it('bills grok-4.7 on the same card as grok-4.6', () => {
-      expect(calculateCost('grok-4.7', 100_000, 1_000, 0, 0)).toBeCloseTo(
+    it('bills grok-4.7 on the same card as grok-4.6', async () => {
+      expect(await calculateCost('grok-4.7', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 2 + 1_000 * 6) / 1_000_000,
         9,
       )
-      expect(calculateCost('grok-4.7', 250_000, 2_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('grok-4.7', 250_000, 2_000, 0, 0)).toBeCloseTo(
         (250_000 * 4 + 2_000 * 12) / 1_000_000,
         9,
       )
     })
 
-    it('bills grok-4.6 below 200k at $2 / $6', () => {
-      expect(calculateCost('grok-4.6', 100_000, 1_000, 0, 0)).toBeCloseTo(
+    it('bills grok-4.6 below 200k at $2 / $6', async () => {
+      expect(await calculateCost('grok-4.6', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 2 + 1_000 * 6) / 1_000_000,
         9,
       )
     })
 
-    it('reprices grok-4.6 above 200k at $4 / $12', () => {
-      expect(calculateCost('grok-4.6', 250_000, 2_000, 0, 0)).toBeCloseTo(
+    it('reprices grok-4.6 above 200k at $4 / $12', async () => {
+      expect(await calculateCost('grok-4.6', 250_000, 2_000, 0, 0)).toBeCloseTo(
         (250_000 * 4 + 2_000 * 12) / 1_000_000,
         9,
       )
     })
 
-    it('reprices grok-4.5 above 200k at $4 / $12 with cache read $0.60', () => {
-      expect(calculateCost('grok-4.5', 150_000, 2_000, 0, 100_000)).toBeCloseTo(
+    it('reprices grok-4.5 above 200k at $4 / $12 with cache read $0.60', async () => {
+      expect(await calculateCost('grok-4.5', 150_000, 2_000, 0, 100_000)).toBeCloseTo(
         (150_000 * 4 + 2_000 * 12 + 100_000 * 0.6) / 1_000_000,
         9,
       )
@@ -839,34 +865,34 @@ describe('usage-service', () => {
   })
 
   describe('calculateCost — global overrides and unknown ids', () => {
-    it('returns 0 for unknown models', () => {
-      expect(calculateCost('totally-unknown', 100_000, 1_000, 0, 0)).toBe(0)
+    it('returns 0 for unknown models', async () => {
+      expect(await calculateCost('totally-unknown', 100_000, 1_000, 0, 0)).toBe(0)
     })
 
-    it('uses a global override for a built-in model', () => {
+    it('uses a global override for a built-in model', async () => {
       settingsMock.mockReturnValue({
         modelPricing: { 'gpt-5.5': { inputPerMtok: 6, outputPerMtok: 36 } },
       })
 
-      expect(calculateCost('gpt-5.5', 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('gpt-5.5', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 6 + 1_000 * 36) / 1_000_000,
         9,
       )
     })
 
-    it('uses net-new custom model pricing and returns 0 when pricing is absent', () => {
+    it('uses net-new custom model pricing and returns 0 when pricing is absent', async () => {
       settingsMock.mockReturnValue({
         modelPricing: { 'custom-priced-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       })
 
-      expect(calculateCost('custom-priced-1', 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('custom-priced-1', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 1 + 1_000 * 2) / 1_000_000,
         9,
       )
-      expect(calculateCost('custom-freeform-1', 100_000, 1_000, 0, 0)).toBe(0)
+      expect(await calculateCost('custom-freeform-1', 100_000, 1_000, 0, 0)).toBe(0)
     })
 
-    it('honors a patched custom long-context cliff', () => {
+    it('honors a patched custom long-context cliff', async () => {
       settingsMock.mockReturnValue({
         modelPricing: { 'custom-cliff-1': { ...{ inputPerMtok: 1, outputPerMtok: 2 }, longContextPriceCliff: {
                   thresholdTokens: 100,
@@ -875,22 +901,22 @@ describe('usage-service', () => {
                 } } },
       })
 
-      expect(calculateCost('custom-cliff-1', 200, 10, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('custom-cliff-1', 200, 10, 0, 0)).toBeCloseTo(
         (200 * 3 + 10 * 8) / 1_000_000,
         9,
       )
     })
 
-    it('uses the same global override for every provider alias', () => {
+    it('uses the same global override for every provider alias', async () => {
       settingsMock.mockReturnValue({
         modelPricing: { 'claude-opus-4-8': { inputPerMtok: 9, outputPerMtok: 45 } },
       })
 
-      expect(calculateCost('us.anthropic.claude-opus-4-8', 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('us.anthropic.claude-opus-4-8', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 9 + 1_000 * 45) / 1_000_000,
         9,
       )
-      expect(calculateCost('claude-opus-4-8', 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost('claude-opus-4-8', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 9 + 1_000 * 45) / 1_000_000,
         9,
       )
@@ -923,9 +949,13 @@ describe('usage-service', () => {
       ['gpt-5.6-sol', 5, 30],
       ['gpt-6-sol', 2, 10],
       ['gpt-6.1-sol', 2, 10],
+      ['gpt-6.1-terra', 1, 5],
       ['gpt-6-luna', 0.1, 0.5],
       ['openai/gpt-6-sol', 2, 10],
       ['openai/gpt-6.1-sol', 2, 10],
+      ['openai/gpt-6.1-terra', 1, 5],
+      ['gpt-6.2-sol', 2, 10],
+      ['gpt-6.2-astra', 8, 40],
       ['openai/gpt-5.5-20260423', 5, 30],
       ['gpt-5.5-2026-04-23', 5, 30],
       ['openai/gpt-5.5-2026-04-23', 5, 30],
@@ -944,9 +974,9 @@ describe('usage-service', () => {
       ['grok-4.7', 2, 6],
       ['x-ai/grok-4.7', 2, 6],
       ['x-ai/grok-4.7-20260916', 2, 6],
-    ])('prices %s through its canonical rate card', (model, inputRate, outputRate) => {
+    ])('prices %s through its canonical rate card', async (model, inputRate, outputRate) => {
       expect(
-        calculateCost(model, 100_000, 1_000, 0, 0, aliasPricingTimestamp),
+        await calculateCost(model, 100_000, 1_000, 0, 0, aliasPricingTimestamp),
       ).toBeCloseTo(
         (100_000 * inputRate + 1_000 * outputRate) / 1_000_000,
         9,
@@ -955,9 +985,9 @@ describe('usage-service', () => {
 
     it.each(['us', 'eu', 'apac', 'jp', 'au', 'global'])(
       'normalizes a %s Bedrock geographic inference-profile id',
-      (geography) => {
+      async (geography) => {
         expect(
-          calculateCost(
+          await calculateCost(
             `${geography}.anthropic.claude-sonnet-4-5-20250929-v1:0`,
             100_000,
             1_000,
@@ -971,46 +1001,46 @@ describe('usage-service', () => {
     it.each([
       'anthropic.claude-sonnet-4-5-20250929-v1:0',
       'us.anthropic.claude-opus-4-6-v1',
-    ])('normalizes the Bedrock version suffix in %s', (model) => {
+    ])('normalizes the Bedrock version suffix in %s', async (model) => {
       const inputRate = model.includes('opus') ? 5 : 3
       const outputRate = model.includes('opus') ? 25 : 15
-      expect(calculateCost(model, 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(await calculateCost(model, 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * inputRate + 1_000 * outputRate) / 1_000_000,
         9,
       )
     })
 
-    it('does not inherit base pricing for an unmatched OpenRouter variant', () => {
-      expect(calculateCost('openai/gpt-5.5:free', 100_000, 1_000, 0, 0)).toBe(0)
+    it('does not inherit base pricing for an unmatched OpenRouter variant', async () => {
+      expect(await calculateCost('openai/gpt-5.5:free', 100_000, 1_000, 0, 0)).toBe(0)
     })
 
-    it('uses exact global pricing for an OpenRouter variant', () => {
+    it('uses exact global pricing for an OpenRouter variant', async () => {
       settingsMock.mockReturnValue({
         modelPricing: { 'openai/gpt-5.5:thinking': { inputPerMtok: 7, outputPerMtok: 42 } },
       })
 
       expect(
-        calculateCost('openai/gpt-5.5:thinking', 100_000, 1_000, 0, 0),
+        await calculateCost('openai/gpt-5.5:thinking', 100_000, 1_000, 0, 0),
       ).toBeCloseTo((100_000 * 7 + 1_000 * 42) / 1_000_000, 9)
     })
 
-    it('uses exact global pricing for an arbitrary Generic/private deployment id', () => {
+    it('uses exact global pricing for an arbitrary Generic/private deployment id', async () => {
       settingsMock.mockReturnValue({
         modelPricing: { 'private-deployment-west': { inputPerMtok: 8, outputPerMtok: 24 } },
       })
 
       expect(
-        calculateCost('private-deployment-west', 100_000, 1_000, 0, 0),
+        await calculateCost('private-deployment-west', 100_000, 1_000, 0, 0),
       ).toBeCloseTo((100_000 * 8 + 1_000 * 24) / 1_000_000, 9)
     })
 
-    it('applies a canonical global pricing override to a dated runtime id', () => {
+    it('applies a canonical global pricing override to a dated runtime id', async () => {
       settingsMock.mockReturnValue({
         modelPricing: { 'claude-sonnet-5': { inputPerMtok: 6, outputPerMtok: 36 } },
       })
 
       expect(
-        calculateCost(
+        await calculateCost(
           'anthropic/claude-sonnet-5-20260630',
           100_000,
           1_000,
@@ -1020,13 +1050,13 @@ describe('usage-service', () => {
       ).toBeCloseTo((100_000 * 6 + 1_000 * 36) / 1_000_000, 9)
     })
 
-    it('uses the shared built-in rate when no override is configured', () => {
+    it('uses the shared built-in rate when no override is configured', async () => {
       settingsMock.mockReturnValue({
         modelPricing: {  },
       })
 
       expect(
-        calculateCost(
+        await calculateCost(
           'anthropic/claude-sonnet-5-20260630',
           100_000,
           1_000,
@@ -1239,7 +1269,7 @@ describe('usage-service', () => {
       const opus55Base = (100_000 * 4 + 1_000 * 20) / 1_000_000
       expect(await costOf('claude-opus-5-5', {})).toBeCloseTo(opus55Base, 9)
       expect(await costOf('claude-opus-5-5', { speed: 'fast' })).toBeCloseTo(opus55Base * 2, 9)
-      expect(calculateCost('claude-opus-5-5', 0, 0, 100_000, 100_000)).toBeCloseTo(
+      expect(await calculateCost('claude-opus-5-5', 0, 0, 100_000, 100_000)).toBeCloseTo(
         (100_000 * 5 + 100_000 * 0.2) / 1_000_000,
         9,
       )
@@ -1260,7 +1290,7 @@ describe('usage-service', () => {
     })
 
     it('bills platform DeepSeek V4.1 Flash at Fireworks list rates with no speed tier', async () => {
-      const deepseekBase = (100_000 * 0.22 + 1_000 * 0.66) / 1_000_000
+      const deepseekBase = (100_000 * 0.3 + 1_000 * 1.2) / 1_000_000
       expect(await costOf('deepseek-v4.1-flash', {})).toBeCloseTo(deepseekBase, 9)
       expect(await costOf('deepseek-v4.1-flash', { speed: 'fast' })).toBeCloseTo(
         deepseekBase,

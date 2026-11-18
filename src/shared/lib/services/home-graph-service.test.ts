@@ -134,7 +134,7 @@ describe('home-graph-service', () => {
   const scope = (overrides?: Partial<Parameters<typeof buildHomeGraph>[0]>) => ({
     agentSlugs: ['agent1', 'agent2'],
     userId: null,
-    isIntegrationConnected: (id: string) => id === 'chat2',
+    isIntegrationConnected: (id: string) => id === 'chat2', integrationTransport: () => null,
     ...overrides,
   })
 

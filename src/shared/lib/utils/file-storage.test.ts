@@ -24,7 +24,6 @@ import {
   getAgentInstructionsPath,
   writeFile,
   getAgentEnvPath,
-  getAgentSessionMetadataPath,
   getAgentClaudeConfigDir,
   getAgentSessionsDir,
   getSessionJsonlPath,
@@ -143,6 +142,11 @@ This is the body.`
     const result = parseMarkdownWithFrontmatter('')
     expect(result.frontmatter).toEqual({})
     expect(result.body).toBe('')
+  })
+
+  it('keeps a quoted blank value a string rather than the number 0', () => {
+    const result = parseMarkdownWithFrontmatter('---\nname: "  "\n---\nBody')
+    expect(result.frontmatter).toEqual({ name: '  ' })
   })
 
   it('parses boolean values', () => {
@@ -412,6 +416,34 @@ describe('removeDirectory', () => {
   it('does not throw if directory does not exist', async () => {
     const dirPath = path.join(testDir, 'nonexistent')
     await expect(removeDirectory(dirPath)).resolves.toBeUndefined()
+  })
+
+  it.skipIf(process.getuid?.() === 0)('removes a workspace with a read-only folder inside', async () => {
+    const dirPath = path.join(testDir, 'workspace')
+    const sealed = path.join(dirPath, 'artifacts', 'sealed-receipts')
+    await fs.promises.mkdir(sealed, { recursive: true })
+    await fs.promises.writeFile(path.join(sealed, 'receipt.json'), '{}')
+    await fs.promises.chmod(path.join(sealed, 'receipt.json'), 0o400)
+    await fs.promises.chmod(sealed, 0o500)
+
+    await removeDirectory(dirPath)
+    expect(await directoryExists(dirPath)).toBe(false)
+  })
+
+  it.skipIf(process.getuid?.() === 0)('does not change folders outside the workspace through a symlink', async () => {
+    const outside = path.join(testDir, 'outside')
+    await fs.promises.mkdir(outside)
+    await fs.promises.chmod(outside, 0o500)
+    const dirPath = path.join(testDir, 'workspace')
+    const sealed = path.join(dirPath, 'sealed')
+    await fs.promises.mkdir(sealed, { recursive: true })
+    await fs.promises.symlink(outside, path.join(sealed, 'link'))
+    await fs.promises.chmod(sealed, 0o500)
+
+    await removeDirectory(dirPath)
+    expect(await directoryExists(dirPath)).toBe(false)
+    expect((await fs.promises.stat(outside)).mode & 0o777).toBe(0o500)
+    await fs.promises.chmod(outside, 0o700)
   })
 })
 
@@ -742,10 +774,6 @@ describe('path helpers', () => {
 
   it('getAgentEnvPath returns path ending with .env', () => {
     expect(getAgentEnvPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/\.env$/)
-  })
-
-  it('getAgentSessionMetadataPath returns path ending with session-metadata.json', () => {
-    expect(getAgentSessionMetadataPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/session-metadata\.json$/)
   })
 
   it('getAgentClaudeConfigDir returns path ending with .claude', () => {

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { Readable, Transform, pipeline } from 'node:stream'
 import { z } from 'zod'
 import type { JsonlEntry, JsonlMessageEntry } from '@shared/lib/types/agent'
-import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import type { StoreFileOps, OpenFile } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 
 /**
@@ -516,7 +516,7 @@ function asBuffer(bytes: Uint8Array): Buffer {
  * type. Only then is a stream opened.
  */
 export async function openMediaBlob(
-  files: FileOps,
+  files: StoreFileOps,
   jsonlPath: string,
   ref: MediaRef,
   signal?: AbortSignal

@@ -21,7 +21,7 @@ registry. Import React entry points only from renderer code. Registry tests chec
 coverage and enforce that backend metadata can load without React.
 
 Request kind selects dispatch, transcript recovery, and pending-card projection.
-Backend handlers stay in the persister. `syncsAwaitingItself` excludes conditional
+Backend handlers stay in the agent's live sessions (`agent-actor/live/tool-calls.ts`). `syncsAwaitingItself` excludes conditional
 approvals from automatic waiting/recovery; `hideToolStatusInChat` suppresses chat
 status lines independently (file delivery uses it without creating a request).
 `showWaitingForInput` preserves transcript labels separately from actual blocking.

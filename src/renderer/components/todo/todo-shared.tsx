@@ -1,17 +1,15 @@
 import { useMemo } from 'react'
 import { format, formatDistanceToNowStrict, isToday } from 'date-fns'
+import type { ApiAgent } from '@shared/lib/types/api'
 import { useAgents } from '@renderer/hooks/use-agents'
 
-export interface TodoAgent {
-  slug: string
-  name: string
-}
+export type TodoAgent = Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
 
 /** The agents on this install the person can hand work to, by slug. */
 export function useTodoAgents(): { agents: TodoAgent[]; bySlug: Map<string, TodoAgent> } {
   const { data } = useAgents()
   return useMemo(() => {
-    const agents = (data ?? []).map((a) => ({ slug: a.slug, name: a.name }))
+    const agents = (data ?? []).map((a) => ({ slug: a.slug, name: a.name, avatar: a.avatar }))
     return { agents, bySlug: new Map(agents.map((a) => [a.slug, a])) }
   }, [data])
 }

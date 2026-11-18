@@ -57,7 +57,7 @@ async function switchAgentViaSidebar(page: Page, agent: TestAgent) {
 
 // These tests leave their uniquely named agents in the per-run data dir and let
 // setup-e2e-data reset them before the next run. Deleting agents while sibling
-// workers list /api/agents can race session-summary file reads under load.
+// workers list /api/agents can race session-summary reads under load.
 test.describe('Cross-Session Message Isolation', () => {
   test('messages from one agent do not leak into another agent', async ({ page, request }, testInfo) => {
     const sessionPage = new SessionPage(page)

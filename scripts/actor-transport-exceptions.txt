@@ -1,0 +1,11 @@
+# Test files `npm run test:actor-transport` leaves out, each with why it cannot
+# hold with the actor across a wire. This list only shrinks. (A single test of
+# what only an actor on this machine does, a host-path shortcut, skips itself
+# with `it.skipIf(underActorTransport)` from agent-actor/testing/via-test-transport.)
+
+# The chat indicator's tick and sleep, timed to the fake clock: each asserts
+# exactly what one tick paints the moment the clock moves, and arms the sleep
+# from when the tick's read landed. Across a wire the read lands real
+# macrotasks later, after the fake clock has run on.
+src/shared/lib/chat-integrations/indicator-sleep.test.ts
+src/shared/lib/chat-integrations/perpetual-thinking.repro.test.ts

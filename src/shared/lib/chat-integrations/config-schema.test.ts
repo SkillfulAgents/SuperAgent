@@ -5,6 +5,7 @@ import {
   imessageConfigSchema,
   validateChatIntegrationConfig,
   parseChatIntegrationConfig,
+  mergeChatIntegrationConfig,
 } from './config-schema'
 
 // ── Telegram config schema ──────────────────────────────────────────────
@@ -62,6 +63,27 @@ describe('slackConfigSchema', () => {
 
   it('rejects empty appToken', () => {
     expect(() => slackConfigSchema.parse({ botToken: 'xoxb-123', appToken: '' })).toThrow()
+  })
+
+  const relay = { endpointId: 'whep_1', url: 'https://relay.test/v1/hooks/whep_1', scope: 'sub_1' }
+
+  it('accepts webhooks without an app-level token, and an installation waiting for its Slack app', () => {
+    expect(slackConfigSchema.parse({ botToken: 'xoxb-123', signingSecret: 'secret', relay, webhookStatus: 'verified' })).toMatchObject({ relay, webhookStatus: 'verified' })
+    expect(slackConfigSchema.parse({ onlyMentioned: true, relay })).toEqual({ onlyMentioned: true, relay })
+  })
+
+  it('keeps webhook state out of caller-supplied config', () => {
+    const stored = JSON.stringify({ botToken: 'xoxb-123', appToken: 'xapp-456' })
+    const merged = mergeChatIntegrationConfig('slack', stored, { relay, webhookStatus: 'verified', signingSecret: 'secret' })
+    expect(merged).toEqual({ botToken: 'xoxb-123', appToken: 'xapp-456', signingSecret: 'secret' })
+  })
+
+  it('forgets what posts showed whenever a signing secret is saved, even the same one', () => {
+    const stored = JSON.stringify({ botToken: 'xoxb-123', signingSecret: 'secret', relay, webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { onlyMentioned: true })).toMatchObject({ webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: '••••••••' })).toMatchObject({ webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: ' secret ' })).not.toHaveProperty('webhookStatus')
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: 'rotated' })).not.toHaveProperty('webhookStatus')
   })
 })
 

@@ -7,13 +7,14 @@ interface ClientContract {
   audit: Mock
   owner: Mock
   read(accountId?: string): Promise<Response>
-  write(signal?: AbortSignal): Promise<Response>
+  write?(signal?: AbortSignal): Promise<Response>
   operation(run: () => Promise<void>): Promise<void>
 }
 
 /** The transport guarantees every remote adapter must keep, regardless of HTTP
  * verb (Dropbox reads use POST) or provider-specific error envelopes. */
 export function remoteClientContract(c: ClientContract): void {
+  const write = c.write
   let test = 0
   const account = { id: 'account', toolkitSlug: c.toolkit, status: 'active', userId: 'alice', providerName: 'composio', providerConnectionId: 'connection' }
   describe(`${c.toolkit}: remote request contract`, () => {
@@ -52,23 +53,23 @@ export function remoteClientContract(c: ClientContract): void {
 
     it('bounds retries and backs off even when Retry-After is zero', async () => {
       c.forward.mockImplementation(async () => Response.json({}, { status: 429, headers: { 'Retry-After': '0' } }))
-      const pending = c.write().catch(error => error)
+      const pending = (write ? write() : c.read()).catch(error => error)
       await vi.advanceTimersByTimeAsync(249)
       expect(c.forward).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(1751)
       expect(await pending).toMatchObject({ status: 429 })
       expect(c.forward).toHaveBeenCalledTimes(4)
-      expect(c.audit).toHaveBeenCalledTimes(1)
+      expect(c.audit).toHaveBeenCalledTimes(write ? 1 : 0)
     })
 
-    it('does not send a cancelled request or retry one cancelled during backoff', async () => {
+    if (write) it('does not send a cancelled request or retry one cancelled during backoff', async () => {
       const aborted = new AbortController()
       aborted.abort()
-      await expect(c.write(aborted.signal)).rejects.toMatchObject({ status: 409 })
+      await expect(write(aborted.signal)).rejects.toMatchObject({ status: 409 })
       expect(c.forward).not.toHaveBeenCalled()
       const signal = new AbortController()
       c.forward.mockResolvedValueOnce(Response.json({}, { status: 429, headers: { 'Retry-After': '2' } }))
-      const pending = c.write(signal.signal).catch(error => error)
+      const pending = write(signal.signal).catch(error => error)
       await vi.advanceTimersByTimeAsync(0)
       expect(c.forward).toHaveBeenCalledTimes(1)
       signal.abort()
@@ -77,11 +78,11 @@ export function remoteClientContract(c: ClientContract): void {
       expect(c.forward).toHaveBeenCalledTimes(1)
     })
 
-    it('never replays a mutation whose outcome is unknown', async () => {
+    if (write) it('never replays a mutation whose outcome is unknown', async () => {
       c.forward.mockRejectedValueOnce(new Error('connection reset'))
-      await expect(c.write()).rejects.toMatchObject({ status: 503 })
+      await expect(write()).rejects.toMatchObject({ status: 503 })
       c.forward.mockResolvedValueOnce(Response.json({}, { status: 502 }))
-      await expect(c.write()).rejects.toMatchObject({ status: 503 })
+      await expect(write()).rejects.toMatchObject({ status: 503 })
       expect(c.forward).toHaveBeenCalledTimes(2)
     })
 
@@ -102,9 +103,9 @@ export function remoteClientContract(c: ClientContract): void {
       expect(c.forward).toHaveBeenCalledTimes(3)
     })
 
-    it('audits mutations once without product analytics or read events', async () => {
+    if (write) it('audits mutations once without product analytics or read events', async () => {
       await c.read()
-      await c.write()
+      await write()
       expect(c.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accountId: 'account', statusCode: 200 }), { analytics: false })
     })
   })

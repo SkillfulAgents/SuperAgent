@@ -49,8 +49,8 @@ function normalizePlatform(platform?: string): string | undefined {
   return trimmed || undefined
 }
 
-function mobileDeviceLifetimeMs(): number {
-  const settings = getSettings()
+async function mobileDeviceLifetimeMs(): Promise<number> {
+  const settings = await getSettings()
   const auth = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
   const configuredDays = auth.mobileDeviceLifetimeDays ?? 90
   const days = Number.isFinite(configuredDays) && configuredDays > 0 ? configuredDays : 90
@@ -160,7 +160,7 @@ export async function redeemPairingToken(
   const deviceId = crypto.randomUUID()
   const refreshToken = newRefreshToken()
   const now = new Date()
-  const refreshExpiresAt = new Date(now.getTime() + mobileDeviceLifetimeMs())
+  const refreshExpiresAt = new Date(now.getTime() + (await mobileDeviceLifetimeMs()))
   await db.insert(mobileDevice)
     .values({
       id: deviceId,
@@ -206,7 +206,7 @@ export async function renewMobileSession(
 
   const rotatedToken = newRefreshToken()
   const rotatedHash = sha256Hex(rotatedToken)
-  const refreshExpiresAt = new Date(now.getTime() + mobileDeviceLifetimeMs())
+  const refreshExpiresAt = new Date(now.getTime() + (await mobileDeviceLifetimeMs()))
   const deviceName = normalizeDeviceName(meta.deviceName) ?? device.deviceName ?? undefined
 
   const rotated = await db

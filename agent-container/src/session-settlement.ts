@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 // Session settlement tracking, shared between the container's SessionManager
-// (idle-eviction reaper) and the host's message-persister (which re-exports
+// (idle-eviction reaper) and the host's live sessions (the host re-exports
 // the snapshot parsing from here — this file must stay dependency-free apart
 // from zod, and must not import anything host- or container-runtime-specific).
 //
@@ -120,7 +120,7 @@ export interface SettlementState {
 export class SessionSettlementTracker {
   private runtime: 'idle' | 'busy';
   private stateEventsSeen = false;
-  // Cleared on outbound send; set on result. Mirrors message-persister: a
+  // Cleared on outbound send; set on result. Mirrors the host's live session: a
   // bare session_state_changed:idle without a result for this turn is
   // ignored (stale idle racing a fresh message).
   private lastResultSubtype: string | null = null;

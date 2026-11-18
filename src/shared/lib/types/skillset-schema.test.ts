@@ -80,6 +80,20 @@ describe('parseSkillsetIndex', () => {
     })
   })
 
+  it('keeps a template avatar, and drops one this build does not know without dropping the template', () => {
+    const result = parseSkillsetIndex({
+      skillset_name: 'Public',
+      skills: [],
+      agents: [
+        { name: 'A', path: 'agents/a/', avatar: { color: 'tonal-teal', shape: 'pill' } },
+        { name: 'B', path: 'agents/b/', avatar: { color: 'tonal-ultraviolet', shape: 'pill' } },
+      ],
+    })
+    if (!result.ok) throw new Error(result.error)
+    expect(result.index.agents?.map((agent) => agent.avatar)).toEqual([{ color: 'tonal-teal', shape: 'pill' }, undefined])
+    expect(result.dropped).toEqual([])
+  })
+
   it('still loads a skillset on the pre-marketplace shape', () => {
     const result = parseSkillsetIndex({
       skillset_name: 'Public',

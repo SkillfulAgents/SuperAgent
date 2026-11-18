@@ -8,6 +8,9 @@ import {
   getTargetFallbackReason,
 } from './api-target'
 import { _resetApiBaseUrlForTest, getApiBaseUrl, initApiBaseUrl } from './env'
+import { _resetFactsForTest, clientFacts, serverFacts } from './facts'
+import type { ApiTarget } from '@shared/lib/api-target'
+import type { Facts } from '@shared/lib/facts/facts-schema'
 
 /**
  * Boot-time target selection: which base URL every call site in the renderer
@@ -22,6 +25,8 @@ const DEPLOYMENT = 'https://acme.gamut.example'
 interface ElectronStub {
   getApiUrl?: () => Promise<string>
   getApiTarget?: () => Promise<ResolvedApiTarget>
+  getFacts?: (target: ApiTarget) => Promise<Facts>
+  platform?: string
 }
 
 /** Stub the renderer's world: Electron when `electron` is given, web when not. */
@@ -38,6 +43,7 @@ const electron = (overrides: ElectronStub = {}): ElectronStub => ({
 beforeEach(() => {
   _resetApiTargetForTest()
   _resetApiBaseUrlForTest()
+  _resetFactsForTest()
 })
 
 afterEach(() => {
@@ -132,5 +138,42 @@ describe('initApiBaseUrl', () => {
     // …but the renderer can still answer "which Superagent am I?", because the
     // getters throw rather than guess.
     expect(getActiveTarget()).toBe('local')
+    // The facts are settled too, so the first render can read them.
+    expect(clientFacts().shell).toBe('electron')
+  })
+})
+
+describe('initApiBaseUrl settles the facts', () => {
+  const cloudFacts: Facts = {
+    client: { shell: 'electron', os: 'darwin', distribution: 'mac-app-store' },
+    server: { os: 'linux', distribution: 'deployment' },
+  }
+
+  it('asks main for the facts of the target it settled', async () => {
+    const getFacts = vi.fn(async () => cloudFacts)
+    stubWindow(
+      electron({
+        getApiTarget: async () => ({ target: 'cloud', baseUrl: CLOUD, deploymentUrl: DEPLOYMENT, fallback: null }),
+        getFacts,
+      }),
+    )
+    await initApiBaseUrl()
+
+    expect(getFacts).toHaveBeenCalledWith('cloud')
+    expect(clientFacts()).toEqual(cloudFacts.client)
+    expect(serverFacts()).toEqual(cloudFacts.server)
+  })
+
+  it('asks for local facts when main denied a stored cloud preference', async () => {
+    const getFacts = vi.fn(async () => cloudFacts)
+    stubWindow(
+      electron({
+        getApiTarget: async () => ({ target: 'local', baseUrl: LOCAL, deploymentUrl: null, fallback: 'no-workspace' }),
+        getFacts,
+      }),
+    )
+    await initApiBaseUrl()
+
+    expect(getFacts).toHaveBeenCalledWith('local')
   })
 })

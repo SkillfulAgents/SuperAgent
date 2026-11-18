@@ -111,7 +111,7 @@ export function CreateAgentTemplates({
         <SectionHeading>Or start from a template</SectionHeading>
         <TemplateGrid>
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-[180px] rounded-2xl" />
+            <Skeleton key={i} className="h-[180px] rounded-card" />
           ))}
         </TemplateGrid>
       </div>
@@ -171,9 +171,9 @@ function ImportTile({ onClick }: { onClick: () => void }) {
       type="button"
       data-testid="import-agent-card"
       onClick={onClick}
-      className="flex h-[100px] w-full flex-col items-center justify-center gap-2 rounded-2xl bg-muted/50 p-4 transition-colors duration-200 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-[100px] w-full flex-col items-center justify-center gap-2 rounded-card bg-muted/50 p-4 transition-colors duration-200 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span className="grid size-9 place-items-center rounded-xl bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
+      <span className="grid h-9 w-9 place-items-center rounded-control bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
         <ArrowDownToLine className="size-4 text-muted-foreground" aria-hidden />
       </span>
       <span className="text-[13px] font-medium text-foreground">Import an Agent</span>

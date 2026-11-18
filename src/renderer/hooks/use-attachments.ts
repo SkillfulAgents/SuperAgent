@@ -1,9 +1,14 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { type Attachment, type UploadState } from '@renderer/components/messages/attachment-preview'
 import { getItemsFromDataTransfer, getFolderFromDirectoryInput, type DataTransferResult, type FileWithPath, type FolderGroup } from '@renderer/lib/file-utils'
+import { requiresImagePreviewConversion } from '@renderer/lib/file-types'
 
 // 500 MB max folder size for in-browser zip upload (no Electron fs.cp available)
 const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
+
+function revokePreview(preview: string | undefined) {
+  if (preview?.startsWith('blob:')) URL.revokeObjectURL(preview)
+}
 
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
@@ -11,15 +16,15 @@ interface UseAttachmentsOptions {
   onAttachmentsAdded?: (added: Attachment[]) => void
 }
 
-export type UploadPatch = { upload?: UploadState; error?: string }
+export type UploadPatch = { upload?: UploadState; error?: string; errorRetryable?: boolean; preview?: string }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
   // Carried-over chips (stale-session → agent home) always re-upload: their
   // paths belong to the composer that uploaded them.
   const [attachments, setAttachments] = useState<Attachment[]>(() =>
     (options?.initialAttachments ?? []).map((attachment) => {
-      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined }
-      return stripped.type === 'file' && stripped.file.type.startsWith('image/') && !stripped.preview
+      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined, errorRetryable: undefined }
+      return stripped.type === 'file' && stripped.file.type.startsWith('image/') && !requiresImagePreviewConversion(stripped.file.name) && !stripped.preview
         ? { ...stripped, preview: URL.createObjectURL(stripped.file) }
         : stripped
     }),
@@ -37,7 +42,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
         file,
         id: crypto.randomUUID(),
       }
-      if (file.type.startsWith('image/')) {
+      if (file.type.startsWith('image/') && !requiresImagePreviewConversion(file.name)) {
         attachment.preview = URL.createObjectURL(file)
       }
       return attachment
@@ -99,9 +104,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => {
       const removed = prev.find((a) => a.id === id)
-      if (removed?.type === 'file' && removed.preview) {
-        URL.revokeObjectURL(removed.preview)
-      }
+      if (removed?.type === 'file') revokePreview(removed.preview)
       return prev.filter((a) => a.id !== id)
     })
   }, [])
@@ -109,7 +112,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
   const clearAttachments = useCallback(() => {
     setAttachments((prev) => {
       prev.forEach((a) => {
-        if (a.type === 'file' && a.preview) URL.revokeObjectURL(a.preview)
+        if (a.type === 'file') revokePreview(a.preview)
       })
       return []
     })
@@ -119,7 +122,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
   useEffect(() => {
     return () => {
       attachments.forEach((a) => {
-        if (a.type === 'file' && a.preview) URL.revokeObjectURL(a.preview)
+        if (a.type === 'file') revokePreview(a.preview)
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

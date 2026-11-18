@@ -28,7 +28,7 @@ vi.mock('../middleware/auth', () => {
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => 'owner' }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
-const manager = vi.hoisted(() => ({ getConnector: vi.fn(), isIntegrationConnected: vi.fn(() => false),
+const manager = vi.hoisted(() => ({ getConnector: vi.fn(), isIntegrationConnected: vi.fn(() => false), integrationTransport: () => null,
   addIntegration: vi.fn(), pauseIntegration: vi.fn(), resumeIntegration: vi.fn(), removeIntegration: vi.fn(), clearSessionById: vi.fn(), integrationCreated: vi.fn() }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: manager }))
 const cleanup = vi.hoisted(() => vi.fn())
@@ -72,6 +72,15 @@ describe('shared integration API', () => {
     expect(created.linear.setup.redirectUri).toContain('/api/agent-integrations/providers/linear/callback')
     expect(manager.addIntegration).not.toHaveBeenCalled()
     expect(await getLinearConfig(created.id)).toMatchObject({ runOnStatusChange: false })
+  })
+  it('resolves which integration owns an agent session, scoped to that agent', async () => {
+    await createAgentIntegrationSession({ integrationId: id, externalChatId: 'issue', sessionId: 'sdk-session' })
+    const lookup = async (agent: string, session: string) =>
+      (await app.request(`/api/agent-integrations/agents/${agent}/sessions/${session}`)).json()
+    auth.role = 'viewer'
+    expect(await lookup('agent', 'sdk-session')).toEqual({ integrationId: id })
+    expect(await lookup('agent', 'user-session')).toEqual({ integrationId: null })
+    expect(await lookup('other-agent', 'sdk-session')).toEqual({ integrationId: null })
   })
   it('lists all providers and serves a credential-free common detail contract', async () => {
     await createAgentIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'telegram-secret' } })

@@ -6,7 +6,7 @@ export const taskEventSchema = z.object({
   trigger: z.enum(['assigned', 'mentioned', 'comment_mention', 'comment', 'status_changed', 'updated']).optional(),
   sourceCommentId: z.string().optional(),
   text: z.string(), title: z.string().optional(),
-  replyTarget: z.record(z.string(), z.string()), payload: z.unknown(),
+  replyTarget: z.record(z.string(), z.string()), payload: z.unknown().optional(),
 })
 /** Decode persisted JSON at the boundary and report a stable, secret-free error. */
 export function parseTaskJson<T>(schema: z.ZodType<T>, json: string): T {

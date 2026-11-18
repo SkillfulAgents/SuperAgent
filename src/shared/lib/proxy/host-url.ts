@@ -1,7 +1,7 @@
 import { getSettings } from '@shared/lib/config/settings'
 
-export function getContainerHostUrl(): string {
-  const settings = getSettings()
+export async function getContainerHostUrl(): Promise<string> {
+  const settings = await getSettings()
   const runner = settings.container.containerRunner
 
   if (runner === 'podman') {

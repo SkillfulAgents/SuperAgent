@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@shared/lib/utils/cn'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
+import {
+  createHalftoneGpuField,
+  halftoneGpuAvailable,
+  parseHalftoneInk,
+  type HalftoneGpuField,
+} from './halftone-gpu'
 import {
   HALFTONE_CURSOR_INFLUENCE,
   HalftoneFrameRenderer,
@@ -14,6 +21,11 @@ import {
  *   - `pulse`   — slow rings from center, the needs-input state (drawn in orange
  *                 by the caller via the wrapper's ink color).
  * State changes the *character* of motion (speed/dim), set by the caller.
+ *
+ * It animates only while it is on screen in a shown document, and holds its
+ * frame in a window left open behind another app. A halftone that does not follow the pointer (a view's
+ * backdrop) is computed and drawn on the GPU where it can be; one that does
+ * (a card) on Canvas2D. docs/halftone-rendering.md has the measurements.
  */
 
 export type { HalftoneState } from './halftone-renderer'
@@ -39,10 +51,14 @@ interface HalftoneProps {
   dim?: number
   /** Per-card phase offset so cards aren't all animating in sync. */
   seed?: number
+  /** Whether dots near the pointer swell (the cards do). Off for a backdrop. */
+  followPointer?: boolean
   className?: string
 }
 
 const LAZY_ROOT_MARGIN = '320px 0px'
+/** The longest step the field takes between two paints, in 60ths of a second. */
+const MAX_FRAME_SCALE = 4
 
 /**
  * Keep the decorative canvas out of the DOM until its card is near the
@@ -92,35 +108,53 @@ export function Halftone({
   speedScale = 1,
   dim,
   seed = 0,
+  followPointer = true,
   className,
 }: HalftoneProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // False once the GPU has let this halftone down, which sends it to Canvas2D for good.
+  const [gpuAllowed, setGpuAllowed] = useState(true)
+  // The pointer's influence eases per dot over time: state the GPU field does not keep.
+  const surface = gpuAllowed && !followPointer && halftoneGpuAvailable() ? 'gpu' : '2d'
 
   useEffect(() => {
     const wrap = wrapRef.current
     const canvas = canvasRef.current
     if (!wrap || !canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
 
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     const fill = color ?? getComputedStyle(canvas).color
     const speed = (speedProp ?? (state === 'idle' ? 0.2 : state === 'alert' ? 1.6 : 0.75)) * speedScale
-    const renderer = new HalftoneFrameRenderer({
-      motif,
-      state,
-      color: fill,
-      spacing,
-      maxRadius,
-      vignette,
-      contrast,
-      dim,
-      seed,
-    })
+    const field = { motif, state, spacing, maxRadius, vignette, contrast, dim, seed }
 
-    let raf = 0
     let stopped = false
+    let gpu: HalftoneGpuField | null = null
+    let ctx: CanvasRenderingContext2D | null = null
+    let renderer: HalftoneFrameRenderer | null = null
+    if (surface === 'gpu') {
+      const ink = parseHalftoneInk(fill)
+      gpu = ink && createHalftoneGpuField(canvas, {
+        ...field,
+        ink,
+        onLost: () => {
+          if (!stopped) setGpuAllowed(false)
+        },
+      })
+      if (!gpu) {
+        // A canvas keeps the kind of context it was first asked for, so the
+        // Canvas2D fallback draws on a fresh one (the canvas is keyed by surface).
+        setGpuAllowed(false)
+        return
+      }
+    } else {
+      ctx = canvas.getContext('2d')
+      if (!ctx) return
+      renderer = new HalftoneFrameRenderer({ ...field, color: fill })
+    }
+
+    // Set while it animates: stops its frames on the app's shared ambient loop.
+    let stopFrames: (() => void) | undefined
     let ready = false
     let lastDrawTime = 0
     let t = 0
@@ -154,14 +188,18 @@ export function Halftone({
       pixelRatio = nextPixelRatio
       canvas!.width = Math.round(W * pixelRatio)
       canvas!.height = Math.round(H * pixelRatio)
-      ctx!.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
-      renderer.resize(W, H)
+      ctx?.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+      renderer?.resize(W, H)
+      gpu?.resize(W, H, pixelRatio)
       ready = true
-      lastDrawTime = 0
       return true
     }
 
     function draw(frameScale = 1) {
+      if (gpu) {
+        gpu.draw(t)
+        return
+      }
       // Pointer position relative to this canvas (recomputed once per frame).
       let mActive = false, mx = 0, my = 0
       if (pointerSeen) {
@@ -174,7 +212,7 @@ export function Halftone({
           my >= -HALFTONE_CURSOR_INFLUENCE &&
           my <= H + HALFTONE_CURSOR_INFLUENCE
       }
-      renderer.draw(ctx!, t, 'alpha-buckets', mx, my, mActive, frameScale)
+      renderer!.draw(ctx!, t, 'alpha-buckets', mx, my, mActive, frameScale)
     }
 
     // IntersectionObserver callbacks are asynchronous. Starting as visible
@@ -195,38 +233,40 @@ export function Halftone({
       }
     }
 
-    const frameInterval = 1000 / 30
-    const frameTolerance = 4
+    // Decoration on the app's shared ambient loop (ambient-frames.ts): 30 paints a second
+    // in the window in use, on the same display frames as every other ambient animation,
+    // and held still in a window that is not. A step is never longer than a few frames'
+    // worth, so the field picks up where it stopped and does not lurch.
     function frame(now: number) {
-      raf = 0
-      if (stopped || !ready || !intersecting || document.hidden) return
-      const elapsed = lastDrawTime === 0 ? frameInterval : now - lastDrawTime
-      if (elapsed >= frameInterval - frameTolerance) {
-        const frameScale = elapsed / (1000 / 60)
-        draw(frameScale)
-        // Preserve the original 60fps phase velocity while drawing half as
-        // often, substantially reducing per-card field math and Canvas2D paths.
-        t += speed * frameScale
-        lastDrawTime = now
-      }
-      raf = requestAnimationFrame(frame)
+      if (stopped || !ready || !intersecting) return
+      const frameScale = lastDrawTime === 0 ? 2 : Math.min((now - lastDrawTime) / (1000 / 60), MAX_FRAME_SCALE)
+      // Layout can change before ResizeObserver runs later in this frame.
+      // It will resize and repaint synchronously; skip the old-size bitmap
+      // that would immediately be discarded, but advance time as usual.
+      if (wrap!.clientWidth === W && wrap!.clientHeight === H) draw(frameScale)
+      // Time moves by the wall clock, so the field keeps its 60fps phase velocity
+      // while drawing half as often.
+      t += speed * frameScale
+      lastDrawTime = now
     }
 
     const syncAnimation = () => {
       const active = ready && !reduce && intersecting && !document.hidden && !stopped
-      setPointerListening(active)
-      if (active && raf === 0) {
+      setPointerListening(active && followPointer)
+      if (active && !stopFrames) {
         lastDrawTime = 0
-        raf = requestAnimationFrame(frame)
-      } else if (!active && raf !== 0) {
-        cancelAnimationFrame(raf)
-        raf = 0
+        stopFrames = subscribeToAmbientFrames(frame, { kind: 'decoration', fps: 30 })
+      } else if (!active && stopFrames) {
+        stopFrames()
+        stopFrames = undefined
       }
     }
 
     const ro = new ResizeObserver(() => {
       const measured = setup()
-      if (measured && reduce && intersecting) draw()
+      // Resizing clears the bitmap after RAF callbacks have run. Repaint before
+      // the browser presents it, without advancing the animation or cursor easing.
+      if (measured && intersecting && !document.hidden) draw(0)
       syncAnimation()
     })
     ro.observe(wrap)
@@ -262,17 +302,18 @@ export function Halftone({
 
     return () => {
       stopped = true
-      cancelAnimationFrame(raf)
+      stopFrames?.()
       ro.disconnect()
       io?.disconnect()
       document.removeEventListener('visibilitychange', onVisibilityChange)
       setPointerListening(false)
+      gpu?.dispose()
     }
-  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed])
+  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed, followPointer, surface])
 
   return (
     <div ref={wrapRef} className={cn('h-full w-full', className)} aria-hidden>
-      <canvas ref={canvasRef} className="block h-full w-full" />
+      <canvas key={surface} ref={canvasRef} className="block h-full w-full" />
     </div>
   )
 }

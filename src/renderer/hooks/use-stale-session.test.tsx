@@ -9,6 +9,7 @@ import {
   type NewSessionCarryover,
 } from '@renderer/lib/new-session-carryover'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import { STALE_TIME_GAP_MS } from '@shared/lib/stale-session/stale-session-config'
 import { useStaleSession } from './use-stale-session'
 
 const { navigate, apiFetch } = vi.hoisted(() => ({ navigate: vi.fn(), apiFetch: vi.fn() }))
@@ -21,13 +22,7 @@ vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: vi.fn() }),
 }))
 
-const staleUsage: SessionUsage = {
-  inputTokens: 10_000,
-  outputTokens: 1_000,
-  cacheReadInputTokens: 100_000,
-  cacheCreationInputTokens: 0,
-  contextWindow: 200_000,
-}
+const staleUsage: SessionUsage = { totalTokens: 110_000, contextWindow: 200_000 }
 const forkResponse = {
   ok: true,
   json: async () => ({ id: 'fork-1', agentSlug: 'abc123def4', name: 'Conversation (fork)' }),
@@ -74,6 +69,21 @@ describe('useStaleSession', () => {
     expect(result.current.stale.showNotice).toBe(false)
   })
 
+  it('shows once an idle session crosses the gap, with no other render', () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderStale({ lastActivityAt: new Date(Date.now() - STALE_TIME_GAP_MS + 60_000) })
+      expect(result.current.stale.showNotice).toBe(false)
+
+      act(() => { vi.advanceTimersByTime(59_000) })
+      expect(result.current.stale.showNotice).toBe(false)
+      act(() => { vi.advanceTimersByTime(2_000) })
+      expect(result.current.stale.showNotice).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not show while active or for view-only users', () => {
     expect(renderStale({ isActive: true }).result.current.stale.showNotice).toBe(false)
     expect(renderStale({ isViewOnly: true }).result.current.stale.showNotice).toBe(false)
@@ -90,7 +100,7 @@ describe('useStaleSession', () => {
     })))
     act(() => result.current.stale.startFresh())
 
-    expect(result.current.store.get('agent:abc123def4')).toBe('Continue as a new task')
+    expect(result.current.store.get('session:agent-home:abc123def4')).toBe('Continue as a new task')
     expect(result.current.store.get<NewSessionCarryover>(newSessionCarryoverKey('abc123def4'))).toEqual({
       attachments: [],
       model: 'sonnet',

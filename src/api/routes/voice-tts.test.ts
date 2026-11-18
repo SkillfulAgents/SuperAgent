@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => ({
   preferences: { ttsVoice: 'cedar', ttsSpeed: 1.2 },
 }))
 vi.mock('../middleware/auth', () => ({ ResolveAgent: () => async (_c: unknown, next: () => Promise<void>) => next(), AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(), Authenticated: () => async (_c: unknown, next: () => Promise<void>) => mocks.authenticated ? next() : new Response('Unauthorized', { status: 401 }) }))
-vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.selected, ttsVoice: 'marin' }) }))
+const getSettings = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/config/settings', () => ({ getSettings }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => 'member' }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({ voice: mocks.preferences }) }))
 vi.mock('@shared/lib/voice', () => ({ getVoiceProvider: (id: string) => ({
@@ -23,6 +24,7 @@ function synthesize(body: unknown = input, signal?: AbortSignal) {
 }
 beforeEach(() => {
   vi.clearAllMocks()
+  getSettings.mockImplementation(async () => ({ voice: { sttProvider: mocks.selected, ttsVoice: 'marin' } }))
   mocks.selected = 'openai'; mocks.authenticated = true
   mocks.preferences = { ttsVoice: 'cedar', ttsSpeed: 1.2 }
   mocks.connection.mockResolvedValue({ transport: 'http' })
@@ -35,6 +37,9 @@ describe('provider-neutral TTS routes', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ provider: 'openai', connection: { transport: 'http' }, voice: 'cedar', speed: 1.2 })
     expect(mocks.synthesize).not.toHaveBeenCalled()
+    // Provider, key status and the workspace default voice come from one settings read.
+    expect(getSettings).toHaveBeenCalledTimes(1)
+    expect(mocks.connection).toHaveBeenCalledWith(await getSettings.mock.results[0]?.value)
   })
   it('preserves token-based initialization for Deepgram', async () => {
     mocks.selected = 'deepgram'
@@ -88,7 +93,9 @@ describe('provider-neutral TTS routes', () => {
     expect(response.headers.get('Content-Type')).toBe('audio/pcm')
     expect(response.headers.get('Cache-Control')).toBe('no-store')
     expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([1, 0, 2, 0])
-    expect(mocks.synthesize).toHaveBeenCalledWith({ text: 'Hello', voice: 'cedar', speed: 1.2 }, expect.any(AbortSignal))
+    // Synthesis takes the key from the settings this request read, once.
+    expect(mocks.synthesize).toHaveBeenCalledWith({ text: 'Hello', voice: 'cedar', speed: 1.2 }, expect.any(AbortSignal), await getSettings.mock.results[0]?.value)
+    expect(getSettings).toHaveBeenCalledTimes(1)
     abort.abort()
     expect(mocks.synthesize.mock.calls[0][1].aborted).toBe(true)
   })

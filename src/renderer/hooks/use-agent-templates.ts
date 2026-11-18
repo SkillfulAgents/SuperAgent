@@ -5,6 +5,7 @@ import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { seedOwnerRole } from '@renderer/hooks/use-agents'
 import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import {
@@ -43,15 +44,16 @@ export function isWaitingOnDiscoverableRefresh(
  * The queryFn returns cached data first (fast). On the first call app-wide,
  * a single background refresh is kicked off; when it resolves with new data
  * the query cache is updated so every consumer re-renders.
+ * `enabled: false` reads nothing, for a caller that needs the catalog only sometimes.
  */
-export function useDiscoverableAgents() {
+export function useDiscoverableAgents(options?: { enabled?: boolean }) {
   const queryClient = useQueryClient()
   const { data: skillsets, isLoading: skillsetsLoading } = useSkillsets()
   const hasSkillsets = !!(skillsets && skillsets.length > 0)
 
   const query = useQuery<ApiDiscoverableAgent[]>({
     queryKey: ['discoverable-agents'],
-    enabled: hasSkillsets,
+    enabled: hasSkillsets && options?.enabled !== false,
     queryFn: async () => {
       const res = await apiFetch('/api/agents/discoverable-agents')
       if (!res.ok) throw new Error('Failed to fetch discoverable agents')
@@ -62,14 +64,14 @@ export function useDiscoverableAgents() {
       if (!refreshPromise) {
         queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'pending')
         refreshPromise = apiFetch('/api/agents/discoverable-agents?refresh=true')
+          // Read the catalog again rather than writing this response: a skillset change made while the refresh ran is newer.
+          // The skillsets too: their template counts come from the indexes this refreshed, and decide whether Explore is offered.
           .then(async (refreshRes) => {
-            if (refreshRes.ok) {
-              const refreshData = await refreshRes.json()
-              const refreshed = refreshData.agents as ApiDiscoverableAgent[]
-              if (JSON.stringify(refreshed) !== JSON.stringify(agents)) {
-                queryClient.setQueryData(['discoverable-agents'], refreshed)
-              }
-            }
+            if (!refreshRes.ok) return
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] }),
+              queryClient.invalidateQueries({ queryKey: ['skillsets'] }),
+            ])
           })
           .catch(() => { /* ignore background refresh failures */ })
           .finally(() => {
@@ -98,6 +100,16 @@ export function useDiscoverableAgents() {
     // Skillsets gate this query, so their fetch is part of the catalog's load.
     isLoading: skillsetsLoading || query.isLoading || waitingOnRefresh,
   }
+}
+
+/**
+ * Whether any configured skillset offers an agent template, or null while the
+ * skillsets load. Each skillset reports its template count, so this answers
+ * without reading the catalog itself.
+ */
+export function useHasDiscoverableAgents(): boolean | null {
+  const { data: skillsets } = useSkillsets()
+  return skillsets === undefined ? null : skillsets.some((skillset) => skillset.agentCount > 0)
 }
 
 export function useHostExportStatus(enabled = true) {
@@ -151,8 +163,12 @@ export function useExportAgentFull() {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
-  return useMutation<void, Error, { agentSlug: string; agentName: string }>({
-    mutationFn: async ({ agentSlug, agentName }) => {
+  return useMutation<
+    void,
+    Error,
+    { agentSlug: string; agentName: string; onProgress?: (bytesReceived: number) => void }
+  >({
+    mutationFn: async ({ agentSlug, agentName, onProgress }) => {
       track('agent_full_exported')
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/export-full`, {
         method: 'POST',
@@ -162,7 +178,7 @@ export function useExportAgentFull() {
         throw new Error(data.error || 'Failed to export agent')
       }
 
-      await downloadBlob(res, `${agentName || agentSlug}-full${AGENT_PACKAGE_EXTENSION}`)
+      await downloadBlob(res, `${agentName || agentSlug}-full${AGENT_PACKAGE_EXTENSION}`, onProgress)
     },
     onMutate: () => {
       markHostExportBusy(queryClient)
@@ -198,6 +214,7 @@ export function useImportAgentTemplate() {
         source: 'file_import',
         has_template_prompt: Boolean(result.templatePrompt),
       })
+      seedOwnerRole(queryClient, result.slug)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -236,6 +253,7 @@ export function useInstallAgentFromSkillset() {
         source: 'skillset',
         has_template_prompt: Boolean(result.templatePrompt),
       })
+      seedOwnerRole(queryClient, result.slug)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
@@ -288,7 +306,7 @@ export function useAgentTemplateStatus(agentSlug: string | null) {
     templateRefreshSet.add(agentSlug)
 
     let cancelled = false
-    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, { method: 'POST' })
+    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh?background=1`, { method: 'POST' })
       .then(async (r) => {
         if (cancelled || !r.ok) return
         const fresh = await r.json() as ApiAgentTemplateStatus

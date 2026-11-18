@@ -16,15 +16,24 @@ export function useLlmConnections(
   return useQuery<ConnectionsResponse>({
     queryKey: ['settings', 'llm-connections', agentSlug, sessionId, currentLlmProviderId],
     queryFn: async () => {
-      const root = await apiFetch('/api/llm-connections')
+      // The two reads are independent, so both start now. They are still
+      // checked in order, so a failed root read wins as it did when the
+      // reads ran back to back; the catch only keeps an abandoned scoped
+      // read from surfacing as an unhandled rejection.
+      const rootRequest = apiFetch('/api/llm-connections')
+      const scopedRequest = agentSlug
+        ? apiFetch(
+            sessionId
+              ? `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}/llm-connections`
+              : `/api/agents/${encodeURIComponent(agentSlug)}/llm-connections`
+          )
+        : undefined
+      void scopedRequest?.catch(() => {})
+      const root = await rootRequest
       if (!root.ok) throw new Error('Could not load model connections')
       const data: ConnectionsResponse = await root.json()
-      if (agentSlug) {
-        const response = await apiFetch(
-          sessionId
-            ? `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}/llm-connections`
-            : `/api/agents/${encodeURIComponent(agentSlug)}/llm-connections`
-        )
+      if (scopedRequest) {
+        const response = await scopedRequest
         if (!response.ok) throw new Error('Could not load session connection')
         const current: { connections: ConnectionInfo[] } = await response.json()
         data.connections = current.connections

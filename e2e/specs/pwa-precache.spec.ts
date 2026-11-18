@@ -62,6 +62,18 @@ test.describe('PWA precaching service worker', () => {
 
     // The app shell itself is precached (what navigateFallback serves offline).
     expect(precached).toContain('/index.html')
+    // Under a revision the server completed with its facts, so a deploy that
+    // changes only those still makes the worker fetch the shell again.
+    const indexRevision = await page.evaluate(async () => {
+      for (const name of await caches.keys()) {
+        for (const req of await (await caches.open(name)).keys()) {
+          const match = req.url.match(/\/index\.html\?__WB_REVISION__=([^&]+)/)
+          if (match) return match[1]
+        }
+      }
+      return null
+    })
+    expect(indexRevision).toMatch(/^[0-9a-f]{32}-[0-9a-f]{12}$/)
 
     // Every hashed asset the page loaded at boot is in the precache…
     const bootAssets = await page.evaluate(() =>
@@ -141,6 +153,10 @@ test.describe('PWA precaching service worker', () => {
     await expect(page).toHaveTitle('Gamut')
     // The boot JS executed from the precache — React mounted into #root.
     await page.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0)
+    // The precached copy is the one the server served, facts inlined, not the
+    // file as built: offline, it is the only source of them.
+    const facts = await page.evaluate(() => document.getElementById('server-facts')?.textContent ?? '')
+    expect(facts).toContain('"distribution":"deployment"')
 
     await context.setOffline(false)
   })

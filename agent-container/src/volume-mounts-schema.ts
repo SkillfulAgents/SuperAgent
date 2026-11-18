@@ -5,10 +5,14 @@ export const volumesEnvSchema = z.array(z.object({
   volumeId: z.string().regex(/^[A-Za-z0-9_-]+$/),
   // Each name becomes one folder under /mounts, so it must be a single path segment.
   name: z.string().min(1).refine((name) => name !== '.' && name !== '..' && !/[/\\\0]/.test(name)),
+  volumeName: z.string().optional(),
   cacheMode: z.enum(['local', 'remote']).default('local'),
   caseInsensitive: z.boolean().optional(),
   ignoreSize: z.boolean().optional(),
   dirCacheSeconds: z.number().int().positive().optional(),
+  readOnly: z.boolean().optional(),
+  sourceLabel: z.string().optional(),
+  agentNote: z.string().optional(),
 }));
 
 export type ContainerMount = z.infer<typeof volumesEnvSchema>[number];

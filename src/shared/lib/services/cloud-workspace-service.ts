@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto'
 
+import { background } from '@shared/lib/background'
 import { captureException } from '@shared/lib/error-reporting'
+import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 import {
-  getPlatformAccessToken,
-  getPlatformAuthStatus,
+  platformAccessTokenFrom,
+  platformAuthStatusFrom,
 } from '@shared/lib/services/platform-auth-service'
 import {
   CloudWorkspaceError,
@@ -21,6 +23,7 @@ import {
   DEPLOYED_STATUS,
   type DeploymentDiscoveryEntry,
 } from '@shared/lib/platform-auth/cloud-workspace-schema'
+import { refreshCloudServerFacts } from '@shared/lib/services/cloud-server-facts'
 import {
   isLocalhostHost,
   validateMcpDiscoveryUrl,
@@ -224,9 +227,14 @@ function fingerprintToken(token: string): string {
   return createHash('sha256').update(token).digest('hex').slice(0, 32)
 }
 
-function readAccount(): CloudWorkspaceAccount {
-  const status = getPlatformAuthStatus()
-  const token = getPlatformAccessToken()
+/**
+ * The account in `settings`. Synchronous, so a record write can re-check it
+ * inside its own compare-and-set (`report: false` there: a settings mutator
+ * may run more than once and must not report).
+ */
+function accountIn(settings: Readonly<AppSettings>, options: { report?: boolean } = {}): CloudWorkspaceAccount {
+  const status = platformAuthStatusFrom(settings, options)
+  const token = platformAccessTokenFrom(settings, options)
   if (!status.connected || !token) return NO_ACCOUNT
   return {
     connected: true,
@@ -236,6 +244,21 @@ function readAccount(): CloudWorkspaceAccount {
     tokenFingerprint: fingerprintToken(token),
     token,
   }
+}
+
+/** The acting account, from one settings read (so bearer and identity agree). */
+async function readAccount(): Promise<CloudWorkspaceAccount> {
+  return accountIn(await getSettings())
+}
+
+/** A record write guard: the settings still hold `account`. */
+function stillActingAs(account: CloudWorkspaceAccount): (settings: Readonly<AppSettings>) => boolean {
+  return (settings) => sameAccount(account, accountIn(settings, { report: false }))
+}
+
+/** A record write guard: the settings hold no connected account. */
+function stillDisconnected(settings: Readonly<AppSettings>): boolean {
+  return !accountIn(settings, { report: false }).connected
 }
 
 /**
@@ -256,7 +279,7 @@ function sameAccount(a: CloudWorkspaceAccount, b: CloudWorkspaceAccount): boolea
 }
 
 function isRecordValidFor(
-  record: ReturnType<typeof readCloudWorkspaceRecord>,
+  record: Awaited<ReturnType<typeof readCloudWorkspaceRecord>>,
   entry: DeploymentDiscoveryEntry,
   account: CloudWorkspaceAccount,
 ): boolean {
@@ -300,7 +323,7 @@ async function ensureDeploymentToken(
   entry: DeploymentDiscoveryEntry,
   forceRefresh = false,
 ): Promise<boolean> {
-  if (!forceRefresh && isRecordValidFor(readCloudWorkspaceRecord(), entry, account)) return true
+  if (!forceRefresh && isRecordValidFor(await readCloudWorkspaceRecord(), entry, account)) return true
   // Nothing to attribute a new token to — don't mint one we couldn't safely
   // reuse anyway. (Unreachable via getCloudWorkspace, which snapshots a
   // connected account to get this far; belt-and-braces for any other caller.)
@@ -314,11 +337,12 @@ async function ensureDeploymentToken(
       deploymentHostPolicy(),
     )
     // The account can be disconnected or switched while the grant round-trip is
-    // in flight, after the clear-on-identity-change has already run. Re-read it
-    // here — the check and the (synchronous) write can't be interleaved — so a
-    // stale refresh can never resurrect the old account's token.
-    if (!sameAccount(account, readAccount())) return false
-    writeCloudWorkspaceRecord({
+    // in flight, after the clear-on-identity-change has already run. Re-check
+    // it here, and again inside the write's compare-and-set (`onlyIf`), so no
+    // account change can land between the check and the write: a stale refresh
+    // can never resurrect the old account's token.
+    if (!sameAccount(account, await readAccount())) return false
+    return await writeCloudWorkspaceRecord({
       deploymentUrl: entry.deployment_url,
       orgId: entry.org_id,
       token,
@@ -328,8 +352,7 @@ async function ensureDeploymentToken(
       userId: account.userId,
       memberId: account.memberId,
       tokenFingerprint: account.tokenFingerprint,
-    })
-    return true
+    }, { onlyIf: stillActingAs(account) })
   } catch (error) {
     // Grant/exchange failure (e.g. a deployment without the exchange endpoint)
     // is non-fatal: the workspace still shows, just without a maintained token.
@@ -363,9 +386,11 @@ export async function getCloudWorkspace(
 
   // One snapshot drives the whole cycle: the bearer we present, the org we
   // filter by, and the identity we'd record must all be the same account.
-  const account = readAccount()
+  const account = await readAccount()
   if (!account.connected || !account.token) {
-    clearCloudWorkspaceRecord()
+    // Cleared only while still disconnected: a connection completed since the
+    // read above may already hold a freshly minted record.
+    await clearCloudWorkspaceRecord({ onlyIf: stillDisconnected })
     return NOT_AVAILABLE
   }
 
@@ -386,7 +411,7 @@ export async function getCloudWorkspace(
   // bearer and file the result under the new account's identity. Abandon the
   // cycle instead: touch nothing, report "unknown", and let the refresh that the
   // identity change itself triggers produce the real answer.
-  if (!sameAccount(account, readAccount())) return DISCOVERY_FAILED
+  if (!sameAccount(account, await readAccount())) return DISCOVERY_FAILED
 
   // `/v1/me/deployments` answers for the *user*, who may belong to several orgs.
   // Only the org we're acting as is ours to show or mint against — another org's
@@ -397,7 +422,8 @@ export async function getCloudWorkspace(
   )
   const deployed = orgWorkspaces.find((d) => d.status === DEPLOYED_STATUS)
   if (!deployed) {
-    clearCloudWorkspaceRecord()
+    // Cleared only while still acting as the account this answer belongs to.
+    await clearCloudWorkspaceRecord({ onlyIf: stillActingAs(account) })
     // Not running: report what the org's workspace is doing instead (setting
     // up, going to sleep, asleep, failed), if it has one. Status only — nothing
     // here is minted against or linked to.
@@ -413,7 +439,7 @@ export async function getCloudWorkspace(
       deploymentUrl: deployed.deployment_url,
       authorizationServer: deployed.authorization_server,
     })
-    clearCloudWorkspaceRecord()
+    await clearCloudWorkspaceRecord({ onlyIf: stillActingAs(account) })
     return DISCOVERY_FAILED
   }
 
@@ -436,10 +462,17 @@ export async function getCloudWorkspace(
 /**
  * Boot/connect hook: run the discover → ensure-token cycle so the deployment
  * token is maintained even when the Account tab is never opened. Never throws.
+ *
+ * The deployment's server facts ride along, so a renderer driving it reads them
+ * at boot rather than waiting on a request of its own (`cloud-server-facts.ts`).
+ * In the background: the cycle takes as long as it did without them.
  */
 export async function refreshCloudWorkspace(): Promise<void> {
   try {
-    await getCloudWorkspace()
+    const status = await getCloudWorkspace()
+    if (status.hasValidToken && status.deploymentUrl) {
+      background(refreshCloudServerFacts(status.deploymentUrl), { name: 'cloud-workspace.refresh-server-facts' })
+    }
   } catch (error) {
     reportFailureOnce('refresh', error)
   }

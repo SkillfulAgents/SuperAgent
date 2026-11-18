@@ -27,14 +27,19 @@ export async function authenticateAgentWebSocket(
   try {
     // Lazy import avoids pulling Better Auth's ESM graph into desktop startup.
     const { getAuth } = await import('@shared/lib/auth/index')
-    const auth = getAuth()
+    const auth = await getAuth()
     const headers = new Headers()
     for (const [key, value] of Object.entries(request.headers)) {
       if (value) headers.set(key, Array.isArray(value) ? value[0] : value)
     }
 
     const session = await auth.api.getSession({ headers })
-    if (!session?.user) return false
+    if (!session?.user) {
+      // The meeting bot's page watches its own agent's browser stream; it may not steer it.
+      const { authenticateMeetingParticipant } = await import('@shared/lib/meeting-integrations/participant-credential')
+      const participant = await authenticateMeetingParticipant(headers.get('cookie'))
+      return !!participant && participant.agentSlug === agentSlug && minRole === 'viewer'
+    }
 
     const [row] = await db
       .select({ role: agentAcl.role })

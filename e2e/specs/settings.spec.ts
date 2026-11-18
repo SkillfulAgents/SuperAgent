@@ -204,6 +204,23 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-model-trigger"]')).toBeVisible()
     await expect(page.locator('#max-browser-tabs')).toBeVisible()
     await expect(page.locator('[data-testid="browser-host-card-container"]')).toBeVisible()
+    // Steel needs only its key: the card can be picked to enter one. Picking it
+    // saves the host on the shared server, so the one before is put back.
+    const before = (await (await page.request.get('/api/settings')).json()).app.hostBrowserProvider ?? null
+    try {
+      const steel = page.locator('[data-testid="browser-host-card-steel"]')
+      await expect(steel).toBeVisible()
+      await steel.getByRole('radio').click()
+      await expect(page.locator('#steel-api-key')).toBeVisible()
+      // Tab Tender needs a server URL and a key.
+      const tabtender = page.locator('[data-testid="browser-host-card-tabtender"]')
+      await expect(tabtender).toBeVisible()
+      await tabtender.getByRole('radio').click()
+      await expect(page.locator('#tabtender-url')).toBeVisible()
+      await expect(page.locator('#tabtender-api-key')).toBeVisible()
+    } finally {
+      await page.request.put('/api/settings', { data: { app: { hostBrowserProvider: before } } })
+    }
   })
 
   test('closes settings page', async ({ page }) => {

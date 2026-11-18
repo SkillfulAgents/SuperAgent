@@ -14,6 +14,10 @@ export interface ProxyAuditEntry {
   errorMessage?: string
   policyDecision?: string
   matchedScopes?: string
+  /** Proxy rule version that allowed the request. */
+  ruleVersionId?: string
+  /** JSON RuleEvaluation[] for every rule that ran. */
+  ruleOutcomes?: string
 }
 
 export async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs?: number }, options: { analytics?: boolean } = {}): Promise<void> {
@@ -26,9 +30,17 @@ export async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs
       durationMs: entry.durationMs ?? null,
       policyDecision: entry.policyDecision ?? null,
       matchedScopes: entry.matchedScopes ?? null,
+      ruleVersionId: entry.ruleVersionId ?? null,
+      ruleOutcomes: entry.ruleOutcomes ?? null,
       createdAt: new Date(),
     })
-    if (options.analytics !== false) trackServerEvent('api_called', { slug: entry.toolkit })
+    if (options.analytics !== false) {
+      trackServerEvent('api_called', {
+        slug: entry.toolkit,
+        decision: entry.policyDecision ?? 'unknown',
+        rule_allowed: Boolean(entry.ruleVersionId),
+      })
+    }
   } catch (error) {
     console.error('[proxy] Failed to write audit log:', error)
   }

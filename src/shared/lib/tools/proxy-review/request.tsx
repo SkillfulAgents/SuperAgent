@@ -1,8 +1,8 @@
 import { apiFetch } from '@renderer/lib/api'
-import { useState, useEffect, useRef } from 'react'
-import { ShieldCheck, ShieldX, ChevronDown, ChevronRight, ArrowUp } from 'lucide-react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useNavigate, useRouter } from '@tanstack/react-router'
+import { ShieldCheck, ShieldX, ChevronRight, Settings } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   Collapsible,
   CollapsibleContent,
@@ -12,13 +12,51 @@ import { cn } from '@shared/lib/utils/cn'
 import { getScopeLabel, type ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
+import type { Components } from 'react-markdown'
 import { Markdown } from '@renderer/components/ui/markdown'
+import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
+import { useAgentRemoteMcps } from '@renderer/hooks/use-remote-mcps'
+import {
+  isForeignAgentConnectedAccount,
+  isForeignAgentRemoteMcp,
+  type AgentConnectedAccountDto,
+  type AgentRemoteMcpDto,
+} from '@shared/lib/agent-connections/public'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
+import { ApprovalActions } from '../requests/approval-actions'
+import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
+import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
+import { TitleCode, useCustomPreview } from './custom-previews'
+
+// Endpoint descriptions come from API docs and carry inline Markdown
+// (`code`, [links](…)). The title renders them inline: no paragraph or block
+// wrappers inside a one-line heading.
+const Inline = ({ children }: { children?: React.ReactNode }) => <>{children}</>
+const TITLE_MARKDOWN: Components = {
+  p: Inline,
+  pre: Inline,
+  code: TitleCode,
+}
 
 // read is least privileged, destructive most — used to pick the minimal group
 // whose "allow all" still satisfies this request (resolver takes most-permissive).
 const LABEL_RANK: Record<ScopeLabel, number> = { read: 0, write: 1, destructive: 2 }
+
+// The connections-page detail key for the reviewed account or MCP server, or null
+// when this viewer can't open it: another member's connection (foreign DTOs carry
+// no id) or one no longer on the agent.
+function ownedConnectionDetailKey(
+  reviewType: ProxyReviewType,
+  id: string,
+  accounts: AgentConnectedAccountDto[] | undefined,
+  mcps: AgentRemoteMcpDto[] | undefined,
+): string | null {
+  if (reviewType === 'mcp') {
+    return mcps?.some((m) => !isForeignAgentRemoteMcp(m) && m.id === id) ? `mcp-${id}` : null
+  }
+  return accounts?.some((a) => !isForeignAgentConnectedAccount(a) && a.id === id) ? `account-${id}` : null
+}
 
 interface ProxyReviewRequestItemProps {
   reviewId: string
@@ -34,6 +72,14 @@ interface ProxyReviewRequestItemProps {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
+  /** The specific call, when the lookup could name it. Without it the headline is general, so the body opens. */
+  endpointDescription?: string
+  /** What the request sends, as text. */
+  requestBody?: string
+  /** Proxy rules that ran on the request and did not allow it. */
+  ruleOutcomes?: ReviewRuleOutcomeView[]
+  /** Present when the review asks to approve an agent's proxy rule. */
+  ruleProposal?: RuleProposalReview
   sessionId?: string
   agentSlug: string
   readOnly?: boolean
@@ -42,7 +88,69 @@ interface ProxyReviewRequestItemProps {
 
 type RequestStatus = 'pending' | 'submitting' | 'allowed' | 'denied'
 
-export function ProxyReviewRequestItem({
+/** A risk tier's "Always allow" wording: which requests it covers, and its hint. A tier allows only its own requests. */
+const LABEL_GRANT: Record<ScopeLabel, { what: string; hint: string }> = {
+  read: { what: 'that only read', hint: 'that only read run without asking.' },
+  write: { what: 'that create or edit', hint: 'that create or edit run without asking. Deletes still ask.' },
+  destructive: { what: 'that delete', hint: 'that delete run without asking.' },
+}
+
+/**
+ * The service, method and path, and what the request sends. The body starts open when neither the
+ * endpoint nor a custom preview names the call: it is then the only thing that says what the call does.
+ */
+function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
+  toolkit: ReactNode
+  requestLabel: string
+  requestBody?: string
+  named: boolean
+}) {
+  return (
+    <Collapsible key={String(named)} defaultOpen={!named} className="mt-3 rounded-card border border-border bg-white px-3 py-2 dark:bg-background">
+      <div className="flex items-center">
+        <span className="mr-2 inline-flex h-7 shrink-0 items-center rounded-control bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
+          {toolkit}
+        </span>
+        <span className="min-w-0 flex-1 break-all font-mono text-xs text-foreground/85">{requestLabel}</span>
+        {requestBody && (
+          <CollapsibleTrigger
+            data-testid="proxy-review-body-toggle"
+            aria-label="Show what the request sends"
+            className="group ml-2 shrink-0 rounded-icon p-0.5 text-muted-foreground hover:bg-muted"
+          >
+            <ChevronRight className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-90" />
+          </CollapsibleTrigger>
+        )}
+      </div>
+      {requestBody && (
+        <CollapsibleContent>
+          <pre data-testid="proxy-review-body" className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-foreground/75">
+            {requestBody}
+          </pre>
+        </CollapsibleContent>
+      )}
+    </Collapsible>
+  )
+}
+
+export function ProxyReviewRequestItem(props: ProxyReviewRequestItemProps) {
+  if (props.ruleProposal) {
+    return (
+      <RuleProposalRequestItem
+        reviewId={props.reviewId}
+        agentSlug={props.agentSlug}
+        displayText={props.displayText}
+        proposal={props.ruleProposal}
+        sessionId={props.sessionId}
+        readOnly={props.readOnly}
+        onComplete={props.onComplete}
+      />
+    )
+  }
+  return <ScopeReviewRequestItem {...props} />
+}
+
+function ScopeReviewRequestItem({
   reviewId,
   accountId,
   reviewType,
@@ -50,8 +158,10 @@ export function ProxyReviewRequestItem({
   method,
   targetPath,
   matchedScopes,
-  scopeDescriptions,
   displayText,
+  endpointDescription,
+  requestBody,
+  ruleOutcomes,
   sessionId,
   agentSlug,
   readOnly,
@@ -59,13 +169,10 @@ export function ProxyReviewRequestItem({
 }: ProxyReviewRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
-  const [allowMenuOpen, setAllowMenuOpen] = useState(false)
-  const [denyMenuOpen, setDenyMenuOpen] = useState(false)
-  const [specificScopeOpen, setSpecificScopeOpen] = useState(false)
-  const [denyReason, setDenyReason] = useState('')
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const denyReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const requestLabel = `${method} /${targetPath}`
+  const customPreview = useCustomPreview(toolkit, method, targetPath, requestBody)
+  const named = !!endpointDescription
 
   // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
   // group is the smallest-blast-radius "allow all" that still lets this request
@@ -81,6 +188,50 @@ export function ProxyReviewRequestItem({
   const resolvedReviewType: ProxyReviewType =
     reviewType ?? (targetPath.startsWith('tools/call') ? 'mcp' : 'api')
   const isApiReview = resolvedReviewType === 'api'
+  // A require rule held this request: changing the policy wouldn't stop the
+  // rule holding the next one, so only one-off decisions are offered.
+  const heldByRule = heldByRequireRule(ruleOutcomes)
+
+  const navigate = useNavigate()
+  const router = useRouter()
+  const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
+  const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
+  const connectionDetailKey = ownedConnectionDetailKey(
+    resolvedReviewType,
+    accountId,
+    accountsData?.accounts,
+    mcpsData?.mcps,
+  )
+  // `source: 'home'` is required with `detail`; `from` overrides where Back goes.
+  const openConnection = connectionDetailKey
+    ? () => {
+        void navigate({
+          to: '/agents/$slug/connections',
+          params: { slug: agentSlug },
+          search: {
+            detail: connectionDetailKey,
+            source: 'home',
+            from: router.state.location.pathname + router.state.location.searchStr,
+          },
+        })
+      }
+    : null
+  // The toolkit name opens its connection page wherever the card shows it.
+  // Matches the `capitalize` class the card shows the name with.
+  const toolkitTitle = toolkit.replace(/\b\w/g, (c) => c.toUpperCase())
+  const toolkitName = (className?: string) =>
+    openConnection ? (
+      <button
+        type="button"
+        data-testid="proxy-review-connection-link"
+        onClick={openConnection}
+        className={cn(className, 'capitalize hover:underline')}
+      >
+        {toolkit}
+      </button>
+    ) : (
+      <span className={className}>{toolkit}</span>
+    )
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -119,7 +270,7 @@ export function ProxyReviewRequestItem({
     }
   }
 
-  const handleAlways = async (decision: 'allow' | 'deny', scope: string) => {
+  const handleAlways = async (scope: string) => {
     setStatus('submitting')
     setError(null)
     try {
@@ -129,7 +280,7 @@ export function ProxyReviewRequestItem({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            decision,
+            decision: 'allow',
             scope,
             accountId,
             reviewType: resolvedReviewType,
@@ -138,14 +289,14 @@ export function ProxyReviewRequestItem({
       )
       if (!response.ok) {
         if (response.status === 404) {
-          setStatus(decision === 'allow' ? 'allowed' : 'denied')
+          setStatus('allowed')
           completeTimerRef.current = setTimeout(() => onComplete(), 1000)
           return
         }
         const data = await response.json()
         throw new Error(data.error || 'Failed to save policy')
       }
-      setStatus(decision === 'allow' ? 'allowed' : 'denied')
+      setStatus('allowed')
       completeTimerRef.current = setTimeout(() => onComplete(), 2000)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save policy')
@@ -164,7 +315,7 @@ export function ProxyReviewRequestItem({
         label: (
           <>
             <span className="font-medium">{requestLabel}</span>{' '}
-            <span className="text-xs text-muted-foreground capitalize">{toolkit}</span>
+            {toolkitName('text-xs text-muted-foreground capitalize')}
           </>
         ),
         statusLabel: status === 'allowed' ? 'Allowed' : 'Denied',
@@ -176,12 +327,8 @@ export function ProxyReviewRequestItem({
     ? {
         extraContent: (
           <>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 font-mono text-xs text-foreground/85">
-                {requestLabel}
-              </span>
-            </div>
-            <p className="mt-2 text-sm leading-5 text-foreground/80 capitalize">Via {toolkit}</p>
+            {customPreview?.preview}
+            <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named || customPreview?.preview != null} />
           </>
         ),
       }
@@ -189,7 +336,7 @@ export function ProxyReviewRequestItem({
 
   return (
     <RequestItemShell
-      title={displayText || requestLabel}
+      title={customPreview?.title ??(displayText ? <Markdown components={TITLE_MARKDOWN}>{displayText}</Markdown> : requestLabel)}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -201,319 +348,57 @@ export function ProxyReviewRequestItem({
       data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Code block showing method/path + toolkit */}
-      <div className="mt-3">
-        <div className="rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
-          <span className="mr-2 inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
-            {toolkit}
-          </span>
-          <span className="font-mono text-xs text-foreground/85">
-            {requestLabel}
-          </span>
-        </div>
-      </div>
+      {/* The call as its service shows it, when a custom preview can read it, then method/path + toolkit, what the request sends, and the rules that held it */}
+      {customPreview?.preview}
+      <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named || customPreview?.preview != null} />
+      {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
 
-      {/* Action buttons */}
       <RequestItemActions>
-        <div className="flex items-stretch">
-          <Button
-            data-testid="proxy-review-deny-btn"
-            onClick={() => handleDecision('deny')}
-            disabled={status === 'submitting'}
-            size="xs"
-            variant="outline"
-            className="rounded-r-none border-r-0 border-border text-foreground hover:bg-muted"
-          >
-            Deny
-          </Button>
-          <Popover open={denyMenuOpen} onOpenChange={setDenyMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                disabled={status === 'submitting'}
-                size="xs"
-                variant="outline"
-                className="rounded-l-none border-border px-1.5 text-foreground hover:bg-muted"
-                data-testid="proxy-review-deny-btn-chevron"
-              >
-                <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', denyMenuOpen && 'rotate-180')} />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              className="w-auto min-w-0 max-w-[480px] px-1 pt-1 pb-4"
-              onOpenAutoFocus={(e) => {
-                e.preventDefault()
-                requestAnimationFrame(() => {
-                  denyReasonInputRef.current?.focus()
-                })
+        <ApprovalActions
+          testIdPrefix="proxy-review"
+          disabled={status === 'submitting'}
+          onDeny={(reason) => handleDecision('deny', reason)}
+          onAllow={() => handleDecision('allow')}
+          expanded={heldByRule ? undefined : {
+            label: 'Always Allow',
+            options: [
+              // Smallest "allow all" that still covers this request. An unnamed API call's scopes union
+              // every action on its path, so allowing any of them can allow a delete: those cards skip it.
+              ...(isApiReview && named && minimalLabel ? [{
+                label: <span className="shrink-0">Always allow {toolkitTitle} requests {LABEL_GRANT[minimalLabel].what}</span>,
+                hint: `${toolkitTitle} requests ${LABEL_GRANT[minimalLabel].hint}`,
+                onSelect: () => handleAlways(labelDefaultKey(minimalLabel)),
+                testId: `proxy-review-allow-label-${minimalLabel}`,
+              }] : []),
+              {
+                label: (
+                  <span className="shrink-0">
+                    Always allow all <span className="capitalize">{toolkit}</span> requests
+                  </span>
+                ),
+                hint: `Allows every ${toolkitTitle} request, including deletes`,
+                onSelect: () => handleAlways('*'),
+                testId: 'proxy-review-always-allow-all',
+              },
+            ],
+          }}
+          footer={openConnection ? (closeMenu) => (
+            <Button
+              data-testid="proxy-review-edit-permissions"
+              onClick={() => {
+                closeMenu()
+                openConnection()
               }}
-              onCloseAutoFocus={() => setDenyReason('')}
+              variant="ghost"
+              size="xs"
+              className="h-auto min-w-0 w-full justify-start gap-1.5 py-2 text-xs font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
             >
-              <div className="flex flex-col items-start gap-0">
-                {matchedScopes.length > 0 && (
-                  <div className="w-full py-2">
-                    <div className="flex flex-col items-start gap-1">
-                      {matchedScopes.map((scope) => (
-                        <Button
-                          key={scope}
-                          data-testid={`proxy-review-always-deny-${scope}`}
-                          onClick={() => {
-                            setDenyMenuOpen(false)
-                            handleAlways('deny', scope)
-                          }}
-                          disabled={status === 'submitting'}
-                          variant="ghost"
-                          size="xs"
-                          className="h-auto w-full justify-start py-2 text-foreground hover:bg-muted"
-                        >
-                          <span className="flex flex-col items-start text-left">
-                            <span>
-                              Always deny{' '}
-                              <span className="ml-1 inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">
-                                {scope}
-                              </span>
-                            </span>
-                            {scopeDescriptions[scope] && (
-                              <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
-                                <Markdown
-                                  components={{
-                                    p: ({ children }) => <>{children}</>,
-                                    a: ({ href, children }) => (
-                                      <a href={href} target="_blank" rel="noopener noreferrer">
-                                        {children}
-                                      </a>
-                                    ),
-                                  }}
-                                >
-                                  {scopeDescriptions[scope]}
-                                </Markdown>
-                              </span>
-                            )}
-                          </span>
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div className="w-full pt-0">
-                  {matchedScopes.length > 0 && <div className="mx-3 border-t border-border" />}
-                  <div className="w-full px-3 pt-3 pb-0 text-foreground">
-                    <span className="flex flex-col items-start text-left">
-                      <span className="text-xs font-medium text-foreground">Deny with reason</span>
-                      <span className="text-xs font-normal text-muted-foreground/80">
-                        Add a note explaining why this action should be denied
-                      </span>
-                    </span>
-                  </div>
-                  <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
-                    <textarea
-                      ref={denyReasonInputRef}
-                      data-testid="proxy-review-deny-reason-input"
-                      placeholder="Reason for denying..."
-                      value={denyReason}
-                      rows={1}
-                      onChange={(e) => {
-                        setDenyReason(e.target.value)
-                        e.currentTarget.style.height = 'auto'
-                        e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`
-                      }}
-                      className="flex-1 self-center resize-none overflow-hidden bg-transparent px-0 pr-1 py-2 text-xs placeholder:text-xs placeholder:text-muted-foreground/80 focus:outline-none focus:ring-0"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey && denyReason.trim()) {
-                          e.preventDefault()
-                          setDenyMenuOpen(false)
-                          handleDecision('deny', denyReason.trim())
-                        }
-                      }}
-                    />
-                    <Button
-                      type="button"
-                      size="icon"
-                      data-testid="proxy-review-deny-reason-submit"
-                      disabled={!denyReason.trim() || status === 'submitting'}
-                      onClick={() => {
-                        setDenyMenuOpen(false)
-                        handleDecision('deny', denyReason.trim())
-                      }}
-                      className="mr-1 h-8 w-8 shrink-0 self-end rounded-md border border-border bg-foreground text-background hover:bg-foreground/90"
-                    >
-                      <ArrowUp className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
-        </div>
-
-        <div className="flex items-stretch">
-          <Popover
-            open={allowMenuOpen}
-            onOpenChange={(o) => {
-              setAllowMenuOpen(o)
-              if (!o) setSpecificScopeOpen(false) // collapse the disclosure on close
-            }}
-          >
-            <PopoverTrigger asChild>
-              <Button
-                disabled={status === 'submitting'}
-                size="xs"
-                className="min-w-24 pr-0 bg-orange-600 text-white hover:bg-orange-700"
-                data-testid="proxy-review-always-allow-btn"
-              >
-                <span>Allow</span>
-                <ChevronDown className={cn('ml-2 h-3.5 w-3.5 transition-transform', allowMenuOpen && 'rotate-180')} />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-[380px] max-w-[calc(100vw-2rem)] p-1">
-              <div className="flex flex-col items-start gap-0">
-                {/* Allow once (this request only) */}
-                <Button
-                  data-testid="proxy-review-allow-once-menu-btn"
-                  onClick={() => {
-                    setAllowMenuOpen(false)
-                    handleDecision('allow')
-                  }}
-                  disabled={status === 'submitting'}
-                  variant="ghost"
-                  size="xs"
-                  className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                >
-                  <span className="flex min-w-0 w-full flex-col items-start text-left">
-                    <span className="block w-full truncate">Allow Once</span>
-                    <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
-                      Only allow this action this one time
-                    </span>
-                  </span>
-                </Button>
-
-                {/* Minimal risk group — smallest "allow all" that still covers this request */}
-                {isApiReview && minimalLabel && (
-                  <>
-                    <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
-                    <Button
-                      data-testid={`proxy-review-allow-label-${minimalLabel}`}
-                      onClick={() => {
-                        setAllowMenuOpen(false)
-                        handleAlways('allow', labelDefaultKey(minimalLabel))
-                      }}
-                      disabled={status === 'submitting'}
-                      variant="ghost"
-                      size="xs"
-                      className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                    >
-                      <span className="flex min-w-0 w-full flex-col items-start text-left">
-                        <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                          <span className="shrink-0">Allow all</span>
-                          <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground/70">
-                            {minimalLabel}
-                          </span>
-                          <span className="shrink-0">
-                            requests to <span className="capitalize">{toolkit}</span>
-                          </span>
-                        </span>
-                        <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
-                          Auto-allow every {minimalLabel}-level scope for this account
-                        </span>
-                      </span>
-                    </Button>
-                  </>
-                )}
-
-                {/* Per-scope "always allow" — tucked behind a disclosure */}
-                {matchedScopes.length > 0 && (
-                  <>
-                    <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
-                    <Collapsible
-                      open={specificScopeOpen}
-                      onOpenChange={setSpecificScopeOpen}
-                      className="w-full"
-                    >
-                      <CollapsibleTrigger
-                        data-testid="proxy-review-specific-scope-toggle"
-                        className="flex w-full items-center gap-1 rounded-md px-3 py-2 text-left text-xs text-foreground hover:bg-muted"
-                      >
-                        <ChevronRight
-                          className={cn(
-                            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-                            specificScopeOpen && 'rotate-90',
-                          )}
-                        />
-                        <span>Select specific scope for allow all</span>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent>
-                        {matchedScopes.map((scope) => (
-                          <Button
-                            key={scope}
-                            data-testid={`proxy-review-always-allow-${scope}`}
-                            onClick={() => {
-                              setAllowMenuOpen(false)
-                              handleAlways('allow', scope)
-                            }}
-                            disabled={status === 'submitting'}
-                            variant="ghost"
-                            size="xs"
-                            className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                          >
-                            <span className="flex min-w-0 w-full flex-col items-start text-left">
-                              <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                                <span className="shrink-0">Always allow</span>
-                                <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">
-                                  {scope}
-                                </span>
-                              </span>
-                              {scopeDescriptions[scope] && (
-                                <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
-                                  <Markdown
-                                    components={{
-                                      p: ({ children }) => <>{children}</>,
-                                      a: ({ href, children }) => (
-                                        <a href={href} target="_blank" rel="noopener noreferrer">
-                                          {children}
-                                        </a>
-                                      ),
-                                    }}
-                                  >
-                                    {scopeDescriptions[scope]}
-                                  </Markdown>
-                                </span>
-                              )}
-                            </span>
-                          </Button>
-                        ))}
-                      </CollapsibleContent>
-                    </Collapsible>
-                  </>
-                )}
-
-                {/* Allow everything for this account */}
-                <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
-                <Button
-                  data-testid="proxy-review-always-allow-all"
-                  onClick={() => {
-                    setAllowMenuOpen(false)
-                    handleAlways('allow', '*')
-                  }}
-                  disabled={status === 'submitting'}
-                  variant="ghost"
-                  size="xs"
-                  className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                >
-                  <span className="flex min-w-0 w-full flex-col items-start text-left">
-                    <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                      <span className="shrink-0">
-                        Always allow all <span className="capitalize">{toolkit}</span> requests
-                      </span>
-                    </span>
-                    <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
-                      Allow full read/edit access to {toolkit}
-                    </span>
-                  </span>
-                </Button>
-              </div>
-            </PopoverContent>
-          </Popover>
-        </div>
+              <Settings className="!size-3" />
+              <span>Advanced permission settings</span>
+              <ChevronRight className="!size-3" />
+            </Button>
+          ) : undefined}
+        />
       </RequestItemActions>
     </RequestItemShell>
   )

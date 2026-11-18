@@ -1,9 +1,12 @@
 import { Hono, type Context } from 'hono'
 import { OPENAI_TTS_VOICES } from '@shared/lib/voice/openai-voices'
+// The Live engine's own list, as the provider reports it; the route only relays it.
+const LIVE_VOICES = [{ id: 'marin', label: 'Marin', description: 'OpenAI' }, { id: 'cinder', label: 'Cinder', description: 'OpenAI' }]
 import { createServer, request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { getRequestListener } from '@hono/node-server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { taskManager } from '@shared/lib/background-work'
 const mocks = vi.hoisted(() => ({
   providerName: 'openai' as string | undefined, alternateEnabled: false, user: 'alice', authenticated: true,
   agentExists: true, agentRole: 'user', getAgent: vi.fn(),
@@ -21,22 +24,32 @@ vi.mock('../middleware/auth', () => ({
   getAgentId: (c: Context) => c.get('agentId'),
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({ getAgent: mocks.getAgent }))
-vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.providerName }), getAgentCapabilitySettings: () => ({ subagents: 'block', workflows: 'review' }) }))
+// One settings read per request; the route takes the provider, key and capability policies from it.
+const getSettings = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/config/settings', () => ({ getSettings }))
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
-    name: { openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
+    id,
+    name:{ openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
     getLiveConversation: () => (id === 'openai' || id === 'platform')
-      ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close }
+      ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close, getLiveVoices: () => LIVE_VOICES, resolveLiveVoice: () => 'marin' }
       : mocks.alternateEnabled
-        ? { createLiveSession: mocks.alternateCreate, mapLiveConversation: mocks.alternateMap, closeLiveSession: mocks.alternateClose }
+        ? { createLiveSession: mocks.alternateCreate, mapLiveConversation: mocks.alternateMap, closeLiveSession: mocks.alternateClose, getLiveVoices: () => [], resolveLiveVoice: () => 'other' }
         : null,
-    getEffectiveApiKey: () => 'session-token',
-    getApiKeyStatus: () => ({ isConfigured: true }), supportsTts: () => true, getTtsVoices: () => OPENAI_TTS_VOICES, resolveTtsVoice: () => 'marin', getConversationEngine: () => 'openai-live',
+    effectiveApiKeyFrom: () => 'session-token',
+    // The hangup's key: the provider's as configured when it hangs up.
+    getEffectiveApiKey: async () => 'session-token',
+    apiKeyStatusFrom: () => ({ isConfigured: true }), supportsTts: () => true, getTtsVoices: () => OPENAI_TTS_VOICES, resolveTtsVoice: () => 'marin', getConversationEngine: () => 'openai-live',
   }),
 }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => mocks.user }))
+const resolveSetting = vi.hoisted(() => vi.fn(async () => undefined as unknown))
+vi.mock('@shared/lib/agent-integrations/live-setting', () => ({ resolveLiveConversationSetting: resolveSetting }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({}) }))
 import voice from './voice'
+import { liveSessions } from '@shared/lib/voice/live-sessions'
+
+beforeEach(() => taskManager().register(liveSessions.hangUpTask))
 
 // Exercise the same error boundary as the production API.
 const app = new Hono().route('/api/voice', voice)
@@ -80,7 +93,11 @@ beforeEach(() => {
   mocks.agentExists = true; mocks.agentRole = 'user'
   mocks.getAgent.mockResolvedValue({ frontmatter: { name: 'Ada', description: 'Research assistant' }, instructions: 'Speak in Spanish. Ask before purchases.' })
   mocks.create.mockResolvedValue({ session: { id: 'live_test' }, transport: { type: 'webrtc', sdp: 'answer' } })
+  getSettings.mockReset()
+  getSettings.mockImplementation(async () => ({ voice: { sttProvider: mocks.providerName }, agentCapabilities: { subagents: 'block', workflows: 'review' } }))
 })
+// What the route hands the provider with each Live session: the settings its request read.
+const credentials = expect.objectContaining({ settings: expect.anything() })
 
 describe('Live voice routes', () => {
   it.each(['openai', 'platform'] as const)('loads authorized agent context on the server for %s', async (provider) => {
@@ -93,10 +110,29 @@ describe('Live voice routes', () => {
     expect(mocks.create).toHaveBeenCalledExactlyOnceWith('offer', [], {
       name: 'Ada', description: 'Research assistant', instructions: 'Speak in Spanish. Ask before purchases.',
       capabilityPolicies: { subagents: 'block', workflows: 'review' },
-    })
+    }, credentials)
+    expect(getSettings).toHaveBeenCalledTimes(1)
     const body = await response.json()
     expect(JSON.stringify(body)).not.toContain('Speak in Spanish')
     expect((await voice.request(`/live/session/${body.handle}`, { method: 'DELETE' })).status).toBe(200)
+  })
+
+  it('asks the integrations whether a named session changes the room, on the agent route only, after authorization', async () => {
+    const setting = { policy: { turnTaking: 'Default to silence' }, instructions: 'In a Zoom call', voice: 'cinder' }
+    resolveSetting.mockResolvedValueOnce(setting)
+    expect((await request('/live/agents/ada/session', { sdp: 'offer', history: [], sessionId: 'meeting-session' })).status).toBe(201)
+    expect(resolveSetting).toHaveBeenCalledExactlyOnceWith('canonical-agent-id', 'meeting-session')
+    expect(mocks.create).toHaveBeenCalledExactlyOnceWith('offer', [], expect.objectContaining({ name: 'Ada', setting }), credentials)
+    // No session named: nothing to resolve, and the generic route never resolves anything.
+    resolveSetting.mockClear(); mocks.create.mockClear()
+    expect((await request('/live/agents/ada/session', { sdp: 'offer', history: [] })).status).toBe(201)
+    expect((await request('/live/session', { sdp: 'offer', history: [], sessionId: 'meeting-session' })).status).toBe(201)
+    expect(resolveSetting).not.toHaveBeenCalled()
+    expect(mocks.create.mock.calls.map(call => call[2]?.setting)).toEqual([undefined, undefined])
+    // Unauthorized callers never reach the resolver either.
+    mocks.agentRole = 'viewer'
+    expect((await request('/live/agents/ada/session', { sdp: 'offer', history: [], sessionId: 'meeting-session' })).status).toBe(403)
+    expect(resolveSetting).not.toHaveBeenCalled()
   })
 
   it.each(['viewer', 'none'])('does not load or send agent instructions for role %s', async (role) => {
@@ -129,8 +165,11 @@ describe('Live voice routes', () => {
     expect(mocks.create).not.toHaveBeenCalled()
   })
 
-  it('advertises Live alongside OpenAI read-aloud voices', async () => {
-    expect(await (await voice.request('/configured')).json()).toMatchObject({ conversationEngine: 'openai-live', supportsTts: true, defaultVoice: 'marin', voices: OPENAI_TTS_VOICES })
+  it('advertises Live alongside OpenAI read-aloud voices, and the Live voices a meeting bot can speak with', async () => {
+    expect(await (await voice.request('/configured')).json()).toMatchObject({
+      conversationEngine: 'openai-live', supportsTts: true, defaultVoice: 'marin', voices: OPENAI_TTS_VOICES,
+      liveVoices: LIVE_VOICES, liveDefaultVoice: 'marin',
+    })
   })
   it('requires authentication before calling a provider', async () => {
     mocks.authenticated = false
@@ -173,10 +212,10 @@ describe('Live voice routes', () => {
     expect(creation.status).toBe(201)
     const { handle, transport } = await creation.json()
     expect(transport.sdp).toBe('other-answer')
-    expect(mocks.alternateCreate).toHaveBeenCalledExactlyOnceWith('offer', [])
+    expect(mocks.alternateCreate).toHaveBeenCalledExactlyOnceWith('offer', [], undefined, credentials)
     const mapping = await request('/live/map', { kind: 'reply', text: 'Working...' })
     expect(await mapping.json()).toEqual({ text: 'Other provider reply' })
-    expect(mocks.alternateMap).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal))
+    expect(mocks.alternateMap).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal), expect.anything())
     mocks.providerName = 'openai'
     expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
     expect(mocks.alternateClose).toHaveBeenCalledExactlyOnceWith('other_session', 'session-token')
@@ -186,8 +225,17 @@ describe('Live voice routes', () => {
   })
   it('rejects invalid and oversized mappings before calling the LLM', async () => {
     expect((await request('/live/map', { kind: 'request', transcript: '' })).status).toBe(400)
+    expect((await request('/live/map', { kind: 'request', transcript: 'user: hi', userWords: '', history: [], previousRequest: '', agentBusy: false })).status).toBe(400)
     expect((await request('/live/map', { kind: 'reply', text: 'a'.repeat(140000) })).status).toBe(413)
     expect(mocks.map).not.toHaveBeenCalled()
+  })
+  it('still accepts a request mapping without userWords from an older client', async () => {
+    mocks.map.mockResolvedValueOnce({ action: 'message', text: 'mapped' })
+    const creation = await request('/live/session', { sdp: 'offer', history: [] })
+    expect(creation.status).toBe(201)
+    const input = { kind: 'request', transcript: 'user: hi', history: [], previousRequest: '', agentBusy: false }
+    expect(await (await request('/live/map', input)).json()).toEqual({ action: 'message', text: 'mapped' })
+    expect(mocks.map).toHaveBeenCalledExactlyOnceWith(input, expect.any(AbortSignal), expect.anything())
   })
   it.each(['openai', 'platform'] as const)('creates, maps, and closes a Live session for %s', async (id) => {
     mocks.providerName = id
@@ -197,8 +245,12 @@ describe('Live voice routes', () => {
     const { handle } = await creation.json()
     expect(await (await request('/live/map', { kind: 'reply', text: 'Working...' })).json()).toEqual({ text: 'mapped' })
     expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
-    expect(mocks.create).toHaveBeenCalledExactlyOnceWith('offer', [])
-    expect(mocks.map).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal))
+    expect(mocks.create).toHaveBeenCalledExactlyOnceWith('offer', [], undefined, credentials)
+    // The mapping uses the settings its own request read, once.
+    const mapSettings = mocks.map.mock.calls[0]?.[2]
+    expect(mocks.map).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal), mapSettings)
+    expect(mapSettings).toEqual(expect.objectContaining({ voice: { sttProvider: id } }))
+    expect(getSettings).toHaveBeenCalledTimes(2)
     expect(mocks.close).toHaveBeenCalledExactlyOnceWith('live_test', 'session-token')
   })
   it.each(['openai', 'platform'] as const)('binds cleanup to the initiating user for %s and permits cleanup after switching providers', async (id) => {
@@ -261,7 +313,7 @@ describe('Live voice routes', () => {
     const response = await chunkedRequest('/live/map', [bytes.subarray(0, split), bytes.subarray(split)])
     expect(response.status).toBe(200)
     expect(JSON.parse(response.body)).toEqual({ text: 'Hello world' })
-    expect(mocks.map).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text }, expect.any(AbortSignal))
+    expect(mocks.map).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text }, expect.any(AbortSignal), expect.anything())
   })
   it('rejects oversized chunked bodies before mapping', async () => {
     const response = await chunkedRequest('/live/map', [Buffer.alloc(64 * 1024, 'x'), Buffer.alloc(64 * 1024 + 1, 'x')])

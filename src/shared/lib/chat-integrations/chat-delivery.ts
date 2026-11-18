@@ -1,12 +1,16 @@
-import type { ChatAgentIntegration, IncomingMessage } from './chat-agent-integration'
+import type { ChatAgentIntegration, IncomingMessage, ToolOutcome } from './chat-agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-actor'
+import { NoImageError, segments, type ChatSegment, type VisualSegment } from './chat-visuals'
 import { getToolDefinition, getToolPresentation } from '@shared/lib/tools/registry'
 import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
+import { background } from '@shared/lib/background'
+import { NO_REPLY_TOKEN } from './chat-session-context'
+import { plainUserTags } from '@shared/lib/utils/mentions'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -18,17 +22,24 @@ export interface ManagedConnector {
     currentMessageId: string | null
     accumulatedText: string
     lastUpdateTime: number
+    /** How much of the buffer is settled blocks already checked for a visual. A fresh state has checked none. */
+    checkedLength?: number
   }
   currentToolInput: string
-  pendingToolMessages: Array<{ messageId: string; text: string }>
+  pendingToolMessages: Array<{ toolId: string; messageId: string; text: string }>
   // Pull-model indicator state. `indicatorShown` makes the clear idempotent so
   // idle ticks make zero connector calls; `indicatorTickTimer` is the per-session
   // sampling tick, alive for the SSE subscription (started on subscribe, cleared
   // on teardown).
   indicatorShown?: boolean
   indicatorTickTimer?: ReturnType<typeof setInterval> | null
+  // The tick's reads, numbered as they start, and the newest one already
+  // overtaken: by a read that landed after it, or by a clear (the event that
+  // cleared knew more than any read out at the time). An overtaken read is dropped.
+  indicatorReads?: number
+  indicatorReadsOvertaken?: number
   // The session the tick samples; set when the tick is armed (subscribe / wake) so the
-  // sleep guard and the health-check backstop can re-read getSessionActivity(sessionId).
+  // sleep guard and the health-check backstop can re-read its activity.
   sessionId?: string
   // Pending idle-sleep debounce. Scheduled when the session settles non-busy; when it
   // fires it re-reads activity and stops the tick only if STILL non-busy (so a stale or
@@ -37,6 +48,11 @@ export interface ManagedConnector {
   // True once the session_error notice has gone out for the current turn, so a
   // turn can't emit duplicate notices.
   turnNotified?: boolean
+  // The turn's first message with text has gone out. Only that message quotes one of the user's.
+  quoteSent?: boolean
+  // The messages waiting when the last turn ended, so the cleanup that follows releases only
+  // those, not one that arrived while that turn's reply was still being sent.
+  turnEndMarks?: string[]
 }
 
 // ── Turn finalize ──────────────────────────────────────────────────────────
@@ -47,21 +63,31 @@ export interface ManagedConnector {
  * clearIndicator call before finalizing, so this only commits text. Idempotent.
  */
 async function finalizeTurn(managed: ManagedConnector): Promise<void> {
+  const marks = managed.turnEndMarks ?? managed.connector.acknowledgedMessages(managed.chatId)
+  managed.turnEndMarks = undefined
   try {
     await finalizeStreaming(managed)
-    await resolvePendingToolMessages(managed)
   } catch (err) {
     console.error('[ChatAgentIntegration] Failed to finalize turn:', err)
     reportError(err, 'finalize-turn', { integrationId: managed.integration.id, chatId: managed.chatId })
   }
+  await resolvePendingToolMessages(managed)
+  managed.connector.releaseAcknowledgements(managed.chatId, marks)
+  managed.quoteSent = false
 }
 
 /**
  * A short, user-facing message for a turn that ended in an error. Curated by the
- * SDK error code; never echoes the raw internal error (which can leak file paths,
- * tokens, or stack text into the chat).
+ * session's provider (`errorPresentation.chatText`) or by the SDK error code;
+ * never echoes the raw internal error (which can leak file paths, tokens, or
+ * stack text into the chat).
  */
-function friendlyErrorMessage(apiErrorCode: string | null | undefined): string {
+export function friendlyErrorMessage(apiErrorCode: string | null | undefined, errorPresentation?: unknown): string {
+  // The session's provider recognized the error and worded it for chat (e.g. a
+  // plan refusing the integration's model). Checked first: the CLI may tag such
+  // a refusal `authentication_failed`, which would otherwise read as a credential problem.
+  const chatText = (errorPresentation as { chatText?: unknown } | null | undefined)?.chatText
+  if (typeof chatText === 'string' && chatText.trim()) return chatText
   const code = (apiErrorCode ?? '').toLowerCase()
   if (code.includes('overload')) return '⚠️ The assistant is overloaded right now. Please try again in a moment.'
   if (code.includes('rate') || code.includes('429')) return '⚠️ Hit a rate limit. Please wait a few seconds and try again.'
@@ -87,12 +113,13 @@ export const BUSY_ACTIVITIES: ReadonlySet<SessionActivity> = new Set([
  * EVERY call, because on Telegram that re-render is the keep-alive. Non-busy tears
  * it down idempotently. Driven by the per-session tick (the only paint) and the
  * cold-subscribe snapshot. The connector owns how each activity renders (Telegram
- * labels a draft, Slack reacts); the app draws its own indicator and is untouched.
+ * labels a draft, Slack sets its status line); the app draws its own indicator
+ * and is untouched.
  */
 export function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
   if (BUSY_ACTIVITIES.has(activity)) {
     managed.indicatorShown = true
-    managed.connector.startWorking(managed.chatId, activity).catch(() => {})
+    background(managed.connector.startWorking(managed.chatId, activity).catch(() => {}), { name: 'chat-delivery.start-working' })
   } else {
     clearIndicator(managed)
   }
@@ -105,10 +132,16 @@ export function reconcileIndicator(managed: ManagedConnector, activity: SessionA
  * draft, so the four immediate clears and the non-busy tick all route through here.
  */
 export function clearIndicator(managed: ManagedConnector): void {
+  managed.indicatorReadsOvertaken = managed.indicatorReads
   if (!managed.indicatorShown) return
   managed.indicatorShown = false
-  managed.connector.stopWorking(managed.chatId).catch(() => {})
+  background(managed.connector.stopWorking(managed.chatId).catch(() => {}), { name: 'chat-delivery.stop-working' })
 }
+
+/** A streamed reply is edited at most once per this interval. */
+export const STREAM_UPDATE_MS = 1000
+/** Chats notify with a message's first post only, so it waits until it reads as text. */
+export const STREAM_FIRST_POST_CHARS = 80
 
 /** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
 export const INDICATOR_TICK_MS = 1000
@@ -138,16 +171,30 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
   managed.sessionId = sessionId
   cancelIndicatorSleep(managed)
   if (managed.indicatorTickTimer) return false
-  managed.indicatorTickTimer = setInterval(() => {
-    const activity = agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId)
-    reconcileIndicator(managed, activity)
-    // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
-    // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
-    // so calling it every non-busy tick never pushes the deadline back.
-    if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
-    else scheduleIndicatorSleep(managed)
+  const tick = setInterval(() => {
+    const read = (managed.indicatorReads ?? 0) + 1
+    managed.indicatorReads = read
+    background(sessionActivity(managed, sessionId).then((activity) => {
+      // Stopped while it read: the read belongs to no tick.
+      if (managed.indicatorTickTimer !== tick) return
+      // Overtaken while it read: what it read is not the latest.
+      if (read <= (managed.indicatorReadsOvertaken ?? 0)) return
+      managed.indicatorReadsOvertaken = read
+      reconcileIndicator(managed, activity)
+      // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
+      // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
+      // so calling it every non-busy tick never pushes the deadline back.
+      if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
+      else scheduleIndicatorSleep(managed)
+    }, () => { /* a failed read changes nothing; the next tick reads again */ }), { name: 'chat-delivery.indicator-tick' })
   }, INDICATOR_TICK_MS)
+  managed.indicatorTickTimer = tick
   return true
+}
+
+/** What the session is doing now, read through its agent's actor. */
+async function sessionActivity(managed: ManagedConnector, sessionId: string): Promise<SessionActivity> {
+  return (await agentRegistry.get(managed.integration.agentSlug).sessions.live(sessionId)).activity
 }
 
 /**
@@ -200,16 +247,23 @@ export function scheduleIndicatorSleep(managed: ManagedConnector): void {
   if (managed.sleepTimer) return
   const sessionId = managed.sessionId
   if (!sessionId) return
-  managed.sleepTimer = setTimeout(() => {
-    managed.sleepTimer = null
-    if (!BUSY_ACTIVITIES.has(agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId))) {
+  const sleep = setTimeout(() => {
+    background(sessionActivity(managed, sessionId).then((activity) => {
+      // Cancelled while it read (a busy tick, a stop): the sleep is off.
+      if (managed.sleepTimer !== sleep) return
+      managed.sleepTimer = null
+      if (BUSY_ACTIVITIES.has(activity)) return
       // Clear before stopping: stopIndicatorTick only drops timers, so stopping a tick that
       // is somehow still showing a draft would strand it. Clearing first makes the guard
       // self-defending regardless of how the caller left indicatorShown.
       clearIndicator(managed)
       stopIndicatorTick(managed)
-    }
+    }, () => {
+      // Unread, the sleep is skipped: the tick arms it again on its next non-busy read.
+      if (managed.sleepTimer === sleep) managed.sleepTimer = null
+    }), { name: 'chat-delivery.indicator-sleep' })
   }, INDICATOR_SLEEP_MS)
+  managed.sleepTimer = sleep
 }
 
 // ── SSE event processing (exported for testing) ────────────────────────
@@ -234,18 +288,49 @@ export async function processSSEEvent(
       // First reply token → 'streaming' (non-busy): the streamed text owns the
       // reply surface, so settle the indicator now. Idempotent; the tick backstops.
       clearIndicator(managed)
+      // A block settles only when a new line starts.
+      const startsLine = text.includes('\n') || managed.streamingState.accumulatedText.endsWith('\n')
       managed.streamingState.accumulatedText += text
 
+      // A settled visual cuts the reply, as a tool call does: the text up to it goes out now.
+      // Settled blocks never change, so only the ones settled since the last check are read.
+      if (startsLine) {
+        const buffer = managed.streamingState.accumulatedText
+        const checked = managed.streamingState.checkedLength ?? 0
+        const fresh = segments(buffer.slice(checked), { settledOnly: true })
+        const lastVisual = fresh.segments.findLastIndex((segment) => segment.kind === 'visual')
+        if (lastVisual === -1) {
+          managed.streamingState.checkedLength = buffer.length - fresh.tail.length
+        } else {
+          const cut = checked + fresh.segments.slice(0, lastVisual + 1).reduce((length, segment) => length + segment.source.length, 0)
+          managed.streamingState.accumulatedText = buffer.slice(0, cut)
+          try {
+            await finalizeStreaming(managed)
+          } catch (err) {
+            console.error('[ChatAgentIntegration] Failed to finalize at a visual:', err)
+          }
+          managed.streamingState.accumulatedText += buffer.slice(cut)
+        }
+      }
+
       const now = Date.now()
-      if (now - managed.streamingState.lastUpdateTime >= 1000) {
+      const { currentMessageId, accumulatedText, lastUpdateTime } = managed.streamingState
+      const visibleText = now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)
+        ? plainUserTags(accumulatedText, { streaming: true })
+        : ''
+      if (visibleText) {
+        // Spent on the attempt: a refused edit must not let the next text through at once.
+        managed.streamingState.lastUpdateTime = now
         try {
+          // A connector whose first streamed text is a real message (a Telegram group) quotes there.
+          const startsReply = !managed.streamingState.currentMessageId && !managed.quoteSent && managed.connector.carriesText(managed.chatId, visibleText)
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
-            managed.streamingState.accumulatedText,
+            visibleText,
             managed.streamingState.currentMessageId ?? undefined,
+            startsReply ? managed.connector.quotedMessage(managed.chatId) : undefined,
           )
           managed.streamingState.currentMessageId = msgId
-          managed.streamingState.lastUpdateTime = now
         } catch (err) {
           console.error(`[ChatAgentIntegration] Streaming update failed:`, err)
           reportError(err, 'streaming-update', { integrationId: managed.integration.id, chatId: managed.chatId, provider: managed.integration.provider })
@@ -257,7 +342,6 @@ export async function processSSEEvent(
     case 'stream_start': {
       try {
         await finalizeStreaming(managed)
-        await resolvePendingToolMessages(managed)
       } catch (err) {
         console.error('[ChatAgentIntegration] Failed to finalize on stream_start:', err)
       }
@@ -277,6 +361,7 @@ export async function processSSEEvent(
     }
 
     case 'tool_use_ready': {
+      const toolId = data.toolId as string
       const toolName = data.toolName as string
 
       // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
@@ -300,13 +385,22 @@ export async function processSSEEvent(
           ? `🔧 *${displayName}* — \`${summary}\` ⏳`
           : `🔧 *${displayName}* ⏳`
         try {
-          const messageId = await managed.connector.sendMessage(managed.chatId, { text })
-          managed.pendingToolMessages.push({ messageId, text })
+          const messageId = await managed.connector.showToolStart(managed.chatId, { toolUseId: toolId, toolName: displayName, summary }, text)
+          managed.connector.messagePosted(managed.chatId)
+          managed.pendingToolMessages.push({ toolId, messageId, text })
         } catch (err) {
           console.error('[ChatAgentIntegration] Failed to send tool call message:', err)
         }
       }
       managed.currentToolInput = ''
+      break
+    }
+
+    case 'tool_result': {
+      const index = managed.pendingToolMessages.findIndex(pending => pending.toolId === data.toolUseId)
+      if (index === -1) break
+      const [pending] = managed.pendingToolMessages.splice(index, 1)
+      await updateToolMessage(managed, pending, data.isError ? 'error' : 'success')
       break
     }
 
@@ -332,23 +426,24 @@ export async function processSSEEvent(
     }
 
     case 'user_request_created': {
-      // The one wire chat renders cards from. The legacy per-type events still
-      // fire alongside this one (they die in Phase 8) and are deliberately NOT
-      // handled here — handling both would double-send every card.
+      // The one wire chat renders cards from: every kind of request opens
+      // with this event, so each card is sent exactly once.
       const request = (data as { request?: PendingUserInputRequest }).request
       if (!request) break
       const card = requestCardFromRegistry(request)
-      // null = chat stays quiet: a review (agent-scoped, rendered off the
-      // global channel) or an auto-approved ask nobody has to decide.
+      // null = chat stays quiet: a review (its Allow/Deny card is sent by the
+      // connector's `deliver`) or an auto-approved ask nobody has to decide.
       if (!card) break
 
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
-      // indicator the moment the card is shown (the persister flips isAwaitingInput,
+      // indicator the moment the card is shown (the live session flips isAwaitingInput,
       // so the tick would clear within a tick anyway — this just makes it instant). The
       // tick then sleeps after the lull and re-checks activity at fire time.
       clearIndicator(managed)
+      const marks = managed.connector.acknowledgedMessages(managed.chatId)
       try {
         await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
+        managed.connector.releaseAcknowledgements(managed.chatId, marks)
       } catch (err) {
         console.error(`[ChatAgentIntegration] Failed to send user request card (${request.kind}):`, err)
         reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType: card.type })
@@ -364,10 +459,32 @@ export async function processSSEEvent(
       break
     }
 
+    case 'turn_output_complete': {
+      // A turn that names the messages it answered: its text goes out first, still quoting
+      // among them, then they stop being candidates for the next turn's quote.
+      if (!Array.isArray(data.answered)) break
+      managed.turnEndMarks = managed.connector.acknowledgedMessages(managed.chatId)
+      try {
+        await finalizeStreaming(managed)
+      } catch (err) {
+        // Reported once, when the session settles and the send is retried.
+        console.error('[ChatAgentIntegration] Failed to finalize turn:', err)
+      }
+      managed.connector.markAnswered(managed.chatId, data.answered.filter((id): id is string => typeof id === 'string'))
+      managed.quoteSent = false
+      break
+    }
+
     case 'session_idle': {
       // Turn ended → settle the indicator instantly, then finalize the streamed text.
       // The tick sleeps itself once it reads the now-idle state.
       clearIndicator(managed)
+      await finalizeTurn(managed)
+      break
+    }
+
+    case 'session_waiting_background': {
+      // The turn ended with background work still open. The tick owns the indicator.
       await finalizeTurn(managed)
       break
     }
@@ -383,7 +500,7 @@ export async function processSSEEvent(
       if (!managed.turnNotified) {
         managed.turnNotified = true
         try {
-          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null, data.errorPresentation) })
         } catch (err) {
           // Delivery failed — release the latch so a later notice isn't suppressed.
           managed.turnNotified = false
@@ -395,21 +512,27 @@ export async function processSSEEvent(
   }
 }
 
-export async function resolvePendingToolMessages(managed: ManagedConnector): Promise<void> {
-  for (const pending of managed.pendingToolMessages) {
-    const doneText = pending.text.replace('⏳', '✅')
-    try {
-      await managed.connector.sendStreamingUpdate(managed.chatId, doneText, pending.messageId)
-    } catch {
-      // Non-critical
-    }
+const TOOL_OUTCOME_GLYPH = { success: '✅', error: '❌', cancelled: '⛔' } as const
+
+async function updateToolMessage(managed: ManagedConnector, pending: ManagedConnector['pendingToolMessages'][number], outcome: ToolOutcome): Promise<void> {
+  try {
+    await managed.connector.showToolOutcome(managed.chatId, pending.toolId, outcome, pending.text.replace(/⏳$/, TOOL_OUTCOME_GLYPH[outcome]), pending.messageId)
+  } catch {
+    // Non-critical
   }
+}
+
+/** Turn end: a tool whose result never arrived is shown as stopped. */
+export async function resolvePendingToolMessages(managed: ManagedConnector): Promise<void> {
+  const pending = managed.pendingToolMessages
   managed.pendingToolMessages = []
+  for (const message of pending) await updateToolMessage(managed, message, 'cancelled')
 }
 
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
-  const finalText = managed.streamingState.accumulatedText
-  if (!finalText) return
+  const streamedText = managed.streamingState.accumulatedText
+  if (!streamedText) return
+  const finalText = plainUserTags(streamedText)
   const messageId = managed.streamingState.currentMessageId
 
   // Claim the buffer synchronously, before the first await, so a concurrent
@@ -421,26 +544,117 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     accumulatedText: '',
     lastUpdateTime: 0,
   }
+  if (!finalText || finalText.trim() === NO_REPLY_TOKEN) return
 
-  try {
-    if (messageId) {
-      try {
-        await managed.connector.finalizeStreamingMessage(managed.chatId, messageId, finalText)
-      } catch {
-        await managed.connector.sendMessage(managed.chatId, { text: finalText })
+  const { undelivered, error, draftId } = await deliverMarkdown(managed.connector, managed.integration.agentSlug, managed.chatId, finalText, { draftId: messageId, turn: managed })
+  if (!undelivered.length) return
+  // The chat was unreachable. Put what did not arrive back in front of anything
+  // streamed since, so the next finalize retries it, and re-throw so callers log it.
+  const restored = undelivered.map((segment) => segment.source).join('')
+  managed.streamingState = {
+    currentMessageId: draftId ?? managed.streamingState.currentMessageId,
+    accumulatedText: restored + managed.streamingState.accumulatedText,
+    lastUpdateTime: 0,
+    checkedLength: restored.length,
+  }
+  throw error
+}
+
+/** A proactive send that did not fully arrive. The message stays free of the agent's text, which only the agent gets back. */
+export class UndeliveredMessageError extends Error {
+  readonly undeliveredText: string
+  constructor(undelivered: ChatSegment[], cause: unknown) {
+    super('Message not fully sent', { cause })
+    this.name = 'UndeliveredMessageError'
+    this.undeliveredText = undelivered.map((segment) => segment.source).join('').trim()
+  }
+}
+
+/**
+ * Send agent markdown in order: text through the connector's own send, each visual
+ * as an image, or as its source when it has none. A streamed draft becomes the first
+ * text, or is retired when the reply opens with a visual. Stops at the first send
+ * that fails and returns the segments not delivered, with the draft if it is still unused.
+ */
+export async function deliverMarkdown(
+  connector: ChatAgentIntegration,
+  agentSlug: string,
+  chatId: string,
+  text: string,
+  options: { draftId?: string | null; alsoSendToChannel?: boolean; deadline?: number; turn?: Turn },
+): Promise<{ messageId: string; undelivered: ChatSegment[]; error?: unknown; draftId?: string | null }> {
+  const all = segments(text, { settledOnly: false }).segments
+  const { deadline = Infinity } = options
+  let draftId = options.draftId
+  const { alsoSendToChannel, turn } = options
+  let messageId = ''
+  for (const [index, segment] of all.entries()) {
+    try {
+      if (Date.now() >= deadline) {
+        // Out of time: the rest goes out as one text, any visual in it as its source.
+        const rest = all.slice(index).map(({ source }) => source).join('')
+        if (rest.trim()) messageId = await sendText(connector, chatId, rest, draftId, { alsoSendToChannel, turn })
+        return { messageId, undelivered: [] }
       }
-    } else {
-      await managed.connector.sendMessage(managed.chatId, { text: finalText })
+      if (segment.kind === 'visual') {
+        messageId = await sendVisual(connector, agentSlug, chatId, segment, draftId, { alsoSendToChannel, deadline: options.deadline, turn })
+        draftId = null
+      } else if (segment.source.trim() || all.length === 1) {
+        // A reply of only whitespace still goes out, as before: the connector words it.
+        messageId = await sendText(connector, chatId, segment.source, draftId, { alsoSendToChannel, turn })
+        draftId = null
+      }
+    } catch (error) {
+      return { messageId, undelivered: all.slice(index), error, draftId }
     }
+  }
+  return { messageId, undelivered: [] }
+}
+
+/** A reply turn's state that decides which of its texts quotes the user's message. */
+type Turn = Pick<ManagedConnector, 'quoteSent'>
+
+async function sendText(connector: ChatAgentIntegration, chatId: string, text: string, draftId: string | null | undefined, { alsoSendToChannel, turn }: { alsoSendToChannel?: boolean; turn?: Turn }): Promise<string> {
+  // Only text that shows as a message counts as posted or may quote: a reaction alone does not.
+  const shows = connector.carriesText(chatId, text)
+  // The turn's first such text quotes. Claimed before the await, and given back if the send fails.
+  const claimed = shows && !!turn && !turn.quoteSent
+  if (claimed) turn.quoteSent = true
+  const replyToExternalId = claimed ? connector.quotedMessage(chatId) : undefined
+  try {
+    let sentId = draftId
+    if (draftId) {
+      try {
+        await connector.finalizeStreamingMessage(chatId, draftId, text, replyToExternalId)
+      } catch { sentId = null /* sent as a new message below */ }
+    }
+    sentId ||= await connector.sendMessage(chatId, { text, ...(alsoSendToChannel && { alsoSendToChannel }), ...(replyToExternalId && { replyToExternalId }) })
+    if (shows) connector.messagePosted(chatId)
+    return sentId
+  } catch (error) {
+    if (claimed && turn) turn.quoteSent = false
+    throw error
+  }
+}
+
+/** A visual as an image, or as its source text when it has none. The draft is retired only once the image is sent. */
+async function sendVisual(
+  connector: ChatAgentIntegration,
+  agentSlug: string,
+  chatId: string,
+  segment: VisualSegment,
+  draftId: string | null | undefined,
+  { alsoSendToChannel, deadline, turn }: { alsoSendToChannel?: boolean; deadline?: number; turn?: Turn },
+): Promise<string> {
+  try {
+    const { data, filename, alt } = await segment.draw(agentSlug, deadline)
+    const messageId = await connector.sendFile(chatId, data, filename, undefined, { asImage: true, alsoSendToChannel, altText: alt, deadline })
+    connector.messagePosted(chatId)
+    if (draftId) await connector.retireStreamingMessage(chatId, draftId).catch((err) => console.error('[ChatAgentIntegration] Failed to retire draft:', err))
+    return messageId
   } catch (err) {
-    // Both delivery attempts failed (chat unreachable) — nothing reached the user.
-    // Restore the claimed buffer so a later terminal path can retry, but only if it
-    // is still empty, so we never overwrite newer streamed text (a later stream_delta
-    // repopulated it). Re-throw so callers log/handle the failure exactly as before.
-    if (!managed.streamingState.accumulatedText) {
-      managed.streamingState = { currentMessageId: messageId, accumulatedText: finalText, lastUpdateTime: 0 }
-    }
-    throw err
+    if (!(err instanceof NoImageError)) reportError(err, 'send-visual', { provider: connector.provider }, 'warning')
+    return sendText(connector, chatId, segment.source, draftId, { alsoSendToChannel, turn })
   }
 }
 
@@ -462,6 +676,7 @@ async function sendDeliveredFile(
       console.error('[ChatAgentIntegration] Delivered file not found:', filePath)
     } else {
       await managed.connector.sendFile(managed.chatId, Buffer.from(fileData), workspaceBasename(filePath), description)
+      managed.connector.messagePosted(managed.chatId)
       return
     }
   } catch (err) {

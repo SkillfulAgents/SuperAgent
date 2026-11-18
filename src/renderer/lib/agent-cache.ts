@@ -1,6 +1,11 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { QueryClient, QueryKey } from '@tanstack/react-query'
 import type { ApiAgent, ApiAgentWidget, ApiSession } from '@shared/lib/types/api'
 import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
+
+export function updateAgentAvatarCache(queryClient: QueryClient, slug: string, avatar: AgentAvatar): void {
+  updateMatchingAgents(queryClient, slug, (agent) => ({ ...agent, avatar }))
+}
 
 function matchesAgent(agent: ApiAgent, slug: string): boolean {
   return agent.slug === slug || agent.displaySlug === slug
@@ -66,6 +71,11 @@ function agentSlugAliases(queryClient: QueryClient, slug: string): Set<string> {
   return aliases
 }
 
+/** The keys one agent's detail may be cached under: its canonical id and decorative route aliases. */
+export function agentDetailQueryKeys(queryClient: QueryClient, slug: string): QueryKey[] {
+  return [...agentSlugAliases(queryClient, slug)].map((alias) => ['agents', alias])
+}
+
 /** Invalidate artifact queries for one agent, including decorative route aliases. */
 export function invalidateAgentArtifacts(queryClient: QueryClient, slug: string): void {
   const aliases = agentSlugAliases(queryClient, slug)
@@ -109,10 +119,11 @@ const SESSION_ROLLUP_FLAGS = [
   ['isActive', 'hasActiveSessions'],
   ['isAwaitingInput', 'hasSessionsAwaitingInput'],
   ['hasUnreadNotifications', 'hasUnreadNotifications'],
+  ['hasUnreadMention', 'hasUnreadMention'],
 ] as const
 
 export type SessionStatusPatch = Partial<
-  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications'>
+  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications' | 'hasUnreadMention'>
 >
 
 // Identity-preserving apply. Change detection iterates the PATCH's own keys —
@@ -128,6 +139,46 @@ function isAgentSessionListKey(queryKey: readonly unknown[], aliases: Set<string
   return queryKey[0] === 'sessions'
     && typeof queryKey[1] === 'string'
     && aliases.has(queryKey[1])
+}
+
+/** One cached session list of an agent, and whether it holds a given session. */
+export interface SessionListMembership {
+  queryKey: QueryKey
+  /** The agent's full list, not a slice of it. */
+  full: boolean
+  holds: boolean
+}
+
+/**
+ * Every cached session list of one agent (all route keys and slices), and
+ * whether each holds this session. A status event can patch a row in place;
+ * only a refetch can add one.
+ */
+export function sessionListMembership(queryClient: QueryClient, agentSlug: string, sessionId: string): SessionListMembership[] {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  return queryClient
+    .getQueriesData<unknown>({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+    .flatMap(([queryKey, data]) => Array.isArray(data)
+      ? [{ queryKey, full: queryKey.length === 2, holds: data.some((entry) => (entry as ApiSession | null)?.id === sessionId) }]
+      : [])
+}
+
+/**
+ * Invalidate the agent's session lists that can hold a hidden automated
+ * session. The full list and the notable slice (`useNotableSessions`) come
+ * from the sessions route, which leaves those sessions out.
+ */
+export function invalidateAutomationSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({
+    predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) && query.queryKey.length > 2 && query.queryKey[2] !== 'notable',
+  })
+}
+
+/** Invalidate every cached session list of one agent (all route keys and slices), and no other agent's. */
+export function invalidateAgentSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
 }
 
 /**
@@ -280,11 +331,14 @@ export function applySessionActivityStatus(
     // an already-working agent — the common case) must return the same agent
     // reference, or every event rebuilds the agents array and pays a full
     // deep-compare in structural sharing.
+    // Only the flags that change are written, so a clear adds no `false` an agent never carried.
     updateMatchingAgents(queryClient, agentSlug, (agent) => {
-      const agentChanged = (Object.keys(agentPatch) as (keyof ApiAgent)[]).some((key) => (
+      const changedKeys = (Object.keys(agentPatch) as (keyof ApiAgent)[]).filter((key) => (
         (agent[key] ?? false) !== agentPatch[key]
       ))
-      return agentChanged ? { ...agent, ...agentPatch } : agent
+      return changedKeys.length > 0
+        ? { ...agent, ...Object.fromEntries(changedKeys.map((key) => [key, agentPatch[key]])) }
+        : agent
     })
   }
   return changed

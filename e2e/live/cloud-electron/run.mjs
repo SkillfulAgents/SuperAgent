@@ -180,6 +180,9 @@ async function waitForSwitcher(page) {
 }
 
 async function openSettings(page) {
+  if (await page.locator('[data-testid="user-menu-trigger"]').count()) {
+    await page.click('[data-testid="user-menu-trigger"]')
+  }
   await page.click('[data-testid="settings-button"]')
   await page.waitForSelector('[data-testid="global-settings-page"]', { timeout: 30_000 })
 }

@@ -1,3 +1,4 @@
+import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
@@ -22,6 +23,8 @@ export interface AgentIntegrationRecord {
   speed: string | null
   createdAt: Date
   updatedAt: Date
+  /** Raised by every write to the row: which write this copy was read after. */
+  version: number
   /** Optional family-specific settings. Legacy chat rows keep their existing columns. */
   settings?: unknown
 }
@@ -34,6 +37,17 @@ export interface IntegrationInputEvent {
   /** Only the family/provider interprets the external payload. */
   payload: unknown
 }
+
+/**
+ * What the host did with an input event a provider handed it:
+ * - accepted: stored for delivery
+ * - duplicate: already stored (same integration, route, and event id)
+ * - rejected: will never be taken (the integration isn't taking input, or
+ *   the event has no route)
+ * - retry: not taken now because this connection was replaced or stopped;
+ *   whoever delivers the event should hand it over again
+ */
+export type IntegrationInputResult = 'accepted' | 'duplicate' | 'rejected' | 'retry'
 
 export interface IntegrationResponseEvent {
   type: 'response'
@@ -65,6 +79,12 @@ export interface IntegrationRoute {
 export interface IntegrationHost {
   /** Attach/recover the mapped runtime stream before returning live session activity. */
   session(externalId: string): Promise<IntegrationSessionContext | undefined>
+  /**
+   * The webhook relay, if the host had one when this connection started;
+   * absent otherwise. A provider that can use it (its webhooks are set up)
+   * should, and connect directly when it can't. Decided once per connection.
+   */
+  relay?: IntegrationRelayHost | null
 }
 
 export interface IntegrationSessionRecovery {
@@ -76,10 +96,12 @@ export interface IntegrationSessionRecovery {
 export interface IntegrationSessionContext {
   integration: AgentIntegrationRecord
   externalId: string
-  /** Live read-only observation. Unknown means recovery has not established state. */
+  /**
+   * What the session was doing when the host handed this context over (an
+   * observation, or `IntegrationHost.session`). Unknown means recovery has not
+   * established state.
+   */
   readonly activity?: SessionActivity | 'unknown'
-  /** Current host requests, including decisions recovered during stream attachment. */
-  readonly pendingRequests?: readonly PendingUserInputRequest[]
   sessionId?: string
   interactionId?: string
   replyTarget?: Readonly<Record<string, string>>
@@ -87,6 +109,8 @@ export interface IntegrationSessionContext {
 
 export interface IntegrationInputContext extends IntegrationSessionContext {
   actor: AgentActor
+  /** The delivery handing this input to the agent; a turn names the deliveries it answered. */
+  deliveryId?: string
 }
 
 export interface PreparedIntegrationInput {
@@ -115,12 +139,24 @@ export type IntegrationOutput =
   | { type: 'access-approved' }
   | { type: 'request-settled' }
 
+/** Who is calling an integration tool: the agent through its runtime, or a person managing the installation. */
+export interface IntegrationToolInvocation {
+  source: 'agent' | 'management'
+  userId?: string
+}
+
 export interface IntegrationTool {
   name: string
   description: string
   /** JSON Schema for the tool's input; implementations also validate on execution. */
   inputSchema: Record<string, unknown>
-  execute(input: unknown): Promise<unknown>
+  /**
+   * Who may call it. Agent-only by default (the x-agent routes); `management`
+   * lets the integration page invoke it on the person's behalf, `both` serves
+   * the same operation to either caller.
+   */
+  exposure?: 'agent' | 'management' | 'both'
+  execute(input: unknown, invocation?: IntegrationToolInvocation): Promise<unknown>
 }
 
 export interface IntegrationSessionPolicy {
@@ -143,4 +179,9 @@ export interface AgentIntegrationDefinition {
   managementCapabilities?: readonly IntegrationCapability[]
   settings: readonly { key: string; label: string; type: 'boolean' }[]
   setup: { kind: string; credentialFields: readonly string[] }
+  /**
+   * How it can receive events; `['direct']` when omitted. A provider without
+   * `direct` can't be set up while the host has no webhook relay.
+   */
+  transports?: readonly IntegrationTransport[]
 }

@@ -1,5 +1,5 @@
 import type { ApiKeySettings } from '../config/settings'
-import { BaseWebProvider } from './base-web-provider'
+import { BaseWebProvider, type WebProviderSettings } from './base-web-provider'
 import { ExaContentsResponseSchema } from './exa-contents-response-schema'
 import { ExaSearchResponseSchema } from './exa-response-schema'
 import type {
@@ -45,7 +45,11 @@ export function mapExaSearchResponse(raw: unknown): WebSearchResponse {
 export function mapExaContentsResponse(raw: unknown, fetchedAt: string): WebFetchResult {
   const parsed = ExaContentsResponseSchema.parse(raw)
   const first = parsed.results[0]
-  if (!first) throw new Error('Exa returned no content for the requested URL')
+  if (!first) {
+    throw new Error(
+      'Exa returned no content for the requested URL. For JSON APIs or simple public pages, try curl from Bash.',
+    )
+  }
   return {
     url: first.url,
     title: first.title ?? null, // failed/empty stubs (filterEmptyResults:false) may omit title
@@ -97,8 +101,8 @@ export class ExaWebProvider extends BaseWebProvider {
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'
   protected readonly envVarName = 'EXA_API_KEY'
 
-  async search(query: string, opts: WebSearchOptions): Promise<WebSearchResponse> {
-    const apiKey = this.getEffectiveApiKey()
+  async search(query: string, opts: WebSearchOptions, settings?: WebProviderSettings): Promise<WebSearchResponse> {
+    const apiKey = await this.apiKeyFor(settings)
     if (!apiKey) throw new Error('Exa API key not configured')
 
     const json = await this.fetchJson(EXA_SEARCH_URL, {
@@ -109,8 +113,8 @@ export class ExaWebProvider extends BaseWebProvider {
     return mapExaSearchResponse(json)
   }
 
-  async fetch(url: string, opts: WebFetchOptions): Promise<WebFetchResult> {
-    const apiKey = this.getEffectiveApiKey()
+  async fetch(url: string, opts: WebFetchOptions, settings?: WebProviderSettings): Promise<WebFetchResult> {
+    const apiKey = await this.apiKeyFor(settings)
     if (!apiKey) throw new Error('Exa API key not configured')
 
     const json = await this.fetchJson(EXA_CONTENTS_URL, {

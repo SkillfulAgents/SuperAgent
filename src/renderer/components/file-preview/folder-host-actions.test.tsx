@@ -125,6 +125,14 @@ describe('FolderHostActions', () => {
     }
   })
 
+  it('renders nothing on a drive folder, whose path is not on this host', () => {
+    window.electronAPI = { platform: 'darwin', revealInFolder: mocks.revealInFolder } as unknown as typeof window.electronAPI
+    render(<FolderHostActions folder={{ ...FOLDER, rootPath: '/mounts/Team Brain' }} />)
+
+    expect(screen.queryByTestId('folder-copy-path')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reveal in Finder' })).not.toBeInTheDocument()
+  })
+
   it('renders nothing for a user who cannot administer the agent', () => {
     // The reveal-path endpoint is owner-only; don't offer a button that 403s.
     mocks.canManage = false

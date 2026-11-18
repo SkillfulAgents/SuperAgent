@@ -1,0 +1,16 @@
+{
+  "name": "gamut-runtime-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Locked TypeScript tools for agent workspace scripts",
+  "dependencies": {
+    "@types/node": "22.20.5",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "ts-node@10.9.2": {
+      "@tsconfig/node16": "16.1.9"
+    }
+  }
+}

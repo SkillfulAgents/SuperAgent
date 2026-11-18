@@ -7,10 +7,12 @@
  * page still renders local agent notifications.
  */
 
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import { Hono } from 'hono'
 import { getSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import {
   listPlatformNotifications,
   markPlatformNotificationsRead,
@@ -21,15 +23,31 @@ const platformNotificationsRouter = new Hono()
 
 platformNotificationsRouter.use('*', Authenticated())
 
-function isPlatformConnected(): boolean {
-  return Boolean(getPlatformProxyBaseUrl() && getPlatformAccessToken())
-}
+platformNotificationsRouter.use('*', async (c, next) => {
+  try {
+    await next()
+  } finally {
+    if (c.req.method === 'POST') {
+      const user = c.get('user' as never) as { id: string } | undefined
+      if (!isAuthMode() || user) {
+        globalFeed.publish({ type: 'platform_notifications_changed', ...(isAuthMode() && user ? { recipientUserId: user.id } : {}) })
+      }
+    }
+  }
+})
 
-// Org JWTs need an acting member appended to the bearer (in auth mode the
-// request-scoped fetch interceptor re-attributes it to the acting user);
-// opaque personal keys ignore the suffix.
-function getMemberId(): string {
-  return getSettings().platformAuth?.memberId ?? 'local'
+/**
+ * The platform connection this request calls with, from one settings read;
+ * null when the platform is not connected. Org JWTs need an acting member
+ * appended to the bearer (in auth mode the request-scoped fetch interceptor
+ * re-attributes it to the acting user); opaque personal keys ignore the suffix.
+ */
+async function platformCaller(): Promise<{ token: string; memberId: string } | null> {
+  if (!getPlatformProxyBaseUrl()) return null
+  const settings = await getSettings()
+  const token = platformAccessTokenFrom(settings)
+  if (!token) return null
+  return { token, memberId: settings.platformAuth?.memberId ?? 'local' }
 }
 
 const EMPTY_LIST = { notifications: [], total: 0, unread_count: 0, connected: false }
@@ -45,7 +63,8 @@ function parseBoundedInt(value: string | undefined, min: number, max: number): n
 
 // GET /api/platform-notifications?status=&limit=&offset= - live list from the platform
 platformNotificationsRouter.get('/', async (c) => {
-  if (!isPlatformConnected()) {
+  const caller = await platformCaller()
+  if (!caller) {
     return c.json(EMPTY_LIST)
   }
   try {
@@ -56,7 +75,8 @@ platformNotificationsRouter.get('/', async (c) => {
         limit: parseBoundedInt(c.req.query('limit'), 1, 100),
         offset: parseBoundedInt(c.req.query('offset'), 0, Number.MAX_SAFE_INTEGER),
       },
-      getMemberId(),
+      caller.memberId,
+      caller.token,
     )
     return c.json({ ...list, connected: true })
   } catch (error) {
@@ -70,11 +90,12 @@ platformNotificationsRouter.get('/', async (c) => {
 
 // GET /api/platform-notifications/unread-count - unread count for the badge
 platformNotificationsRouter.get('/unread-count', async (c) => {
-  if (!isPlatformConnected()) {
+  const caller = await platformCaller()
+  if (!caller) {
     return c.json({ count: 0 })
   }
   try {
-    const list = await listPlatformNotifications({ status: 'unread', limit: 1 }, getMemberId())
+    const list = await listPlatformNotifications({ status: 'unread', limit: 1 }, caller.memberId, caller.token)
     return c.json({ count: list.unread_count })
   } catch (error) {
     // Same offline degradation as the list route: a zero badge, not a 502.
@@ -85,7 +106,8 @@ platformNotificationsRouter.get('/unread-count', async (c) => {
 
 // POST /api/platform-notifications/read { ids } - write-through mark-read
 platformNotificationsRouter.post('/read', async (c) => {
-  if (!isPlatformConnected()) {
+  const caller = await platformCaller()
+  if (!caller) {
     return c.json({ error: 'Platform not connected' }, 409)
   }
   try {
@@ -96,7 +118,7 @@ platformNotificationsRouter.post('/read', async (c) => {
     if (ids.length === 0) {
       return c.json({ error: 'Missing ids array' }, 400)
     }
-    const updated = await markPlatformNotificationsRead(ids, getMemberId())
+    const updated = await markPlatformNotificationsRead(ids, caller.memberId, caller.token)
     return c.json({ success: true, updated })
   } catch (error) {
     console.error('Failed to mark platform notifications read:', error)
@@ -106,16 +128,23 @@ platformNotificationsRouter.post('/read', async (c) => {
 
 // POST /api/platform-notifications/read-all - mark every unread row read
 platformNotificationsRouter.post('/read-all', async (c) => {
-  if (!isPlatformConnected()) {
+  const caller = await platformCaller()
+  if (!caller) {
     return c.json({ success: true, updated: 0 })
   }
   try {
-    const memberId = getMemberId()
-    // The platform has no bulk endpoint; resolve the unread page (100 covers
-    // realistic announcement volume) and ack those ids.
-    const unread = await listPlatformNotifications({ status: 'unread', limit: 100 }, memberId)
-    const ids = unread.notifications.map((n) => n.id)
-    const updated = ids.length > 0 ? await markPlatformNotificationsRead(ids, memberId) : 0
+    // Drain unread pages from offset zero: each ack removes rows from that
+    // result set. Stop if the proxy makes no progress instead of looping.
+    let updated = 0
+    const attempted = new Set<string>()
+    for (;;) {
+      const unread = await listPlatformNotifications({ status: 'unread', limit: 100 }, caller.memberId, caller.token)
+      const ids = unread.notifications.map(n => n.id).filter(id => !attempted.has(id))
+      if (!ids.length) break
+      ids.forEach(id => attempted.add(id))
+      updated += await markPlatformNotificationsRead(ids, caller.memberId, caller.token)
+      if (unread.unread_count <= ids.length) break
+    }
     return c.json({ success: true, updated })
   } catch (error) {
     console.error('Failed to mark all platform notifications read:', error)

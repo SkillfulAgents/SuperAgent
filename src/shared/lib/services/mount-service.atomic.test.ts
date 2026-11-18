@@ -53,6 +53,6 @@ describe('atomic volume writes', () => {
   it('allows renaming an attached public source', async () => {
     const mount = await addMount('agent', 'local', { path: folder }, viewer)
     await updateVolumeDefinition(mount.volumeId, { name: 'new-name', visibility: 'public' }, viewer)
-    expect(await getMounts('agent')).toEqual([mount])
+    expect(await getMounts('agent')).toEqual([{ ...mount, volumeName: 'new-name' }])
   })
 })

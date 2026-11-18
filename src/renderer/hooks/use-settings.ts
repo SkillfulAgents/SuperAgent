@@ -1,4 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
+import { HttpError } from '@renderer/lib/http-error'
+import { useUser } from '@renderer/context/user-context'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type {
   GlobalSettingsResponse,
@@ -19,16 +21,32 @@ import type { ModelSearchResult } from '@shared/lib/llm-provider'
 
 export type { GlobalSettingsResponse, ModelPickerSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
+/** The server's refusal of a signed-in user who is not an admin. */
+function isForbidden(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 403
+}
+
+/**
+ * The global settings. `GET /api/settings` is admin-only in auth mode, so the
+ * query is off for everyone else there (and until the session says who is
+ * asking): `data` stays undefined and `isLoading` stays false, with no request.
+ * A 403 that still arrives (a role revoked since the session was read) is not
+ * retried and stops the poll.
+ */
 export function useSettings(options?: { enabled?: boolean }) {
+  const { isAuthMode, isAdmin } = useUser()
+  const mayRead = !isAuthMode || isAdmin
   return useQuery<GlobalSettingsResponse>({
     queryKey: ['settings'],
     queryFn: async () => {
       const res = await apiFetch('/api/settings')
-      if (!res.ok) throw new Error('Failed to fetch settings')
+      if (!res.ok) throw new HttpError(res.status, 'Failed to fetch settings')
       return res.json()
     },
-    refetchInterval: 60000, // Poll less frequently - container status is cached server-side
-    enabled: options?.enabled,
+    // Poll less frequently - container status is cached server-side
+    refetchInterval: (query) => (isForbidden(query.state.error) ? false : 60000),
+    retry: (failureCount, error) => !isForbidden(error) && failureCount < 3,
+    enabled: mayRead && (options?.enabled ?? true),
   })
 }
 
@@ -83,12 +101,21 @@ export function useModelSettings(agentSlug?: string, llmProviderId?: string | nu
   return useQuery<ModelPickerSettingsResponse>({
     queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, llmProviderId] : [])],
     queryFn: async () => {
-      const res = await apiFetch('/api/settings/models')
+      // The two reads are independent, so both start now. They are still
+      // checked in order, so a failed settings read wins as it did when the
+      // reads ran back to back; the catch only keeps an abandoned connection
+      // read from surfacing as an unhandled rejection.
+      const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
+      const settingsRequest = apiFetch('/api/settings/models')
+      const connectionRequest = agentSlug
+        ? apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
+        : undefined
+      void connectionRequest?.catch(() => {})
+      const res = await settingsRequest
       if (!res.ok) throw new Error('Failed to fetch model settings')
       const data: ModelPickerSettingsResponse = await res.json()
-      if (agentSlug) {
-        const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
-        const response = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
+      if (connectionRequest) {
+        const response = await connectionRequest
         if (!response.ok) throw new Error('Failed to fetch saved model connection')
         data.connections = (await response.json()).connections
       }
@@ -127,6 +154,7 @@ export type UpdateSettingsParams = SettingsPatch
 export interface UpdateSettingsError {
   error: string
   runningAgents?: string[]
+  status: number
 }
 
 export function useUpdateSettings() {
@@ -141,7 +169,7 @@ export function useUpdateSettings() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error: UpdateSettingsError = { ...(await res.json()), status: res.status }
         throw error
       }
 

@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
-import { execFileSync, spawnSync } from 'child_process';
+import { execFile, execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as http from 'http';
+import type { AddressInfo } from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -19,6 +21,7 @@ import * as path from 'path';
 const BIN = path.join(__dirname, '..', 'bin');
 const LIST = path.join(BIN, 'list-sessions.py');
 const READ = path.join(BIN, 'read-session.py');
+const MANAGE = path.join(BIN, 'manage-session.py');
 
 const PYTHON = process.env.PYTHON ?? 'python3';
 const hasPython = spawnSync(PYTHON, ['--version']).status === 0;
@@ -100,8 +103,12 @@ function run(script: string, args: string[], currentSessionId?: string): string 
   // The container exports GAMUT_SESSION_ID to every tool call; the scripts
   // read it to tell the current conversation apart from past ones. Stripped
   // by default so a developer's own shell can never leak one into the tests.
+  // The same for the app's address and token: without them the helpers ask
+  // nobody for names, which is what every test not about the app wants.
   const env = { ...process.env };
   delete env.GAMUT_SESSION_ID;
+  delete env.SUPERAGENT_HOST_API_URL;
+  delete env.PROXY_TOKEN;
   return execFileSync(PYTHON, [script, ...args, '--dir', sessionsDir], {
     encoding: 'utf-8',
     env: currentSessionId ? { ...env, GAMUT_SESSION_ID: currentSessionId } : env,
@@ -228,19 +235,6 @@ describeWithPython('session-history helper scripts', () => {
       );
 
       expect(run(LIST, [])).toContain('actually, use the staging bucket');
-    });
-
-    it('prefers the name the app stored in session-metadata.json', () => {
-      writeSession('eeeeeeee-5555', userText('u1', 'first thing I typed'));
-      fs.writeFileSync(
-        path.join(workspace, 'session-metadata.json'),
-        JSON.stringify({ 'eeeeeeee-5555': { name: 'Pricing decision', starred: true } })
-      );
-
-      const out = run(LIST, []);
-      expect(out).toContain('Pricing decision');
-      expect(out).toContain('★');
-      expect(out).not.toContain('first thing I typed');
     });
 
     it('filters by --grep across the whole transcript, and by --since', () => {
@@ -519,6 +513,180 @@ describeWithPython('session-history helper scripts', () => {
 
       expect(() => run(READ, ['abcd'])).toThrow(/matches 2 sessions/);
       expect(() => run(READ, ['nope'])).toThrow(/No session matching/);
+    });
+  });
+
+  /**
+   * The app, as the helpers reach it: the routes of /api/x-agent/sessions,
+   * answering for the one agent whose token this is. A helper is a child
+   * process, so it runs asynchronously here: the server has to answer it.
+   */
+  describe('with the app', () => {
+    interface Call { method: string; url: string; authorization: string | undefined; body: unknown }
+    let server: http.Server;
+    let calls: Call[];
+    let names: Record<string, string>;
+    let respond: ((call: Call) => { status: number; body?: unknown } | undefined) | undefined;
+
+    beforeEach(async () => {
+      calls = [];
+      names = {};
+      respond = undefined;
+      server = http.createServer((req, res) => {
+        let raw = '';
+        req.on('data', (chunk) => { raw += chunk; });
+        req.on('end', () => {
+          const call = { method: req.method!, url: req.url!, authorization: req.headers.authorization, body: raw ? JSON.parse(raw) : undefined };
+          calls.push(call);
+          const answer = respond?.(call) ?? (call.method === 'GET' ? { status: 200, body: { names } }
+            : call.method === 'PATCH' ? { status: 200, body: { id: 'x', name: (call.body as { name: string }).name } }
+            : { status: 204 });
+          res.writeHead(answer.status, { 'Content-Type': 'application/json' });
+          res.end(answer.body === undefined ? '' : JSON.stringify(answer.body));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    });
+
+    afterEach(async () => {
+      await new Promise((resolve) => server.close(resolve));
+    });
+
+    function runWithApp(script: string, args: string[], extraEnv: Record<string, string> = {}) {
+      const env = { ...process.env, ...extraEnv };
+      delete env.GAMUT_SESSION_ID;
+      Object.assign(env, {
+        SUPERAGENT_HOST_API_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`,
+        PROXY_TOKEN: 'agent-token',
+        // A proxy set for the agent's web traffic must not swallow the call.
+        HTTP_PROXY: 'http://127.0.0.1:1',
+        http_proxy: 'http://127.0.0.1:1',
+        ...extraEnv,
+      });
+      return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+        execFile(PYTHON, [script, ...args], { encoding: 'utf-8', env }, (error, stdout, stderr) => {
+          resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr });
+        });
+      });
+    }
+    const list = (args: string[] = [], env?: Record<string, string>) => runWithApp(LIST, [...args, '--dir', sessionsDir], env);
+
+    it('headlines a session by the name it has in the app, and the rest by their first message', async () => {
+      writeSession('eeeeeeee-5555', userText('u1', 'first thing I typed'));
+      writeSession('ffffffff-6666', userText('u1', 'never named'));
+      names = { 'eeeeeeee-5555': 'Pricing decision', 'gone-from-disk': 'No transcript here' };
+
+      const { stdout, code } = await list();
+
+      expect(code).toBe(0);
+      expect(stdout).toContain('Pricing decision');
+      expect(stdout).not.toContain('first thing I typed');
+      expect(stdout).toContain('never named');
+      expect(stdout).not.toContain('No transcript here');
+      expect(stdout).toContain('manage-session.py');
+      expect(calls).toEqual([{ method: 'GET', url: '/api/x-agent/sessions', authorization: 'Bearer agent-token', body: undefined }]);
+    });
+
+    it('carries the name in --json, beside the first message', async () => {
+      writeSession('eeeeeeee-5555', userText('u1', 'first thing I typed'));
+      names = { 'eeeeeeee-5555': 'Pricing decision' };
+
+      const rows = JSON.parse((await list(['--json'])).stdout);
+
+      expect(rows).toEqual([expect.objectContaining({ session_id: 'eeeeeeee-5555', name: 'Pricing decision', first_user_message: 'first thing I typed' })]);
+    });
+
+    it('still lists, by first message and saying why, when the app refuses or cannot be reached', async () => {
+      writeSession('eeeeeeee-5555', userText('u1', 'first thing I typed'));
+      respond = () => ({ status: 500, body: { error: 'Index unavailable' } });
+
+      const refused = await list();
+      expect(refused.code).toBe(0);
+      expect(refused.stdout).toContain('first thing I typed');
+      expect(refused.stdout).toContain('Session names are missing (Index unavailable (HTTP 500))');
+
+      const unreachable = await list([], { SUPERAGENT_HOST_API_URL: 'http://127.0.0.1:1/api' });
+      expect(unreachable.code).toBe(0);
+      expect(unreachable.stdout).toContain('first thing I typed');
+      expect(unreachable.stdout).toContain('Session names are missing (The app could not be reached');
+
+      // --json stays JSON, note or no note.
+      expect(JSON.parse((await list(['--json'])).stdout)).toHaveLength(1);
+    });
+
+    it('ignores an answer that is not a map of names', async () => {
+      writeSession('eeeeeeee-5555', userText('u1', 'first thing I typed'));
+      respond = () => ({ status: 200, body: { names: ['not', 'a', 'map'] } });
+
+      expect((await list()).stdout).toContain('first thing I typed');
+
+      respond = () => ({ status: 200, body: { names: { 'eeeeeeee-5555': { not: 'text' } } } });
+      expect((await list()).stdout).toContain('first thing I typed');
+    });
+
+    it('renames a session through the app, joining an unquoted name', async () => {
+      const { stdout, code } = await runWithApp(MANAGE, ['rename', 'eeeeeeee-5555', 'Pricing', 'decision,', 'final']);
+
+      expect(code).toBe(0);
+      expect(stdout).toContain('Renamed eeeeeeee-5555 to "Pricing decision, final".');
+      expect(calls).toEqual([{
+        method: 'PATCH',
+        url: '/api/x-agent/sessions/eeeeeeee-5555',
+        authorization: 'Bearer agent-token',
+        body: { name: 'Pricing decision, final' },
+      }]);
+    });
+
+    it('deletes a session through the app', async () => {
+      const { stdout, code } = await runWithApp(MANAGE, ['delete', 'eeeeeeee-5555']);
+
+      expect(code).toBe(0);
+      expect(stdout).toContain('Deleted eeeeeeee-5555.');
+      expect(calls).toEqual([{ method: 'DELETE', url: '/api/x-agent/sessions/eeeeeeee-5555', authorization: 'Bearer agent-token', body: undefined }]);
+    });
+
+    it('keeps a session id that is not a plain word inside its own path segment', async () => {
+      await runWithApp(MANAGE, ['delete', '../other agent/x?y']);
+
+      expect(calls.map((call) => call.url)).toEqual(['/api/x-agent/sessions/..%2Fother%20agent%2Fx%3Fy']);
+    });
+
+    it('refuses to delete the session it runs in, without asking the app', async () => {
+      const { code, stderr } = await runWithApp(MANAGE, ['delete', '88880000-now'], { GAMUT_SESSION_ID: '88880000-now' });
+
+      expect(code).not.toBe(0);
+      expect(stderr).toContain('THIS session');
+      expect(calls).toEqual([]);
+    });
+
+    it('fails with the app\'s own reason when it refuses', async () => {
+      respond = (call) => (call.method === 'DELETE'
+        ? { status: 409, body: { error: 'This session is running or waiting for input and cannot be deleted' } }
+        : { status: 404, body: { error: 'Session not found' } });
+
+      const deleted = await runWithApp(MANAGE, ['delete', 'busy']);
+      expect(deleted.code).not.toBe(0);
+      expect(deleted.stderr).toContain('Could not delete busy: This session is running or waiting for input and cannot be deleted (HTTP 409)');
+
+      const renamed = await runWithApp(MANAGE, ['rename', 'nope', 'New name']);
+      expect(renamed.code).not.toBe(0);
+      expect(renamed.stderr).toContain('Could not rename nope: Session not found (HTTP 404)');
+      expect(renamed.stdout).toBe('');
+    });
+
+    it('says so when the container has no connection to the app', async () => {
+      const { code, stderr } = await runWithApp(MANAGE, ['rename', 'eeeeeeee-5555', 'Name'], { PROXY_TOKEN: '' });
+
+      expect(code).not.toBe(0);
+      expect(stderr).toContain('no connection to the app');
+      expect(calls).toEqual([]);
+    });
+
+    it('asks for an action and a session id', async () => {
+      expect((await runWithApp(MANAGE, [])).code).not.toBe(0);
+      expect((await runWithApp(MANAGE, ['rename', 'only-an-id'])).code).not.toBe(0);
+      expect((await runWithApp(MANAGE, ['rename', 'an-id', '   '])).stderr).toContain('empty');
+      expect(calls).toEqual([]);
     });
   });
 });

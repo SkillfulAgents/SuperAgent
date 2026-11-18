@@ -43,16 +43,21 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-20250514',
     dashboardBuilderModel: 'claude-sonnet-4-20250514',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+    dashboardBuilderModel: 'claude-sonnet-4-20250514',
+  }),
 }))
 
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+  }),
 }))
 
 const mockTriggerScheduledSessionStarted = vi.fn()
@@ -152,7 +157,6 @@ function existingScheduledSession(sessionId = 'container-session-1') {
     name: 'Daily report',
     createdAt: scheduledExecutionAt,
     lastActivityAt: scheduledExecutionAt,
-    messageCount: 0,
   }
 }
 

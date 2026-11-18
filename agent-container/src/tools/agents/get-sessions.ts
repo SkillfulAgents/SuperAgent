@@ -27,7 +27,7 @@ Use the returned session ID with get_session_transcript to read the conversation
       }
       const lines = data.sessions.map((s) => {
         const running = s.isRunning ? ' [running]' : ''
-        return `- ${s.id}${running} · ${s.name} · ${s.messageCount} msgs · last ${s.lastActivityAt}`
+        return `- ${s.id}${running} · ${s.name} · last ${s.lastActivityAt}`
       })
       const shown = data.offset + data.sessions.length
       const header = `Sessions for "${args.slug}" (${data.sessions.length} of ${data.total}):`

@@ -23,6 +23,8 @@ import {
   DownloadNonceUnavailableError,
 } from '@shared/lib/services/download-nonce-service'
 import { platformService } from '@shared/lib/services/platform-service'
+import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
+import { platformExcludedModels } from '@shared/lib/llm-provider/platform-plan-policy'
 import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
@@ -68,12 +70,13 @@ platformAuth.get('/', async (c) => {
 // (correct per-user seat balance in auth_mode). Falls back to the non-auth
 // cache on a transient failure so a blip doesn't blank the UI.
 platformAuth.get('/billing', async (c) => {
-  if (!getPlatformAuthStatus().connected) {
+  if (!(await getPlatformAuthStatus()).connected) {
     return c.json({ connected: false })
   }
   try {
     const billing = await platformService.refreshBilling()
-    return c.json({ connected: true, billing })
+    // What the plan excludes, worded here so the Account screen never reads the denylist.
+    return c.json({ connected: true, billing, excludedModels: platformExcludedModels(billing, PLATFORM_CATALOG) })
   } catch (error) {
     // Serve the last-known snapshot so a transient blip doesn't blank the UI,
     // tagged with when it was fetched so the client can show "Last updated …".
@@ -82,6 +85,7 @@ platformAuth.get('/billing', async (c) => {
       return c.json({
         connected: true,
         billing: cached,
+        excludedModels: platformExcludedModels(cached, PLATFORM_CATALOG),
         stale: true,
         lastRefreshedAt: platformService.getLastRefreshedAt(),
       })
@@ -103,9 +107,9 @@ platformAuth.get('/deployments', async (c) => {
   return c.json(status)
 })
 
-platformAuth.post('/initiate', (c) => {
+platformAuth.post('/initiate', async (c) => {
   const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-  const clientInstanceId = getOrCreatePlatformClientInstanceId()
+  const clientInstanceId = await getOrCreatePlatformClientInstanceId()
   const deviceName = getPlatformDeviceName()
 
   return c.json({

@@ -24,7 +24,8 @@ export async function fetchWithIdleTimeout(
     if (ended) return
     cleanup()
     output.error(signal.reason)
-    void reader.cancel(signal.reason).catch(() => {})
+    // eslint-disable-next-line local-rules/no-floating-work -- the renderer bundles this file and has no background(); the cancel is already handled
+    reader.cancel(signal.reason).catch(() => {})
   }
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -42,7 +43,12 @@ export async function fetchWithIdleTimeout(
         if (done) { cleanup(); reader.releaseLock(); controller.close() }
         else controller.enqueue(value)
       } catch (error) {
-        if (!ended) { cleanup(); controller.error(error); void reader.cancel(error).catch(() => {}) }
+        if (!ended) {
+          cleanup()
+          controller.error(error)
+          // eslint-disable-next-line local-rules/no-floating-work -- the renderer bundles this file and has no background(); the cancel is already handled
+          reader.cancel(error).catch(() => {})
+        }
       }
     },
     async cancel(reason) {

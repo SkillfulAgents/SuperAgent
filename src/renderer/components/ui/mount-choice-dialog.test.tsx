@@ -29,7 +29,7 @@ describe('MountChoiceDialog', () => {
     const onChoice = vi.fn()
     render(<MountChoiceDialog open={true} onChoice={onChoice} />)
 
-    await user.click(screen.getByText('Mount folder'))
+    await user.click(screen.getByText('Add as drive'))
     expect(onChoice).toHaveBeenCalledWith('mount')
   })
 

@@ -5,6 +5,7 @@ import { buildInboundXAgentDetails } from './inbound-x-agent-service'
 
 function agent(slug: string, name: string): ApiAgent {
   return {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug,
     displaySlug: `${name.toLowerCase().replaceAll(' ', '-')}-${slug}`,
     name,

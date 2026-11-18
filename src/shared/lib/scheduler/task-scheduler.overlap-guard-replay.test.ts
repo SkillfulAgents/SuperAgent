@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as path from 'path'
 import { promises as fs } from 'fs'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
-import type { ContainerClient, StreamMessage } from '@shared/lib/container/types'
+import { createStreamClient } from '@shared/lib/agent-actor/testing/live-sessions-harness'
+import type { StreamMessage } from '@shared/lib/container/types'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
 
-// The overlap guard end to end: the REAL message persister replays a real
-// capture (background-bash-premature-idle: two run_in_background Bash tasks,
-// each followed by a turn-end idle while the bash is still running), and the
-// REAL scheduler reads that state through the real agent actor. The unit test
-// mocks the busy predicate; this one checks that what the persister reports
+// The overlap guard end to end: the agent actor's REAL live sessions replay a
+// real capture (background-bash-premature-idle: two run_in_background Bash
+// tasks, each followed by a turn-end idle while the bash is still running),
+// and the REAL scheduler reads that state through the same actor. The unit
+// test mocks the busy predicate; this one checks that what the sessions report
 // for a run with background work pending is what the guard needs to hold.
 
 // ----- Scheduler-side mocks -----
@@ -19,6 +19,11 @@ const mockMarkTaskExecuted = vi.fn()
 const mockUpdateNextExecution = vi.fn()
 const mockRecordTaskSkip = vi.fn()
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...a: unknown[]) => mockGetDueTasks(...a),
   markTaskExecuted: (...a: unknown[]) => mockMarkTaskExecuted(...a),
@@ -26,7 +31,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   updateNextExecution: (...a: unknown[]) => mockUpdateNextExecution(...a),
   recordTaskSkip: (...a: unknown[]) => mockRecordTaskSkip(...a),
   rescheduleAfterFailure: vi.fn(() => Promise.resolve()),
-  // Persister side
+  // Live-sessions side
   createScheduledTask: vi.fn(),
   getScheduledTask: vi.fn(() => Promise.resolve(null)),
 }))
@@ -68,6 +73,11 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-20250514',
     dashboardBuilderModel: 'claude-sonnet-4-20250514',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+    dashboardBuilderModel: 'claude-sonnet-4-20250514',
+  }),
   getSettings: () => ({}),
   VALID_SCRIPT_TYPES: { darwin: ['applescript', 'shell'], linux: ['shell'], win32: ['powershell'] },
 }))
@@ -89,34 +99,35 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
-// ----- Persister-side mocks (mirrors the container replay suites) -----
+// ----- Live-sessions-side mocks (mirrors the container replay suites) -----
 
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: {
     checkPermission: vi.fn(() => 'prompt_needed'),
-    getGrabbedApp: vi.fn(() => undefined),
-    setGrabbedApp: vi.fn(),
-    clearGrabbedApp: vi.fn(),
+    getActiveApp: vi.fn(() => undefined),
+    setActiveApp: vi.fn(),
+    clearActiveApp: vi.fn(),
     consumeOnceGrant: vi.fn(),
   },
 }))
-vi.mock('@shared/lib/computer-use/types', () => ({
+vi.mock('@shared/lib/computer-use/types', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/computer-use/types')>()),
   getRequiredPermissionLevel: vi.fn(() => 'use_application'),
-  resolveTargetApp: vi.fn(() => undefined),
-  READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
-  TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
-vi.mock('@shared/lib/computer-use/executor', () => ({
-  resolveAppFromWindowRef: vi.fn(() => undefined),
-}))
+// Replays drive no machine.
+vi.mock('@shared/lib/computer-use/executor', () => ({}))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
+// The actor's session store is a local one: its workspace is nowhere, so the
+// replay writes nothing to disk.
 vi.mock('@shared/lib/utils/file-storage', () => ({
+  getAgentWorkspaceDir: (_agentSlug: string) => '/nonexistent',
   getAgentSessionsDir: (_agentSlug: string) => '/nonexistent',
   getSessionJsonlPath: (_agentSlug: string, _sessionId: string) => '/nonexistent/session.jsonl',
 }))
 
-import { messagePersister } from '@shared/lib/container/message-persister'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
+import { drain } from '@shared/lib/agent-actor/testing/drain'
 import { taskScheduler } from './task-scheduler'
 
 // ----- Fixture plumbing -----
@@ -135,20 +146,6 @@ async function loadFixture(): Promise<{ sessionId: string; agentSlug: string; en
     .filter((l) => l.trim().length > 0)
     .map((l) => JSON.parse(l))
   return { sessionId: meta.sessionId, agentSlug: meta.agentSlug, entries }
-}
-
-function createReplayClient(): { client: ContainerClient; send: (m: StreamMessage) => void } {
-  let callback: ((message: StreamMessage) => void) | null = null
-  const client = {
-    subscribeToStream: vi.fn((_sid: string, cb: (message: StreamMessage) => void) => {
-      callback = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    getSession: vi.fn(() => Promise.resolve(null)),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as ContainerClient
-  return { client, send: (m) => callback?.(m) }
 }
 
 const tick = () => new Promise((r) => setImmediate(r))
@@ -211,25 +208,25 @@ describe('overlap guard against a real background-bash capture', () => {
 
   it('holds while the backgrounded bash runs, then fires once the session settles', async () => {
     const { sessionId, agentSlug, entries } = await loadFixture()
-    // The registry attaches the actors' real session stores on first use;
-    // swap in memory ones afterwards so the replay touches no disk.
-    agentRegistry.get(agentSlug)
-    messagePersister.attachSessionStores(createInMemorySessionStore)
+    // The same actor the scheduler reads: its live sessions follow the
+    // replayed stream through the agent's current client.
+    const actor = agentRegistry.get(agentSlug)
+    const client = createStreamClient()
+    mockClient = client
 
-    const { client, send } = createReplayClient()
     const sseTypes: unknown[] = []
-    const removeSseClient = messagePersister.addSSEClient(agentSlug, sessionId, (data) => {
-      sseTypes.push((data as { type?: unknown }).type)
+    const removeSseClient = drain(await actor.messages.subscribe(sessionId), (data) => {
+      sseTypes.push(data.type)
     })
-    await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
-    messagePersister.markSessionActive(agentSlug, sessionId)
+    await actor.sessions.attach(sessionId)
+    await actor.sessions.markActive(sessionId)
 
     // Replay up to the first turn-end idle that arrives while a background bash
     // is still running: the moment the session tells clients it is waiting on
     // background work.
     let busyIdx = -1
     for (let i = 0; i < entries.length; i++) {
-      send(entries[i].message)
+      client.emit(entries[i].message.content)
       await tick()
       if (sseTypes.includes('session_waiting_background')) {
         busyIdx = i
@@ -237,7 +234,8 @@ describe('overlap guard against a real background-bash capture', () => {
       }
     }
     expect(busyIdx).toBeGreaterThan(-1)
-    expect(messagePersister.getActiveBackgroundTasks(agentSlug, sessionId).length).toBeGreaterThan(0)
+    const sessions = (actor as LocalAgentActor).state.sessions
+    expect(sessions.backgroundTasks(sessionId).length).toBeGreaterThan(0)
 
     mockGetDueTasks.mockResolvedValue([dueRecurringTask(agentSlug, sessionId)])
     await taskScheduler.triggerExecution()
@@ -249,11 +247,11 @@ describe('overlap guard against a real background-bash capture', () => {
 
     // Replay the rest: both bashes report completion and the session settles.
     for (let i = busyIdx + 1; i < entries.length; i++) {
-      send(entries[i].message)
+      client.emit(entries[i].message.content)
       await tick()
     }
-    expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(false)
-    expect(messagePersister.getActiveBackgroundTasks(agentSlug, sessionId)).toHaveLength(0)
+    expect((await actor.sessions.live(sessionId)).isActive).toBe(false)
+    expect(sessions.backgroundTasks(sessionId)).toHaveLength(0)
 
     await taskScheduler.triggerExecution()
 

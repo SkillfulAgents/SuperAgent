@@ -285,6 +285,18 @@ export function buttonActionIds(message) {
   return ids
 }
 
+/** Every button value in a message's Block Kit payload, in render order. */
+export function buttonValues(message) {
+  const values = []
+  for (const block of message.blocks ?? []) {
+    if (block.type !== 'actions') continue
+    for (const el of block.elements ?? []) {
+      if (el.type === 'button') values.push(el.value ?? '')
+    }
+  }
+  return values
+}
+
 /** Button labels in a message, in render order. */
 export function buttonLabels(message) {
   const labels = []

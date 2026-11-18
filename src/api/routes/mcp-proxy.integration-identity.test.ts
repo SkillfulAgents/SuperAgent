@@ -16,7 +16,19 @@ vi.mock('node:dns/promises', () => ({ lookup: vi.fn(async () => [{ address: '8.8
 vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn(async () => 'agent') }))
 const policy = vi.hoisted(() => ({ resolve: vi.fn(), review: vi.fn(), reauth: vi.fn() }))
 vi.mock('@shared/lib/proxy/policy-resolver', () => ({ resolveMcpPolicy: policy.resolve }))
-vi.mock('@shared/lib/agent-actor', () => ({ agentRegistry: { get: () => ({ inputs: { reviews: { request: policy.review }, mcpReauth: { request: policy.reauth } } }) } }))
+// The reviews and re-auth waits are the policy's doubles; the proxy's sessions and their locks are the agent's own.
+vi.mock('@shared/lib/agent-actor', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/agent-actor')>()
+  return {
+    ...actual,
+    agentRegistry: {
+      get: (slug: string) => {
+        const { mcpSessions, locks } = actual.agentRegistry.get(slug)
+        return { inputs: { reviews: { request: policy.review }, mcpReauth: { request: policy.reauth } }, mcpSessions, locks }
+      },
+    },
+  }
+})
 const fetchMock = vi.fn<typeof fetch>()
 const authRequired = vi.fn<() => Promise<void>>()
 const reportHealth = vi.fn<(available: boolean) => Promise<void>>()

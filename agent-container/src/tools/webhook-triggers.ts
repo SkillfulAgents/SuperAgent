@@ -6,8 +6,8 @@
  * - get_available_triggers: blocking — returns available trigger types
  * - list_triggers: blocking — returns active triggers/endpoints for this agent
  * - update_trigger: blocking — updates a trigger prompt without replacing it
- * - setup_trigger: blocking — message persister handles dual-write, resolves with result
- * - cancel_trigger: blocking — message persister handles dual-delete, resolves with result
+ * - setup_trigger: blocking — the host's tool handler does the dual-write, resolves with result
+ * - cancel_trigger: blocking — the host's tool handler does the dual-delete, resolves with result
  * - create_webhook_endpoint: blocking — mints a public webhook URL on the platform
  * - update_webhook_endpoint: blocking — attaches/updates signature verification
  */
@@ -88,7 +88,7 @@ Call this before setup_trigger to discover what triggers are available for a giv
     }
 
     try {
-      // Block until the message persister resolves with trigger data
+      // Block until the host resolves with trigger data
       const result = await inputManager.createPendingWithType<string>(
         toolUseId,
         'get_available_triggers',
@@ -206,9 +206,9 @@ Use get_available_triggers first to discover what triggers are available for an 
       .optional()
       .describe('Optional configuration for the trigger (depends on trigger type)'),
     model: z
-      .enum(['opus', 'sonnet', 'haiku'])
+      .string()
       .optional()
-      .describe('Optional model family to use when this trigger fires. If not specified, uses the global default.'),
+      .describe('Optional model to use when this trigger fires: a model id or a family name such as "sonnet". An unknown model is rejected with the list of valid ids. If not specified, uses the agent default.'),
     effort: z
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()
@@ -284,9 +284,9 @@ If the service reveals a signing secret only AFTER registration, attach it after
       .describe('Optional HMAC signature verification profile, if you already know the signing secret'),
     filter_exp: z.string().optional().describe(FILTER_EXP_DESCRIPTION),
     model: z
-      .enum(['opus', 'sonnet', 'haiku'])
+      .string()
       .optional()
-      .describe('Optional model family to use when this endpoint fires. If not specified, uses the global default.'),
+      .describe('Optional model to use when this endpoint fires: a model id or a family name such as "sonnet". An unknown model is rejected with the list of valid ids. If not specified, uses the agent default.'),
     effort: z
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()

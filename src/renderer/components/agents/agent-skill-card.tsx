@@ -38,7 +38,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
 
   return (
     <SkillContextMenu skill={skill} agentSlug={agentSlug}>
-      <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors">
+      <div className="flex items-start gap-3 p-3 rounded-card bg-muted/50 hover:bg-muted transition-colors">
         <Sparkles className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">

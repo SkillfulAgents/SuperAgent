@@ -131,9 +131,18 @@ ${API_PREFIX_SNIPPET}
       if (this._realPromise) return this._realPromise;
       var self = this;
       this._realPromise = ensureSdk().then(function (SDK) {
+        // The proxy authenticates the session cookie. The SDK sends an apiKey
+        // as a bearer, which the auth layer would take for a session token, so
+        // the placeholder goes out as X-Api-Key with no Authorization header,
+        // and any credential the dashboard passed is cleared (the SDK takes one).
         var config = Object.assign({}, self._userOpts, {
           baseURL: window.location.origin + apiPrefix + "/api/llm",
           apiKey: "placeholder",
+          authToken: null,
+          credentials: null,
+          config: null,
+          profile: null,
+          defaultHeaders: Object.assign({}, self._userOpts.defaultHeaders, { "X-Api-Key": "placeholder", Authorization: null }),
           dangerouslyAllowBrowser: true,
         });
         self._real = new SDK(config);

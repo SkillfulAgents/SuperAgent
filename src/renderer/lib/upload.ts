@@ -1,13 +1,15 @@
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { handleUnauthorizedResponse, handleWorkspaceUnavailableResponse } from '@renderer/lib/api'
+import { HttpError } from './http-error'
 
 // 50MB — keeps each request under Cloudflare's 100MB request-body limit so
 // large files don't 413 at the edge before reaching the API.
 export const UPLOAD_CHUNK_SIZE = 50 * 1024 * 1024
 
-// Between-progress-events stall bound (Uppy's XHRUpload default). Only the
-// composer passes it; other callers leave the timer off because their server
-// side does unbounded work after the last byte (template import).
+// Between-progress-events stall bound (Uppy's XHRUpload default), while the
+// body is being sent. Only the composer passes it; other callers leave the
+// timer off. The wait for the answer after the last byte is not bounded: the
+// server may still be building the file from its chunks.
 export const UPLOAD_STALL_MS = 30_000
 
 export type UploadProgress = { phase: 'uploading' | 'processing'; percent: number }
@@ -51,9 +53,10 @@ function sendUploadRequest(url: string, formData: FormData, { onSent, signal, st
     // the chip) or surfaces it (we gave up on a stall).
     let terminal: Error | null = null
     let stallTimer: ReturnType<typeof setTimeout> | undefined
+    let bodySent = false
 
     const armStall = () => {
-      if (!stallMs) return
+      if (!stallMs || bodySent) return
       if (stallTimer) clearTimeout(stallTimer)
       stallTimer = setTimeout(() => {
         terminal = new UploadStalledError(stallMs)
@@ -74,6 +77,10 @@ function sendUploadRequest(url: string, formData: FormData, { onSent, signal, st
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && e.total > 0) onSent?.(Math.min(1, e.loaded / e.total))
       armStall()
+    }
+    xhr.upload.onload = () => {
+      bodySent = true
+      if (stallTimer) clearTimeout(stallTimer)
     }
     xhr.onload = () => {
       settle()
@@ -125,7 +132,7 @@ function readError(res: UploadResponse, fallback: string): string {
 async function checkResponse(res: UploadResponse, url: string): Promise<void> {
   handleWorkspaceUnavailableResponse(url, res.header)
   await handleUnauthorizedResponse(res.status, url)
-  if (!res.ok) throw new Error(readError(res, 'Upload failed. Please try again.'))
+  if (!res.ok) throw new HttpError(res.status, readError(res, 'Upload failed.'))
 }
 
 interface UploadOptions {

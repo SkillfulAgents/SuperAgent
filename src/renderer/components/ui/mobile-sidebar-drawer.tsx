@@ -125,6 +125,7 @@ export function MobileSidebarDrawer({
   ...props
 }: MobileSidebarDrawerProps) {
   const panelRef = React.useRef<HTMLDivElement>(null)
+  const backdropRef = React.useRef<HTMLDivElement>(null)
   const gestureRef = React.useRef<Gesture | null>(null)
   // Live drag offset kept in a ref for the (stable) gesture handlers to read, and
   // mirrored into state only to drive the panel/backdrop render while dragging.
@@ -280,6 +281,23 @@ export function MobileSidebarDrawer({
     return () => document.removeEventListener("touchstart", onTouchStart)
   }, [open, beginGesture])
 
+  // A backdrop click closes the drawer only when its press began on the backdrop
+  // with nothing layered over the drawer. A row's context menu is a modal Radix
+  // layer, and Radix turns pointer events off for the page (body) while one is
+  // open. The panel then stops being a hit target, so the click from lifting the
+  // finger off a long-pressed row lands on the backdrop beneath it, and a tap on
+  // the backdrop is that menu's outside-tap. Either way only the menu closes.
+  const backdropPressRef = React.useRef(false)
+  React.useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: PointerEvent) => {
+      backdropPressRef.current =
+        e.target === backdropRef.current && document.body.style.pointerEvents !== "none"
+    }
+    document.addEventListener("pointerdown", onPointerDown, true)
+    return () => document.removeEventListener("pointerdown", onPointerDown, true)
+  }, [open])
+
   // Focus management + Esc + Tab trap while open. Focus the panel on open, restore
   // to the previously-focused element (the trigger) on close.
   React.useEffect(() => {
@@ -290,6 +308,9 @@ export function MobileSidebarDrawer({
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // A layer over the drawer (a row's menu) used it first: Radix cancels
+        // the Escape it closes on.
+        if (e.defaultPrevented) return
         e.preventDefault()
         onOpenChangeRef.current(false)
         return
@@ -349,9 +370,13 @@ export function MobileSidebarDrawer({
           webview's top row (see the status-bar note in the component doc). It's still
           fully present as a tap target across the whole area — alpha ≠ hit-testing. */}
       <div
+        ref={backdropRef}
         aria-hidden="true"
         data-testid="mobile-drawer-backdrop"
-        onClick={() => onOpenChange(false)}
+        onClick={() => {
+          if (backdropPressRef.current) onOpenChange(false)
+          backdropPressRef.current = false
+        }}
         className="fixed inset-x-0 top-0 h-screen z-40"
         style={{
           background: BACKDROP_SCRIM,

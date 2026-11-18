@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import { closeAppState } from '@shared/lib/app-state'
 import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 
 // ---------------------------------------------------------------------------
@@ -18,37 +19,44 @@ const state = vi.hoisted(() => ({
 }))
 
 const mockCreate = vi.fn()
+const mockGetSettings = vi.fn()
 
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 
-vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  configuredHelperModel: () => state.helperModel,
-  getConfiguredLlmClient: async () => {
-    if (state.helperError) throw state.helperError
-    return { messages: { create: mockCreate } }
-  },
-}))
+// The real helper setup (helpers.ts) over a stand-in provider, connection
+// selection and settings.
+function provider() {
+  return {
+    id: state.providerId,
+    supportsDirectApi: true,
+    apiKeyStatusFrom: () => ({ isConfigured: state.configured }),
+    createClientFrom: async () => {
+      if (state.helperError) throw state.helperError
+      return { messages: { create: mockCreate } }
+    },
+  }
+}
 
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({
-    id: state.providerId,
-    getApiKeyStatus: () => ({ isConfigured: state.configured }),
-  }),
-  resolveActiveProviderModel: (selection: string, purpose: string) => {
+  activeLlmProviderFrom: () => provider(),
+  resolveModelForProviderFrom: (selection: string, _providerId: string, purpose: string) => {
     state.resolveModel(selection, purpose)
     return state.resolvedModel
   },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ browserModel: state.browserModel }),
-  getSettings: () => state.hasDefault ? { llmDefault: { llmProviderId: 'sub', model: 'sonnet' } } : {},
+  effectiveModelsFrom: () => ({ browserModel: state.browserModel }),
+  getSettings: async () => mockGetSettings(),
 }))
 
 vi.mock('@shared/lib/llm-provider/connections', () => ({
-  resolveHelperSelection: async () => { throw state.helperError },
+  resolveHelperSelection: async () => {
+    if (state.helperError) throw state.helperError
+    return { provider: provider(), wireModel: state.helperModel }
+  },
 }))
 
 import llm from './llm'
@@ -90,6 +98,21 @@ describe('LLM proxy endpoint', () => {
     state.helperModel = undefined
     state.browserModel = 'sonnet'
     state.resolvedModel = 'claude-sonnet-5'
+    mockGetSettings.mockImplementation(() => state.hasDefault ? { llmDefault: { llmProviderId: 'sub', model: 'sonnet' } } : {})
+  })
+
+  it.each(['config', 'v1/messages'])('reads the settings once for %s', async path => {
+    mockCreate.mockResolvedValue({ content: [] })
+    for (const hasDefault of [false, true]) {
+      state.hasDefault = hasDefault
+      state.helperModel = hasDefault ? 'global-helper-model' : undefined
+      mockGetSettings.mockClear()
+      const app = createApp()
+      const res = path === 'config' ? await get(app, '/api/llm/config')
+        : await post(app, '/api/llm/v1/messages', { messages: [{ role: 'user', content: 'hi' }] })
+      expect(res.status).toBe(200)
+      expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    }
   })
 
   it.each(['config', 'v1/messages'])('reports unavailable helpers on %s', async path => {
@@ -143,6 +166,52 @@ describe('LLM proxy endpoint', () => {
   })
 
   describe('POST /api/llm/v1/messages', () => {
+    describe('rate limit', () => {
+      const T0 = Date.parse('2026-11-04T12:00:00Z')
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(T0)
+        mockCreate.mockResolvedValue({ content: [] })
+      })
+
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      const call = (app: ReturnType<typeof createApp>, client = '203.0.113.7') =>
+        app.fetch(new Request('http://localhost/api/llm/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-forwarded-for': client },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+        }))
+
+      it('admits 100 calls per client in a minute and refuses the rest of the window', async () => {
+        const app = createApp()
+        const results = await Promise.all(Array.from({ length: 120 }, () => call(app)))
+        expect(results.filter((res) => res.status === 200)).toHaveLength(100)
+        const refused = results.filter((res) => res.status === 429)
+        expect(refused).toHaveLength(20)
+        expect(await refused[0].json()).toEqual({ error: 'Too many LLM requests. Please slow down.' })
+        expect(mockCreate).toHaveBeenCalledTimes(100)
+
+        // Another client has its own window; this one's opens again a minute after its first call.
+        expect((await call(app, '198.51.100.2')).status).toBe(200)
+        vi.setSystemTime(T0 + 60_000 - 1)
+        expect((await call(app)).status).toBe(429)
+        vi.setSystemTime(T0 + 60_000)
+        expect((await call(app)).status).toBe(200)
+      })
+
+      it('fails the call when the counter cannot be reached', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        await closeAppState()
+        expect((await call(createApp())).status).toBe(500)
+        expect(mockCreate).not.toHaveBeenCalled()
+        consoleError.mockRestore()
+      })
+    })
+
     it('forwards request to SDK and returns response', async () => {
       const mockResponse = {
         id: 'msg_123',
@@ -187,6 +256,7 @@ describe('LLM proxy endpoint', () => {
     })
 
     it('uses the global helper model when no explicit model is requested', async () => {
+      state.hasDefault = true
       state.helperModel = 'global-helper-model'
       mockCreate.mockResolvedValue({ content: [] })
       const res = await post(createApp(), '/api/llm/v1/messages', {
@@ -197,6 +267,7 @@ describe('LLM proxy endpoint', () => {
     })
 
     it('preserves an explicit model even when the helper has another default', async () => {
+      state.hasDefault = true
       state.helperModel = 'global-helper-model'
       mockCreate.mockResolvedValue({ content: [] })
 
@@ -249,6 +320,26 @@ describe('LLM proxy endpoint', () => {
       expect(calledWith.baseURL).toBeUndefined()
       expect(calledWith.api_key).toBeUndefined()
       expect(calledWith.base_url).toBeUndefined()
+    })
+
+    // API version 2026-10-21 rejects these even at their defaults.
+    it('drops sampling parameters dashboard code may still send', async () => {
+      mockCreate.mockResolvedValue({ content: [] })
+
+      const app = createApp()
+      await post(app, '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+        temperature: 0.2,
+        top_p: 0.9,
+        top_k: 40,
+      })
+
+      const calledWith = mockCreate.mock.calls[0][0]
+      expect(calledWith).not.toHaveProperty('temperature')
+      expect(calledWith).not.toHaveProperty('top_p')
+      expect(calledWith).not.toHaveProperty('top_k')
+      expect(calledWith.max_tokens).toBe(10)
     })
 
     it('returns streaming SSE response when stream: true', async () => {

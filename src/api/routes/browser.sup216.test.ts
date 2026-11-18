@@ -44,10 +44,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   return { containerHost: hostFromManagerMock({ getClient: () => ({ fetch: vi.fn() }) }) }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { broadcastGlobal: vi.fn() },
-}))
-
 // auth.ts dependencies — we deliberately use the REAL IsAgent() so the token →
 // slug binding is exercised end to end. IsAgent() never touches the db / auth
 // mode, so these are minimal stubs to keep the import graph light.

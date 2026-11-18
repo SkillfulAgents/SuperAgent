@@ -76,7 +76,7 @@
   --pulse-period: 2.6s;
   position: absolute;
   inset: 0;
-  border-radius: 0.75rem; /* rounded-xl, matching the card */
+  border-radius: var(--radius-card); /* rounded-card, matching the card */
   outline: 1.5px solid var(--pulse-color);
   pointer-events: none;
   opacity: 0;

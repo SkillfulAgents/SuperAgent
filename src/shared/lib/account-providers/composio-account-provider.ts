@@ -1,5 +1,11 @@
 import { BaseAccountProvider } from './base-account-provider'
-import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
+import type {
+  AccountProviderSettings,
+  InitiateConnectionResult,
+  ProviderConnection,
+  ProviderConnectionListItem,
+  ProviderCredentials,
+} from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
 import { getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
 import {
@@ -10,9 +16,11 @@ import {
   listConnections as composioListConnections,
   getConnectionToken,
   proxyExecute,
+  composioAuthFrom,
+  resolveComposioAuth,
   ComposioRedactedTokenError,
 } from '@shared/lib/composio/client'
-import type { ProxyExecuteParams } from '@shared/lib/composio/client'
+import type { ComposioAuth, ProxyExecuteParams } from '@shared/lib/composio/client'
 import {
   buildProxyParameters,
   envelopeToResponse,
@@ -27,10 +35,34 @@ type ConnectionMode =
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
 
+interface ComposioCredentials extends ProviderCredentials {
+  readonly provider: 'composio'
+  readonly auth: ComposioAuth
+}
+
+/** The Composio auth in `credentials` when this provider made them; undefined (read at the call) otherwise. */
+function composioAuthOf(credentials?: ProviderCredentials): ComposioAuth | undefined {
+  return credentials?.provider === 'composio' ? (credentials as ComposioCredentials).auth : undefined
+}
+
+/** A Google Drive resumable upload session link, which carries its own authorization. */
+function isDriveUploadSession(toolkitSlug: string, method: string, targetUrl: string): boolean {
+  const url = URL.parse(targetUrl)
+  return toolkitSlug === 'googledrive' && method === 'PUT' && url?.protocol === 'https:' && url.hostname === 'www.googleapis.com'
+    && url.pathname.startsWith('/upload/drive/') && !!url.searchParams.get('upload_id')
+}
+
 export class ComposioAccountProvider extends BaseAccountProvider {
   readonly name = 'composio' as const
 
   private connectionModeCache = new Map<string, ConnectionMode>()
+  /** Token reads in flight, shared by the calls that miss the cache together. */
+  private pendingModes = new Map<string, Promise<ConnectionMode>>()
+
+  credentialsFrom(settings: AccountProviderSettings): ProviderCredentials {
+    const credentials: ComposioCredentials = { provider: 'composio', auth: composioAuthFrom(settings) }
+    return credentials
+  }
 
   async listConnections(userId?: string): Promise<ProviderConnectionListItem[]> {
     const connections = await composioListConnections(undefined, userId)
@@ -49,12 +81,14 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     callbackUrl: string,
     userId?: string,
   ): Promise<InitiateConnectionResult> {
-    const authConfig = await getOrCreateAuthConfig(getProviderSlug(toolkitSlug, 'composio'))
-    return composioInitiateConnection(authConfig.id, callbackUrl, userId)
+    // One credential for the auth-config lookup and the link.
+    const auth = await resolveComposioAuth()
+    const authConfig = await getOrCreateAuthConfig(getProviderSlug(toolkitSlug, 'composio'), auth)
+    return composioInitiateConnection(authConfig.id, callbackUrl, userId, auth)
   }
 
-  async getConnection(connectionId: string): Promise<ProviderConnection> {
-    return composioGetConnection(connectionId)
+  async getConnection(connectionId: string, _toolkitSlug?: string, credentials?: ProviderCredentials): Promise<ProviderConnection> {
+    return composioGetConnection(connectionId, composioAuthOf(credentials))
   }
 
   async deleteConnection(connectionId: string): Promise<void> {
@@ -68,14 +102,25 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    credentials?: ProviderCredentials
   }): Promise<Response> {
-    const mode = await this.resolveConnectionMode(params.providerConnectionId)
+    // The call's credentials, else one read shared by the token lookup and the
+    // forward, made only when one of them goes to Composio (a cached token
+    // goes straight to the upstream).
+    const given = composioAuthOf(params.credentials)
+    let resolving: Promise<ComposioAuth> | undefined
+    const auth = () => given ? Promise.resolve(given) : (resolving ??= resolveComposioAuth())
+    const mode = await this.resolveConnectionMode(params.providerConnectionId, auth)
 
     if (mode.kind === 'token') {
       return this.directForward(mode.accessToken, params)
     }
+    // The link authorizes its own upload, so its bytes skip the proxy and its body limit.
+    if (isDriveUploadSession(params.toolkitSlug, params.method, params.targetUrl)) {
+      return this.directForward(null, params)
+    }
 
-    return this.proxyForward(params)
+    return this.proxyForward(params, auth)
   }
 
   async getAccountDisplayName(
@@ -92,15 +137,28 @@ export class ComposioAccountProvider extends BaseAccountProvider {
   }
 
   private async resolveConnectionMode(
-    connectionId: string
+    connectionId: string,
+    auth: () => Promise<ComposioAuth>,
   ): Promise<ConnectionMode> {
     const cached = this.connectionModeCache.get(connectionId)
     if (cached && cached.cacheExpiresAt > Date.now()) {
       return cached
     }
 
+    let pending = this.pendingModes.get(connectionId)
+    if (!pending) {
+      pending = this.readConnectionMode(connectionId, auth).finally(() => this.pendingModes.delete(connectionId))
+      this.pendingModes.set(connectionId, pending)
+    }
+    return pending
+  }
+
+  private async readConnectionMode(
+    connectionId: string,
+    auth: () => Promise<ComposioAuth>,
+  ): Promise<ConnectionMode> {
     try {
-      const { accessToken, expiresAt } = await getConnectionToken(connectionId)
+      const { accessToken, expiresAt } = await getConnectionToken(connectionId, await auth())
 
       let ttl = DEFAULT_CACHE_TTL_MS
       if (expiresAt) {
@@ -129,8 +187,9 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     }
   }
 
+  /** Without a token the target authorizes itself: cookies stay behind and a redirect is returned, never followed. */
   private async directForward(
-    accessToken: string,
+    accessToken: string | null,
     params: {
       targetUrl: string
       method: string
@@ -140,13 +199,13 @@ export class ComposioAccountProvider extends BaseAccountProvider {
   ): Promise<Response> {
     const forwardHeaders = new Headers()
     params.headers.forEach((value, key) => {
-      if (!PROXY_SKIP_REQUEST_HEADERS.has(key.toLowerCase())) {
+      if (!PROXY_SKIP_REQUEST_HEADERS.has(key.toLowerCase()) && (accessToken || key.toLowerCase() !== 'cookie')) {
         forwardHeaders.set(key, value)
       }
     })
-    forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
+    if (accessToken) forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
 
-    const init: RequestInit = { method: params.method, headers: forwardHeaders }
+    const init: RequestInit = { method: params.method, headers: forwardHeaders, redirect: accessToken ? 'follow' : 'manual' }
     if (params.method !== 'GET' && params.method !== 'HEAD' && params.body) {
       init.body = params.body
     }
@@ -172,7 +231,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
-  }): Promise<Response> {
+  }, auth: () => Promise<ComposioAuth>): Promise<Response> {
     const contentType = params.headers.get('Content-Type')
     const requestBuffer = params.body ?? new ArrayBuffer(0)
     const translation = translateProxyBody(params.method, contentType, requestBuffer)
@@ -198,7 +257,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
       ...(translation.body !== undefined ? { body: translation.body } : {}),
       ...(parameters.length ? { parameters } : {}),
       ...(translation.binaryBody ? { binaryBody: translation.binaryBody } : {}),
-    })
+    }, await auth())
 
     return envelopeToResponse(result)
   }

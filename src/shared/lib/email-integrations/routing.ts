@@ -1,20 +1,11 @@
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
-import { listActiveAgentIntegrationSessions } from '../services/agent-integration-session-service'
-import { parseEmailConfig } from './config-schema'
-import { clientFor, EmailGatewayError } from './gateway-client'
+import { getAgentIntegrationSession } from '../services/agent-integration-session-service'
+import type { EmailMessage } from './config-schema'
 
-/** Reuse existing session mappings; the gateway owns canonical thread redirects. */
-export async function emailThreadRoute(record: AgentIntegrationRecord, canonicalId: string): Promise<string> {
-  const sessions = await listActiveAgentIntegrationSessions(record.id)
-  if (sessions.some(session => session.externalChatId === canonicalId)) return canonicalId
-  const client = clientFor(record)
-  const { mailboxId } = parseEmailConfig(record.config)
-  for (const session of sessions) {
-    try {
-      if (await client.canonicalThreadId(mailboxId, session.externalChatId) === canonicalId) return session.externalChatId
-    } catch (error) {
-      if (!(error instanceof EmailGatewayError) || error.status !== 404) throw error
-    }
+/** Reuse existing session mappings; the gateway owns canonical thread redirects and lists them with the message. */
+export async function emailThreadRoute(record: AgentIntegrationRecord, message: Pick<EmailMessage, 'threadId' | 'threadAliases'>): Promise<string> {
+  for (const threadId of [message.threadId, ...(message.threadAliases ?? [])]) {
+    if (await getAgentIntegrationSession(record.id, threadId)) return threadId
   }
-  return canonicalId
+  return message.threadId
 }

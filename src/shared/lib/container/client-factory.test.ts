@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
+import { PassThrough, Readable } from 'node:stream'
 
 // ============================================================================
 // Mocks — must be set up before importing the module under test
@@ -93,9 +94,16 @@ vi.mock('./base-container-client', () => ({
   AGENT_CONTAINER_PATH: '/mock/agent-container',
 }))
 
+const mockCreateReadStream = vi.fn()
 vi.mock('fs', () => ({
-  default: { existsSync: vi.fn(() => false) },
+  default: { existsSync: vi.fn(() => false), createReadStream: (...args: unknown[]) => mockCreateReadStream(...args) },
   existsSync: vi.fn(() => false),
+  createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
+}))
+
+const mockFindBundledAgentImage = vi.fn((_image: string): unknown => null)
+vi.mock('./bundled-agent-image', () => ({
+  findBundledAgentImage: (image: string) => mockFindBundledAgentImage(image),
 }))
 
 const mockGetSettings = vi.fn()
@@ -105,6 +113,11 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('os', () => ({
   platform: vi.fn(() => 'darwin'),
+}))
+
+const serverFacts = vi.hoisted(() => ({ distribution: 'direct' as 'direct' | 'mac-app-store' }))
+vi.mock('@shared/lib/facts/server-facts', () => ({
+  getServerFacts: () => ({ os: 'darwin', distribution: serverFacts.distribution }),
 }))
 
 const mockCaptureException = vi.fn()
@@ -120,24 +133,48 @@ vi.mock('@shared/lib/error-reporting', () => ({
 // ============================================================================
 
 import {
+  buildImage,
   checkAllRunnersAvailability,
   classifyImageCheckOutput,
+  getCliCommand,
   clearRunnerAvailabilityCache,
   IMAGE_CHECK_MARKER,
   IMAGE_CHECK_TIMEOUT_MS,
+  IMAGE_LOAD_TIMEOUT_MS,
+  IMAGE_COMMAND_TIMEOUT_MS,
   pullImage,
   PULL_STALL_TIMEOUT_MS,
   KILL_STALLED_PULL_TIMEOUT_MS,
   reconcileRunnerState,
+  refreshRunnerAvailability,
   restartRunner,
   shutdownActiveRunner,
   startRunner,
 } from './client-factory'
 import { AppleContainerClient } from './apple-container-client'
+import { getNerdctlWrapperPath } from './lima-container-client'
 
 // ============================================================================
 // Tests
 // ============================================================================
+
+describe('the runtimes this server offers', () => {
+  afterEach(async () => {
+    serverFacts.distribution = 'direct'
+    await refreshRunnerAvailability()
+  })
+
+  it('in the App Sandbox are only the bundled Lima, even with others eligible', async () => {
+    serverFacts.distribution = 'mac-app-store'
+    const availability = await refreshRunnerAvailability()
+    expect(availability.map((r) => r.runner)).toEqual(['lima'])
+  })
+
+  it('elsewhere are every eligible one', async () => {
+    const availability = await refreshRunnerAvailability()
+    expect(availability.map((r) => r.runner)).toEqual(expect.arrayContaining(['lima', 'docker', 'podman', 'apple-container']))
+  })
+})
 
 describe('shutdownActiveRunner', () => {
   beforeEach(() => {
@@ -773,5 +810,226 @@ describe('pullImage integrity check', () => {
 
     await expect(pullImage('docker', IMAGE)).rejects.toThrow(/Image pull failed/)
     expect(argsOf(spawned)).toEqual(['pull'])
+  })
+})
+
+describe('pullImage with the agent image bundled with the app', () => {
+  class FakeProc extends EventEmitter {
+    stdout = new EventEmitter()
+    stderr = new EventEmitter()
+    stdin = new PassThrough()
+    received: Buffer[] = []
+    kill = vi.fn()
+    constructor(public readonly args: string[]) {
+      super()
+      this.stdin.on('data', (chunk: Buffer) => this.received.push(chunk))
+    }
+  }
+
+  const IMAGE = 'ghcr.io/acme/agent:1.0.0'
+  const ARCHIVE_BYTES = Buffer.alloc(3 * 1024, 7)
+  const BUNDLED = {
+    path: '/Applications/Gamut.app/Contents/Resources/agent-image/agent-image.tar',
+    description: { image: IMAGE, architecture: 'arm64', manifestDigest: `sha256:${'a'.repeat(64)}`, archiveBytes: ARCHIVE_BYTES.length },
+  }
+  const OK_LINE = `${IMAGE_CHECK_MARKER} 139 package.json files checked, 0 damaged\n`
+
+  let spawned: FakeProc[]
+  // How the `load` process ends: exit code, or never (the timeout settles it).
+  let loadOutcome: number | 'hang'
+  // Whether `rmi` answers, or never does (a runtime that stopped answering).
+  let removeOutcome: 'ok' | 'hang'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    spawned = []
+    loadOutcome = 0
+    removeOutcome = 'ok'
+    mockFindBundledAgentImage.mockReturnValue(BUNDLED)
+    mockCreateReadStream.mockImplementation(() => Readable.from([ARCHIVE_BYTES.subarray(0, 1024), ARCHIVE_BYTES.subarray(1024)]))
+    mockExecWithPath.mockResolvedValue({ stdout: '[]', stderr: '' })
+    mockSpawnWithPath.mockImplementation((_cli: string, args: string[]) => {
+      const proc = new FakeProc(args)
+      spawned.push(proc)
+      if (args[0] === 'load') {
+        // Like the CLI: answer once the whole archive is in.
+        proc.stdin.on('end', () => {
+          if (loadOutcome === 'hang') return
+          if (loadOutcome !== 0) proc.stderr.emit('data', Buffer.from('unpacking failed: no space left on device\n'))
+          proc.emit('close', loadOutcome)
+        })
+      } else if (args[0] === 'rmi' && removeOutcome === 'hang') {
+        // Never closes: the removal timeout has to settle it.
+      } else {
+        queueMicrotask(() => {
+          if (args[0] === 'run') proc.stdout.emit('data', Buffer.from(OK_LINE))
+          proc.emit('close', 0)
+        })
+      }
+      return proc
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    mockFindBundledAgentImage.mockReturnValue(null)
+  })
+
+  const argsOf = () => spawned.map((p) => p.args[0])
+
+  it('streams the archive into the Lima VM instead of pulling, then checks it like a pull', async () => {
+    const progress: Array<{ status: string; percent: number | null }> = []
+
+    await pullImage('lima', IMAGE, (p) => progress.push(p))
+
+    expect(mockFindBundledAgentImage).toHaveBeenCalledWith(IMAGE)
+    expect(mockCreateReadStream).toHaveBeenCalledWith(BUNDLED.path)
+    expect(argsOf()).toEqual(['load', 'run'])
+    expect(Buffer.concat(spawned[0].received).equals(ARCHIVE_BYTES)).toBe(true)
+    // Loaded by the name the settings ask for, checked before the pull path is skipped.
+    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS })
+    expect(progress.map((p) => p.percent)).toEqual(expect.arrayContaining([33, 100, null]))
+    expect(progress.find((p) => p.percent === 100)?.status).toBe('Copying the agent image bundled with the app')
+    expect(mockCaptureMessage).not.toHaveBeenCalled()
+  })
+
+  it('removes what a failed load left and pulls, and reports why', async () => {
+    loadOutcome = 1
+
+    await pullImage('lima', IMAGE)
+
+    // nerdctl keeps the image's name when unpacking fails; a later "did it
+    // appear?" re-check must not find it if the pull fails too.
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
+    expect(spawned[1].args).toEqual(['rmi', '-f', IMAGE])
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Loading the bundled agent image failed; pulling it instead',
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ error: expect.stringContaining('no space left on device') }),
+      })
+    )
+  })
+
+  it('pulls when the load succeeds but the image is not there by its name', async () => {
+    mockExecWithPath.mockRejectedValueOnce(new Error('no such image'))
+
+    await pullImage('lima', IMAGE)
+
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Loading the bundled agent image failed; pulling it instead',
+      expect.objectContaining({ extra: expect.objectContaining({ error: expect.stringContaining(`${IMAGE} isn't there`) }) })
+    )
+  })
+
+  it('pulls when the archive cannot be read', async () => {
+    mockCreateReadStream.mockImplementation(() => {
+      const stream = new Readable({ read() {} })
+      queueMicrotask(() => stream.destroy(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })))
+      return stream
+    })
+
+    await pullImage('lima', IMAGE)
+
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
+    expect(spawned[0].kill).toHaveBeenCalledWith('SIGKILL')
+  })
+
+  it('abandons a load that hangs for a pull', async () => {
+    vi.useFakeTimers()
+    loadOutcome = 'hang'
+
+    const promise = pullImage('lima', IMAGE)
+    await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + 1)
+    await promise
+
+    expect(spawned[0].kill).toHaveBeenCalledWith('SIGKILL')
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
+  })
+
+  it('fails as a stalled pull, without pulling, when the runtime answers neither the load nor the removal', async () => {
+    vi.useFakeTimers()
+    loadOutcome = 'hang'
+    removeOutcome = 'hang'
+
+    const failure = pullImage('lima', IMAGE).then(
+      () => { throw new Error('expected the pull to fail') },
+      (err: Error) => err
+    )
+    await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + IMAGE_COMMAND_TIMEOUT_MS + 1)
+
+    // Startup retries "Image pull stalled" after recovering the VM.
+    expect((await failure).message).toMatch(/^Image pull stalled: lima stopped answering while loading the bundled agent image/)
+    expect(argsOf()).toEqual(['load', 'rmi'])
+    expect(spawned[1].kill).toHaveBeenCalledWith('SIGKILL')
+  })
+
+  it('bounds the check that the loaded image is there by its name', async () => {
+    await pullImage('lima', IMAGE)
+
+    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS })
+  })
+
+  it('pulls when nothing is bundled for the image', async () => {
+    mockFindBundledAgentImage.mockReturnValue(null)
+
+    await pullImage('lima', IMAGE)
+
+    expect(argsOf()).toEqual(['pull', 'run'])
+  })
+
+  it('pulls on runners that do not load archives', async () => {
+    await pullImage('wsl2', IMAGE)
+
+    expect(mockFindBundledAgentImage).not.toHaveBeenCalled()
+    expect(argsOf()).toEqual(['pull', 'run'])
+  })
+})
+
+// The Lima runner's CLI is a wrapper inside the app bundle, so its path has a
+// space whenever the app's does (e.g. "Gamut 2.app"). Shell strings need it
+// quoted; spawn() needs it raw, or it looks for a file named with the quotes.
+describe('runner CLI path with a space', () => {
+  const WRAPPER = '/Applications/Gamut 2.app/Contents/Resources/lima/bin/lima-nerdctl'
+
+  class ClosingProc extends EventEmitter {
+    stdout = new EventEmitter()
+    stderr = new EventEmitter()
+    kill = vi.fn()
+    constructor(args: string[]) {
+      super()
+      queueMicrotask(() => {
+        if (args[0] === 'run') this.stdout.emit('data', Buffer.from(`${IMAGE_CHECK_MARKER} 1 package.json files checked, 0 damaged\n`))
+        this.emit('close', 0)
+      })
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getNerdctlWrapperPath).mockReturnValue(WRAPPER)
+    mockSpawnWithPath.mockImplementation((_cli: string, args: string[]) => new ClosingProc(args))
+  })
+
+  afterEach(() => {
+    vi.mocked(getNerdctlWrapperPath).mockReturnValue('/mock/nerdctl')
+  })
+
+  it('quotes it for shell command strings', () => {
+    expect(getCliCommand('lima')).toBe(`"${WRAPPER}"`)
+  })
+
+  it('spawns the pull and the integrity check with the raw path', async () => {
+    await pullImage('lima', 'ghcr.io/acme/agent:1')
+
+    expect(mockSpawnWithPath.mock.calls.map((c) => (c[1] as string[])[0])).toEqual(['pull', 'run'])
+    expect(mockSpawnWithPath.mock.calls.map((c) => c[0])).toEqual([WRAPPER, WRAPPER])
+  })
+
+  it('spawns a build with the raw path', async () => {
+    await buildImage('lima', 'superagent/agent:dev')
+
+    expect(mockSpawnWithPath.mock.calls[0][0]).toBe(WRAPPER)
   })
 })

@@ -5,7 +5,8 @@ import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agent
 import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
-import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { getApiBaseUrl, openDashboardExternal } from '@renderer/lib/env'
+import { addsToDock } from '@renderer/lib/capabilities'
 import { apiFetch } from '@renderer/lib/api'
 import { getRemoteDeploymentUrl } from '@renderer/lib/api-target'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
@@ -13,6 +14,10 @@ import { AddToDockDialog } from './add-to-dock-dialog'
 import { DashboardDispatchDialog } from './dashboard-dispatch-dialog'
 import { useDashboardDispatch } from './use-dashboard-dispatch'
 import { PendingAgentReviews } from './pending-agent-reviews'
+import { DashboardCommentOverlay } from './comments/dashboard-comment-overlay'
+import { DashboardFrameMenu } from './comments/dashboard-frame-menu'
+import { useDashboardFrameComments } from './comments/dashboard-frame'
+import { useDashboardComment } from './comments/use-dashboard-comment'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-context'
 import {
@@ -113,6 +118,29 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const dashboardPath = buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)
   const iframeSrc = `${getRemoteDeploymentUrl() ?? baseUrl}${dashboardPath}`
   const dashboardDispatch = useDashboardDispatch(iframeRef)
+
+  const dashboardName = dashboard?.name || dashboardSlug
+  const commentTarget = useMemo(() => ({ name: dashboardName, slug: dashboardSlug }), [dashboardName, dashboardSlug])
+  const comment = useDashboardComment({
+    frameRef: iframeRef,
+    agentSlug: dashboardAgentSlug,
+    routeAgentSlug: agentSlug,
+    agentName: agent?.name ?? dashboardAgentSlug,
+    dashboard: commentTarget,
+  })
+  const [frameMenuAt, setFrameMenuAt] = useState<{ x: number; y: number } | null>(null)
+  const frameComments = useDashboardFrameComments(iframeRef, canStart, (x, y) => setFrameMenuAt({ x, y }))
+  const commentState = comment.state
+  const { open: openComment, close: closeComment } = comment
+  const handleToggleComment = useCallback(() => {
+    if (commentState.phase === 'closed') void openComment()
+    else if (commentState.phase === 'open' && !commentState.sending) closeComment()
+  }, [commentState, openComment, closeComment])
+  const handleCommentHere = useCallback((at: { x: number; y: number }) => {
+    // The capture hides the menu if it is still on screen.
+    setFrameMenuAt(null)
+    void openComment(at)
+  }, [openComment])
 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
@@ -244,8 +272,19 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
       ? {
           onOpenExternal: handlePopOut,
           onRefresh: handleRefresh,
-          ...(isElectron() && getPlatform() === 'darwin' ? { onAddToDock: handleAddToDock } : {}),
+          ...(addsToDock() ? { onAddToDock: handleAddToDock } : {}),
           refreshState: refreshing ? 'refreshing' as const : frameLoading ? 'loading' as const : 'idle' as const,
+          ...(canStart
+            ? {
+                comment: {
+                  onToggle: handleToggleComment,
+                  state: commentState.phase === 'open'
+                    ? (commentState.sending ? 'sending' as const : 'open' as const)
+                    : commentState.phase === 'opening' ? 'opening' as const : 'idle' as const,
+                  disabled: !dashboardRunning,
+                },
+              }
+            : {}),
         }
       : null,
   }), [
@@ -259,7 +298,21 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     handleAddToDock,
     refreshing,
     frameLoading,
+    canStart,
+    handleToggleComment,
+    commentState,
+    dashboardRunning,
   ])
+
+  // A different dashboard is not the one the comment is on. A reload of this one
+  // (a resolved review, a retry) keeps the comment and its typed text; only an
+  // open right-click menu, placed on the old document, goes.
+  useEffect(() => {
+    closeComment()
+  }, [iframeSrc, closeComment])
+  useEffect(() => {
+    setFrameMenuAt(null)
+  }, [iframeSrc, frameAttempt])
   useRegisterDashboardHeader(dashboardHeader)
 
   useEffect(() => {
@@ -341,7 +394,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             canStart={canStart}
           />
           <div className="w-full">
-            <PendingAgentReviews agentSlug={agentSlug} />
+            <PendingAgentReviews agentSlug={agentSlug} readOnly={!canStart} />
           </div>
         </div>
       </div>
@@ -350,7 +403,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <PendingAgentReviews agentSlug={agentSlug} onReviewResolved={handleRefresh} />
+      <PendingAgentReviews agentSlug={agentSlug} readOnly={!canStart} onReviewResolved={handleRefresh} />
       <AddToDockDialog
         open={dockDialogOpen}
         onOpenChange={setDockDialogOpen}
@@ -376,6 +429,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           allow="microphone; camera"
           onLoad={() => {
             setRefreshing(false)
+            frameComments.announce()
             if (!dashboardRunning) {
               setFrameLoading(false)
               setFrameLoadedEarly(true)
@@ -384,6 +438,25 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             void verifyFrameDocument()
           }}
         />
+        {canStart && dashboardRunning && (
+          <DashboardFrameMenu
+            at={frameMenuAt}
+            onComment={handleCommentHere}
+            onRefresh={handleRefresh}
+            onClose={() => setFrameMenuAt(null)}
+          />
+        )}
+        {commentState.phase === 'open' && (
+          <DashboardCommentOverlay
+            pin={commentState.pin}
+            onPin={comment.setPin}
+            onSend={(text, dictated) => void comment.send(text, dictated)}
+            onClose={closeComment}
+            sending={commentState.sending}
+            error={commentState.error}
+            closing={commentState.closing}
+          />
+        )}
         {!dashboardRunning && (
           <div className="absolute inset-0 z-10 bg-background flex flex-col items-center justify-center p-8 text-muted-foreground">
             <DashboardStatusBody

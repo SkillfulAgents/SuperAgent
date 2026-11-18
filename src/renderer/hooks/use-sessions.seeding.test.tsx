@@ -34,7 +34,6 @@ const existingSession: ApiSession = {
   name: 'Older session',
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   lastActivityAt: new Date('2026-01-01T00:00:00.000Z'),
-  messageCount: 3,
 }
 
 function respondWith(body: unknown) {

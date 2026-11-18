@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
-import type { BrowserTabInfo, BrowserNavigateAction } from '@shared/lib/browser-stream-protocol'
+import type { BrowserTabInfo, BrowserNavigateAction, BrowserViewportCommand } from '@shared/lib/browser-stream-protocol'
 import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-stream-state'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
@@ -15,6 +15,11 @@ export type NavigateAction = BrowserNavigateAction
 const RECONNECT_BASE_MS = 1000
 const MAX_RECONNECT_DELAY_MS = 8000
 const MAX_FAILED_RECONNECTS = 5
+
+function canvasDeviceWidth(canvas: HTMLCanvasElement | null): number | undefined {
+  const width = Math.round((canvas?.getBoundingClientRect().width ?? 0) * window.devicePixelRatio)
+  return width > 0 ? width : undefined
+}
 
 interface UseBrowserStreamOptions {
   agentSlug: string
@@ -96,6 +101,8 @@ export function useBrowserStream({
   const pendingBlobRef = useRef<Blob | null>(null)
   const rafIdRef = useRef<number | null>(null)
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const decodesStartedRef = useRef(0)
+  const newestPaintedRef = useRef(0)
 
   const renderFrame = useCallback((blob: Blob) => {
     pendingBlobRef.current = blob
@@ -118,13 +125,18 @@ export function useBrowserStream({
         if (!ctx) return
 
         // Decode image off the main thread
+        const decode = ++decodesStartedRef.current
         createImageBitmap(latestBlob).then((bitmap) => {
+          // A large frame can finish decoding after a smaller, newer one: don't paint over it.
+          if (decode < newestPaintedRef.current) {
+            bitmap.close()
+            return
+          }
+          newestPaintedRef.current = decode
           const needsResize = canvas.width !== bitmap.width || canvas.height !== bitmap.height
           if (needsResize) {
             canvas.width = bitmap.width
             canvas.height = bitmap.height
-            const newRatio = `${bitmap.width} / ${bitmap.height}`
-            setAspectRatio(prev => prev === newRatio ? prev : newRatio)
           }
           ctx.drawImage(bitmap, 0, 0)
           bitmap.close()
@@ -154,13 +166,24 @@ export function useBrowserStream({
     const baseUrl = getApiBaseUrl()
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
-    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream`
+    // Sizes the first screencast. A drawer still opening has no width yet; the report below covers that.
+    const width = canvasDeviceWidth(canvasRef.current)
+    const widthQuery = width ? `?width=${width}` : ''
+    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream${widthQuery}`
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
     // Set by a browser_closed frame: the server has already dropped its browser
     // state, so the close that follows needs no status check and no retry.
     let browserGone = false
+
+    // The aspect ratio comes from the page, not the frame: a scaled frame's rounding changes with its
+    // width, and a full-screen card's width follows this ratio, so that would feed back into the width.
+    const setPageSize = (deviceWidth: number | undefined, deviceHeight: number | undefined) => {
+      metadataRef.current = { deviceWidth: deviceWidth || 1280, deviceHeight: deviceHeight || 720 }
+      const ratio = `${metadataRef.current.deviceWidth} / ${metadataRef.current.deviceHeight}`
+      setAspectRatio(prev => prev === ratio ? prev : ratio)
+    }
 
     ws.onopen = () => {
       failedReconnectsRef.current = 0
@@ -182,12 +205,8 @@ export function useBrowserStream({
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null
         if (!data) return
 
-        // Metadata updates are cheap (ref only, no re-render)
         if (data.type === 'metadata') {
-          metadataRef.current = {
-            deviceWidth: data.deviceWidth || 1280,
-            deviceHeight: data.deviceHeight || 720,
-          }
+          setPageSize(data.deviceWidth, data.deviceHeight)
           return
         }
 
@@ -209,12 +228,7 @@ export function useBrowserStream({
             if (blob) renderFrame(blob)
           }
 
-          if (data.metadata) {
-            metadataRef.current = {
-              deviceWidth: data.metadata.deviceWidth || 1280,
-              deviceHeight: data.metadata.deviceHeight || 720,
-            }
-          }
+          if (data.metadata) setPageSize(data.metadata.deviceWidth, data.metadata.deviceHeight)
         } else if (data.type === 'tab_list') {
           setTabs(prev => {
             if (prev.length === data.tabs.length && prev.every((t: BrowserTabInfo, i: number) =>
@@ -293,7 +307,7 @@ export function useBrowserStream({
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId])
+  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId, canvasRef])
 
   // Reset overlay dismiss state when attention state ends
   useEffect(() => {
@@ -347,6 +361,40 @@ export function useBrowserStream({
     },
     []
   )
+
+  // Tell the container when the canvas width changes, so it never streams wider frames than shown.
+  // It debounces these, because any client can send them.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!connected || !canvas || typeof ResizeObserver === 'undefined') return
+    let sent: number | undefined
+    const report = (width: number | undefined) => {
+      if (!width || width === sent) return
+      sent = width
+      sendMessage({ type: 'viewport', width } satisfies BrowserViewportCommand)
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      report(entry.devicePixelContentBoxSize?.[0]?.inlineSize ?? canvasDeviceWidth(canvas))
+    })
+    let pixelRatioQuery: MediaQueryList | undefined
+    const watchPixelRatio = () => {
+      report(canvasDeviceWidth(canvas))
+      pixelRatioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      pixelRatioQuery.addEventListener('change', watchPixelRatio, { once: true })
+    }
+    try {
+      // This box also fires when the window moves to a screen with another pixel ratio.
+      observer.observe(canvas, { box: 'device-pixel-content-box' })
+    } catch {
+      // Safari has no device-pixel-content-box, and the CSS box doesn't change on a pixel-ratio move.
+      observer.observe(canvas)
+      watchPixelRatio()
+    }
+    return () => {
+      observer.disconnect()
+      pixelRatioQuery?.removeEventListener('change', watchPixelRatio)
+    }
+  }, [connected, canvasRef, sendMessage])
 
   const buttonName = useCallback((button: number): string => {
     switch (button) {

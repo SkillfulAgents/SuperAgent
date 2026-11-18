@@ -35,7 +35,6 @@ Related paths in the same tree:
 |---|---|
 | `<session-id>/subagents/agent-<id>.jsonl` | one subagent (Task) transcript |
 | `<session-id>/subagents/workflows/<run-id>/` | workflow journal + per-agent transcripts |
-| `/workspace/session-metadata.json` | the names, stars, and provenance the app keeps per session |
 | `/workspace/.superagent-sessions.json` | the container's own session index (model, effort, timestamps) |
 | `<CLAUDE_CONFIG_DIR>/projects/-workspace/memory/` | your auto-memory (see the memory section of the system prompt) |
 
@@ -63,10 +62,10 @@ A `--grep` for the topic you are working on right now can therefore come back
 empty. That is the correct answer, not a broken directory: there is no earlier
 conversation about it.
 
-## The Two Helpers
+## The Helpers
 
-Both are plain stdlib Python, installed read-only in the image, and safe to run
-against a session that is still being written.
+All are plain stdlib Python, installed read-only in the image. The two that
+read are safe to run against a session that is still being written.
 
 ### Find the session
 
@@ -79,7 +78,7 @@ python3 /opt/gamut/bin/list-sessions.py --json --limit 100
 ```
 
 One row per session, newest activity first: timestamp (UTC, like the timestamps
-inside a transcript), session id, size, and a headline — the name the app stored, or the first user message when it has none.
+inside a transcript), session id, size, and a headline — the name the session has in the app, or the first user message when it has none. The app keeps the names, not the workspace, so the helper asks it for them; if the app cannot be reached it says so and shows first messages.
 `--grep` searches what was said — user and agent turns, not tool calls, tool
 results, or thinking — keeps only the sessions that match, and ranks them by
 hit count with the count shown — the fastest way from "we discussed X" to a
@@ -118,6 +117,22 @@ or `--grep`, because a full transcript can be tens of megabytes.
 
 Both scripts take `--dir` if you ever need to point them at another transcript
 directory.
+
+### Rename or delete a session
+
+```bash
+python3 /opt/gamut/bin/manage-session.py rename <session-id> Pricing decision, final
+python3 /opt/gamut/bin/manage-session.py delete <session-id>
+```
+
+Both take the full session id and go through the app, which is where a
+session's name lives. A rename shows in the app at once. A delete removes the
+transcript and everything the app keeps about the session, and cannot be
+undone, so do it only when the user asked for that session to go. The session
+you are in, and one that is running or waiting for an answer, cannot be
+deleted. Do not rename by editing files: there is no file to edit. Deleting a
+transcript file by hand does take the session off the list, but leaves its
+notifications behind; use the helper.
 
 ## Surfacing What You Found
 

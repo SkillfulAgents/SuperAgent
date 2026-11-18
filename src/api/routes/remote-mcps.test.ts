@@ -66,12 +66,8 @@ vi.mock('@shared/lib/services/connection-sync-service', () => ({
     mockSyncAgentsAssignedRemoteMcp(...args),
   syncRemoteMcpAgents: (...args: unknown[]) =>
     mockSyncRemoteMcpAgents(...args),
-}))
-
-vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
-  mcpReauthManager: {
-    completeMcp: (...args: unknown[]) => mockCompleteMcpReauth(...args),
-  },
+  // Each assigned agent's parked calls on the MCP go on.
+  resumeMcpReauthWaits: (...args: unknown[]) => mockCompleteMcpReauth(...args),
 }))
 
 // Mock DB with chainable query builder
@@ -1333,6 +1329,22 @@ describe('OAuth callback — postMessage origin', () => {
     expect(html).toContain('window.location.origin')
     expect(html).toContain('"state":"xyz"')
     expect(html).not.toContain("'*'")
+  })
+
+  it('says why a refused callback failed, such as an expired sign-in', async () => {
+    mockCompleteOAuthFlow.mockResolvedValue({
+      success: false,
+      error: 'This sign-in has expired or was already used. Start the connection again',
+    })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?code=abc&state=xyz'
+    )
+
+    const html = await res.text()
+    expect(html).toContain('"error":"This sign-in has expired or was already used. Start the connection again"')
+    expect(html).toContain('OAuth failed: This sign-in has expired or was already used. Start the connection again. You can close this window.')
+    expect(html).not.toContain('OAuth successful')
   })
 
   it('passes iss through for successful authorization responses', async () => {

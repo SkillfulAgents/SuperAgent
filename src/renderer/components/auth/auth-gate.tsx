@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useUser } from '@renderer/context/user-context'
 import { stashRedirectTarget } from '@renderer/lib/api'
+import { isMeetingParticipantPage } from '@renderer/lib/meeting-participant-page'
 import { targetIsRemote } from '@renderer/lib/api-target'
 import { AuthPage } from './auth-page'
 import { ForcePasswordChange } from './force-password-change'
@@ -69,7 +70,7 @@ function useSignalPainted(isPending: boolean): void {
 }
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const { isAuthMode, isAuthenticated, isPending, mustChangePassword } = useUser()
+  const { isAuthMode, isAuthenticated, isPending, mustChangePassword, cloudWait } = useUser()
   const [pendingApproval, setPendingApproval] = useState(false)
   useSignalPainted(isPending && !pendingApproval)
 
@@ -96,6 +97,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }, [isAuthMode, isPending, isAuthenticated])
 
   if (!isAuthMode) return <>{children}</>
+  // The meeting bot's camera page has no account; its own token is its credential.
+  if (isMeetingParticipantPage()) return <>{children}</>
+  // Before the pending check: each retry is pending again, and must not swap to the loading screen.
+  if (cloudWait) return <WorkspaceReconnect waiting={cloudWait} />
   if (isPending && !pendingApproval) return <LoadingScreen />
   // A cloud workspace authenticates with a token held by the main process, so
   // there is no password to ask for — offer reconnection instead of a login form.

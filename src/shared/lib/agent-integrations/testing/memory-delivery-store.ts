@@ -6,12 +6,12 @@ export function memoryDeliveryStore(): typeof deliveryStore {
   const rows = new Map<string, DeliveryRecord>()
   return {
     accept: async (integrationId, event, route) => {
-      if ([...rows.values()].some(row => row.integrationId === integrationId && row.externalId === route.externalId && row.eventId === event.id)) return false
+      if ([...rows.values()].some(row => row.integrationId === integrationId && row.externalId === route.externalId && row.eventId === event.id)) return 'duplicate'
       const now = new Date(); const id = crypto.randomUUID()
       rows.set(id, { id, integrationId, externalId: route.externalId, eventId: event.id, envelope: JSON.stringify({ event, route }),
         sessionId: null, state: 'pending', attempts: 0, owner: null, nextAttemptAt: now, noticeState: 'none', noticeAttempts: 0,
         error: null, createdAt: now, updatedAt: now })
-      return true
+      return 'accepted'
     },
     due: async () => structuredClone([...rows.values()].filter(row => row.state === 'pending' || (row.state === 'sending' && !row.owner) || row.noticeState === 'pending')),
     nextDue: async available => {
@@ -38,6 +38,10 @@ export function memoryDeliveryStore(): typeof deliveryStore {
     },
     cancel: async (id, externalId, exceptId) => {
       for (const row of rows.values()) if (row.integrationId === id && (!externalId || row.externalId === externalId) && row.id !== exceptId) Object.assign(row, { state: 'cancelled', owner: null, noticeState: 'none' })
+    },
+    // Holds no installation status: every row of the integration counts as stopped.
+    cancelStopped: async id => {
+      for (const row of rows.values()) if (row.integrationId === id) Object.assign(row, { state: 'cancelled', owner: null, noticeState: 'none' })
     },
     cancelSession: async () => {},
     prune: async () => {},

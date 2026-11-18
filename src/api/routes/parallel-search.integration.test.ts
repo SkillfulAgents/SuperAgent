@@ -1,30 +1,39 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 
 vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn(async () => 'test-agent') }))
-vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: () => null }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: async () => null }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }))
 
-import { loadSettings, updateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { getActiveWebProvider, resolveEffectiveWebVendor } from '@shared/lib/web-provider'
 import webSearch from './web-search'
 
-let scratch: string
-beforeEach(() => {
-  scratch = mkdtempSync(join(tmpdir(), 'parallel-native-'))
-  vi.stubEnv('SUPERAGENT_DATA_DIR', scratch)
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
+beforeEach(async () => {
   for (const name of ['PARALLEL_API_KEY', 'PLATFORM_TOKEN', 'EXA_API_KEY']) vi.stubEnv(name, '')
+  handle = await createTestDatabase()
+  testDb = handle.db
 })
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(scratch, { recursive: true, force: true }) })
+afterEach(async () => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+  await handle.close()
+})
 
 it('serves a saved keyless choice through the authenticated host route with the operator policy applied', async () => {
-  updateSettings({ ...loadSettings(), webProvider: 'parallel', apiKeys: {}, webBlockedSites: ['blocked.test'] })
-  expect(loadSettings().webProvider).toBe('parallel')
-  expect(resolveEffectiveWebVendor()).toBe('parallel')
-  expect(getActiveWebProvider()?.fetch).toBeUndefined()
+  await mutateSettings((s) => {
+    s.webProvider = 'parallel'
+    s.apiKeys = {}
+    s.webBlockedSites = ['blocked.test']
+  })
+  expect((await getSettings()).webProvider).toBe('parallel')
+  expect(await resolveEffectiveWebVendor()).toBe('parallel')
+  expect((await getActiveWebProvider())?.fetch).toBeUndefined()
   const app = new Hono().route('/api/x-agent/web-search', webSearch)
   const observed: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
@@ -54,7 +63,9 @@ it('serves a saved keyless choice through the authenticated host route with the 
   expect(body.hits[0].snippet).toContain('Keyless search works through the host.')
   expect(body.warnings).toEqual(['1 result removed by your allowed-sites policy'])
   expect(observed).toEqual(['initialize', 'notifications/initialized', 'tools/list', 'tools/call'])
-  updateSettings({ ...loadSettings(), webProvider: 'native' })
-  expect(resolveEffectiveWebVendor()).toBe('native')
-  expect(getActiveWebProvider()).toBeNull()
+  await mutateSettings((s) => {
+    s.webProvider = 'native'
+  })
+  expect(await resolveEffectiveWebVendor()).toBe('native')
+  expect(await getActiveWebProvider()).toBeNull()
 })

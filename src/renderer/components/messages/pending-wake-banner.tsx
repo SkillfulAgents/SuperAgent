@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { MoonStar, X, Play } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow, format } from 'date-fns'
@@ -14,6 +15,9 @@ interface PendingWakeBannerProps {
   readOnly?: boolean
 }
 
+// How often the "auto-resume in …" text re-reads the clock.
+const RELATIVE_TIME_TICK_MS = 30_000
+
 /**
  * Bar shown above the composer while the session has a pending scheduled wake
  * (long sleep): when it will auto-resume, the agent's note-to-self, and
@@ -28,6 +32,14 @@ export function PendingWakeBanner({
   readOnly,
 }: PendingWakeBannerProps) {
   const queryClient = useQueryClient()
+
+  // The relative time is read from the clock during render, and the banner shows
+  // while the session is idle, when nothing else re-renders it. Tick so it counts down.
+  const [, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), RELATIVE_TIME_TICK_MS)
+    return () => clearInterval(id)
+  }, [])
 
   const invalidateSession = () => {
     queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
@@ -61,7 +73,7 @@ export function PendingWakeBanner({
 
   return (
     <div
-      className="mx-4 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground"
+      className="mx-4 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-card border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="pending-wake-banner"
     >
       <div className="flex min-w-0 grow basis-40 items-start gap-2">

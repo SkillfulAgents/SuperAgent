@@ -451,6 +451,62 @@ describe('SubAgentBlock', () => {
     expect(screen.getByText('Found 3 config files in the workspace.')).toBeInTheDocument()
   })
 
+  it("does not show a background launch's acknowledgement as the agent's result", async () => {
+    // Every background subagent (and every fork, which always runs in the
+    // background) gets this tool_result at launch; its report is in the
+    // transcript or the SSE resultText.
+    const user = userEvent.setup()
+    mockSubMessages = [createAssistantMessage({ content: { text: 'date -u output: Mon Oct 19' } })]
+    const tc = createToolCall({
+      name: 'Agent',
+      input: { subagent_type: 'fork', description: 'inspect workspace' },
+      result: 'Async agent launched successfully. (This tool result is internal metadata.)\nagentId: sub-1',
+      subagent: { agentId: 'sub-1', status: 'async_launched' },
+    })
+
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByText('fork'))
+
+    expect(screen.getByText('date -u output: Mon Oct 19')).toBeInTheDocument()
+    expect(screen.queryByText(/Async agent launched/)).not.toBeInTheDocument()
+  })
+
+  it("shows the SSE result of a background launch that finished in this session", async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({
+      name: 'Agent',
+      input: { subagent_type: 'fork', description: 'inspect workspace' },
+      result: 'Async agent launched successfully.\nagentId: sub-1',
+      subagent: { agentId: 'sub-1', status: 'async_launched' },
+    })
+
+    render(
+      <SubAgentBlock
+        toolCall={tc}
+        sessionId="s-1"
+        agentSlug="agent-1"
+        isSessionActive
+        isCompleted
+        activeSubagent={{
+          parentToolId: tc.id,
+          agentId: 'sub-1',
+          streamingMessage: null,
+          streamingToolUse: null,
+          progressSummary: null,
+          subagentType: 'fork',
+          description: 'inspect workspace',
+          usage: null,
+          lastToolName: null,
+          resultText: 'The listing had 8 entries.',
+        }}
+      />
+    )
+    await user.click(screen.getByText('fork'))
+
+    expect(screen.getByText('The listing had 8 entries.')).toBeInTheDocument()
+    expect(screen.queryByText(/Async agent launched/)).not.toBeInTheDocument()
+  })
+
   it('keeps a mermaid fence in live sub-agent text as code and draws it in the settled result', async () => {
     const user = userEvent.setup()
     const tc = createToolCall({ name: 'Task', input: { subagent_type: 'Explore', description: 'Searching' }, result: undefined })

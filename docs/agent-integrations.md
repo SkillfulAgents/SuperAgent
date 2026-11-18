@@ -6,6 +6,8 @@
 classDiagram
     AgentIntegration <|-- TaskManagerAgentIntegration
     TaskManagerAgentIntegration <|-- LinearAgentIntegration
+    AgentIntegration <|-- MeetingAgentIntegration
+    MeetingAgentIntegration <|-- RecallMeetingIntegration
     AgentIntegration <|-- ChatAgentIntegration
     ChatAgentIntegration <|-- TelegramConnector
     ChatAgentIntegration <|-- SlackConnector
@@ -35,7 +37,7 @@ The registry exposes serializable definitions (family, agent capabilities, manag
 
 `ChatAgentIntegration` owns `/clear`, Telegram's `/start`, sender attribution, input preparation, session naming, streaming delivery, working indicators, user-request cards, and chat tools. `chat-input.ts` contains the attachment download/upload and transcription path; `chat-delivery.ts` contains response formatting and streaming state. The concrete providers retain their protocol, threading, formatting, reaction, directory, and native-card implementations.
 
-The normalized response event carries a request ID, request kind, and value. Chat-specific callback strings and question-answer envelopes are decoded in the chat family. The host retains actor-bound review submission, input claims, and stale-response checks. `emitEvent` awaits its subscribers: the host persists accepted inputs before returning and processes responses inline. Shared delivery, retries and restart semantics are described in [Durable integration delivery](integration-delivery.md). The host logs and reports event-processing failures without changing connection status; connector errors still update status and notify the user. All chat events use `onEvent`.
+The normalized response event carries a request ID, request kind, and value. Chat-specific callback strings and question-answer envelopes are decoded in the chat family. The host retains actor-bound review submission, input claims, and stale-response checks. `emitEvent` awaits its subscribers: the host persists accepted inputs before returning, resolving an input to `accepted`, `duplicate`, `rejected` or `retry` ([Durable integration delivery](integration-delivery.md#acceptance-and-dispatch)), and processes responses inline. Shared delivery, retries and restart semantics are described in [Durable integration delivery](integration-delivery.md). The host logs and reports event-processing failures without changing connection status; connector errors still update status and notify the user. All chat events use `onEvent`.
 
 ## Message display
 
@@ -129,6 +131,12 @@ connection/settings panels; shared pages do not import concrete provider panels.
 It lists every account owned by the caller, its capabilities, active external session
 IDs, and any integration-owned MCP identity/server/tools. Chat operations consume
 chat capabilities; MCP providers use their named server. Credentials are excluded.
+Each family with agent-side operations has its own x-agent routes behind the same
+proxy token: chat under `/api/x-agent/chat`, meetings under `/api/x-agent/meetings`
+(see [meeting-integrations.md](meeting-integrations.md)). A family route may set the
+caller's installation up on first use when the provider's setup opts in with
+`allowAgentCreation`; it runs the family's `IntegrationTool`s with `source: 'agent'`
+and must refuse tools exposed to management only.
 
 ## Provider setup
 
@@ -152,6 +160,142 @@ connection flow. An optional read-only `setup.describe` hook supplies app-creati
 and callback URLs through the agent-scoped setup endpoint without creating an
 installation. The endpoint enforces the same provider management role as creation.
 
+## Transports
+
+A provider receives events over its own connection (`direct`) or as webhooks
+through the host's webhook relay (`relay`). Its definition lists the transports
+it supports; `['direct']` when omitted. A provider without `direct` requires the
+relay, so the setup UI hides it while `useWebhookRelay()` reports the relay
+unavailable, and the setup endpoint publishes the provider's transports
+alongside its links.
+
+Which transport a connection uses is decided each time it connects, and never
+stored. The manager hands the connector the relay in `host.relay` when the host
+has one available at that moment, and nothing otherwise. A connector whose
+webhooks are set up uses the relay when it's offered and connects directly when
+it isn't; one whose webhooks aren't set up always connects directly, so
+installations from before the relay keep working unchanged. A relay that comes
+or goes while a connection runs changes nothing until its next connect (boot,
+pause/resume, a settings change, or a health rebuild). Relay addresses are
+treated as fixed: switching relay implementations breaks set-up webhooks, as it
+does agent-minted webhook triggers.
+
+"Webhooks are set up" is the stored config's `relay: { endpointId, url, scope }`,
+plus whatever the provider keeps on its side (for Linear, the optional signing secret).
+When provider setup returns `relay: true`, setup mints the endpoint before the
+installation exists, under the creator's platform member (as agent-minted
+webhook endpoints are), so provider setup can hand out its URL; a relay-only
+provider always gets one. If the installation is then not created, the endpoint
+is disabled. Deleting the installation disables it too, unless another
+installation stores the same endpoint (Email's mailboxes share one per relay
+scope).
+
+`host.relay.attach()` goes through `integrationRelays`, which keeps one relay
+registration per integration across reconnects: nothing is claimed while no
+connection is attached, and events already claimed are offered to the next
+connection as soon as it attaches. A relay connection is connected while it is
+attached, so the delivery queue keeps running even while the relay itself is
+down. Relayed events go through the same `emitEvent` handoff as direct input;
+`relayAcceptResult()` maps its result to what the relay acknowledges (`rejected`
+becomes `discard`; `retry` is never acknowledged).
+
+iMessage sets its webhooks up itself, and with a relay it opens no socket. The
+first connect offered a relay mints the endpoint, with a verification profile
+for the gateway's signature and a secret the host generates. Every such connect
+registers the endpoint as the phone's gateway webhook (`PUT`, which is
+idempotent), then receives every event through the relay and sends commands
+over the gateway's HTTP API. Existing installations switch on their next connect
+with no step from the user. Without a relay, or if the endpoint or registration
+fails, the connection uses the gateway socket for both directions as before,
+acking each event once `emitEvent` resolves to anything but `retry`. The
+registered webhook stays in place, so events the socket misses wait on the
+relay for a later connect.
+
+The webhook takes every event type the gateway would otherwise hold for a
+socket, since held events count toward the gateway's 1,000-event cap. Events
+are handled one at a time and deduplicated on the gateway event id; messages
+are also deduplicated by the delivery queue on their message id. Send
+confirmations arriving through the relay are ignored. Instead, each HTTP send
+returns Linq's message id, and a reaction answers an approval only if it is on
+that approval's own message, so a stale reaction can't answer a newer approval.
+Deleting the installation removes the gateway webhook before the endpoint is
+disabled.
+
+Email works the same way, with no SSE stream when a relay is offered, but its
+webhooks only wake the cursor poll, which stays the source of truth. Its
+mailboxes share one endpoint per relay scope, so they don't attach through
+`integrationRelays`. `EmailRelays` keeps one registration per endpoint and
+routes each pointer to its mailbox. See [agent-email.md](agent-email.md#consumption-and-delivery).
+
+Telegram sets its webhook up itself too, and with a relay it doesn't poll. A
+bot has either a webhook or `getUpdates`, and Telegram holds what it can't
+deliver for 24 hours. The first connect offered a relay mints the endpoint and
+a secret. Every such connect calls `setWebhook` with the endpoint, which is
+idempotent and moves updates held for `getUpdates` to the webhook. Without a
+relay, or if the endpoint or `setWebhook` fails, the connection long-polls.
+grammY deletes the webhook before its first `getUpdates`, keeping held updates.
+Updates an earlier webhook already posted to the relay can't come back through
+`getUpdates`, so a connection that has an endpoint but couldn't set the webhook
+also drains the relay alongside the poll. A connection replaced during setup
+sends no `setWebhook`, and one already in flight is waited out by its disconnect
+and by the installation's next connect, before that one touches Telegram. The
+manager stops waiting for a teardown after five seconds, so the disconnect alone
+isn't enough. A stale webhook can't land after the next connection has chosen
+to poll.
+Telegram doesn't sign its posts. It sends back the webhook's `secret_token` in
+a header, which no relay verification profile can check (they all sign the
+body), so the host compares it itself. The token is the secret bound to the
+bot's id, so a bot the installation no longer uses can't post as the current
+one. Relayed updates go through `bot.handleUpdate()` one at a time, into the
+same handlers as polled ones, without the first-poll batching, and are
+deduplicated on `update_id` for as long as the installation keeps its cards.
+Each reports what `emitEvent` did with its message.
+Open cards and their buttons belong to the installation, not the connection,
+so a tap that arrives after a reconnect still answers. A restart forgets them,
+and callback ids are random, so an old card's button can't match a new card. Deleting the installation deletes the
+bot's webhook if it still points at the endpoint, before the endpoint is disabled.
+
+Slack can't set its webhooks up itself. A Slack app delivers over Socket Mode
+or to request URLs, never both, and only the app's owner can switch it in
+Slack. So webhooks are explicit:
+- New installations, when the host has a relay: "Create app in Slack" creates
+  the installation first. `prepare()` returns `relay: true` and status
+  `disconnected`, with no bot token yet. Slack's create-app page then opens
+  with a manifest whose Event Subscriptions and Interactivity post to the
+  endpoint, with Socket Mode off. Pasting the app's signing secret and bot
+  token connects it. No app-level token is needed.
+- Existing Socket Mode installations: the Event Delivery card's "Set up
+  webhooks" takes the signing secret and mints the endpoint. The card then
+  walks the owner through switching the app in Slack. "Remove webhooks" goes
+  back to Socket Mode, with an app-level token.
+
+The endpoint carries a Slack v0 verification profile (`slackVerificationProfile`),
+so forgeries are refused as they arrive. The host verifies each post again with
+`isValidSlackRequest`, as of the post's `received_at`, because a claim can come
+long after the post, and because Slack's URL check skips the endpoint's
+verification. A post that fails the host's check but that the endpoint
+verified was signed with the previous secret (it arrived before a rotation),
+so it is still handled; it just doesn't count toward `webhookStatus`.
+
+A connection with webhooks keeps Socket Mode (when it has an app-level token)
+until a post the host itself verifies arrives through the relay. Slack signs
+its URL check, so saving the request URL is enough. That post records
+`webhookStatus: 'verified'` and closes the socket; later connections receive
+through the relay only. Until then the socket is what reports the connection's
+health, and a socket that fails to open keeps retrying while the relay stays
+attached for that first post. A signed URL check that fails verification
+records `rejected`, and the card asks for the secret again; an unsigned one
+isn't Slack's and changes nothing. Saving a signing secret, even the same one,
+clears the status and gives the endpoint that secret. Finishing a webhook-first
+installation checks its bot token with `auth.test` before saving it.
+
+Without a relay, a verified installation has nothing to receive through, so its
+connect fails, and the manager retries it as it would through a network
+outage. Relayed bodies go through `app.processEvent()`, into the same Bolt
+handlers as Socket Mode. They are deduplicated on `event_id` / `trigger_id`.
+Answer buttons carry their request in the button value, so a click that
+reaches another connection, or arrives after a restart, still answers.
+
 ## Task managers
 
 `TaskManagerAgentIntegration` maps each work item to a session and prepares issue
@@ -161,3 +305,13 @@ durable work queue, turn lock or retry scheduler; the shared manager owns delive
 durability for all integrations. Linear implements provider setup, cleanup and MCP hooks;
 its UI panels register at the renderer composition point.
 See [Linear integration](linear-agent-integration.md) for event delivery and identity setup.
+
+## Meetings
+
+`MeetingAgentIntegration` brings the agent into a video call as a voice participant: one
+session per meeting, a join brief, status tracking, and tools to join, leave, list and post
+chat. Providers implement only `MeetingBotHost`; the voice loop runs in the participant page
+the bot presents as its camera. Integration tools can opt into management invocation
+(`exposure: 'management' | 'both'`) and are then reachable at
+`POST /api/agent-integrations/:id/tools/:tool`, so the join button and the agent's
+`join_meeting` call the same operation. See [Meeting integrations](meeting-integrations.md).

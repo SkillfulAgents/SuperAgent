@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
 import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
@@ -14,6 +15,7 @@ import {
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { getViewerUserId } from '@shared/lib/auth/ownership'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -22,10 +24,10 @@ import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { discoverTools } from '@shared/lib/mcp/discover-tools'
 import {
   findAgentsAssignedRemoteMcp,
+  resumeMcpReauthWaits,
   syncAgentsAssignedRemoteMcp,
   syncRemoteMcpAgents,
 } from '@shared/lib/services/connection-sync-service'
-import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
   if (!json) return []
@@ -135,16 +137,16 @@ function resolveDesktopOAuthProtocol(candidate?: string): string {
  * Shared with the read-only redirect-uris route so the string we show a user to
  * paste into a provider console is the same one we later send.
  */
-function buildRedirectCandidates(
+async function buildRedirectCandidates(
   c: Context,
   options: { electron: boolean; protocol?: string },
-): string[] {
+): Promise<string[]> {
   const protocol = resolveDesktopOAuthProtocol(options.protocol)
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
   const httpRedirect = options.electron
     ? loopbackRedirect
-    : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
+    : `${await getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
   return options.electron
     ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
     : [httpRedirect]
@@ -278,7 +280,7 @@ remoteMcps.post('/', async (c) => {
     id,
     name: body.name.trim(),
     url: body.url.trim(),
-    userId: getCurrentUserId(c),
+    userId: getViewerUserId(c),
     authType,
     accessToken: body.accessToken || null,
     toolsJson: JSON.stringify(tools),
@@ -309,7 +311,7 @@ remoteMcps.post('/', async (c) => {
  */
 remoteMcps.get('/oauth-redirect-uris', async (c) => {
   const electron = c.req.query('electron') === '1'
-  const candidates = buildRedirectCandidates(c, {
+  const candidates = await buildRedirectCandidates(c, {
     electron,
     protocol: c.req.query('protocol') ?? undefined,
   })
@@ -345,7 +347,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       ? body.clientSecret.trim()
       : undefined
 
-  const redirectCandidates = buildRedirectCandidates(c, {
+  const redirectCandidates = await buildRedirectCandidates(c, {
     electron: !!body.electron,
     protocol: typeof body.protocol === 'string' ? body.protocol : undefined,
   })
@@ -393,7 +395,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     // New server: OAuth-first flow (no DB insert yet)
     let result
     try {
-      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getViewerUserId(c) ?? undefined, clientNameOverride, clientIdOverride, clientSecretOverride)
     } catch (e) {
       if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
       throw e
@@ -421,7 +423,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
   const iss = c.req.query('iss')
 
   if (error) {
-    const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
+    const issuerValidation = await validateAndConsumeOAuthErrorResponse(state, iss)
     if (!issuerValidation.valid) {
       return c.html(mcpOAuthCallbackBody(
         { type: 'mcp-oauth-callback', state, success: false, error: 'OAuth callback validation failed' },
@@ -449,9 +451,10 @@ remoteMcps.get('/oauth-callback', async (c) => {
   }
 
   if (!result.success || !result.mcpId) {
+    // A refused callback (an expired or already used sign-in) says why.
     return c.html(mcpOAuthCallbackBody(
-      { type: 'mcp-oauth-callback', state, success: false, error: 'Token exchange failed' },
-      'OAuth failed. You can close this window.',
+      { type: 'mcp-oauth-callback', state, success: false, error: result.error ?? 'Token exchange failed' },
+      result.error ? `OAuth failed: ${result.error}. You can close this window.` : 'OAuth failed. You can close this window.',
       delivery,
     ))
   }
@@ -505,7 +508,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   // OAuth and tool discovery both succeeded, so every proxy request parked
   // on this MCP can safely reload its token and retry.
-  mcpReauthManager.completeMcp(result.mcpId)
+  await resumeMcpReauthWaits(result.mcpId)
 
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
   return c.html(mcpOAuthCallbackBody(
@@ -624,7 +627,9 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
   } catch (error) {
     console.warn(`Failed to resolve agents assigned MCP ${id} before delete:`, error)
   }
+  const removedRules = await rulesAboutToBeRemoved({ kind: 'mcp', targetId: id })
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
+  for (const rule of removedRules) await auditRuleChange('deleted', rule, { by: 'system', reason: 'mcp_deleted' }, getCurrentUserId(c))
   const liveRefresh = assignedAgentSlugs
     ? await syncRemoteMcpAgents(assignedAgentSlugs)
     : false
@@ -664,7 +669,7 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       .where(eq(remoteMcpServers.id, id))
 
     const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
-    mcpReauthManager.completeMcp(id)
+    await resumeMcpReauthWaits(id)
     return c.json({ tools, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Tool discovery failed'
@@ -746,7 +751,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       .where(eq(remoteMcpServers.id, id))
 
     const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
-    mcpReauthManager.completeMcp(id)
+    await resumeMcpReauthWaits(id)
     return c.json({ success: true, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Connection test failed'

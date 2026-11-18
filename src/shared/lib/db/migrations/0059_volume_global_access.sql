@@ -1,0 +1,1 @@
+ALTER TABLE `volume_definitions` ADD `global_access` text;

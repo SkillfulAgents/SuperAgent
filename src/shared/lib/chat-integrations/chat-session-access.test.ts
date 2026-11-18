@@ -69,6 +69,9 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { agentRegistry } from '../agent-actor'
 import { createAgentIntegrationSession, getLastDisplayName } from '../services/agent-integration-session-service'
 

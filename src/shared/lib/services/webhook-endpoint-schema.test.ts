@@ -85,6 +85,20 @@ describe('webhookEndpointSchema', () => {
       webhookEndpointSchema.safeParse({ id: 'whep_x', name: 'n', status: 'active' }).success,
     ).toBe(false)
   })
+
+  it.each([
+    ['platformproxy.gamutagents.com/v1/hooks/whep_x', 'https://platformproxy.gamutagents.com/v1/hooks/whep_x'],
+    ['proxy.test:8443/v1/hooks/whep_x?key=value', 'https://proxy.test:8443/v1/hooks/whep_x?key=value'],
+    ['https://proxy.test/v1/hooks/whep_x', 'https://proxy.test/v1/hooks/whep_x'],
+    ['http://localhost:8080/v1/hooks/whep_x', 'http://localhost:8080/v1/hooks/whep_x'],
+  ])('supplies HTTPS only when the endpoint URL has no scheme: %s', (url, expected) => {
+    const endpoint = webhookEndpointSchema.parse({ id: 'whep_x', url, name: 'n', status: 'active' })
+    expect(endpoint.url).toBe(expected)
+  })
+
+  it.each(['', '/v1/hooks/whep_x', 'not a URL', 'https://', 'ftp://proxy.test/hooks', 'mailto:user@proxy.test'])('rejects an unusable webhook URL: %s', url => {
+    expect(webhookEndpointSchema.safeParse({ id: 'whep_x', url, name: 'n', status: 'active' }).success).toBe(false)
+  })
 })
 
 describe('webhookEnvelopeSchema', () => {

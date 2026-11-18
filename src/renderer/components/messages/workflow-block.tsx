@@ -12,7 +12,7 @@ import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
  * A workflow runs as a background fan-out of subagents inside the CLI; only
  * WORKFLOW-LEVEL lifecycle crosses the SDK stream (the per-agent transcripts
  * live on disk, not on the wire — a full per-agent drawer is a planned follow-up).
- * The persister maps the workflow's `task_*` events onto the existing subagent
+ * The host's `LiveSession` maps the workflow's `task_*` events onto the existing subagent
  * channel keyed by the Workflow tool's `tool_use_id`, so we can show a live
  * running→done status, cumulative usage, and the currently-active agent label
  * (`lastToolName`) with no extra plumbing. The Workflow tool itself returns an

@@ -11,15 +11,16 @@
  *
  * Run:
  *   node e2e/live/mcp-hot-add/run.mjs
- *   node e2e/live/mcp-hot-add/run.mjs --source=/path/to/data-dir   # install to borrow settings.json from
+ *   node e2e/live/mcp-hot-add/run.mjs --source=/path/to/data-dir   # install to borrow settings from
  *   node e2e/live/mcp-hot-add/run.mjs --image=superagent-container:mytag
  *   node e2e/live/mcp-hot-add/run.mjs --keep-data                   # keep the seeded dir (holds API keys!)
  *
  * Prerequisites: Docker running, a container image built from THIS checkout
  * (`docker build -t superagent-container:mcp-hot-add agent-container`), and
- * a source data dir whose settings.json carries a working LLM key. The source
- * install is only ever READ; only settings.json, host-container-tokens.json
- * and tenant-id are copied, never the database.
+ * a source data dir whose settings carry a working LLM key. The source
+ * install is only ever READ; only its settings (written to the fresh target as
+ * settings.json, which the first boot imports), host-container-tokens.json and
+ * tenant-id are copied, never the database.
  *
  * The host is started with SUPERAGENT_UNSAFE_ALLOW_LOOPBACK_MCP=1 so the mock
  * MCP on 127.0.0.1 passes the remote-MCP SSRF policy — the same exception the
@@ -32,7 +33,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
   rmSync,
   copyFileSync,
@@ -42,6 +42,7 @@ import path from 'node:path'
 import os from 'node:os'
 import net from 'node:net'
 import { fileURLToPath } from 'node:url'
+import { readInstallSettings } from '../lib/install-settings.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '../../..')
@@ -67,9 +68,11 @@ const log = (msg) => console.log(`[mcp-hot-add] ${msg}`)
 const TARGET = mkdtempSync(path.join(os.tmpdir(), 'mcp-hot-add-data-'))
 
 function seed() {
-  const settingsPath = path.join(SOURCE, 'settings.json')
-  if (!existsSync(settingsPath)) throw new Error(`No settings.json in ${SOURCE}`)
-  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+  // Read from the source's database (or its settings.json if it has not
+  // imported it yet), and written to the fresh target before its first boot,
+  // which imports it.
+  const settings = readInstallSettings(SOURCE)
+  if (!settings) throw new Error(`No settings in ${SOURCE}`)
   settings.container = { ...(settings.container ?? {}), containerRunner: 'docker', agentImage: IMAGE }
   settings.app = { ...(settings.app ?? {}), setupCompleted: true }
 

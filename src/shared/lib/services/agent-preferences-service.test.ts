@@ -3,11 +3,17 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { agentPreferencesSchema } from '@shared/lib/types/agent-preferences'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import {
   readAgentPreferences,
   writeAgentPreferences,
   updateAgentPreferences,
 } from './agent-preferences-service'
+
+// Settings (read alongside the preferences) are in the app database: a fresh test database per test.
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 describe('agent-preferences-service', () => {
   let testDir: string
@@ -19,9 +25,12 @@ describe('agent-preferences-service', () => {
     )
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
+    handle = await createTestDatabase()
+    testDb = handle.db
   })
 
   afterEach(async () => {
+    await handle.close()
     if (originalEnv) {
       process.env.SUPERAGENT_DATA_DIR = originalEnv
     } else {

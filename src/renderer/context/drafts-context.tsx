@@ -23,19 +23,17 @@ export function appendToSessionDraft(
 
 export interface SessionDraftSnapshot {
   text: string | undefined
-  securedSecrets: unknown
 }
 
 /**
- * Fork Session: capture the source's unsent text and secured secrets at click
- * time (the fork's id does not exist yet), then seed the fork's slots once it
- * does. A copy, not a move — the source keeps its own draft. Attachments live in
- * component state, not here, so they do not carry.
+ * Fork Session: capture the source's unsent text at click time (the fork's id
+ * does not exist yet), then seed the fork's slot once it does. A copy, not a
+ * move — the source keeps its own draft. Attachments live in component state,
+ * not here, so they do not carry.
  */
 export function snapshotSessionDraft(store: Pick<DraftsStore, 'get'>, sessionId: string): SessionDraftSnapshot {
   return {
     text: store.get<string>(`session:${sessionId}`),
-    securedSecrets: store.get<unknown>(`session:${sessionId}:secured-secrets`),
   }
 }
 
@@ -45,7 +43,14 @@ export function seedSessionDraft(
   snapshot: SessionDraftSnapshot,
 ): void {
   if (snapshot.text !== undefined) store.set(`session:${sessionId}`, snapshot.text)
-  if (snapshot.securedSecrets !== undefined) store.set(`session:${sessionId}:secured-secrets`, snapshot.securedSecrets)
+}
+
+/**
+ * The id of an agent's home composer and its file drawer, as a session's id is its composer's and drawer's: its draft
+ * is `session:` + this, where the drawer's Submit adds comments and other parts of the app put text for a new conversation.
+ */
+export function agentHomeId(agentSlug: string): string {
+  return `agent-home:${agentSlug}`
 }
 
 /** Seed a newly installed agent's home composer from its template prompt. */
@@ -55,7 +60,7 @@ export function seedAgentTemplatePrompt(
   content: string | undefined,
 ): boolean {
   if (!content) return false
-  store.set(`agent:${agentSlug}`, content)
+  store.set(`session:${agentHomeId(agentSlug)}`, content)
   return true
 }
 

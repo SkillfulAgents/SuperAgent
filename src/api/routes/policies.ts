@@ -3,10 +3,11 @@ import { randomUUID } from 'crypto'
 import { Authenticated, OwnsAccountByParam, OwnsMcpByParam } from '../middleware/auth'
 import { db } from '@shared/lib/db'
 import { batch } from '@shared/lib/db/batch'
-import { apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
+import { apiScopePolicies, mcpToolPolicies, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { getScopeDescriptors } from '@shared/lib/proxy/scope-catalog'
 
 const VALID_DECISIONS = ['allow', 'review', 'block'] as const
 type ValidDecision = (typeof VALID_DECISIONS)[number]
@@ -27,7 +28,9 @@ policies.get('/scope/:accountId', OwnsAccountByParam('accountId'), async (c) => 
     .from(apiScopePolicies)
     .where(eq(apiScopePolicies.accountId, accountId))
     .all()
-  return c.json({ policies: rows })
+  const account = await db.select({ toolkitSlug: connectedAccounts.toolkitSlug })
+    .from(connectedAccounts).where(eq(connectedAccounts.id, accountId)).get()
+  return c.json({ policies: rows, scopeMetadata: getScopeDescriptors(account?.toolkitSlug ?? '') })
 })
 
 // PUT /api/policies/scope/:accountId - Replace all scope policies (batch)

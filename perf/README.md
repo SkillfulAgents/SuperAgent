@@ -34,10 +34,11 @@ CI uploads as an artifact.
 
 | File | Role |
 |---|---|
-| `nfs-shim.ts` | Wraps `fs.promises.*` and `FileHandle#read/stat/readFile` with latency + counters, and the sync entry points with counters. Installed once, disabled outside `measure()`. |
+| `nfs-shim.ts` | Wraps `fs.promises.*` and `FileHandle#read/stat/readFile/write/sync` with latency + counters, and the sync entry points with counters. Installed once, disabled outside `measure()`. `NFS_SIM_TRACE=1` prints each counted operation with its path. |
 | `fixtures.ts` | Deterministic seeding (`PROFILES.small`, `PROFILES.big`), with hidden automations, metadata-only sessions, SDK subagent artifacts, artifacts, and a pre-written ownership index. |
 | `harness.ts` | `bootPerfApp()` (seeds, boots the router, sends one unmeasured warm-up request), `measure()`, `expectWithinBudget()`. |
 | `home-scenarios.ts` | The iOS home-page scenarios, parameterised by profile. |
+| `session-send.perf.ts` | Creating a session and sending it messages: operations before the container has the message, and to the response. |
 | `*.perf.ts` | One file per profile: calls the scenario definition with that profile's budgets. Each file runs in its own fork, so profiles share no process state. |
 | `../vitest.perf.config.ts` | Separate config: `perf/**/*.perf.ts`, single fork, no concurrency. |
 
@@ -63,6 +64,54 @@ adds to it), so give it room for a busy runner.
 1. Seed what you need in `fixtures.ts` (keep it deterministic — PRNG, fixed
    timestamps via `utimes`, ownership index written up front).
 2. `const { result, measurement } = await measure(() => perf.request(url))`.
+   A route that leaves fire-and-forget work running when it responds (a
+   rename, a background read) takes `measure(fn, { settle: true })`, which
+   keeps counting until the filesystem goes quiet; otherwise that work lands
+   in the counts in part, differently on every run.
 3. Assert correctness on `result` first (this is the only place the whole
    chain runs on a real filesystem; the route unit tests mock the services).
 4. `expectWithinBudget(label, measurement, budget)`.
+
+To find out which call an operation belongs to, run the file with
+`NFS_SIM_TRACE=1`.
+
+## Agent avatar browser benchmark
+
+`agent-avatar-fixture.tsx` is a separate renderer fixture, outside the API suite.
+Run from the repository root with Playwright Chromium installed:
+
+```bash
+E2E_MOCK=true npx tsx scripts/benchmark-agent-avatars.ts --baseline 16884e2b6b77d3438feac08ac954155aaf686145 2>&1 | tee /tmp/avatar-perf.txt
+```
+
+The script bundles the fixture in memory, compares the selected revision's
+avatar modules with the working tree, and writes validated samples to
+`/tmp/agent-avatar-performance.json` (override with `--output`). It does not run
+the app build. Each fixture alternates baseline/current order across three
+trials, with a 2-second warm-up and a 1.5-second sample. Sidebar fixtures mount
+40 or 200 rows in a 480px scroller with 10 avatars visible; the picker has all
+28 avatars visible. Offscreen cases translate the entire sidebar outside the
+viewport.
+
+Results on 2026-10-12: production React, headless Chromium 145.0.7632.6, DPR 2,
+Linux x64, AMD Ryzen Threadripper PRO 9965WX. Values are median main-thread
+milliseconds per second, measured with Chromium's `TaskDuration` metric.
+
+| Fixture | Stack tip | After cleanup |
+|---|---:|---:|
+| 40 idle, no pointer | 69.8 | 40.8 |
+| 40 idle, stationary pointer | 53.5 | 18.4 |
+| 40 idle, moving pointer | 114.6 | 77.5 |
+| 200 idle, moving pointer | 226.2 | 65.1 |
+| 200 idle, offscreen sidebar | 153.9 | 0.1 |
+| 40 working, no pointer | 114.6 | 29.5 |
+| 200 working, offscreen sidebar | 352.6 | 0.1 |
+| 28-option picker, moving pointer | 76.8 | 64.4 |
+
+Offscreen cases recorded zero component animation frames after cleanup.
+Stationary-pointer bounds reads dropped from 3,600 to zero per sample; the
+200-row moving-pointer case dropped from 18,000 to 900. Steady working dots
+caused zero layouts, down from 65 per sample. These are component measurements,
+not full-app latency or GPU/compositor measurements; wall-clock results vary
+with the machine, browser and workload. The harness remains available for
+repeat comparisons rather than enforcing these timing values as CI budgets.

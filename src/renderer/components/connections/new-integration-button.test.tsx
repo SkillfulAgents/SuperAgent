@@ -243,10 +243,15 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
 
     expect(capturedOAuthCallback).not.toBeNull()
 
-    // Simulate Electron OAuth callback with connectionId + toolkit
+    // A callback for another sign-in settles nothing; only this click's connection completes it.
+    await act(async () => {
+      await capturedOAuthCallback!({ connectionId: 'other-conn', toolkit: 'slack', status: 'success' })
+    })
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/connected-accounts/complete', expect.anything())
+
     await act(async () => {
       await capturedOAuthCallback!({
-        connectionId: 'composio-conn-123',
+        connectionId: 'pending-conn-123',
         toolkit: 'slack',
         status: 'success',
       })
@@ -270,11 +275,16 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
 
     await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
 
+    const callback = { type: 'oauth-callback', success: true, accountId: MOCK_ACCOUNT_ID, toolkitSlug: 'slack' }
+    // Another site's message settles nothing.
     await act(async () => {
-      window.postMessage(
-        { type: 'oauth-callback', success: true, accountId: MOCK_ACCOUNT_ID, toolkitSlug: 'slack' },
-        '*',
-      )
+      window.dispatchEvent(new MessageEvent('message', { data: callback, origin: 'https://evil.example' }))
+      await new Promise((r) => setTimeout(r, 50))
+    })
+    expect(screen.getByText('Add New Connection')).toBeInTheDocument()
+
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { data: callback, origin: window.location.origin }))
       // Let the async message handler settle
       await new Promise((r) => setTimeout(r, 50))
     })
@@ -298,10 +308,7 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
 
     await act(async () => {
-      window.postMessage(
-        { type: 'oauth-callback', success: true },
-        '*',
-      )
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'oauth-callback', success: true }, origin: window.location.origin }))
       await new Promise((r) => setTimeout(r, 50))
     })
 

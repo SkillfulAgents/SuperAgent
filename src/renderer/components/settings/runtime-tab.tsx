@@ -457,7 +457,7 @@ export function RuntimeTab() {
       )}
 
       {hasRunningAgents && (
-        <div className="flex items-start gap-2 p-3 text-sm bg-yellow-500/10 border border-yellow-500/20 rounded-md">
+        <div className="flex items-start gap-2 p-3 text-sm bg-yellow-500/10 border border-yellow-500/20 rounded-card">
           <AlertCircle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
           <p className="text-yellow-700 dark:text-yellow-400">
             Some settings cannot be changed while agents are running. Stop all agents to modify container runtime or resource limits.
@@ -571,7 +571,7 @@ export function RuntimeTab() {
 
       {/* Runtime-specific settings */}
       {currentRunnerFields.length > 0 && (
-        <div className="space-y-4 p-4 border rounded-md">
+        <div className="space-y-4 p-4 border rounded-card">
           <div className="space-y-0.5">
             <Label className="text-base">{RUNNER_LABELS[containerRunner] || containerRunner} Settings</Label>
             <p className="text-xs text-muted-foreground">

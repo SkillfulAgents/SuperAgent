@@ -26,7 +26,7 @@ interface BrowserActivityLogProps {
 
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
   const { data: messages } = useMessages(sessionId, agentSlug)
-  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug)
+  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug, ['streamingToolUses', 'activeSubagents'])
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
 
   // Collect ALL subagent IDs from the session messages
@@ -146,7 +146,7 @@ function CompactToolCall({ toolCall }: { toolCall: ApiToolCall }) {
   const isError = toolCall.isError
 
   return (
-    <div className="text-xs rounded-md border border-border/30 px-2 py-1">
+    <div className="text-xs rounded-item border border-border/30 px-2 py-1">
       <button
         className={cn(
           'w-full flex items-center gap-1 rounded-sm',

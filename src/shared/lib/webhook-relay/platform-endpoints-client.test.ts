@@ -25,6 +25,7 @@ import {
   listPlatformWebhookEvents,
   testPlatformWebhookFilter,
 } from './platform-endpoints-client'
+import { integrationRelayBindingSchema } from '../agent-integrations/transport'
 
 const ENDPOINT = {
   id: 'whep_11111111-2222-4333-8444-555555555555',
@@ -81,6 +82,15 @@ describe('platform-endpoints-client', () => {
     await createPlatformWebhookEndpoint('sub_member_1', { name: 'n' })
     const headers = (mockFetch.mock.calls[0][1] as RequestInit).headers as Headers
     expect(headers.get('Authorization')).toBe('Bearer token-value')
+  })
+
+  it('makes a scheme-less platform URL usable by integration setup', async () => {
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({ ...ENDPOINT, url: ENDPOINT.url.slice('https://'.length) }), { status: 201 }))
+
+    const endpoint = await createPlatformWebhookEndpoint('sub_member_1', { name: 'Linear integration' })
+    const binding = integrationRelayBindingSchema.parse({ endpointId: endpoint.id, url: endpoint.url, scope: 'sub_member_1' })
+    expect(binding.url).toBe(ENDPOINT.url)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 
   it('PATCHes verification onto an existing endpoint', async () => {
@@ -263,5 +273,14 @@ describe('platform-endpoints-client', () => {
     )
     expect(deleteCall).toBeDefined()
     expect(deleteCall?.[0]).toContain(encodeURIComponent(orphanId))
+  })
+
+  it('rolls back a minted endpoint when its URL cannot be repaired', async () => {
+    mockFetch
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...ENDPOINT, url: '/v1/hooks/invalid' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    await expect(createPlatformWebhookEndpoint('sub_member_1', { name: 'n' })).rejects.toThrow(/unexpected webhook-endpoint response/)
+    expect(mockFetch).toHaveBeenLastCalledWith(`https://proxy.test/v1/webhook-endpoints/${ENDPOINT.id}`, expect.objectContaining({ method: 'DELETE' }))
   })
 })

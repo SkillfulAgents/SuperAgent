@@ -4,9 +4,13 @@ import {
   proxyAuditLog,
   proxyTokens,
   agentConnectedAccounts,
+  agentBrowserAccounts,
+  browserAccountSessions,
+  browserAccounts,
   scheduledTasks,
   notifications,
   sessionUnreadMarks,
+  agentSessions,
   todos,
   connectedAccounts,
   userSettings,
@@ -19,6 +23,8 @@ import {
   agentRemoteMcps,
   mcpAuditLog,
   mcpToolPolicies,
+  proxyRules,
+  proxyRuleVersions,
   agentAcl,
   agentVolumes,
   volumeDefinitions,
@@ -32,6 +38,7 @@ import {
   apnsDevices,
   pushSubscriptions,
   pushVapidKeys,
+  teamDirectories,
 } from './schema'
 import { agentIntegrationRegistry } from '../agent-integrations/registry'
 
@@ -61,6 +68,10 @@ function factoryResetTables(): SQLiteTable[] { return [
   agentAcl,
   xAgentPolicies,
   webhookTriggers,
+  // Browser Vault grants point at agents; sessions and grants at accounts
+  agentBrowserAccounts,
+  browserAccountSessions,
+  browserAccounts,
   // attachments precede both their saved source and their agent
   agentVolumes,
   volumeDefinitions,
@@ -68,6 +79,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   agents,
   notifications,
   sessionUnreadMarks,
+  // the local agents' session indexes
+  agentSessions,
   // personal Todo board items (they point at agents and sessions)
   todos,
   scheduledTasks,
@@ -76,6 +89,11 @@ function factoryResetTables(): SQLiteTable[] { return [
   integrationDeliveries,
   chatIntegrations,
   llmConnections,
+  // connected team directories (their people are only ever cached)
+  teamDirectories,
+  // proxy rules point at connected accounts or remote MCP servers
+  proxyRuleVersions,
+  proxyRules,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
   agentConnectedAccounts,
   apiScopePolicies,

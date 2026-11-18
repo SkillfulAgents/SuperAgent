@@ -1,8 +1,9 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
+import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { createAgentWithTelegramIntegration } from '../helpers/chat-integrations'
+import { openHomeSection } from '../helpers/agent-home'
 
 async function openAgentHome(page: Page, agentPage: AgentPage, agentName: string) {
   await agentPage.selectAgent(agentName)
@@ -17,12 +18,6 @@ function getDailyIssueSummaryTaskRow(appPage: AppPage) {
     .filter({ hasText: 'Daily Issue Summary' })
     .filter({ hasText: /cron/i })
     .first()
-}
-
-function getCurrentAgentSlug(page: Page) {
-  const match = page.url().match(/\/agents\/([^/?#]+)/)
-  expect(match).toBeTruthy()
-  return match![1]
 }
 
 async function waitForDailyIssueSummaryTask(request: APIRequestContext, agentSlug: string) {
@@ -112,10 +107,11 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await openAgentHome(page, agentPage, agentName)
 
     const main = appPage.getMainContent()
-    // Role-scoped: the section's empty state ("No triggers yet" / "Triggers
-    // fire your agent…") also contains the word "Triggers", and bare
+    // Role-scoped: the section's empty state ("Triggers run your agent…")
+    // also contains the word "Triggers", and bare
     // getByText trips strict mode while the task is still being created.
     await expect(main.getByRole('button', { name: 'Triggers' })).toBeVisible({ timeout: 5000 })
+    await openHomeSection(page, 'Triggers')
     await expect(getDailyIssueSummaryTaskRow(appPage)).toBeVisible({ timeout: 10000 })
   })
 
@@ -132,6 +128,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
 
     // Land on agent home where the task lives under "Triggers"
     await openAgentHome(page, agentPage, agentName)
+    await openHomeSection(page, 'Triggers')
     const taskRow = getDailyIssueSummaryTaskRow(appPage)
     await expect(taskRow).toBeVisible({ timeout: 10000 })
 
@@ -166,6 +163,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
 
     // Open the task to capture its id + the owner's slug from the URL.
     await openAgentHome(page, agentPage, ownerName)
+    await openHomeSection(page, 'Triggers')
     const taskRow = getDailyIssueSummaryTaskRow(appPage)
     await expect(taskRow).toBeVisible({ timeout: 10000 })
     await taskRow.click()

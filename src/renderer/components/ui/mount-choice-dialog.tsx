@@ -31,7 +31,7 @@ export function MountChoiceDialog({ open, onChoice, folderName }: MountChoiceDia
           <button
             type="button"
             onClick={() => onChoice('upload')}
-            className="flex items-start gap-3 rounded-lg border p-3 text-left hover:bg-muted/50 transition-colors"
+            className="flex items-start gap-3 rounded-card border p-3 text-left hover:bg-muted/50 transition-colors"
           >
             <Upload className="h-5 w-5 mt-0.5 text-muted-foreground shrink-0" />
             <div>
@@ -47,12 +47,12 @@ export function MountChoiceDialog({ open, onChoice, folderName }: MountChoiceDia
           <button
             type="button"
             onClick={() => onChoice('mount')}
-            className="flex items-start gap-3 rounded-lg border p-3 text-left hover:bg-muted/50 transition-colors"
+            className="flex items-start gap-3 rounded-card border p-3 text-left hover:bg-muted/50 transition-colors"
           >
             <Link2 className="h-5 w-5 mt-0.5 text-muted-foreground shrink-0" />
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-medium text-sm">Mount folder</span>
+                <span className="font-medium text-sm">Add as drive</span>
                 <span className="rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-2xs font-medium leading-none">Read &amp; Write</span>
               </div>
               <div className="text-xs text-muted-foreground">

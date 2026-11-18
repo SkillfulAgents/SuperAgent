@@ -62,9 +62,9 @@ describe('stale poll responses never overwrite a newer tray menu', () => {
   })
 
   it('discards an older build that resolves after a newer one', async () => {
-    createTray(null, () => 'http://localhost:1')
+    createTray(null, async () => 'http://localhost:1')
     refreshTrayMenu()
-    expect(resolvers).toHaveLength(2)
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2))
 
     resolvers[1]([agent('cloud-agent')])
     await vi.waitFor(() => expect(setContextMenu).toHaveBeenCalledTimes(1))

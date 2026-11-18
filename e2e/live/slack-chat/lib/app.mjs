@@ -134,17 +134,15 @@ export async function startApp({
   }
 
   mkdirSync(path.dirname(logFile), { recursive: true })
-  // better-sqlite3 is a native module and the two hosts need different ABIs, so
-  // whichever ran last leaves the other broken. Rebuilding for the host about
-  // to run is what `npm run dev` / `dev:electron` each do for themselves.
-  log(`rebuilding better-sqlite3 for ${host}…`)
-  await new Promise((resolve, reject) => {
-    const rebuild =
-      host === 'electron'
-        ? spawn('npx', ['electron-rebuild', '-f', '-w', 'better-sqlite3'], { cwd: repoRoot, stdio: 'ignore' })
-        : spawn('npm', ['rebuild', 'better-sqlite3'], { cwd: repoRoot, stdio: 'ignore' })
-    rebuild.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`rebuild exited ${code}`))))
-  })
+  // Electron downloads its binary on first launch, not on install, and
+  // electron-vite refuses to start without it — what `dev:electron` does first.
+  if (host === 'electron') {
+    log('making sure the Electron binary is downloaded…')
+    await new Promise((resolve, reject) => {
+      const install = spawn('npx', ['--no', 'install-electron'], { cwd: repoRoot, stdio: 'ignore' })
+      install.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`install-electron exited ${code}`))))
+    })
+  }
 
   const out = createWriteStream(logFile, { flags: 'a' })
   // Own process group: electron-vite forks Electron, and SIGTERM to the

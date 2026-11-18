@@ -40,7 +40,10 @@ test.describe('composer Markdown blocks', () => {
     await expect(input.locator('h2')).toHaveText('Hello')
     await expect(input.locator('ul').first().locator(':scope > li')).toHaveCount(2)
 
-    await input.fill('')
+    // Clear through the editor so the synthetic paste sees an empty document.
+    await input.press('ControlOrMeta+A')
+    await input.press('Backspace')
+    await expect(input).toHaveText('')
     await input.evaluate((element) => {
       const clipboardData = new DataTransfer()
       clipboardData.setData(
@@ -78,11 +81,21 @@ test.describe('composer Markdown blocks', () => {
     await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeHidden()
 
     await input.locator('a[href="https://example.com/docs"]').click()
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeVisible()
     await cardSettled(page.getByRole('button', { name: 'https://example.com/docs' }))
     await page.keyboard.press('Escape')
     await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeHidden()
 
+    await input.press('End')
+    await input.pressSequentially(' and [guide](https://example.com/guide)')
+    await expect(input.locator('a[href="https://example.com/guide"]')).toHaveText('guide')
     await input.locator('a[href="https://example.com/docs"]').click()
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeVisible()
+    await input.locator('a[href="https://example.com/guide"]').click()
+    await expect(page.getByRole('button', { name: 'https://example.com/guide' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeHidden()
+    await input.locator('a[href="https://example.com/docs"]').click()
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeVisible()
     await page.keyboard.type('s')
     await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeHidden()
   })
@@ -101,6 +114,22 @@ test.describe('composer Markdown blocks', () => {
       const card = page.getByRole('button', { name: 'https://example.com/docs' })
       await expect(card).toBeVisible()
 
+      await cardSettled(card)
+      await page.keyboard.press('Escape')
+      await expect(card).toBeHidden()
+      await expect(dialog).toBeVisible()
+
+      // Move the caret first: two clicks at the same point are a ProseMirror
+      // double-click, which selects text instead of opening the link card.
+      await editor.click({ position: { x: 4, y: 8 } })
+      await editor.locator('a[href="https://example.com/docs"]').click()
+      await expect(card).toBeVisible()
+      await editor.click({ position: { x: 4, y: 8 } })
+      await expect(card).toBeHidden()
+      // Reopening during the closing animation must survive the previous
+      // layer's deferred outside event, including inside a parent dialog.
+      await editor.locator('a[href="https://example.com/docs"]').click()
+      await expect(card).toBeVisible()
       await cardSettled(card)
       await page.keyboard.press('Escape')
       await expect(card).toBeHidden()

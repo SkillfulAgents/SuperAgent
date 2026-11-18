@@ -1,48 +1,52 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import * as fs from 'fs'
-import * as os from 'os'
-import * as path from 'path'
-
-let tempDir: string
-
-vi.mock('@shared/lib/config/data-dir', () => ({
-  getDataDir: () => tempDir,
-}))
-
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { readStoredRecord } from '@shared/lib/app-records/records'
+import { hostContainerTokenKey } from '@shared/lib/app-records/record-schemas'
 import { getOrCreateHostToken } from './host-token-store'
 
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
+// The token store is one app record per agent. Concurrency across processes
+// and corrupt rows are covered with the records themselves
+// (app-records/host-records.test.ts); the legacy file's import, by its data
+// migration (db/data-migrations/0009-import-host-records.test.ts).
 describe('host-token-store', () => {
-  beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'host-token-store-'))
+  beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
   })
 
-  afterEach(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true })
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await handle.close()
   })
 
-  it('creates a token per agent and returns the same one on later calls', () => {
-    const first = getOrCreateHostToken('agent-a')
+  it('creates a token per agent and returns the same one on later calls', async () => {
+    const first = await getOrCreateHostToken('agent-a')
     expect(first).toMatch(/^hostc_[0-9a-f]{64}$/)
-    expect(getOrCreateHostToken('agent-a')).toBe(first)
-    expect(getOrCreateHostToken('agent-b')).not.toBe(first)
+    expect(await getOrCreateHostToken('agent-a')).toBe(first)
+    expect(await getOrCreateHostToken('agent-b')).not.toBe(first)
   })
 
-  it('persists tokens across reads (survives a host restart)', () => {
-    const token = getOrCreateHostToken('agent-a')
-    const onDisk = JSON.parse(fs.readFileSync(path.join(tempDir, 'host-container-tokens.json'), 'utf-8'))
-    expect(onDisk['agent-a']).toBe(token)
+  it('keeps each agent\'s token in its own record, which a later process reads back', async () => {
+    const token = await getOrCreateHostToken('agent-a')
+    // The database, not this process, holds it: a host restart reads this record.
+    const stored = await readStoredRecord(hostContainerTokenKey('agent-a'))
+    expect(stored && JSON.parse(stored.value)).toBe(token)
+    expect(await readStoredRecord(hostContainerTokenKey('agent-b'))).toBeNull()
   })
 
-  it('writes the token file owner-read/write only', () => {
-    getOrCreateHostToken('agent-a')
-    const mode = fs.statSync(path.join(tempDir, 'host-container-tokens.json')).mode & 0o777
-    expect(mode).toBe(0o600)
+  it('agrees on one token when first uses race', async () => {
+    const tokens = await Promise.all(Array.from({ length: 5 }, () => getOrCreateHostToken('agent-a')))
+    expect(new Set(tokens).size).toBe(1)
   })
 
-  it('regenerates from scratch when the file is corrupt', () => {
-    fs.writeFileSync(path.join(tempDir, 'host-container-tokens.json'), 'not-json')
-    const token = getOrCreateHostToken('agent-a')
-    expect(token).toMatch(/^hostc_/)
-    expect(getOrCreateHostToken('agent-a')).toBe(token)
+  it('reads the record on every call rather than keeping the token', async () => {
+    await getOrCreateHostToken('agent-a')
+    const reads = vi.spyOn(testDb, 'select')
+    await getOrCreateHostToken('agent-a')
+    expect(reads).toHaveBeenCalledTimes(1)
   })
 })

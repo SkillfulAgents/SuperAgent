@@ -332,7 +332,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     })
   })
 
-  it('applies marginal >200K rates to historical Claude 1M-context usage (ccusage #651)', () => {
+  it('applies marginal >200K rates to historical Claude 1M-context usage (ccusage #651)', async () => {
     const expected =
       (200_000 * 3 + 100_000 * 6 +
         200_000 * 15 + 50_000 * 22.5 +
@@ -341,7 +341,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
       1_000_000
 
     expect(
-      calculateCost('claude-4-sonnet-20250514', 300_000, 250_000, 300_000, 250_000),
+      await calculateCost('claude-4-sonnet-20250514', 300_000, 250_000, 300_000, 250_000),
     ).toBeCloseTo(expected, 9)
   })
 
@@ -373,9 +373,9 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     })
   })
 
-  it('counts cache writes when selecting a whole-request long-context tier (ccusage #1541)', () => {
+  it('counts cache writes when selecting a whole-request long-context tier (ccusage #1541)', async () => {
     // 10K fresh + 191K cache writes is above Grok's 200K prompt threshold.
-    expect(calculateCost('grok-4.5', 10_000, 1_000, 191_000, 0)).toBeCloseTo(
+    expect(await calculateCost('grok-4.5', 10_000, 1_000, 191_000, 0)).toBeCloseTo(
       (10_000 * 4 + 1_000 * 12 + 191_000 * 4) / 1_000_000,
       9,
     )
@@ -409,15 +409,15 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     })
   })
 
-  it('inherits the canonical cache-write ratio for a Bedrock-prefixed Claude ID (#743 class)', () => {
+  it('inherits the canonical cache-write ratio for a Bedrock-prefixed Claude ID (#743 class)', async () => {
     expect(
-      calculateCost('us.anthropic.claude-sonnet-4-6', 0, 0, 1_000_000, 0),
+      await calculateCost('us.anthropic.claude-sonnet-4-6', 0, 0, 1_000_000, 0),
     ).toBeCloseTo(3.75, 9)
   })
 
-  it('does not bill GLM cache creation at its input-token rate (ccusage #1235)', () => {
-    expect(calculateCost('z-ai/glm-5.2', 1_000_000, 0, 0, 0)).toBe(1.2)
-    expect(calculateCost('z-ai/glm-5.2', 0, 0, 1_000_000, 0)).toBe(0)
+  it('does not bill GLM cache creation at its input-token rate (ccusage #1235)', async () => {
+    expect(await calculateCost('z-ai/glm-5.2', 1_000_000, 0, 0, 0)).toBe(1.2)
+    expect(await calculateCost('z-ai/glm-5.2', 0, 0, 1_000_000, 0)).toBe(0)
   })
 
   it.each([

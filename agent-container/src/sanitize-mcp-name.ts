@@ -1,7 +1,7 @@
 /**
  * Reserved MCP server names that collide with built-in MCP servers.
  */
-export const RESERVED_MCP_NAMES = new Set(['user_input', 'browser', 'dashboards']);
+export const RESERVED_MCP_NAMES = new Set(['user_input', 'browser', 'dashboards', 'rules']);
 
 /**
  * Sanitize an MCP server name for use as an SDK MCP server key.

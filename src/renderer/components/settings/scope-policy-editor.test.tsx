@@ -12,6 +12,9 @@ const mockApiFetch = vi.fn((url: string, opts?: { method?: string; body?: string
     lastPutBody = JSON.parse(opts.body as string)
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) })
   }
+  if (url === '/api/user-settings') {
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ defaultApiPolicy: 'review' }) })
+  }
   return Promise.resolve({ ok: true, json: () => Promise.resolve({ policies: policiesFixture }) })
 })
 vi.mock('@renderer/lib/api', () => ({
@@ -70,6 +73,30 @@ describe('ScopePolicyEditor', () => {
     for (const group of ['read', 'write', 'destructive'] as const) {
       expect(groupDecision(group)).toHaveAttribute('data-decision', 'default')
     }
+  })
+
+  it('shows what a group on "default" falls back to', async () => {
+    policiesFixture = [{ scope: '*', decision: 'block' }]
+    renderWithProviders(
+      <ScopePolicyEditor accountId="acc-2b" toolkit="gmail" open onOpenChange={() => {}} />,
+    )
+    await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
+
+    expect(groupDecision('read')).toHaveAttribute('data-inherited', 'true')
+    expect(groupDecision('read')).toHaveTextContent('Blocked (from fallback)')
+  })
+
+  it('shows the global API policy on a group when nothing else is set', async () => {
+    policiesFixture = [{ scope: 'gmail.send', decision: 'block' }]
+    renderWithProviders(
+      <ScopePolicyEditor accountId="acc-2c" toolkit="gmail" open onOpenChange={() => {}} />,
+    )
+    await waitFor(() => expect(groupDecision('read')).toHaveTextContent('Needs approval (default)'))
+    expect(groupDecision('read')).toHaveAttribute('data-inherited', 'true')
+
+    await expandGroup('read')
+    expect(scopeToggle('gmail.readonly', 'review')).toHaveAttribute('data-inherited', 'true')
+    expect(screen.getByTestId('scope-policy-save')).toBeDisabled()
   })
 
   it('Save persists the pre-filled baseline as label-default rows', async () => {

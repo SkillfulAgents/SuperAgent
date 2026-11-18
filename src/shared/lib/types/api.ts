@@ -7,9 +7,11 @@
 
 import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
-import type { SessionUsage } from '@shared/lib/types/agent'
+import type { SessionOrigin, SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { UnansweredReason } from '@shared/lib/tools/types'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
+import type { AgentAvatar } from './agent-avatar'
 
 export type { ApiAgentWidget }
 
@@ -26,6 +28,12 @@ export interface ApiAgent {
   /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
   displaySlug: string
   name: string
+  /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
+  teamBrain?: { volumeId: string }
+  /** The agent of a Team Brain set-up still in progress: no list shows it. */
+  teamBrainSettingUp?: true
+  /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
+  avatar?: AgentAvatar | null
   description?: string
   instructions?: string // Only included in single-agent response
   createdAt: Date
@@ -39,6 +47,19 @@ export interface ApiAgent {
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** One of its sessions has an unread notification that tags the viewer. */
+  hasUnreadMention?: boolean
+  /**
+   * The start of the newest unread notification behind the flag that wins
+   * above (waiting, then mention, then any unread), on one line. Absent when
+   * none of those flags has a notification to show, e.g. a session marked
+   * unread by hand or a pending proxy review.
+   */
+  notificationPreview?: string
+  /** Identity of the notification shown, for optimistic read updates. */
+  notificationPreviewSource?: { id: string; sessionId: string }
+  /** Personal reminders survive marking notifications read. */
+  markedUnreadSessionIds?: string[]
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
@@ -112,6 +133,8 @@ export interface ApiDiscoverableAgent {
   category?: string
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon?: string
+  /** The template's orb, when its skillset names one. */
+  avatar?: AgentAvatar
   tags?: string[]
   /** Services the template connects to; `slug` matches the service-icon set. */
   worksWith?: { type: string; slug: string }[]
@@ -131,10 +154,13 @@ export interface ApiSession {
   name: string
   createdAt: Date
   lastActivityAt: Date
-  messageCount: number
+  /** Original source; older servers may omit it. Promotion does not change it. */
+  origin?: SessionOrigin
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** An unread notification that tags the viewer: drawn as an @, not a dot. */
+  hasUnreadMention?: boolean
   lastUsage?: SessionUsage
   // Present when session was created by a scheduled task or webhook trigger
   scheduledTaskId?: string
@@ -163,6 +189,8 @@ export interface ApiSession {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  /** Auth mode, list only: the people who wrote in it, in the order they first did. */
+  participants?: ApiMessageSender[]
 }
 
 // ============================================================================
@@ -185,8 +213,12 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
-  /** The runtime's task id for a Bash call run in the background. */
+  /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
   backgroundTaskId?: string
+  /** A TaskCreate call's description as the CLI saved it (CLI 2.1.317+). */
+  taskDescription?: string
+  /** An AskUserQuestion call's questions that ended without an answer, by question text. */
+  unansweredQuestions?: Record<string, UnansweredReason>
 }
 
 /**
@@ -314,9 +346,27 @@ export interface ApiInformational {
 }
 
 /**
+ * One batch of a Monitor watch's output, shown where the runtime delivered it
+ * (see monitor-notifications.ts)
+ */
+export interface ApiMonitorEvent {
+  id: string
+  type: 'monitor_event'
+  /** The watch's task id: the Monitor call's backgroundTaskId. */
+  taskId: string
+  description: string | null
+  events: string[]
+  /** Set on the batch that ended the watch (completed, failed, …). */
+  status: string | null
+  endReason: string | null
+  createdAt: Date
+  forked?: boolean
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational | ApiMonitorEvent
 
 // ============================================================================
 // Secret API Types
@@ -450,12 +500,16 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
   sessionId: string
   agentSlug: string
   title: string
   body: string
   isRead: boolean
+  /** Set on a mention: it is this user's alone. */
+  recipientUserId?: string | null
+  /** The message a mention points at. */
+  messageUuid?: string | null
   createdAt: Date
   readAt: Date | null
 }

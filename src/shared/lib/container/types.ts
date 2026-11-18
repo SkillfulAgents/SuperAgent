@@ -1,6 +1,8 @@
 import type { RuntimeOptions } from './runtime-options'
 import type { ContainerVolume } from '@shared/lib/types/mount'
+import type { SessionMetadata } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
+import type { AppSettings } from '@shared/lib/config/settings'
 
 /** The container refused an operation because the session is mid-turn (HTTP 409). */
 export class ContainerConflictError extends Error {
@@ -24,6 +26,33 @@ export interface SendMessageOptions extends RuntimeOptions {
   preserveRuntime?: boolean
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
+  /**
+   * The session's metadata entry as the caller just read it (null: it has
+   * none). The send binds its provider from it instead of reading it again.
+   */
+  sessionMetadata?: SessionMetadata | null
+  /**
+   * Fields the caller is about to store for this send. When the send has to
+   * store a changed provider binding, these go in the same write.
+   */
+  metadataUpdates?: Partial<SessionMetadata>
+}
+
+export interface SendMessageResult {
+  /** The provider binding the send resolved; absent when it kept the running turn's. */
+  selection?: { llmProviderId: string; model: string }
+  /**
+   * The send stored a changed binding before the container had the message,
+   * together with `metadataUpdates`.
+   */
+  metadataWritten?: boolean
+  /**
+   * Whether the settings this send was prepared from name an app default
+   * connection (`llmDefault`): the binding the send resolved is then the
+   * session's. Read with the rest of the send, so the caller need not read
+   * the settings again to store it.
+   */
+  llmDefault?: boolean
 }
 
 export const CONTAINER_RUNNER_IDS = [
@@ -70,6 +99,14 @@ export interface SlashCommandInfo {
   description: string
   argumentHint: string
 }
+
+/**
+ * A toolset a session can have in the prompt from its first turn
+ * (`CreateSessionOptions.preloadToolsets`), by its name on the wire; the agent
+ * container maps it to the in-process MCP server that carries it
+ * (PRELOAD_TOOLSETS in `agent-container/src/preload-toolsets.ts`).
+ */
+export type PreloadToolset = 'computer-use'
 
 export type InterruptScope = 'turn' | 'all'
 
@@ -121,6 +158,14 @@ export interface CreateSessionOptions {
   effort?: EffortLevel // Initial thinking effort level
   speed?: SpeedLevel // Initial processing speed tier
   /**
+   * Toolsets loaded into the prompt from the first turn rather than behind
+   * ToolSearch, for a session started to do one thing (the launcher's
+   * computer-use toggle). A session asking for any starts cold: the
+   * pre-warmed process doesn't have them. An image that doesn't know a name
+   * ignores it.
+   */
+  preloadToolsets?: PreloadToolset[]
+  /**
    * What the NEXT session on this agent will most likely ask for: the agent's
    * default model/effort/speed with the global fallback applied, ignoring any
    * per-session pick in `model`/`effort`/`speed` above.
@@ -146,6 +191,12 @@ export interface StartOptions {
    * runtime has no view of the workspace and must not read it by host path.
    */
   agentName?: string
+  /**
+   * The settings the caller read for this start, so the start's own steps
+   * (image, resource limits, the agent env) do not read them again. Read by
+   * the start when absent. Host-side only: never part of the container's env.
+   */
+  settings?: AppSettings
   /** Sent as SUPERAGENT_VOLUMES with `volumeRunFlags()`, and dropped with them when the runtime refuses the flags. */
   volumes?: ContainerVolume[]
   /** The runtime refused the volume flags, so the container started without its volumes. */
@@ -171,6 +222,17 @@ export interface HealthCheckResult {
 }
 
 export interface StopOptions {
+  /**
+   * The agent is being deleted: nothing its container holds is needed again,
+   * so a runtime that saves the workspace on stop may drop the container
+   * without saving.
+   */
+  forDeletion?: boolean
+  /**
+   * A session's fatal error (OOM, say) is taking the container down: no one
+   * stopped the sessions on it, so one mid-turn reads it as the crash it is.
+   */
+  afterFatalError?: boolean
   stopTimeoutMs?: number
   killTimeoutMs?: number
   /**
@@ -233,6 +295,8 @@ export interface ContainerClient {
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
   getInfoFromRuntime(): Promise<ContainerInfo>
+  /** Positive evidence that no container process remains. Unknown/unreachable is false. */
+  isDefinitelyStopped(): Promise<boolean>
 
   // Alias for getInfoFromRuntime() - prefer getCachedInfo() from containerManager
   getInfo(): Promise<ContainerInfo>
@@ -243,8 +307,10 @@ export interface ContainerClient {
 
   // Headers proving the caller is the host — required by the container API,
   // which is also reachable from the agent's own Bash. Callers that dial the
-  // container directly (e.g. WebSocket upgrades) must attach these.
-  getHostAuthHeaders(): Record<string, string>
+  // container directly (e.g. WebSocket upgrades) must attach these. The
+  // token is a database record that never changes for the agent: a client
+  // reads it on its first request and keeps it.
+  getHostAuthHeaders(): Promise<Record<string, string>>
 
   getWebSocketBaseUrl(port: number): string
   getHostApiBaseUrl(): string | Promise<string>
@@ -261,15 +327,23 @@ export interface ContainerClient {
   // Session management (proxied to container API)
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
+  /** Stop the session's process, retaining the record needed to resume after a failed file delete. */
+  releaseSession(sessionId: string): Promise<boolean>
+  // true once the container holds no process for the session, including one it never had.
   deleteSession(sessionId: string): Promise<boolean>
   // Copy a session's transcript into a new session (Fork Session).
   // null = the container predates the fork endpoint (plain 404). Throws
   // ContainerNotFoundError when the session is gone (JSON 404),
   // ContainerConflictError when the source is mid-turn.
   forkSession(sessionId: string): Promise<{ id: string } | null>
+  // Ask the container to resume this session's CLI ahead of its next message
+  // (it may have been evicted while idle). Best-effort and never throws:
+  // false when the container predates the endpoint (plain 404), does not know
+  // the session, or does not answer within a short timeout.
+  warmSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>

@@ -123,7 +123,8 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     const result = await deleteAgent('test-agent')
 
     expect(result).toBe(true)
-    expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
+    // The runtime is told the stop is for a delete, so it need not save the workspace.
+    expect(mockStopContainer).toHaveBeenCalledWith('test-agent', { forDeletion: true })
     expect(await agentExists('test-agent')).toBe(false)
   })
 })

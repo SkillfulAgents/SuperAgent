@@ -3,14 +3,14 @@
  *
  * Built through the registry schema rather than by hand: a card a test accepts
  * has to come from an envelope the registry could really have produced. (That
- * the persister EMITS these at all is proven separately, by the wire-contract
+ * the host EMITS these at all is proven separately, by the wire-contract
  * suite in chat-integration-e2e.test.ts, which drives a real tool_use through
- * the real MessagePersister.)
+ * the agent's real live sessions.)
  */
 
 import { pendingUserInputRequestSchema } from '@shared/lib/tools/requests/request-schema'
 
-/** The exact event the persister puts on the wire when a request opens. */
+/** The exact event the live sessions put on the wire when a request opens. */
 export function createdEvent(
   kind: string,
   payload: Record<string, unknown> = {},

@@ -52,7 +52,7 @@ jobs:
   happy-path:
     needs: detect-changes
     if: ${{ github.event_name == 'workflow_dispatch' || (!github.event.pull_request.draft && !github.event.pull_request.head.repo.fork && needs.detect-changes.outputs.container-changed == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       QAGENT_VERSION: v0.1.2

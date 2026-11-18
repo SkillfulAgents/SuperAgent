@@ -1,17 +1,16 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { useNavigate } from '@tanstack/react-router'
-import { Loader2 } from 'lucide-react'
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
+  AlertDialogClose,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
+import { SlideToConfirm } from '@renderer/components/ui/slide-to-confirm'
 import { useDeleteAgent, useRouteAgentId } from '@renderer/hooks/use-agents'
 
 interface DeleteAgentConfirmDialogProps {
@@ -27,6 +26,12 @@ interface DeleteAgentConfirmDialogProps {
  * The one delete-agent confirmation, opened from the agent context menu
  * (every agent entry point shares that menu). Owns the mutation, the
  * navigate-away-when-viewing-the-agent behavior, and the copy.
+ *
+ * Deleting an agent takes its sessions and data with it, so the confirm is
+ * a slide rather than a button: a handle has to be pushed the length of its
+ * track, which a stray click cannot do. The handle unfurls into "Deleting…"
+ * while the mutation runs and the dialog closes behind it; a failed delete
+ * toasts and slides the handle back so it can be tried again.
  */
 export function DeleteAgentConfirmDialog({
   agentSlug,
@@ -50,6 +55,8 @@ export function DeleteAgentConfirmDialog({
     } catch (error) {
       console.error('Failed to delete agent:', error)
       toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
+      // Rethrown so the slider knows to re-arm; the toast above is the report.
+      throw error
     } finally {
       setIsDeleting(false)
     }
@@ -57,31 +64,23 @@ export function DeleteAgentConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent data-testid="confirm-delete-agent-dialog">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete Agent</AlertDialogTitle>
-          <AlertDialogDescription>
-            Are you sure you want to delete &quot;{agentName}&quot;? This will permanently delete
-            the agent and all its sessions, messages, and data. This action cannot be undone.
-          </AlertDialogDescription>
+      {/* max-w-sm: wide enough for the 280px slider and one line of copy, no wider */}
+      <AlertDialogContent className="max-w-sm" data-testid="confirm-delete-agent-dialog">
+        <AlertDialogClose disabled={isDeleting} data-testid="cancel-delete-agent-button" />
+        <AlertDialogHeader className="sm:text-center">
+          {/* symmetric padding keeps the centred title clear of the X without skewing it */}
+          <AlertDialogTitle className="break-words px-8">Delete {agentName}?</AlertDialogTitle>
+          <AlertDialogDescription>All data will be deleted permanently.</AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={handleDelete}
-            disabled={isDeleting}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+        <AlertDialogFooter className="mt-2 sm:justify-center">
+          <SlideToConfirm
+            className="self-center"
+            tone="destructive"
+            label="Slide to delete"
+            confirmedLabel={isDeleting ? 'Deleting…' : 'Deleted'}
+            onConfirm={handleDelete}
             data-testid="confirm-delete-agent-button"
-          >
-            {isDeleting ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Deleting...
-              </>
-            ) : (
-              'Delete'
-            )}
-          </AlertDialogAction>
+          />
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

@@ -1,4 +1,4 @@
-import { canUseHostFeatures } from './host-features'
+import { usesHostFolderPaths } from './capabilities'
 
 /**
  * A dropped or picked file's absolute path on this computer, or null when that
@@ -10,7 +10,7 @@ import { canUseHostFeatures } from './host-features'
  * (enumerate and upload the bytes), which is the only thing that can work.
  */
 function hostPathOf(file: File): string | null {
-  if (!canUseHostFeatures()) return null
+  if (!usesHostFolderPaths()) return null
   return window.electronAPI?.getPathForFile(file) ?? null
 }
 
@@ -23,6 +23,28 @@ export interface FolderGroup {
   folderName: string
   folderPath?: string // Electron: absolute path for server-side copy
   files: { file: File; relativePath: string }[]
+}
+
+/** Splits dropped folders by the choice made. A folder with no path on disk cannot mount, so it is copied instead. */
+export function folderChoice(
+  choice: 'upload' | 'mount' | 'cancel',
+  folders: readonly FolderGroup[],
+): { upload: FolderGroup[]; mount: { folderName: string; hostPath: string }[] } {
+  if (choice !== 'mount') return { upload: choice === 'upload' ? [...folders] : [], mount: [] }
+  return {
+    upload: folders.filter((folder) => !folder.folderPath),
+    mount: folders.flatMap((folder) => (folder.folderPath ? [{ folderName: folder.folderName, hostPath: folder.folderPath }] : [])),
+  }
+}
+
+/** The files in a paste. Text and other items are left out. */
+export function filesFromClipboard(data: { items: Iterable<{ kind: string; getAsFile(): File | null }> } | null | undefined): File[] {
+  const files: File[] = []
+  for (const item of data?.items ?? []) {
+    const file = item.kind === 'file' ? item.getAsFile() : null
+    if (file) files.push(file)
+  }
+  return files
 }
 
 export interface DataTransferResult {

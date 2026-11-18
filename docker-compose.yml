@@ -24,4 +24,7 @@ services:
       # Auth mode (requires building with AUTH_MODE=true)
       - AUTH_MODE=${AUTH_MODE:-false}
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
+      # Browser Vault key (base64, 32 bytes) or a secret file holding it; unset keeps it in the data dir
+      - SUPERAGENT_VAULT_KEY=${SUPERAGENT_VAULT_KEY:-}
+      - SUPERAGENT_VAULT_KEY_FILE=${SUPERAGENT_VAULT_KEY_FILE:-}
       - TRUSTED_ORIGINS=${TRUSTED_ORIGINS:-}

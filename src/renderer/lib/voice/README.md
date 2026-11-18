@@ -35,3 +35,11 @@ Safari's output handling belongs to the shared speech player because it applies 
 Implement the relevant contracts in the provider directory, add the provider to each registry record (the compiler lists the ones you missed), add its settings metadata to `catalog.ts`, and keep provider tests beside the implementation. Generic session and UI code should not need new protocol branches.
 
 Tests sit beside what they exercise: the shared WebSocket STT lifecycle cases live in `shared/`, run against both vendor adapters; registry tests cover selection only; Live and TTS protocol tests live beside their implementations.
+
+## Independent voice transcripts
+
+Adapters declare `capabilities.transcript` as `agent-session` or `separate`. Chained STT/TTS uses `agent-session`: its speech is already the agent's conversation. An adapter with its own conversation declares `separate` and emits `onSpeech` for incoming speech and audible replies, including exchanges it never delegates to the agent. Transcript persistence does not select by engine or provider name.
+
+`useConversationMode` owns one `VoiceTranscriptRelay` per explicit activation. The host allocates `/workspace/sessions/<sessionId>/transcript-N.md` using immutable, exclusively created allocation records, so retries, reconnects, concurrent hosts, and host restarts cannot reuse another activation's index. Leaving and entering voice again allocates the next file. Speech batches are appended before acknowledgement, and pending speech is flushed before a delegated request reaches the agent. Batches whose response was lost can appear twice; page teardown can still interrupt delivery of an unsent backlog.
+
+The app's entry notice includes the path for a separate conversation. A session created from Home already has its initial entry notice before the voice engine exists, so startup adds the transcript location without a second entry boundary. Meetings use the same recording and transcript-only notice, then add active-speaker names on the host and meeting-specific reading guidance. Their speaking/listening policy stays in the meeting prompt. Chained adapters retain the original notice and allocate no file.

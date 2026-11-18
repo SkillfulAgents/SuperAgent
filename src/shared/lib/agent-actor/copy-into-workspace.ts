@@ -1,10 +1,10 @@
 /**
  * Bringing files from this machine into an agent's workspace through the
- * agent's `FileOps`: one file (copied or moved) or a whole directory.
+ * agent's `FileOps`: one file or a whole directory.
  *
  * The source is a host path — a skillset cache clone, a template checkout, a
- * folder chosen in the desktop file picker, an upload assembled in the temp
- * dir — that lives outside any workspace and is walked with `fs`. The
+ * folder chosen in the desktop file picker — that lives outside any workspace
+ * and is walked with `fs`. The
  * destination is a workspace path, so where it lands and whether it stays
  * inside the workspace is the actor's business, not the caller's. A
  * workspace on this machine takes a file in one filesystem operation, which
@@ -153,20 +153,4 @@ export async function copyHostFileIntoWorkspace(files: FileOps, hostPath: string
     return
   }
   await streamHostFile(files, hostPath, workspacePath)
-}
-
-/**
- * Move one file from this machine into the workspace: the source is gone
- * afterwards. A workspace on this machine renames it into place when the two
- * share a filesystem, so a file already written in full is not written again.
- */
-export async function moveHostFileIntoWorkspace(
-  files: FileOps,
-  hostPath: string,
-  workspacePath: string,
-): Promise<{ size: number }> {
-  if (files instanceof LocalFileOps) return files.moveHostFile(hostPath, workspacePath)
-  const result = await streamHostFile(files, hostPath, workspacePath)
-  await fs.promises.unlink(hostPath)
-  return result
 }

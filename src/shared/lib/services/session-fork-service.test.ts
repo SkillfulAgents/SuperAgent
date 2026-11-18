@@ -17,10 +17,11 @@ const {
   sessionIsKnown: vi.fn(),
 }))
 
-const { isSessionActive, ensureRunning, forkInContainer, deleteInContainer } = vi.hoisted(() => ({
+const { isSessionActive, ensureRunning, forkInContainer, releaseInContainer, deleteInContainer } = vi.hoisted(() => ({
   isSessionActive: vi.fn(),
   ensureRunning: vi.fn(),
   forkInContainer: vi.fn(),
+  releaseInContainer: vi.fn(),
   deleteInContainer: vi.fn(),
 }))
 
@@ -34,7 +35,10 @@ const { copyDirectoryFiltered, streamJsonlFile } = vi.hoisted(() => ({
 vi.mock('@shared/lib/agent-actor/local-transcript-ops', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/agent-actor/local-transcript-ops')>()),
   copyDerivedSessionFiles: (...args: unknown[]) => copyDirectoryFiltered(...args),
-  streamRawEntries: () => streamJsonlFile(),
+}))
+vi.mock('@shared/lib/agent-actor/jsonl-files', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/jsonl-files')>()),
+  streamJsonl: () => streamJsonlFile(),
 }))
 
 const { insertMessageAuthorsBestEffort, dbSelectFrom } = vi.hoisted(() => ({
@@ -58,14 +62,17 @@ vi.mock('@shared/lib/container/container-host', async () => {
       ensureRunning,
       getClient: () => ({
         forkSession: forkInContainer,
+        releaseSession: releaseInContainer,
         deleteSession: deleteInContainer,
       }),
     }),
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { isSessionActive },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (slug, sessionId) => isSessionActive(slug, sessionId),
+  }),
 }))
 
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
@@ -110,7 +117,6 @@ const source = {
   name: 'Pricing',
   createdAt: new Date('2026-01-01T00:00:00Z'),
   lastActivityAt: new Date('2026-01-01T00:00:00Z'),
-  messageCount: 2,
 }
 
 const sourceMeta = {
@@ -131,6 +137,7 @@ describe('forkSession', () => {
     registerSession.mockResolvedValue(undefined)
     deleteSession.mockResolvedValue(true)
     forkInContainer.mockResolvedValue({ id: 'fork-1' })
+    releaseInContainer.mockResolvedValue(true)
     deleteInContainer.mockResolvedValue(true)
     copyDirectoryFiltered.mockResolvedValue(undefined)
     streamJsonlFile.mockImplementation(async function* () { yield })
@@ -266,6 +273,7 @@ describe('forkSession', () => {
     registerSession.mockRejectedValue(new Error('metadata write failed'))
     deleteSession.mockRejectedValue(new Error('unlink failed'))
     await expect(forkSession('test-agent', 'src-1')).rejects.toThrow('metadata write failed')
+    expect(releaseInContainer).toHaveBeenCalledExactlyOnceWith('fork-1')
     expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'fork-1')
     expect(deleteInContainer).toHaveBeenCalledWith('fork-1')
   })

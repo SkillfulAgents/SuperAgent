@@ -171,4 +171,40 @@ test.describe('Composer failure recovery', () => {
     // ~1.5s and was still present at this point)
     await expect(sessionPage.getMessageInput()).toHaveText('')
   })
+
+  test('a delivered send stays out of the composer while transcript reads lag past idle', async ({ page }) => {
+    // A slow link: the send is accepted and answered, the session goes idle,
+    // but every transcript read is still in flight. Holding the GETs past the
+    // old 1.5s idle grace reproduces that deterministically.
+    const text = 'delivered while the transcript lags'
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    await page.route('**/sessions/*/messages*', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await held
+      return route.continue()
+    })
+    // page.clock drives the page's timers, so the grace below needs no real sleep
+    await page.clock.install()
+
+    await sessionPage.typeMessage(text)
+    const accepted = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && /\/sessions\/[^/]+\/messages$/.test(res.url()) && res.ok()
+    )
+    await sessionPage.getSendButton().click()
+    await accepted
+
+    // The turn runs and ends over the live stream while no transcript read lands.
+    // Well past any idle grace, the 15s poll included: nothing may return the text.
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 15000 })
+    await page.clock.fastForward(20_000)
+    await expect(sessionPage.getMessageInput()).toHaveText('')
+
+    // Reads resume: the next poll shows the message by its id
+    release()
+    await page.clock.fastForward(15_000)
+    await sessionPage.waitForUserMessageCount(2, 20000)
+    await expect(sessionPage.getUserMessages().filter({ hasText: text })).toHaveCount(1)
+    await expect(sessionPage.getMessageInput()).toHaveText('')
+  })
 })

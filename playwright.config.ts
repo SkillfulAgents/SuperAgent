@@ -18,6 +18,8 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const webTestIgnore = [
   '**/auth/**',
+  // Desktop runtime tests have their own app launcher and config.
+  '**/electron/**',
   // Real-container probes with their own config (playwright.live-mcp.config.ts).
   '**/live/**',
   // Recorded walkthroughs, not regression tests — they throttle the network and
@@ -27,15 +29,25 @@ const webTestIgnore = [
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
+  // Writes app-wide model defaults — also belongs to the isolated wizard suite.
+  '**/paywall-subscriptions.spec.ts',
   // Needs a production build (service worker) — runs under playwright.pwa.config.ts.
   '**/pwa-precache.spec.ts',
   // WebKit-engine regression (async-scroll follow) — runs under the web-webkit project.
   '**/safari-follow.spec.ts',
   // Canvas mouse gestures need a still layout: sibling specs' agent churn on
   // the shared server re-solves the graph under the cursor, which made this
-  // the suite's top flake. Runs under the web-graph project on its own server
-  // and data dir (see test:e2e:graph).
+  // the suite's top flake. Runs in playwright.graph.config.ts on its own
+  // server/data dir (test:e2e:graph); web-graph below remains a legacy entry.
   '**/home-graph.spec.ts',
+  '**/home-graph-interactions.spec.ts',
+  // Section drags also need a stable list; sibling specs create/delete agents
+  // mid-gesture. Run on a fresh server through test:e2e:sidebar.
+  '**/agent-folders.spec.ts',
+  // Layer/focus and touch gestures need stable lists and their own settings.
+  // Runs across desktop/touch engines via playwright.radix.config.ts.
+  '**/radix-interactions.spec.ts',
+  '**/radix-touch.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {
@@ -72,12 +84,17 @@ function buildWebServerCommand() {
   return `${inlineVars} node e2e/setup-e2e-data.js && ${inlineVars} npm run dev:web`
 }
 
+// CI's Mac VMs occasionally run about 4x slower than usual, from `npm ci` onward,
+// and the WebKit suites run with retries off. At the 30s default those Macs fail
+// tests that are only slow, so give these projects 3x that budget.
+const webkitTestTimeout = 90_000
+
 export default defineConfig({
   testDir: './e2e',
   // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
   // holds probes against the REAL container (playwright.live-mcp.config.ts
   // and the .mjs harnesses), which the mock host cannot satisfy.
-  testIgnore: ['**/auth/**', '**/live/**'],
+  testIgnore: ['**/auth/**', '**/live/**', '**/electron/**'],
   outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -102,11 +119,29 @@ export default defineConfig({
     // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
     {
       name: 'web-webkit',
-      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts'],
+      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts', '**/pdf-preview.spec.ts'],
+      timeout: webkitTestTimeout,
       use: { ...devices['Desktop Safari'] },
     },
+    // Deterministic navigation contracts run once on macOS per PR. Keep the
+    // compositor regressions above in their three independent serial runs.
+    {
+      name: 'web-webkit-navigation',
+      testMatch: ['**/navigation.spec.ts', '**/router-upgrade.spec.ts', '**/memory-history.spec.ts', '**/router-response-guard.spec.ts'],
+      fullyParallel: false,
+      timeout: webkitTestTimeout,
+      use: { ...devices['Desktop Safari'] },
+    },
+    // Section drag-and-drop and persistence, on their own server/data dir.
+    {
+      name: 'web-sidebar',
+      testMatch: ['**/agent-folders.spec.ts'],
+      fullyParallel: false,
+      use: { ...devices['Desktop Chrome'] },
+    },
     // Home connections graph — canvas mouse gestures (hover-fade, edge draw,
-    // node drag) against react-flow. Run with `npm run test:e2e:graph` and a
+    // node drag) against react-flow. Legacy desktop-only entry; the expanded
+    // `npm run test:e2e:graph` uses playwright.graph.config.ts. Use a
     // dedicated SUPERAGENT_DATA_DIR: the only agents on the board are the
     // spec's own, so the layout stays still and fitView never bottoms out at
     // minZoom. Not fullyParallel — the file's own tests would otherwise churn

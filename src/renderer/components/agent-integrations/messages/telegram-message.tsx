@@ -26,8 +26,13 @@ export function TelegramIntegrationMessage({ display, message, iconClassName }: 
           )}
           <div className="whitespace-pre-wrap break-words" data-testid="integration-message-request">
             {request?.text || <span className="italic opacity-70">Attachment</span>}
-            {/* Reserves the corner so the last line never runs under the time. */}
-            {time && <span className="inline-block w-[4.25rem]" aria-hidden />}
+            {/* An invisible copy of the time row reserves exactly its width, so the last line never runs under it. */}
+            {time && (
+              <span className="invisible inline-flex items-center gap-0.5 whitespace-nowrap pl-2 text-[11px] tabular-nums" aria-hidden>
+                {time}
+                <span className="inline-block w-[18px]" />
+              </span>
+            )}
           </div>
           {time && (
             <div className="-mt-4 flex items-center justify-end gap-0.5 text-[11px] text-[#4FAE4E] tabular-nums dark:text-[#7DA8D3]">

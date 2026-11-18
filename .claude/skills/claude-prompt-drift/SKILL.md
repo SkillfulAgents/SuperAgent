@@ -120,6 +120,7 @@ git worktree remove /tmp/sa-old
 | `--snapshots-dir`       | `$SNAPSHOTS_DIR` or `<skill>/snapshots`    | Where to write snapshots (gitignored at the default location) |
 | `--superagent-path`     | _auto_                                     | Override SuperAgent repo path                            |
 | `--anthropic-api-key`   | `dummy-for-capture`                        | API key passed to the containers. Proxy captures the request body **before** forwarding upstream, so a 401 is fine. Claude Code's CLI does light local validation — pass a real-looking key if it complains. |
+| `--tool-search`         | `true`                                     | `ENABLE_TOOL_SEARCH` on the superagent axis — `true` is what the Anthropic, Platform and subscription providers send. Always pinned: behind the capture proxy an unset value means on since CLI 2.1.304 and off before it. The pure-claude axis always runs with it `false`, so every preset tool's full description is on the wire for triage. Snapshots taken before this flag (≤ 0.3.303) are tool-search-off captures; compare them to a `--tool-search false` capture. |
 
 ### Diff two snapshots
 

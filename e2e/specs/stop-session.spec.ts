@@ -129,8 +129,8 @@ test.describe('Stop button interrupts the working agent', () => {
     await sessionPage.getStopButton().click()
     await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
 
-    // The queued message was never picked up — after the idle grace period its
-    // ghost is removed and its text is restored into the composer draft
+    // The queued message was never picked up — the runtime reports it discarded,
+    // so its ghost is removed and its text is restored into the composer draft
     await expect(ghost).not.toBeAttached({ timeout: 10000 })
     await expect(sessionPage.getMessageInput()).toHaveText(queuedText, { timeout: 10000 })
 

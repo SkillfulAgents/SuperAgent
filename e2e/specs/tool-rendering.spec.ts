@@ -82,6 +82,34 @@ test.describe('Tool Call Rendering', () => {
     await expect(terminal).toHaveCSS('background-color', 'rgb(0, 0, 0)')
   })
 
+  test('names the platform service a Bash call uses and keeps the terminal', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Bash service')
+
+    await sessionPage.sendMessage('check github through proxy')
+    await sessionPage.waitForInputEnabled(20000)
+
+    await sessionPage.expandLatestCompletedTurn(20000)
+    await sessionPage.expectToolCall('Bash', 20000)
+    const toolCall = renderedToolCall(sessionPage, 'Bash')
+    await expect(toolCall.getByTestId('tool-call-toggle-Bash')).toContainText('GitHub')
+
+    const terminal = toolCall.getByTestId('bash-terminal')
+    await expectToolCallExpanded(toolCall, 'Bash', true, terminal)
+  })
+
+  test('keeps a direct curl a Bash row and shows the site icon', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Bash direct curl')
+
+    await sessionPage.sendMessage('query linear directly')
+    await sessionPage.waitForInputEnabled(20000)
+
+    await sessionPage.expandLatestCompletedTurn(20000)
+    await sessionPage.expectToolCall('Bash', 20000)
+    const toggle = renderedToolCall(sessionPage, 'Bash').getByTestId('tool-call-toggle-Bash')
+    await expect(toggle).toContainText('Bash')
+    await expect(toggle.locator('img[src$="/linear.svg"]')).toBeVisible()
+  })
+
   test('renders Read tool call with file path summary', async ({ page, request }, testInfo) => {
     const { sessionPage } = await setupToolTest(page, request, testInfo, 'Read')
 

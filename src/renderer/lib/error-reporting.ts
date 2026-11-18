@@ -37,6 +37,8 @@ function loadSentry(): Promise<typeof import('./sentry-browser-provider') | null
         environment: isElectron() ? 'electron-renderer' : 'web',
         release: __APP_VERSION__,
         tracesSampleRate: 0,
+        // Logs bypass beforeSend, so keep them outside our error-reporting consent flow.
+        enableLogs: false,
         beforeSend(event, hint) {
           if (!errorReportingEnabled) return null
           // Expected while a cloud workspace sleeps or wakes; the breadcrumb

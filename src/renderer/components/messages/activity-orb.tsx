@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { MODE_DRAWS, resolvePreset, type OrbState as PackageOrbState } from 'thinking-orbs'
 
 import { useIsDark } from '@renderer/hooks/use-theme'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 /**
  * The thought orbs used by the activity indicator (AgentActivityIndicator):
  * per-state canvas animations plus the status-text/orb-state derivation. The
- * orbs render inside the card above the composer.
+ * card above the composer shows the agent's avatar instead, falling back to
+ * these orbs for an agent without one.
  */
 
 // ── Shared 3D primitives ─────────────────────────────────────────────────────
@@ -152,28 +154,9 @@ function OrbCanvas({ draw, speed, staticT = 0.6, size }: { draw: OrbDraw; speed:
       return
     }
 
-    let raf = 0
-    let running = false
-    const loop = () => {
-      frame((performance.now() / 1000) * speed)
-      if (running) raf = requestAnimationFrame(loop)
-    }
-    const start = () => {
-      if (running) return
-      running = true
-      raf = requestAnimationFrame(loop)
-    }
-    const stop = () => {
-      running = false
-      cancelAnimationFrame(raf)
-    }
-    const onVis = () => (document.visibilityState === 'hidden' ? stop() : start())
-    document.addEventListener('visibilitychange', onVis)
-    start()
-    return () => {
-      stop()
-      document.removeEventListener('visibilitychange', onVis)
-    }
+    // Status: 60 paints a second in the window in use, the slow clock in one that is not, and
+    // a frame at once whenever what it shows changes, since that re-subscribes (ambient-frames.ts).
+    return subscribeToAmbientFrames(() => frame((performance.now() / 1000) * speed), { kind: 'status' })
   }, [draw, speed, staticT, size, dark])
 
   return (

@@ -1,4 +1,4 @@
-import { Suspense, lazy } from 'react'
+import { Suspense } from 'react'
 import { Loader2 } from 'lucide-react'
 import { MarkdownRenderer } from './markdown-renderer'
 import { TextRenderer } from './text-renderer'
@@ -8,10 +8,17 @@ import { VideoRenderer } from './video-renderer'
 import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
-import { useFilePreview } from '@renderer/context/file-preview-context'
 import { previewKind } from '@renderer/lib/file-types'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
 
-const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
+const PdfRenderer = lazyWithReload(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
+const ArchiveRenderer = lazyWithReload(() => import('./archive-renderer').then(m => ({ default: m.ArchiveRenderer })))
+
+export const LAZY_FALLBACK = (
+  <div className="flex items-center justify-center py-12">
+    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  </div>
+)
 
 interface FileRendererProps {
   filePath: string
@@ -30,11 +37,9 @@ export function FileRenderer({
   pdfPage,
   onPdfPageChange,
 }: FileRendererProps) {
-  const { commentsEnabled } = useFilePreview()
-
   switch (previewKind(filePath)) {
     case 'markdown':
-      return <MarkdownRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <MarkdownRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'html':
       return <HtmlRenderer url={fileUrl} />
@@ -43,7 +48,7 @@ export function FileRenderer({
       return <CsvRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'text':
-      return <TextRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <TextRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'image':
       return <ImageRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
@@ -56,11 +61,7 @@ export function FileRenderer({
 
     case 'pdf':
       return (
-        <Suspense fallback={
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        }>
+        <Suspense fallback={LAZY_FALLBACK}>
           <PdfRenderer
             key={`${filePath}:${fileUrl}`}
             url={fileUrl}
@@ -68,12 +69,18 @@ export function FileRenderer({
             agentSlug={agentSlug}
             pageNumber={pdfPage}
             onPageChange={onPdfPageChange}
-            commentsEnabled={commentsEnabled}
           />
         </Suspense>
       )
 
+    case 'archive':
+      return (
+        <Suspense fallback={LAZY_FALLBACK}>
+          <ArchiveRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} downloadUrl={downloadUrl} />
+        </Suspense>
+      )
+
     default:
-      return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} />
+      return <UnsupportedRenderer filePath={filePath} downloadUrl={downloadUrl} />
   }
 }

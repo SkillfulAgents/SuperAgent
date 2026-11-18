@@ -11,6 +11,7 @@
  * left alone too, so re-running is safe.
  */
 import { agents } from '../schema'
+import { randomAgentAvatar } from '@shared/lib/agent-actor/agent-avatar'
 import { LOCAL_RUNTIME, readAgentDirectoriesSync } from '@shared/lib/agent-actor/agent-directories'
 import type { DataMigration, DataMigrationDb } from './index'
 
@@ -20,9 +21,12 @@ export async function importAgentDirectories(db: DataMigrationDb): Promise<strin
   const imported: string[] = []
   for (const found of readAgentDirectoriesSync()) {
     if (known.has(found.slug)) continue
+    const avatar = randomAgentAvatar()
     await db.insert(agents).values({
       slug: found.slug,
       name: found.name,
+      avatarColor: avatar.color,
+      avatarShape: avatar.shape,
       description: found.description ?? null,
       createdAt: found.createdAt,
       runtime: LOCAL_RUNTIME,

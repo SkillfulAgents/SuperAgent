@@ -433,6 +433,53 @@ const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
   { name: 'sdk296-bg-subagent-interrupt-noop', settledAtEnd: true },
   { name: 'sdk296-bg-subagent-nested-bg-bash', settledAtEnd: true },
   { name: 'sdk296-sendmessage-resumed-subagent', settledAtEnd: true },
+  // SDK 0.3.300 / CLI 2.1.300 re-captures: no protocol change from 2.1.296.
+  { name: 'sdk300-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk300-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk300-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk300-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk300-sendmessage-resumed-subagent', settledAtEnd: true },
+  // SDK 0.3.303 / CLI 2.1.303 re-captures: no protocol change from 2.1.300.
+  { name: 'sdk303-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk303-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk303-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk303-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk303-sendmessage-resumed-subagent', settledAtEnd: true },
+  // CLI 2.1.302+ fork subagents: background subagents on the wire.
+  { name: 'sdk303-fork-subagent', settledAtEnd: true },
+  { name: 'sdk303-fork-sendmessage-resumed', settledAtEnd: true },
+  // SDK 0.3.311 / CLI 2.1.311 re-captures: no protocol change from 2.1.303.
+  { name: 'sdk311-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk311-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk311-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk311-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk311-sendmessage-resumed-subagent', settledAtEnd: true },
+  { name: 'sdk311-fork-subagent', settledAtEnd: true },
+  { name: 'sdk311-fork-sendmessage-resumed', settledAtEnd: true },
+  // SDK 0.3.318 / CLI 2.1.318 re-captures: no protocol change from 2.1.311.
+  { name: 'sdk318-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk318-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk318-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk318-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk318-sendmessage-resumed-subagent', settledAtEnd: true },
+  { name: 'sdk318-fork-subagent', settledAtEnd: true },
+  { name: 'sdk318-fork-sendmessage-resumed', settledAtEnd: true },
+  // SDK 0.3.321 / CLI 2.1.321 re-captures: no protocol change from 2.1.318.
+  { name: 'sdk321-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk321-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk321-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk321-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk321-sendmessage-resumed-subagent', settledAtEnd: true },
+  { name: 'sdk321-fork-subagent', settledAtEnd: true },
+  { name: 'sdk321-fork-sendmessage-resumed', settledAtEnd: true },
+  // SDK 0.3.325 / CLI 2.1.325 re-captures: no protocol change from 2.1.321.
+  { name: 'sdk325-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk325-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk325-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk325-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk325-sendmessage-resumed-subagent', settledAtEnd: true },
+  { name: 'sdk325-fork-subagent', settledAtEnd: true },
+  { name: 'sdk325-fork-sendmessage-resumed', settledAtEnd: true },
   { name: 'sendmessage-resumed-subagent', settledAtEnd: true },
   { name: 'sequential-different-types', settledAtEnd: true },
   { name: 'single-subagent-progress', settledAtEnd: true },
@@ -634,10 +681,10 @@ describe('SessionSettlementTracker — real capture replay', () => {
     expect(tracker.openBackgroundTaskCount).toBe(0);
   });
 
-  it.each(FIXTURE_EXPECTATIONS.filter((f) => f.name.startsWith('sdk296-')))(
+  it.each(FIXTURE_EXPECTATIONS.filter((f) => /^sdk(296|300|303|311|318|321|325)-/.test(f.name)))(
     '$name never settles before its final idle, even between frames',
     ({ name }) => {
-      // Each sdk296 capture is one run that only legitimately ends at its last
+      // Each sdk296/sdk300/sdk303/sdk311/sdk318/sdk321/sdk325 capture is one run that only legitimately ends at its last
       // session_state_changed:idle. A sweep may land at any instant, so check
       // the moment just before every next frame too — that is where the
       // trailing-snapshot order and the nested re-run open their gaps.
@@ -657,13 +704,13 @@ describe('SessionSettlementTracker — real capture replay', () => {
     }
   );
 
-  it('sdk296-bg-subagent-nested-bg-bash: the subagent leaving the snapshot does not drop its live child', () => {
-    // t=5129: the subagent's task_updated/task_notification completed, then a
+  it.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321', 'sdk325'])('%s-bg-subagent-nested-bg-bash: the subagent leaving the snapshot does not drop its live child', (sdk) => {
+    // sdk296 at t=5129: the subagent's task_updated/task_notification completed, then a
     // snapshot listing only its background Bash (parent_task_id = subagent).
     // The child keeps the session busy until its own completion at t=14252;
     // 3ms later the CLI re-runs the subagent (same task_id, new run_id) to
     // hand it the child's result.
-    const frames = loadFixture('sdk296-bg-subagent-nested-bg-bash');
+    const frames = loadFixture(`${sdk}-bg-subagent-nested-bg-bash`);
     const tracker = new SessionSettlementTracker();
     tracker.noteOutboundMessage();
     let sawChildOnly = false;

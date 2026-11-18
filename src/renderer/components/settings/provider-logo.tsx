@@ -28,8 +28,10 @@ const GLYPHS: Record<Exclude<LlmProviderId, 'generic'>, string> = {
   'codex-subscription': 'model-icons/openai.svg',
   'kimi-subscription': 'model-icons/kimi.svg',
   'minimax-subscription': 'model-icons/minimax.svg',
+  'qwen-subscription': 'model-icons/qwen.svg',
   bedrock: 'provider-icons/aws.svg',
   openrouter: 'provider-icons/openrouter.svg',
+  ollama: 'model-icons/ollama.svg',
 }
 
 /**
@@ -57,10 +59,14 @@ export function ProviderLogo({ provider, className = 'h-5 w-5', monochrome = fal
       return <ModelIcon icon="kimi" className={cn('shrink-0', className)} />
     case 'minimax-subscription':
       return <ModelIcon icon="minimax" className={cn('shrink-0', className)} />
+    case 'qwen-subscription':
+      return <ModelIcon icon="qwen" className={cn('shrink-0', className)} />
     case 'bedrock':
       return <img src={`${import.meta.env.BASE_URL}provider-icons/aws.svg`} alt="" aria-hidden="true" className={cn('shrink-0 object-contain', className)} />
     case 'openrouter':
       return <BrandMark src="provider-icons/openrouter.svg" color="#94A3B8" className={className} />
+    case 'ollama':
+      return <ModelIcon icon="ollama" className={cn('shrink-0', className)} />
     case 'generic':
       return <Globe className={cn('shrink-0 text-sky-500', className)} aria-hidden="true" />
   }

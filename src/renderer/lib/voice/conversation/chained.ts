@@ -22,7 +22,7 @@ export const CHAINED_TURN_POLICY: VoiceTurnPolicy = {
 
 /** Chained STT + read-aloud. Agent execution is supplied through onCommand. */
 export class ChainedConversationAdapter implements VoiceConversationAdapter {
-  readonly capabilities = { speechSpeed: true, spokenTranscript: false }
+  readonly capabilities = { speechSpeed: true, spokenTranscript: false, transcript: 'agent-session' as const }
   readonly turnPolicy = CHAINED_TURN_POLICY
   // Words taken from the mic as a request card went up: sent once it is answered.
   private held: string | null = null

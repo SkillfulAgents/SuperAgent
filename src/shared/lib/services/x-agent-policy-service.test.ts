@@ -234,6 +234,15 @@ describe('x-agent-policy-service', () => {
       expect(results[0]).toEqual({ created: false, previousDecision: 'allow' })
       expect(results[1]).toEqual({ created: false, previousDecision: 'block' })
     })
+
+    it('keepBlock: an allow queued behind a block leaves the block in place', async () => {
+      const results = await Promise.all([
+        setPolicy('alice', 'invoke', 'bob', 'block'),
+        setPolicy('alice', 'invoke', 'bob', 'allow', { keepBlock: true }),
+      ])
+      expect(results[1]).toEqual({ created: false, previousDecision: 'block' })
+      expect(await evaluate('alice', 'invoke', 'bob')).toBe('block')
+    })
   })
 
   describe('replacePoliciesForCaller', () => {

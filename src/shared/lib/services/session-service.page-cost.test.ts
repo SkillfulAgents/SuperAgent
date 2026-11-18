@@ -35,7 +35,7 @@ const MB = 1024 * KB
 const AGENT = 'cost-agent'
 /** The window a cursor page extends past its anchor (CURSOR_WINDOW_GRACE_BYTES). */
 const CURSOR_GRACE = 512 * KB
-/** Slack for where the 64KB backward-walk chunks happen to land. */
+/** Slack for where the backward walk's first (64KB) chunks happen to land. */
 const CHUNK_SLACK = 128 * KB
 
 let testDir: string
@@ -210,6 +210,43 @@ describe('messages page read cost — bounded window', () => {
 
     expect(page.messages.length).toBeGreaterThan(0)
     expect(account.bytes).toBeLessThan(size * 2 + CHUNK_SLACK)
+  })
+})
+
+describe('messages page read cost — round trips', () => {
+  // Bytes say a page costs its window; round trips say how long it takes to
+  // get them on a network volume, where every read is an RPC and a backward
+  // walk gets no readahead. The walk's reads grow from 64KB to 1MB, and the
+  // window read takes chunks sized to the window.
+
+  it('walks a 4MB window in a handful of reads, not one per 64KB', async () => {
+    await writeTranscript('round-trips', thread(1500, 2600))
+
+    // No budget: the default 4MB window, as every client before max_bytes;
+    // an item limit above what the window holds, so the bytes stop it.
+    const { account, page } = await costOf('round-trips', { limit: 5000 })
+
+    expect(page.messages.length).toBeLessThan(3000)
+    expect(page.nextCursor).toBe(page.messages[0]!.id)
+    expect(account.bytes).toBeGreaterThan(8 * MB)
+    // 8 backward reads (64KB doubling to 1MB), then the window in 1MB forward
+    // reads. Fixed 64KB reads took ~130 for the same page.
+    expect(account.reads).toBeLessThanOrEqual(16)
+  })
+
+  it('serves a 512KB-budget page in a few reads', async () => {
+    await writeTranscript('round-trips-budget', thread(1500, 2600))
+
+    // An item limit the budget cuts short, as on a tool-heavy session.
+    const { account, page } = await costOf('round-trips-budget', { limit: 2000, byteBudget: 512 * KB })
+
+    expect(page.messages.length).toBeGreaterThan(0)
+    expect(page.messages.length).toBeLessThan(2000)
+    expect(page.nextCursor).toBe(page.messages[0]!.id)
+    // Four backward reads (64+128+256+512KB), then the ~512KB window in one
+    // forward read plus the end-of-file read. Fixed 64KB reads took ~19.
+    expect(account.reads).toBeLessThanOrEqual(6)
+    expect(account.bytes).toBeLessThan(2 * MB)
   })
 })
 

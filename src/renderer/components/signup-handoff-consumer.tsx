@@ -37,11 +37,6 @@ export function SignupHandoffConsumer() {
   const setupCompleted = userSettings?.setupCompleted
   const settingsReady = userSettings !== undefined
   const updateUserSettings = useUpdateUserSettings()
-  const {
-    data: discoverableAgents,
-    isError: discoverableAgentsFailed,
-    isLoading: discoverableAgentsLoading,
-  } = useDiscoverableAgents()
   const completeInstall = useCompleteTemplateInstall()
   const [template, setTemplate] = useState<ApiDiscoverableAgent | null>(null)
   const resolvedRef = useRef(false)
@@ -52,6 +47,12 @@ export function SignupHandoffConsumer() {
     slugRef.current = template_slug
   }
   const slug = slugRef.current
+  // Mounted on every page: read the catalog only for a template handoff to resolve.
+  const {
+    data: discoverableAgents,
+    isError: discoverableAgentsFailed,
+    isLoading: discoverableAgentsLoading,
+  } = useDiscoverableAgents({ enabled: slug !== null })
   // RootLayout skips the create wizard only for an auth user's agent-only
   // first run. Full/local setup still needs the wizard, whose create step owns
   // the existing handoff flow.

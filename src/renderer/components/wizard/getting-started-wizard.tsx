@@ -16,7 +16,7 @@ import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
 import { CreateAgentStep } from './create-agent-step'
 import { PrivacyStep } from './privacy-step'
-import { RibbonWave } from './ribbon-wave'
+import { WelcomeOrbCrowd } from './welcome-orb-crowd'
 
 type WizardStepId = 'llm' | 'model' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
 
@@ -299,9 +299,9 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
         </div>
       </div>
 
-      {/* Right column: cover image — slides out on the agent step */}
+      {/* Right column: the cover, a crowd of agent orbs — slides out on the agent step */}
       <div className={`hidden lg:block p-4 shrink-0 transition-all duration-500 ease-in-out ${isAgentStep ? 'w-0 translate-x-full opacity-0 p-0' : 'w-1/2 translate-x-0 opacity-100'} ${getPlatform() === 'win32' ? 'pt-12' : ''}`}>
-        <RibbonWave className="h-full w-full rounded-xl" />
+        <WelcomeOrbCrowd paused={isAgentStep} className="h-full w-full rounded-dialog" />
       </div>
     </div>
   )

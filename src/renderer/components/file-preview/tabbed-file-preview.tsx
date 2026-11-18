@@ -5,6 +5,7 @@ import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
 import { isCopyableTextFile } from '@renderer/lib/file-types'
 import { FileRenderer } from './renderers/file-renderer'
+import { UnsupportedRenderer } from './renderers/unsupported-renderer'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
@@ -15,7 +16,8 @@ interface TabbedFilePreviewProps<T extends FileBrowserTab> {
   activeTabIndex: number
   onSelectTab: (index: number) => void
   onCloseTab: (key: string) => void
-  file?: { path: string; inlineUrl?: string | null; downloadUrl?: string | null; agentSlug?: string; size?: number | null } | null
+  /** `reason` says why a file cannot be shown, for sources that know before rendering. */
+  file?: { path: string; inlineUrl?: string | null; downloadUrl?: string | null; agentSlug?: string; size?: number | null; reason?: string } | null
   folderContent?: ReactNode
   folderActions?: ReactNode
   onPdfPageChange: (page: number) => void
@@ -44,7 +46,7 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
       <div className="flex flex-1 min-h-0 flex-col bg-muted/60 px-2 pb-2">
         <div
           className={cn(
-            'flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border border-black/5 bg-background dark:border-white/5',
+            'flex flex-1 min-h-0 flex-col overflow-hidden rounded-card border border-black/5 bg-background dark:border-white/5',
             // Square only where a tab actually meets the corner. Under an inactive
             // tab — or a strip scrolled away from its first tab — the square edge
             // would be a corner cut for no one.
@@ -77,7 +79,7 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
                         href={file.downloadUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="p-0.5 rounded hover:bg-muted transition-colors"
+                        className="p-0.5 rounded-icon hover:bg-muted transition-colors"
                         aria-label="Download file"
                       >
                         <ArrowDownToLine className="h-4 w-4" />
@@ -107,6 +109,8 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
                 pdfPage={activeTab.pdfPage}
                 onPdfPageChange={onPdfPageChange}
               />
+            ) : file?.reason ? (
+              <UnsupportedRenderer filePath={file.path} downloadUrl={file.downloadUrl ?? undefined} reason={file.reason} />
             ) : null}
           </div>
         </div>

@@ -70,6 +70,10 @@ pending wake; a new wake replaces the previous one. Wakes are one-shot. If the
 condition is still unresolved after resuming, inspect the current state and
 schedule another wake if appropriate.
 
+Only the main conversation can pause itself. A wake resumes the main
+conversation, never a subagent, so a subagent cannot call `schedule_resume`:
+have it finish and report back, then pause from the main conversation.
+
 ## Time and Safety
 
 - Interpret ambiguous times in the user's configured timezone.

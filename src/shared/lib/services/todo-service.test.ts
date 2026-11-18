@@ -215,6 +215,15 @@ describe('status changes', () => {
   })
 })
 
+const entry = {
+  id: '11111111-1111-4111-8111-111111111111',
+  name: 'note.txt',
+  size: 4,
+  mimeType: 'text/plain',
+  kind: 'file' as const,
+  path: '/workspace/uploads/note.txt',
+}
+
 describe('deleting sessions and agents', () => {
   it('a deleted session sends work in progress back to Drafts', async () => {
     const todo = await startedTodo('agent-a', 'session-1')
@@ -241,6 +250,7 @@ describe('deleting sessions and agents', () => {
 
   it('a deleted agent lets go of every item it had', async () => {
     const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    await updateDraft(ME, draft.id, { agentSlug: 'agent-a', attachments: [entry] })
     const active = await startedTodo('agent-a', 'session-1')
     const done = await startedTodo('agent-a', 'session-2')
     await setTodoStatus(ME, done.id, 'done')
@@ -248,9 +258,25 @@ describe('deleting sessions and agents', () => {
 
     await batch(unlinkAgentStatements('agent-a'))
 
-    expect(await getTodo(ME, draft.id)).toMatchObject({ status: 'draft', agentSlug: null })
+    expect(await getTodo(ME, draft.id)).toMatchObject({ status: 'draft', agentSlug: null, attachments: '[]' })
     expect(await getTodo(ME, active.id)).toMatchObject({ status: 'draft', agentSlug: null, sessionId: null })
     expect(await getTodo(ME, done.id)).toMatchObject({ status: 'done', agentSlug: null, sessionId: null })
     expect(await getTodo(ME, elsewhere.id)).toMatchObject({ status: 'active', agentSlug: 'agent-b' })
+  })
+})
+
+
+
+describe('attachments', () => {
+  it('keeps the agent while anything is attached, and pins a list to the agent it was checked on', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    expect((await updateDraft(ME, draft.id, { agentSlug: 'agent-a', attachments: [entry] })).ok).toBe(true)
+    expect(await updateDraft(ME, draft.id, { agentSlug: 'agent-b' })).toEqual({ ok: false, reason: 'conflict' })
+    expect(await updateDraft(ME, draft.id, { newAgent: true })).toEqual({ ok: false, reason: 'conflict' })
+    // A list checked on another agent cannot land on this one.
+    expect(await updateDraft(ME, draft.id, { agentSlug: 'agent-b', attachments: [entry] })).toEqual({ ok: false, reason: 'conflict' })
+    expect((await updateDraft(ME, draft.id, { agentSlug: 'agent-a', title: 'Renamed' })).ok).toBe(true)
+    // A list checked against what was stored before a change does not land.
+    expect(await updateDraft(ME, draft.id, { attachments: [] }, '[]')).toEqual({ ok: false, reason: 'conflict' })
   })
 })

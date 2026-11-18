@@ -26,9 +26,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'scripts/**/*.test.ts'],
     setupFiles: ['src/renderer/test/setup.ts'],
     testTimeout: 15_000,
+    // Many suites import the app (db, auth, routes) in beforeAll, after stubbing
+    // env: ~3 s alone, past the 10 s default on a loaded CI runner with coverage.
+    hookTimeout: 30_000,
     reporters: isGithubActions ? ['dot', 'github-actions', 'json'] : ['default'],
     outputFile: { json: 'test-results/unit/vitest-results.json' },
     coverage: {

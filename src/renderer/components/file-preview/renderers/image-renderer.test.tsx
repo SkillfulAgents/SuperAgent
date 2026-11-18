@@ -24,6 +24,44 @@ describe('ImageRenderer', () => {
     expect(screen.getByText('At position (25%, 25%)')).toBeVisible()
   })
 
+  it('replaces a failed image and its spinner with an unavailable message', () => {
+    const { container } = render(<ImageRenderer url="/broken.heic" filePath="/workspace/broken.heic" agentSlug="test-agent" />)
+
+    fireEvent.error(screen.getByRole('img'))
+
+    expect(screen.getByText('Image preview unavailable')).toBeVisible()
+    expect(container.querySelector('.animate-spin')).toBeNull()
+  })
+
+  it.each(['png', 'heic'])('retries a failed %s preview when the same file gets a new URL', (extension) => {
+    const filePath = `/workspace/photo.${extension}`
+    const { container, rerender } = render(
+      <ImageRenderer url={`/photo.${extension}?v=1`} filePath={filePath} agentSlug="test-agent" />,
+    )
+    fireEvent.error(screen.getByRole('img'))
+    expect(screen.getByText('Image preview unavailable')).toBeVisible()
+
+    rerender(<ImageRenderer url={`/photo.${extension}?v=2`} filePath={filePath} agentSlug="test-agent" />)
+
+    expect(screen.queryByText('Image preview unavailable')).not.toBeInTheDocument()
+    expect(screen.getByRole('img')).toHaveAttribute('src', `/photo.${extension}?v=2`)
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+    fireEvent.load(screen.getByRole('img'))
+    expect(container.querySelector('.animate-spin')).toBeNull()
+  })
+
+  it('shows loading again when a previously loaded preview gets a new URL', () => {
+    const { container, rerender } = render(
+      <ImageRenderer url="/photo.png?v=1" filePath="/workspace/photo.png" agentSlug="test-agent" />,
+    )
+    fireEvent.load(screen.getByRole('img'))
+    expect(container.querySelector('.animate-spin')).toBeNull()
+
+    rerender(<ImageRenderer url="/photo.png?v=2" filePath="/workspace/photo.png" agentSlug="test-agent" />)
+
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+  })
+
   it('closes an open box on Escape pressed outside it', () => {
     render(<ImageRenderer url="/shot.png" filePath="/workspace/shot.png" agentSlug="test-agent" />)
     fireEvent.click(screen.getByRole('img'))

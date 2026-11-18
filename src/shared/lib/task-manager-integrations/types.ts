@@ -14,7 +14,8 @@ export interface TaskEvent {
   sourceCommentId?: string
   title?: string
   replyTarget: Record<string, string>
-  payload: unknown
+  /** Optional provider context; routing and task hydration use the fields above. */
+  payload?: unknown
 }
 
 export interface TaskSnapshot {

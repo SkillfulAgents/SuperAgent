@@ -76,7 +76,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {file_path && (
         <div>
           <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
-          <div className="bg-background rounded p-2 text-xs font-mono truncate">
+          <div className="bg-background rounded-item p-2 text-xs font-mono truncate">
             {file_path}
           </div>
         </div>
@@ -86,7 +86,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {content && (
         <div>
           <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Content</div>
-          <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono">
+          <pre className="bg-background rounded-item p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono">
             {content}
           </pre>
         </div>
@@ -99,7 +99,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
             {isError ? 'Error' : 'Result'}
           </div>
           <pre
-            className={`bg-background rounded p-2 text-xs overflow-x-auto font-mono ${
+            className={`bg-background rounded-item p-2 text-xs overflow-x-auto font-mono ${
               isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'
             }`}
           >
@@ -125,7 +125,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       {/* Always show file section */}
       <div>
         <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
-        <div className="bg-background rounded p-2 text-xs font-mono">
+        <div className="bg-background rounded-item p-2 text-xs font-mono">
           {filePath || <span className="text-muted-foreground italic">...</span>}
         </div>
       </div>
@@ -136,7 +136,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
           <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             Content {lineCount > 0 && `(${lineCount} ${lineCount === 1 ? 'line' : 'lines'})`}
           </div>
-          <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto font-mono whitespace-pre-wrap">
+          <pre className="bg-background rounded-item p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto font-mono whitespace-pre-wrap">
             {content || <span className="text-muted-foreground">...</span>}
             <span className="animate-pulse">|</span>
           </pre>
@@ -147,7 +147,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       {content === null && filePath && (
         <div>
           <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Content</div>
-          <div className="bg-background rounded p-2 text-xs text-muted-foreground flex items-center gap-2">
+          <div className="bg-background rounded-item p-2 text-xs text-muted-foreground flex items-center gap-2">
             <Loader2 className="h-3 w-3 animate-spin" />
             <span>Generating...</span>
           </div>

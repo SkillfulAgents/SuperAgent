@@ -7,7 +7,7 @@
  * for a session to run under a configuration it did not ask for.
  */
 import { describe, it, expect } from 'vitest'
-import { warmProfileKey, warmProfileSchema } from './warm-profile'
+import { nextWarmProfileFromRequest, sessionProfileFromRequest, warmProfileKey, warmProfileSchema } from './warm-profile'
 
 const base = warmProfileSchema.parse({ model: 'claude-opus-4-8', effort: 'high' })
 
@@ -94,5 +94,37 @@ describe('warmProfileKey', () => {
     const undef = warmProfileKey(warmProfileSchema.parse({ model: 'm', effort: undefined, speed: undefined }))
 
     expect(absent).toBe(undef)
+  })
+})
+
+describe('preloaded toolsets', () => {
+  const request = { initialMessage: 'go', model: 'claude-opus-4-8', preloadToolsets: ['computer-use'] }
+
+  // The tools' definitions are in the warm process's query: a session that
+  // asked for them must not get a process warmed without them, or the reverse.
+  it('are part of the session profile and its key', () => {
+    const preloading = sessionProfileFromRequest(request)
+    const plain = sessionProfileFromRequest({ ...request, preloadToolsets: undefined })
+
+    expect(preloading.preloadToolsets).toEqual(['computer-use'])
+    expect(warmProfileKey(preloading)).not.toBe(warmProfileKey(plain))
+  })
+
+  // A newer host may name a toolset this image lacks: the session runs without
+  // it, and keys like the session that never asked, so it can take that warm process.
+  it('drop names this image does not know, and repeats', () => {
+    const unknownOnly = sessionProfileFromRequest({ ...request, preloadToolsets: ['spreadsheets'] })
+    const mixed = sessionProfileFromRequest({ ...request, preloadToolsets: ['spreadsheets', 'computer-use', 'computer-use'] })
+    const plain = sessionProfileFromRequest({ ...request, preloadToolsets: [] })
+
+    expect(unknownOnly.preloadToolsets).toBeUndefined()
+    expect(warmProfileKey(unknownOnly)).toBe(warmProfileKey(plain))
+    expect(warmProfileKey(mixed)).toBe(warmProfileKey(sessionProfileFromRequest(request)))
+  })
+
+  // One session's choice: the next, ordinary session must find a process warmed for it.
+  it('are never what the next session is warmed for', () => {
+    expect(nextWarmProfileFromRequest(request).preloadToolsets).toBeUndefined()
+    expect(nextWarmProfileFromRequest({ ...request, prewarmDefaults: { model: 'claude-opus-4-8' } }).preloadToolsets).toBeUndefined()
   })
 })

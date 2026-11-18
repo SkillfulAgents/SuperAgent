@@ -5,6 +5,15 @@ import userEvent from '@testing-library/user-event'
 import { HomeConnections } from './home-connections'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
+// These tests cover the section's content; the collapsed-by-default row itself
+// is covered in home-collapsible.test.tsx, so here it always renders open.
+vi.mock('./home-collapsible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./home-collapsible')>()),
+  HomeCollapsible: ({ title, children }: { title: string; children: import('react').ReactNode }) => (
+    <div><span>{title}</span>{children}</div>
+  ),
+}))
+
 // Mock apiFetch so the real `useAgentConnectedAccounts` hook runs end-to-end
 // against a fake network.
 const mockApiFetch = vi.fn()
@@ -28,9 +37,11 @@ vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
 // Capture navigate so we can assert the deep link into the connections page
 // (the rows navigate directly).
 const mockNavigate = vi.fn()
+const mockHere = vi.hoisted(() => ({ current: '/agents/test-agent' }))
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => mockNavigate,
+  useRouterState: ({ select }: { select: (s: { location: { href: string } }) => unknown }) => select({ location: { href: mockHere.current } }),
 }))
 
 const ACCOUNT = {
@@ -64,6 +75,7 @@ describe('HomeConnections — row navigation', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
     mockNavigate.mockReset()
+    mockHere.current = '/agents/test-agent'
     oauthReconnectMocks.reconnect.mockReset()
     oauthReconnectMocks.cancelReconnect.mockReset()
     accountResponse = [ACCOUNT]
@@ -109,7 +121,20 @@ describe('HomeConnections — row navigation', () => {
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/agents/$slug/connections',
       params: { slug: 'test-agent' },
-      search: { detail: 'account-acc-1', source: 'home' },
+      search: { detail: 'account-acc-1', source: 'home', from: '/agents/test-agent' },
+    })
+  })
+
+  it('Back returns to the page it was opened from, with what that page carries in its URL', async () => {
+    mockHere.current = '/agents/test-agent?tab=files'
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open GitHub connection details' }))
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'test-agent' },
+      search: { detail: 'account-acc-1', source: 'home', from: '/agents/test-agent?tab=files' },
     })
   })
 

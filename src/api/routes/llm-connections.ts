@@ -1,8 +1,9 @@
 import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
+import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection-credentials'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
-import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
-import { OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
-import { Hono } from 'hono'
+import { startOAuthLogin, pollOAuthLogin, cancelOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
+import { isOAuthProvider, OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -10,16 +11,16 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
   canSelectConnection,
-  isHelperSelection,
-  listConnections,
-  resolveSummarizerSelection,
-  resolveGlobalSelection,
+  listConnectionsWithSelection,
   saveConnection,
   deleteConnection,
+  shareConnection,
   setGlobalSelection,
+  compareAndSetGlobalDefault,
   getConnection,
   assertManageConnection,
   providerForConnection,
+  connectionCatalogFrom,
   prepareConnection,
   type ConnectionViewer,
 } from '@shared/lib/llm-provider/connections'
@@ -53,22 +54,22 @@ routes.post('/oauth/:provider/start', async c => {
   c.header('Cache-Control', 'no-store')
   return c.json(await startOAuthLogin(actor, input.userId, input.id, providerId, { region: input.region }))
 })
+routes.delete('/oauth/:id', async c => {
+  c.header('Cache-Control', 'no-store')
+  return c.json({ cancelled: await cancelOAuthLogin(c.req.param('id'), viewer(c)) })
+})
 routes.post('/oauth/:id/poll', async c => {
   c.header('Cache-Control', 'no-store')
   return c.json(await pollOAuthLogin(c.req.param('id'), viewer(c)))
 })
 routes.get('/', async (c) => {
-  const connections = await listConnections(viewer(c))
-  const root = await resolveGlobalSelection()
-  const summarizer = await resolveSummarizerSelection()
+  // One settings read for the listing, however many connections it has.
+  const settings = await getSettings()
+  const { connections, ...selection } = await listConnectionsWithSelection(viewer(c), settings)
   return c.json({
     connections,
-    legacyLlmProviderId: getSettings().llmLegacyProviderId,
-    defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
-    summarizerSelection:
-      isHelperSelection(summarizer)
-        ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model }
-        : null,
+    legacyLlmProviderId: settings.llmLegacyProviderId,
+    ...selection,
   })
 })
 routes.post('/', async (c) =>
@@ -77,14 +78,22 @@ routes.post('/', async (c) =>
 routes.put('/:id', async (c) =>
   c.json({ id: await saveConnection(await c.req.json(), viewer(c), c.req.param('id')) })
 )
+routes.post('/:id/share', IsAdmin(), async (c) => {
+  await shareConnection(c.req.param('id'), viewer(c))
+  return c.json({ success: true })
+})
 routes.delete('/:id', async (c) => {
   await deleteConnection(c.req.param('id'), viewer(c))
   return c.json({ success: true })
 })
 routes.put('/defaults/:purpose', IsAdmin(), async (c) => {
   const purpose = z.enum(['default', 'summarizer']).parse(c.req.param('purpose'))
-  await setGlobalSelection(purpose, await c.req.json())
-  return c.json({ success: true })
+  const state = await setGlobalSelection(purpose, await c.req.json())
+  return c.json({ success: true, ...state })
+})
+routes.put('/defaults/default/compare-and-set', IsAdmin(), async (c) => {
+  const body = z.object({ expected: z.unknown(), restore: z.unknown() }).parse(await c.req.json())
+  return c.json({ updated: await compareAndSetGlobalDefault(body.expected, body.restore) })
 })
 routes.post('/validate', async (c) => {
   const body = z
@@ -96,7 +105,7 @@ routes.post('/validate', async (c) => {
     provider: input.provider,
     config: JSON.stringify(config),
   })
-  if (provider instanceof BedrockLlmProvider && !provider.getEffectiveApiKey()) {
+  if (provider instanceof BedrockLlmProvider && !(await provider.getEffectiveApiKey())) {
     const env = await provider.getContainerEnvVars()
     return c.json(
       await provider.validateAwsCredentials(
@@ -107,18 +116,69 @@ routes.post('/validate', async (c) => {
     )
   }
   return c.json(
-    await provider.validateKey(provider.getEffectiveApiKey() ?? '', {
+    await provider.validateKey((await provider.getEffectiveApiKey()) ?? '', {
       baseUrl: config.apiKeys.genericBaseUrl,
     })
   )
 })
+// A provider's own model server (supportsServerStatus, supportsModelDownloads), for a
+// connection saved or still being set up: the provider reads where it is from the draft.
+const draftBody = z.object({ id: z.string().optional(), connection: z.unknown(), model: z.string().optional() })
+async function draftProvider(c: Context, capability: 'supportsServerStatus' | 'supportsModelDownloads') {
+  const body = draftBody.parse(await c.req.json())
+  const { input, config } = await prepareConnection(body.connection, viewer(c), body.id, { draft: true })
+  const provider = providerForConnection({ id: body.id, provider: input.provider, config: JSON.stringify(config) })
+  if (!provider[capability]) throw new Error(`${provider.name} does not support this`)
+  return { provider, model: body.model ?? '' }
+}
+routes.post('/server-status', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const { provider } = await draftProvider(c, 'supportsServerStatus')
+  const status = await provider.getServerStatus()
+  // Why an address failed (a timeout, a 404, something else answering) would map the server's network.
+  if (status.state !== 'running' && !viewer(c).admin) return c.json({ ...status, error: `Could not reach ${provider.name} at ${status.baseUrl}` })
+  return c.json(status)
+})
+routes.post('/model-downloads/list', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const { provider } = await draftProvider(c, 'supportsModelDownloads')
+  return c.json({ data: await provider.listModelDownloads() })
+})
+// A download writes to the server's disk.
+routes.post('/model-downloads', IsAdmin(), async (c) => {
+  const { provider, model } = await draftProvider(c, 'supportsModelDownloads')
+  await provider.startModelDownload(model)
+  return c.json({ success: true }, 202)
+})
+routes.post('/model-downloads/cancel', IsAdmin(), async (c) => {
+  const { provider, model } = await draftProvider(c, 'supportsModelDownloads')
+  await provider.cancelModelDownload(model)
+  return c.json({ success: true })
+})
 routes.get('/:id/usage', async c => {
   c.header('Cache-Control', 'no-store')
-  const row = await getConnection(c.req.param('id'))
+  let row = await getConnection(c.req.param('id'))
   const actor = viewer(c)
   // Being able to use another member's saved session does not expose their billing.
   if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
+  if (c.req.query('refreshCredentials') === '1' && isOAuthProvider(row.provider)) {
+    await resolveConnectionCredential(row.id)
+    // Refresh can rotate both the token and the usage cache generation.
+    row = await getConnection(row.id)
+    if (!row) return c.json({ error: 'Connection not found' }, 404)
+  }
   return c.json(await runWithOptionalUser(actor.userId, () => readConnectionUsage(row)))
+})
+routes.get('/:id/model-availability', async c => {
+  c.header('Cache-Control', 'no-store')
+  const row = await getConnection(c.req.param('id'))
+  const actor = viewer(c)
+  if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
+  // `fresh=1` re-reads the provider's source (after an upgrade, or a refusal).
+  const fresh = c.req.query('fresh') === '1'
+  const settings = await getSettings()
+  return c.json(await runWithOptionalUser(actor.userId,
+    async () => providerForConnection(row).getModelAvailability(connectionCatalogFrom(row, settings), { fresh, settings })))
 })
 routes.get('/:id/models/search', async (c) => {
   const row = await getConnection(c.req.param('id'))

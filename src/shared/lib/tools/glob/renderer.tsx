@@ -13,7 +13,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Pattern and path */}
       <div>
         <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Pattern</div>
-        <div className="bg-background rounded p-2 text-xs font-mono">
+        <div className="bg-background rounded-item p-2 text-xs font-mono">
           {pattern}
           {path && (
             <span className="text-muted-foreground ml-2">in {path}</span>
@@ -28,7 +28,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
             {isError ? 'Error' : `Files (${files.length})`}
           </div>
           <pre
-            className={`rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
+            className={`rounded-item p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
               isError ? 'bg-background text-red-800 dark:text-red-200' : 'bg-background'
             }`}
           >

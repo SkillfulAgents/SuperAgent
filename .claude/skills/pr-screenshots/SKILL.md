@@ -16,7 +16,7 @@ The pieces:
 ## Prerequisites
 
 - `gh --version` ≥ 2.99.0 (`brew upgrade gh`). Older gh rejects `--attach` as an unknown flag.
-- This checkout's `node_modules` must be fresh. Claude worktrees do not inherit the parent's install: if Vite fails with `Cannot find module 'vite-plugin-pwa'` (or better-sqlite3 complains about `NODE_MODULE_VERSION`), run `npm ci` in the worktree. Never rebuild the user's main checkout.
+- This checkout's `node_modules` must be fresh. Claude worktrees do not inherit the parent's install: if Vite fails with `Cannot find module 'vite-plugin-pwa'`, run `npm ci` in the worktree. Never rebuild the user's main checkout.
 - Playwright Chromium present (`npx playwright install chromium` if `capture.mjs` fails to launch a browser).
 
 ## Procedure
@@ -121,7 +121,7 @@ Title bar, traffic-light inset, native menus, vibrancy, and anything gated on `i
 SUPERAGENT_DATA_DIR="$SCRATCH/pr-shots/electron-data" SUPERAGENT_DISABLE_SINGLE_INSTANCE=1 E2E_MOCK=true npm run dev:electron
 ```
 
-`SUPERAGENT_DISABLE_SINGLE_INSTANCE=1` stops the dev instance from exiting silently when the user's own Gamut is running. `dev:electron` runs `electron-rebuild`, which flips better-sqlite3's ABI away from Node; run `npm rebuild better-sqlite3` before the next web-target capture in this worktree (never in the user's main checkout). Web-target shots from step 3 are still the default for everything else: they are deterministic, carry no personal data, and need no window focus.
+`SUPERAGENT_DISABLE_SINGLE_INSTANCE=1` stops the dev instance from exiting silently when the user's own Gamut is running. Web-target shots from step 3 are still the default for everything else: they are deterministic, carry no personal data, and need no window focus.
 
 ## Never
 

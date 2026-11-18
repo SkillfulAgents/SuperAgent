@@ -14,12 +14,12 @@ describe('MinimaxSubscriptionLlmProvider', () => {
     expect(prompt).toContain('"ratio":"16:9"')
   })
 
-  it('makes M3.1 Flash Preview the latest and default model, with M3 still listed', async () => {
+  it('makes M3.1 Flash the latest and default model, with M3 still listed', async () => {
     const provider = new MinimaxSubscriptionLlmProvider()
     const catalog = provider.getBuiltinCatalog()
-    expect(catalog.map(model => model.id)).toEqual(['MiniMax-M3.1-Flash-Preview', 'MiniMax-M3'])
-    expect(catalog.find(model => model.isDefault)?.id).toBe('MiniMax-M3.1-Flash-Preview')
-    expect(catalog.find(model => model.isLatest)?.id).toBe('MiniMax-M3.1-Flash-Preview')
-    expect((await provider.searchModels('flash')).map(model => model.id)).toEqual(['MiniMax-M3.1-Flash-Preview'])
+    expect(catalog.map(model => model.id)).toEqual(['MiniMax-M3.1-Flash', 'MiniMax-M3'])
+    expect(catalog.find(model => model.isDefault)?.id).toBe('MiniMax-M3.1-Flash')
+    expect(catalog.find(model => model.isLatest)?.id).toBe('MiniMax-M3.1-Flash')
+    expect((await provider.searchModels('flash')).map(model => model.id)).toEqual(['MiniMax-M3.1-Flash'])
   })
 })

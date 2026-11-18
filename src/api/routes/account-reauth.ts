@@ -25,7 +25,7 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
 
   try {
     // The actor only hands back this agent's requests; another agent's reads as absent.
-    const request = agentRegistry.get(slug).inputs.get(requestId)
+    const request = await agentRegistry.get(slug).inputs.get(requestId)
     if (request?.kind !== 'account_reauth_required') {
       return c.json({ error: 'Reconnection request is no longer available' }, 404)
     }
@@ -51,7 +51,7 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
     )).get()
     if (!mapping) return c.json({ error: 'The original account is no longer assigned to this agent' }, 409)
     // The reads above yielded; make sure the card did not settle meanwhile.
-    if (agentRegistry.get(slug).inputs.get(requestId)?.kind !== 'account_reauth_required') {
+    if ((await agentRegistry.get(slug).inputs.get(requestId))?.kind !== 'account_reauth_required') {
       return c.json({ error: 'Reconnection request is no longer available' }, 404)
     }
 
@@ -85,13 +85,7 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
       name: getProvider(result.toolkit)?.displayName ?? result.toolkit,
       previousId: result.previousAccountId,
       replacementId: result.accountId,
-    }, () => {
-      const actor = agentRegistry.get(slug)
-      if (!actor.inputs.accountReauth.replace(requestId, result.accountId)) {
-        actor.inputs.resolve(requestId, 'answered')
-        actor.sessions.syncAwaiting()
-      }
-    })
+    }, () => agentRegistry.get(slug).inputs.accountReauth.settleReplaced(requestId, result.accountId))
     return c.json({ success: true, ...recovery })
   } catch (error) {
     console.error('Failed to replace account connection:', error)

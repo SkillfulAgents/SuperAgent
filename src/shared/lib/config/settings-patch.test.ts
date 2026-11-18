@@ -70,6 +70,7 @@ const transitionContext: SettingsTransitionContext = {
   hasRunningAgents: false,
   hostTotalMemoryBytes: 64 * 1024 ** 3,
   supportsCustomAgentImage: (runner) => runner !== 'lambda-microvm',
+  offersRuntime: () => true,
 }
 
 function parsePatch(input: unknown): SettingsPatch {
@@ -246,6 +247,29 @@ describe('validateSettingsTransition', () => {
         container: { containerRunner: 'lambda-microvm', agentImage: 'custom:v2' },
       }),
     ).toContainEqual(expect.objectContaining({ status: 400 }))
+  })
+
+  it('rejects switching to a runner this build doesn’t offer', () => {
+    const offersOnlyLima = { offersRuntime: (runner: string) => runner === 'lima' }
+
+    expect(problemsFor(currentSettings(), { container: { containerRunner: 'podman' } }, offersOnlyLima)).toContainEqual({
+      status: 400,
+      message: "The podman container runner isn't available in this build of the app.",
+    })
+    expect(problemsFor(currentSettings(), { container: { containerRunner: 'lima' } }, offersOnlyLima)).toEqual([])
+  })
+
+  it('says so before asking to stop running agents, which wouldn’t help', () => {
+    const problems = problemsFor(currentSettings(), { container: { containerRunner: 'podman' } }, {
+      offersRuntime: (runner) => runner === 'lima',
+      hasRunningAgents: true,
+    })
+    expect(problems[0]).toEqual(expect.objectContaining({ status: 400 }))
+  })
+
+  it('leaves the runner the settings already hold alone, whatever this build offers', () => {
+    // currentSettings() holds docker.
+    expect(problemsFor(currentSettings(), { container: { containerRunner: 'docker' } }, { offersRuntime: () => false })).toEqual([])
   })
 
   it('rejects a requested Lima VM size at or above host memory', () => {

@@ -61,7 +61,8 @@ function makeRow(windows: AgentIntegrationSession[]): ChatRow {
   }
 }
 
-const props = { agentSlug: 'a', providerName: 'Telegram', integrationId: 'i', canManageAccess: false }
+const onOpenSession = vi.fn<(sessionId: string) => void>()
+const props = { agentSlug: 'a', providerName: 'Telegram', integrationId: 'i', canManageAccess: false, onOpenSession }
 
 const onSelectWindow = vi.fn<(sessionId: string | null) => void>()
 const onNewConversation = vi.fn<(externalChatId: string) => void>()
@@ -231,5 +232,27 @@ describe('ConversationDetail request view (pending/blocked, no window)', () => {
     // windows.length > 0 -> falls through to the thread, never the request preview.
     expect(screen.getByTestId('session-thread')).toHaveTextContent('sess-a')
     expect(screen.queryByText('Blocked')).toBeNull()
+  })
+})
+
+describe('ConversationDetail Open Session', () => {
+  beforeEach(() => onOpenSession.mockReset())
+
+  it('opens the shown window in the full session view', async () => {
+    const user = userEvent.setup()
+    const row = makeRow([win('sess-a', '2026-06-20T12:00:00Z'), win('sess-b', '2026-06-19T09:00:00Z', true)])
+    render(
+      <ConversationDetail row={row} openWindowId="sess-b" onSelectWindow={onSelectWindow} onNewConversation={onNewConversation} {...props} />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Open Session' }))
+    expect(onOpenSession).toHaveBeenCalledWith('sess-b')
+  })
+
+  it('has no session to open on a fresh, blank conversation', () => {
+    const row = makeRow([win('sess-a', '2026-06-20T12:00:00Z', true)])
+    render(
+      <ConversationDetail row={row} openWindowId={null} onSelectWindow={onSelectWindow} onNewConversation={onNewConversation} {...props} />,
+    )
+    expect(screen.queryByRole('button', { name: 'Open Session' })).toBeNull()
   })
 })

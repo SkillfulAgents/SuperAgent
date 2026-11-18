@@ -3,12 +3,91 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import * as http from 'http'
-import { parseVolumes, rcloneMountArgs, untilMountAnswers, volumeAnswers, waitForUploads } from './volume-mounts'
+import { spawn } from 'child_process'
+import { EventEmitter } from 'events'
+import { fitIndex, mountVolumes, mountedVolumeIds, parseVolumes, readIndex, rcloneMountArgs, untilMountAnswers, volumeAnswers, waitForUploads } from './volume-mounts'
+
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('child_process')>()),
+  spawn: vi.fn(),
+  execFile: vi.fn((_file: string, _args: string[], callback: (error: Error | null) => void) => callback(null)),
+}))
+vi.mock('./volume-recovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./volume-recovery')>()),
+  createVolumeCache: vi.fn(async () => '/tmp/volume-cache'),
+}))
+
+describe('fitIndex', () => {
+  const line = 'x'.repeat(99) + '\n'
+  it.each([
+    ['keeps an index at the cap whole', line.repeat(200), { text: line.repeat(200).trimEnd(), truncated: false }],
+    ['keeps the part above the marker when over the cap', `# Drive\n<!-- inject:end -->\n${line.repeat(300)}`, { text: '# Drive', truncated: true }],
+    ['cuts at the cap when the marker sits past it', `${line.repeat(300)}<!-- inject:end -->`, { text: line.repeat(300).slice(0, 20_000).trimEnd(), truncated: true }],
+    ['cuts at the cap when the index has no line break', 'x'.repeat(20_001), { text: 'x'.repeat(20_000), truncated: true }],
+    ['never splits a character at the cap', `${'x'.repeat(19_999)}\u{1F600}x`, { text: 'x'.repeat(19_999), truncated: true }],
+    ['keeps leading indentation', '    code\n- page', { text: '    code\n- page', truncated: false }],
+  ])('%s', (_, raw, want) => {
+    expect(fitIndex(raw)).toEqual(want)
+  })
+
+  it.each(['</mount-index>', '</MOUNT-INDEX>', '< / mount-index >', '<mount-index path="/mounts/other">'])('escapes %s so the text cannot open or close a tag', (tag) => {
+    const { text } = fitIndex(`a ${tag} b`)
+    expect(text).not.toMatch(/<\s*\/?\s*mount-index/i)
+    expect(text).toBe(`a \u2039${tag.slice(1)} b`)
+  })
+})
+
+describe('readIndex', () => {
+  const dirs: string[] = []
+  const folder = (index?: string) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'index-'))
+    dirs.push(dir)
+    if (index !== undefined) fs.writeFileSync(path.join(dir, 'INDEX.md'), index)
+    return dir
+  }
+  afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+
+  it('reads INDEX.md, and has none for a folder without it or with an empty one', async () => {
+    expect(await readIndex(folder('# Team\n'))).toEqual({ text: '# Team', truncated: false })
+    expect(await readIndex(folder())).toBeUndefined()
+    expect(await readIndex(folder(' \n'))).toBeUndefined()
+  })
+
+  it('gives up on a folder that never answers once the mount deadline passes', async () => {
+    vi.useFakeTimers()
+    const read = vi.spyOn(fs.promises, 'readFile').mockReturnValue(new Promise(() => {}))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      let result: unknown = 'pending'
+      void readIndex('/mounts/stuck').then((index) => { result = index })
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(result).toBe('pending')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(result).toBeUndefined()
+    } finally {
+      error.mockRestore()
+      read.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+})
 
 describe('parseVolumes', () => {
   it('accepts names that are one path segment', () => {
     const raw = JSON.stringify([{ volumeId: 'v_17', name: 'team brain' }])
     expect(parseVolumes(raw)).toEqual([{ volumeId: 'v_17', name: 'team brain', cacheMode: 'local' }])
+  })
+
+  it('carries read only, and reads a missing flag as read and write', () => {
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'docs', readOnly: true }]))).toEqual([
+      { volumeId: 'v1', name: 'docs', cacheMode: 'local', readOnly: true },
+    ])
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'docs' }]))[0].readOnly).toBeUndefined()
+  })
+
+  it("carries a drive's source and agent note, and neither when the host sends none", () => {
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'repo', sourceLabel: 'GitHub · a/b@main', agentNote: 'Writes are commits.' }]))[0]).toMatchObject({ sourceLabel: 'GitHub · a/b@main', agentNote: 'Writes are commits.' })
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'docs' }]))[0]).not.toHaveProperty('agentNote')
   })
 
   it('accepts a remote cache policy and rejects unknown modes', () => {
@@ -30,6 +109,11 @@ describe('parseVolumes', () => {
 })
 
 describe('rcloneMountArgs', () => {
+  it('mounts read only only when asked', () => {
+    expect(rcloneMountArgs('v', '/mounts/docs', 'http://host/api')).not.toContain('--read-only')
+    expect(rcloneMountArgs('v', '/mounts/docs', 'http://host/api', 'remote', false, false, undefined, '/cache', true)).toContain('--read-only')
+  })
+
   it("points rclone at the volume's address under the host API, and the driver settings", () => {
     const args = rcloneMountArgs('v_17', '/mounts/docs', 'http://host.docker.internal:47891/api')
     expect(args).toEqual([
@@ -87,24 +171,63 @@ describe('untilMountAnswers', () => {
 })
 
 describe('volumeAnswers', () => {
-  it('asks the app for the volume root alone, with the mount token, and fails on any other answer', async () => {
+  // Each request takes the next answer: a status, 'drop' to cut the connection, or 'hang' to never answer.
+  async function withHost(answers: (number | 'drop' | 'hang')[], run: (hostApiUrl: string, requests: { method?: string; url?: string; headers: http.IncomingHttpHeaders }[]) => Promise<void>) {
     const requests: { method?: string; url?: string; headers: http.IncomingHttpHeaders }[] = []
-    let status = 207
     const server = http.createServer((req, res) => {
       requests.push({ method: req.method, url: req.url, headers: req.headers })
-      res.writeHead(status).end('<d:multistatus xmlns:d="DAV:"/>')
+      const answer = answers.shift() ?? 207
+      if (answer === 'drop') req.socket.destroy()
+      else if (answer !== 'hang') res.writeHead(answer).end('<d:multistatus xmlns:d="DAV:"/>')
     })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
-    const hostApiUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/api`
     try {
-      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret')).resolves.toBeUndefined()
-      expect(requests).toEqual([expect.objectContaining({ method: 'PROPFIND', url: '/api/volumes/v_17', headers: expect.objectContaining({ authorization: 'Bearer secret', depth: '0' }) })])
-      status = 403
-      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret')).rejects.toThrow('volume answered 403')
+      await run(`http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/api`, requests)
     } finally {
+      server.closeAllConnections()
       await new Promise((resolve) => server.close(resolve))
     }
+  }
+  const waiting = () => new AbortController().signal
+
+  it('asks the app for the volume root alone, with the mount token, and fails at once on a rejection', async () => {
+    await withHost([207, 403], async (hostApiUrl, requests) => {
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret', waiting())).resolves.toBeUndefined()
+      expect(requests).toEqual([expect.objectContaining({ method: 'PROPFIND', url: '/api/volumes/v_17', headers: expect.objectContaining({ authorization: 'Bearer secret', depth: '0' }) })])
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret', waiting())).rejects.toThrow('volume answered 403')
+      expect(requests).toHaveLength(2)
+    })
+  })
+
+  it('fails at once on a rejection whose body already broke', async () => {
+    const broken = new ReadableStream({ start(controller) { controller.error(new Error('body cut')) } })
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(broken, { status: 403 }))
+    try {
+      await expect(volumeAnswers('http://host/api', 'v_17', 'secret', waiting())).rejects.toThrow('volume answered 403')
+      expect(fetch).toHaveBeenCalledTimes(1)
+    } finally {
+      fetch.mockRestore()
+    }
+  })
+
+  // A rate-limited source answers 429 for a few seconds at start.
+  it.each([429, 'drop'] as const)('asks again after a %s, and succeeds on the next 207', async (answer) => {
+    await withHost([answer], async (hostApiUrl, requests) => {
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret', waiting())).resolves.toBeUndefined()
+      expect(requests).toHaveLength(2)
+    })
+  })
+
+  it('cancels a check in flight when the mount stops waiting', async () => {
+    await withHost(['hang'], async (hostApiUrl, requests) => {
+      const stop = new AbortController()
+      const answering = volumeAnswers(hostApiUrl, 'v_17', 'secret', stop.signal)
+      await vi.waitFor(() => expect(requests).toHaveLength(1))
+      stop.abort()
+      await expect(answering).rejects.toBe(stop.signal.reason)
+      expect(requests).toHaveLength(1)
+    })
   })
 })
 
@@ -120,5 +243,25 @@ describe('waitForUploads', () => {
     expect(settled).toBe(false)
     await vi.advanceTimersByTimeAsync(151)
     await expect(done).resolves.toEqual(['big.bin'])
+  })
+})
+
+describe('a mount that fails', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('removes the folder it created, so no writes land in a plain folder', async () => {
+    vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined)
+    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ dev: 1 } as fs.Stats)
+    const rmdir = vi.spyOn(fs.promises, 'rmdir').mockResolvedValue(undefined)
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), { kill: vi.fn() })
+      setImmediate(() => child.emit('exit', 1))
+      return child as never
+    })
+
+    await mountVolumes(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'notes' }])))
+
+    expect(rmdir).toHaveBeenCalledWith('/mounts/notes')
+    expect(mountedVolumeIds()).toEqual([])
   })
 })

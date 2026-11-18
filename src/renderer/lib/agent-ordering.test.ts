@@ -4,6 +4,7 @@ import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 function makeAgent(slug: string, createdAt: string): ApiAgent {
   return {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug,
     displaySlug: slug,
     name: slug,

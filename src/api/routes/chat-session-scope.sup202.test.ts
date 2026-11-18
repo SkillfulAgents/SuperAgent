@@ -78,7 +78,7 @@ const mockClearChatSessionById = vi.fn()
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
   agentIntegrationManager: {
     clearSessionById: (id: string) => mockClearChatSessionById(id),
-    isIntegrationConnected: vi.fn(() => false),
+    isIntegrationConnected: vi.fn(() => false), integrationTransport: () => null,
     addIntegration: vi.fn(),
     removeIntegration: vi.fn(),
     pauseIntegration: vi.fn(),

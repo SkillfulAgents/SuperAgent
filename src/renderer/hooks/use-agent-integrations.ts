@@ -4,6 +4,9 @@
  * React Query hooks for managing external agent integrations.
  */
 
+import { usePlatformAuthStatus } from './use-platform-auth'
+import { useWebhookRelay } from './use-webhook-relay'
+import type { AgentIntegrationDefinition } from '@shared/lib/agent-integrations/types'
 import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
@@ -43,6 +46,23 @@ export const agentIntegrationKeys = {
   status: (id: string | null) => ['chat-integration-status', id] as const,
   sessions: (integrationId: string | null) => ['chat-integration-sessions', integrationId] as const,
   access: (integrationId: string) => ['chat-integration-access', integrationId] as const,
+  sessionOwner: (agentSlug: string, sessionId: string | null) => ['chat-integration-session-owner', agentSlug, sessionId] as const,
+}
+
+/** Host owns the decision; capability changes only invalidate discovery. */
+export function useAvailableAgentIntegrationProviders() {
+  const { data: platform, isLoading: platformLoading } = usePlatformAuthStatus()
+  const { data: relay, isLoading: relayLoading } = useWebhookRelay()
+  return useQuery<AgentIntegrationDefinition[]>({
+    queryKey: ['agent-integration-providers', platform?.connected, relay?.available],
+    queryFn: async () => {
+      const response = await apiFetch('/api/agent-integrations/providers')
+      if (!response.ok) throw new Error('Failed to fetch available integrations')
+      return response.json()
+    },
+    // Both answers are in the key, so a read before they arrive is read again right after.
+    enabled: !platformLoading && !relayLoading,
+  })
 }
 
 // ── List hooks ──────────────────────────────────────────────────────────
@@ -93,6 +113,8 @@ export function useAgentIntegrationStatus(id: string | null) {
   return useQuery<{
     status: string
     connected: boolean
+    /** The path the running connection uses; null without one, or for providers that don't say. */
+    transport?: 'direct' | 'relay' | null
     provider: string
   }>({
     queryKey: agentIntegrationKeys.status(id),
@@ -117,6 +139,21 @@ export function useAgentIntegrationStatus(id: string | null) {
 }
 
 // ── Sessions hook ──────────────────────────────────────────────────────
+
+/** The integration an agent session belongs to, or null for an ordinary session. */
+export function useSessionAgentIntegrationId(agentSlug: string, sessionId: string | null) {
+  return useQuery<string | null>({
+    queryKey: agentIntegrationKeys.sessionOwner(agentSlug, sessionId),
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agent-integrations/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId!)}`)
+      if (!res.ok) throw new Error('Failed to resolve session integration')
+      return (await res.json()).integrationId
+    },
+    enabled: !!sessionId,
+    // A session's owning integration never changes.
+    staleTime: Infinity,
+  })
+}
 
 export function useAgentIntegrationSessions(integrationId: string | null) {
   return useQuery<AgentIntegrationSession[]>({
@@ -229,7 +266,10 @@ export function useUpdateAgentIntegration() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       })
-      if (!res.ok) throw new Error('Failed to update agent integration')
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(payload?.error ?? 'Failed to update agent integration')
+      }
       return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {
@@ -372,6 +412,26 @@ export function useAgentIntegrationSetup(agentSlug: string, provider: string, na
     },
     staleTime: 60_000,
     enabled,
+  })
+}
+
+/** Renames the app a team directory created for an installation, and/or sets its icon (base64 PNG). */
+export function useUpdateProvisionedApp() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, name, icon }: { id: string; agentSlug: string; name?: string; icon?: string }) => {
+      const response = await apiFetch(`/api/agent-integrations/${id}/app`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(name ? { name } : {}), ...(icon ? { icon } : {}) }),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(typeof result?.error === 'string' && result.error ? result.error : 'Could not update the app')
+      return result
+    },
+    onSuccess: (_, { id, agentSlug }) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(id) }),
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) }),
+    ]),
   })
 }
 

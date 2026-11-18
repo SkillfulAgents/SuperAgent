@@ -63,7 +63,7 @@ export function PlatformNotificationDetail() {
           Loading notification...
         </div>
       ) : !notification ? (
-        <div className="rounded-xl border border-dashed p-12 text-center text-sm text-muted-foreground">
+        <div className="rounded-card border border-dashed p-12 text-center text-sm text-muted-foreground">
           <Megaphone className="h-8 w-8 mx-auto mb-3 opacity-20" />
           Notification not found.
         </div>

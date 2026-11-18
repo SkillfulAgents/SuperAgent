@@ -34,7 +34,7 @@ function HeaderAction({ label, onClick, disabled, className, children }: HeaderA
           disabled={disabled}
           aria-label={label}
           className={cn(
-            'p-0.5 rounded hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-30',
+            'p-0.5 rounded-icon hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-30',
             className,
           )}
         >

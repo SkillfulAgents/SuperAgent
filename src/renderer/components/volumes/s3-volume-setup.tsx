@@ -13,7 +13,7 @@ function S3Logo({ className }: { className?: string }) { return <Database aria-h
 function ValidationResult({ result }: { result: VolumeValidation }) {
   return <div className="space-y-3" role="status" aria-live="polite" data-testid="s3-validation-result">
     <p className={`text-sm font-medium ${result.valid ? 'text-emerald-700 dark:text-emerald-400' : 'text-destructive'}`}>
-      {result.valid ? 'Connected — this key has the access the volume needs.' : 'This key is not ready to mount. Check the items below.'}
+      {result.valid ? 'Connected. This key has the access the drive needs.' : 'This key is not ready to use. Check the items below.'}
     </p>
     <ul className="space-y-2 text-xs">
       {result.checks.map(check => <li key={check.label} className="flex items-start gap-2">
@@ -23,7 +23,7 @@ function ValidationResult({ result }: { result: VolumeValidation }) {
         <span>{check.label}{check.message && <span className="mt-0.5 block text-muted-foreground">{check.message}</span>}</span>
       </li>)}
     </ul>
-    {result.warnings.map(warning => <p key={warning} className="break-words rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">{warning}</p>)}
+    {result.warnings.map(warning => <p key={warning} className="break-words rounded-card border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">{warning}</p>)}
     {!result.valid && <p className="text-xs text-muted-foreground">Use a key with list, read, write, delete, and multipart upload access to this bucket and prefix. For Cloudflare R2, choose Object Read &amp; Write.</p>}
   </div>
 }
@@ -61,8 +61,8 @@ function S3VolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, e
     setStep('details')
   }
   return <>
-    <VolumeSetupHeader title={step === 'connection' ? 'Connect an S3 bucket' : 'Set up S3 volume'}
-      description={step === 'connection' ? 'Works with Amazon S3, Cloudflare R2, and compatible storage.' : 'Name this volume and choose who can attach it.'}
+    <VolumeSetupHeader title={step === 'connection' ? 'Connect an S3 bucket' : 'Set up S3 drive'}
+      description={step === 'connection' ? 'Works with Amazon S3, Cloudflare R2, and compatible storage.' : 'Name this drive and choose who can add it.'}
       Logo={S3Logo} steps={['Source', 'Connection', 'Details']} step={step === 'connection' ? 1 : 2} />
     <form className="space-y-4" onSubmit={event => {
       event.preventDefault()
@@ -86,14 +86,14 @@ function S3VolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, e
           <div className="space-y-1.5"><Label htmlFor="s3-access-key">Access key ID</Label><Input id="s3-access-key" autoComplete="off" spellCheck={false} value={config.credentials.accessKeyId} disabled={checking} onChange={event => update({ ...config, credentials: { ...config.credentials, accessKeyId: event.target.value } })} required /></div>
           <div className="space-y-1.5"><Label htmlFor="s3-secret-key">Secret access key</Label><Input id="s3-secret-key" type="password" autoComplete="new-password" value={config.credentials.secretAccessKey} disabled={checking} onChange={event => update({ ...config, credentials: { ...config.credentials, secretAccessKey: event.target.value } })} required /></div>
           <div className="space-y-1.5"><Label htmlFor="s3-prefix">Folder prefix (optional)</Label><Input id="s3-prefix" placeholder="e.g. shared/documents" value={config.prefix} disabled={checking} onChange={event => update({ ...config, prefix: event.target.value })} />
-            <p className="text-xs text-muted-foreground">Leave blank to mount the whole bucket. Access stays within this prefix.</p>
+            <p className="text-xs text-muted-foreground">Leave blank to use the whole bucket. Access stays within this prefix.</p>
           </div>
           <details className="text-sm"><summary className="cursor-pointer text-muted-foreground">Advanced</summary><div className="mt-3 space-y-3">
             <div className="space-y-1.5"><Label htmlFor="s3-session-token">Session token (optional)</Label><Input id="s3-session-token" type="password" autoComplete="off" disabled={checking} value={config.credentials.sessionToken ?? ''} onChange={event => update({ ...config, credentials: { ...config.credentials, sessionToken: event.target.value || undefined } })} /></div>
             <label className="flex items-center gap-2"><input type="checkbox" checked={config.forcePathStyle} disabled={checking} onChange={event => update({ ...config, forcePathStyle: event.target.checked })} />Use path-style bucket URLs</label>
           </div></details>
         </> : <VolumeDetailsFields value={details} onChange={value => { setDetails(value); clearError() }} disabled={isSaving}>
-          <div className="rounded-md border bg-muted/30 p-3 text-sm"><p className="font-medium">{config.bucket}</p><p className="mt-1 break-all text-xs text-muted-foreground">{config.prefix || 'Entire bucket'} · {config.region}</p></div>
+          <div className="rounded-card border bg-muted/30 p-3 text-sm"><p className="font-medium">{config.bucket}</p><p className="mt-1 break-all text-xs text-muted-foreground">{config.prefix || 'Entire bucket'} · {config.region}</p></div>
         </VolumeDetailsFields>}
         {result && <div ref={resultRef} tabIndex={-1} className="outline-none"><ValidationResult result={result} /></div>}
         {(connectionError || error) && <p role="alert" className="text-sm text-destructive">{connectionError || error}</p>}
@@ -101,7 +101,7 @@ function S3VolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, e
       {step === 'connection' && <p className="text-xs text-muted-foreground">Checking access creates temporary test objects inside this prefix, then removes them.</p>}
       <VolumeSetupFooter onBack={step === 'connection' ? onBack : () => { setStep('connection'); clearError() }} onCancel={onCancel}
         isSaving={checking || isSaving} disabled={step === 'connection' ? !parsed.success : !details.name.trim() || !result?.valid}
-        submitLabel={step === 'details' ? attachToAgent ? 'Create and attach' : 'Create volume' : checking ? 'Checking access…' : result?.valid ? 'Continue' : 'Test connection'} />
+        submitLabel={step === 'details' ? attachToAgent ? 'Create and add' : 'Create drive' : checking ? 'Checking access…' : result?.valid ? 'Continue' : 'Test connection'} />
     </form>
   </>
 }

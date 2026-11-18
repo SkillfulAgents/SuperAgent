@@ -3,8 +3,8 @@
  * in-process serialization and nothing to heal.
  */
 import { createConfigOps } from '../config-ops'
-import type { ConfigOps, FileOps } from '../types'
+import type { FileOps, StoreConfigOps } from '../types'
 
-export function createInMemoryConfigOps(files: FileOps): ConfigOps {
+export function createInMemoryConfigOps(files: FileOps): StoreConfigOps {
   return createConfigOps(files)
 }

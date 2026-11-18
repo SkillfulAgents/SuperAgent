@@ -34,13 +34,13 @@ describe('deliver_file expanded view', () => {
   it('offers a download for a file the drawer cannot render', () => {
     render(
       <ExpandedView
-        input={{ filePath: '/workspace/output/bundle.zip' }}
+        input={{ filePath: '/workspace/output/bundle.tar' }}
         result={'Delivered: {"sizeBytes":8192}'}
         agentSlug="test-agent"
       />
     )
     expect(screen.getByTestId('file-delivery-row')).toHaveAttribute('data-file-action', 'download')
-    expect(screen.getByRole('link', { name: 'Download bundle.zip' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Download bundle.tar' })).toBeInTheDocument()
   })
 
   it('falls back to a plain name for a failed delivery, with no row to click', () => {

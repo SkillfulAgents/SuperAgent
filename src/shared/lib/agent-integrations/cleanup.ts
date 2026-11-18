@@ -2,6 +2,8 @@ import { listAgentIntegrations } from '../services/agent-integration-service'
 import { captureException } from '../error-reporting'
 import { agentIntegrationRegistry } from './registry'
 import { agentIntegrationManager } from './agent-integration-manager'
+import { releaseIntegrationTransport } from './relay-transport'
+import { deleteAgentApp, provisionedAppOf } from '../team-directory/provisioning'
 import type { AgentIntegrationRecord } from './types'
 
 /** Stop the local runtime before deletion; unavailable remote services cannot block it. */
@@ -15,6 +17,10 @@ export async function cleanupIntegrationResource(integration: AgentIntegrationRe
       extra: { integrationId: integration.id, provider: integration.provider },
     })
   }
+  // An app a team directory created for it goes with it.
+  const provisionedApp = provisionedAppOf(integration.config)
+  if (provisionedApp) await deleteAgentApp(provisionedApp)
+  await releaseIntegrationTransport(integration)
 }
 
 export async function cleanupIntegrationResources(agentSlug?: string): Promise<void> {

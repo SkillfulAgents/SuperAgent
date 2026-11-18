@@ -101,6 +101,9 @@ function forget(keys: Iterable<string>): void {
   }
 }
 
+/** Bumped by every start: only the latest start's target may fill the entries. */
+let startGeneration = 0
+
 /**
  * Begin the boot round trips for the workspace this app is about to drive.
  *
@@ -108,18 +111,21 @@ function forget(keys: Iterable<string>): void {
  * pending and does nothing else. Never throws and never rejects — a prefetch
  * that fails must degrade to the request the renderer would have made anyway.
  */
-export function startCloudBootPrefetch(): void {
+export async function startCloudBootPrefetch(): Promise<void> {
   forget(entries.keys())
+  const generation = ++startGeneration
 
   // Guarded because of where this is called from: one caller is app startup,
   // ahead of the window being created. Reading the workspace record touches
-  // settings on disk, and a head start is never worth a boot.
+  // the database, and a head start is never worth a boot.
   let target: CloudProxyTarget | null = null
   try {
-    target = resolveCloudProxyTarget()
+    target = await resolveCloudProxyTarget()
   } catch {
     return
   }
+  // A later start (another switch) owns the entries now.
+  if (generation !== startGeneration) return
   if (!target) return
 
   const startedAt = Date.now()

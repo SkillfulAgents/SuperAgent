@@ -52,6 +52,21 @@ export function planMcpOAuthCallback(
   }
 }
 
+/**
+ * The payload's `error`, when the page carries one: why the sign-in failed
+ * (an expired or already used flow, for example), to show the user.
+ */
+function payloadError(html: string): string | null {
+  const literal = html.match(/"error":("(?:[^"\\]|\\.)*")/)?.[1]
+  if (!literal) return null
+  try {
+    const error: unknown = JSON.parse(literal)
+    return typeof error === 'string' && error ? error : null
+  } catch {
+    return null
+  }
+}
+
 /** Read the completion result out of the callback route's HTML response. */
 export function parseMcpOAuthCompletionResponse(html: string): McpOAuthCallbackResult {
   const success = html.includes('OAuth successful')
@@ -61,6 +76,6 @@ export function parseMcpOAuthCompletionResponse(html: string): McpOAuthCallbackR
   return {
     success,
     mcpId: mcpIdMatch?.[1] || null,
-    error: success ? null : 'OAuth failed',
+    error: success ? null : (payloadError(html) ?? 'OAuth failed'),
   }
 }

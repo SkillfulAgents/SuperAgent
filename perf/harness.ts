@@ -37,8 +37,11 @@ export interface PerfApp {
   seeded: SeededData
   profile: SeedProfile
   request(url: string): Promise<Response>
-  /** Drop the per-agent session summary caches so the next read is cold. */
-  invalidateSummaryCaches(): void
+  /**
+   * Drop every agent's actor, and with it what its session index holds in
+   * memory: the next read is the first one after a restart of the app.
+   */
+  restartActors(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -63,6 +66,15 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   // seeded agent directories into the catalog table the listing reads.
   const { openDatabase } = await import('@shared/lib/db')
   await openDatabase()
+  const { initializeLocalAppState } = await import('@shared/lib/app-state')
+  await initializeLocalAppState()
+  const { initializeBackgroundWork } = await import('@shared/lib/background-work')
+  const { LocalTaskManager } = await import('@shared/lib/background-work/local-task-manager')
+  await initializeBackgroundWork(new LocalTaskManager())
+  // This harness skips the full service startup, but container discovery needs
+  // the same provider registry. Registration is local and stays outside measurements.
+  const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
+  registerAllAccountProviders()
   const { Hono: HonoCtor } = await import('hono')
   const agentsRouter = (await import('@/api/routes/agents')).default
   const { agentRegistry } = await import('@shared/lib/agent-actor')
@@ -70,30 +82,32 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   const app = new HonoCtor()
   app.route('/api/agents', agentsRouter)
 
-  // The summary cache is the actor's: dropping the actor drops it, and the
-  // next request builds a fresh handle (no I/O) and a cold cache.
-  const invalidateSummaryCaches = () => {
-    for (const slug of seeded.agentSlugs) agentRegistry.evict(slug)
+  // What a session index knows of its transcripts directory is the actor's:
+  // dropping the actor drops it, and the next request builds a fresh handle
+  // (no I/O) that has to look at the directory again.
+  const restartActors = async () => {
+    await Promise.all(seeded.agentSlugs.map((slug) => agentRegistry.evict(slug)))
   }
 
   // One throwaway request, unmeasured: pays Hono's first-request setup and
   // the JIT, and loads the process-lifetime caches that are not part of any
   // route's cost, so that op counts do not depend on which scenario happens
-  // to run first. The summary caches it warms are dropped again so "cold"
-  // scenarios stay cold.
+  // to run first. It is also the first read of every agent's sessions, the
+  // one that stats each transcript, once: no scenario pays that again. The
+  // actors it built are dropped so "after a restart" scenarios start there.
   disableNfsShim()
   const warmup = await app.request('http://localhost/api/agents')
   if (warmup.status !== 200) {
     throw new Error(`perf harness: warm-up request failed with ${warmup.status}`)
   }
-  invalidateSummaryCaches()
+  await restartActors()
 
   return {
     app,
     seeded,
     profile,
     request: async (url) => app.request(`http://localhost${url}`),
-    invalidateSummaryCaches,
+    restartActors,
     dispose: async () => {
       disableNfsShim()
       clock.mockRestore()
@@ -113,18 +127,50 @@ export interface Measurement {
   bytesRead: number
 }
 
+export interface MeasureOptions {
+  /**
+   * Keep counting after `fn` resolves until no operation has started for a
+   * while, so the fire-and-forget work a request leaves running (a session
+   * rename, a background read) is in the counts in full instead of in part.
+   * `wallMs` still ends when `fn` resolves.
+   */
+  settle?: boolean
+}
+
 /** Run `fn` with the shim enabled; everything outside runs at native speed. */
-export async function measure<T>(fn: () => Promise<T>): Promise<{ result: T; measurement: Measurement }> {
+export async function measure<T>(
+  fn: () => Promise<T>,
+  options: MeasureOptions = {},
+): Promise<{ result: T; measurement: Measurement }> {
   resetNfsShimCounters()
   enableNfsShim()
   const started = performance.now()
   try {
     const result = await fn()
     const wallMs = performance.now() - started
+    if (options.settle) await settle()
     const snapshot = nfsShimSnapshot()
     return { result, measurement: { wallMs, ...snapshot } }
   } finally {
     disableNfsShim()
+  }
+}
+
+/**
+ * Wait until two quiet intervals pass without a new operation. A chain of
+ * awaited operations starts its next one within one simulated latency of the
+ * last, so an interval several latencies long with nothing new means none is
+ * running.
+ */
+async function settle(): Promise<void> {
+  const intervalMs = Math.max(25, nfsShimLatencyMs() * 5)
+  let quiet = 0
+  let seen = nfsShimSnapshot().totalOps
+  while (quiet < 2) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    const now = nfsShimSnapshot().totalOps
+    quiet = now === seen ? quiet + 1 : 0
+    seen = now
   }
 }
 

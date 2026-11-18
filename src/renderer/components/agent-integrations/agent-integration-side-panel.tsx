@@ -3,6 +3,7 @@ import { IntegrationStatusCard } from './integration-status-card'
 import { IntegrationSettingsCard } from './integration-settings-card'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { IntegrationModelEffort } from './integration-settings-controls'
+import { ProvisionedAppCard } from './provisioned-app-card'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 export interface AgentIntegrationSidePanelProps {
@@ -19,6 +20,7 @@ export function AgentIntegrationSidePanel({ integration, canManage, canManageAcc
   return (
     <div className="space-y-3">
       {canManage && ConnectionSettings && <ConnectionSettings integration={integration} />}
+      {canManage && integration.provisionedApp && <ProvisionedAppCard integration={integration} />}
       {canManage && <IntegrationStatusCard integration={integration} connected={connected} />}
       {canManage && <IntegrationSettingsCard integration={integration} canManageAccess={canManageAccess} />}
       {canManage && (

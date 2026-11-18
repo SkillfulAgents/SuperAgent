@@ -1,3 +1,5 @@
+import { validatePressKey } from './press-key';
+
 // Split a command string into arguments, respecting quoted strings.
 // e.g. 'get text "hello world"' -> ['get', 'text', 'hello world']
 //
@@ -132,4 +134,37 @@ export function buildRunCommandArgs(command: string): string[] {
   }
 
   return commandArgs;
+}
+
+// Why browser_run refuses one CLI command, or null.
+function refuseCommand(command: string[]): string | null {
+  const verb = command[0]?.toLowerCase();
+  // The agent-browser CLI `upload` command does not work reliably in this
+  // environment — refuse it and steer the model to `browser_upload`, which
+  // routes through the buffer-based path with size verification.
+  if (verb === 'upload') {
+    return 'Use the `browser_upload(filePath, selector)` MCP tool for file uploads instead of `browser_run("upload …")`.';
+  }
+  // A HAR written by the CLI itself carries the session's cookies and
+  // tokens unredacted, to wherever the agent points it.
+  if (verb === 'network' && command[1]?.toLowerCase() === 'har') {
+    return 'Use the `browser_capture_traffic` tool to record traffic: it saves a HAR with cookies, tokens and auth headers redacted. `network har` through browser_run is not available.';
+  }
+  // Same guard as /browser/press for the raw CLI form: `press` with a
+  // non-key string silently types nothing while reporting success.
+  if (verb === 'press' && command.length === 2) return validatePressKey(command[1]);
+  return null;
+}
+
+// Why browser_run refuses a command, or null. `batch` runs each of its
+// arguments as a command of its own, so each one gets the same checks.
+export function runCommandRefusal(commandArgs: string[]): string | null {
+  const commands = commandArgs[0]?.toLowerCase() === 'batch'
+    ? commandArgs.slice(1).filter((arg) => !arg.startsWith('-')).map(splitCommandArgs)
+    : [commandArgs];
+  for (const command of commands) {
+    const refusal = refuseCommand(command);
+    if (refusal) return refusal;
+  }
+  return null;
 }

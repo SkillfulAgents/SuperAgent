@@ -12,6 +12,7 @@ interface InlineEditableTitleProps {
   isSaving: boolean
   onSave: (value: string) => void | Promise<void>
   onError?: (error: unknown) => void
+  onEditEnd?: () => void
   displayClassName?: string
   inputClassName?: string
   editContainerClassName?: string
@@ -36,6 +37,7 @@ export const InlineEditableTitle = forwardRef<InlineEditableTitleHandle, InlineE
   isSaving,
   onSave,
   onError,
+  onEditEnd,
   displayClassName,
   inputClassName,
   editContainerClassName,
@@ -63,6 +65,7 @@ export const InlineEditableTitle = forwardRef<InlineEditableTitleHandle, InlineE
   const cancel = () => {
     setDraft(value)
     setIsEditing(false)
+    onEditEnd?.()
   }
 
   const save = async () => {
@@ -75,6 +78,7 @@ export const InlineEditableTitle = forwardRef<InlineEditableTitleHandle, InlineE
     try {
       await onSave(trimmed)
       setIsEditing(false)
+      onEditEnd?.()
     } catch (error) {
       onError?.(error)
     }
@@ -97,6 +101,7 @@ export const InlineEditableTitle = forwardRef<InlineEditableTitleHandle, InlineE
           }}
           autoFocus
           disabled={isSaving}
+          aria-label={ariaLabel}
           className={inputClassName}
           data-testid={inputTestId}
         />

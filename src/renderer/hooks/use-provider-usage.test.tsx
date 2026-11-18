@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useProviderUsage } from './use-provider-usage'
+import { useProviderUsage, useProviderUsages } from './use-provider-usage'
 import { connectionInfoSchema } from '@shared/lib/llm-provider/connection-schema'
 const state = vi.hoisted(() => ({ userId: 'alice', fetch: vi.fn() }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ user: { id: state.userId } }) }))
@@ -18,6 +18,25 @@ function setup(initial = connection) {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('usage reads on view', () => {
+  it('revalidates paywall eligibility even when an informational usage read cached an unavailable result', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const subscription = { ...connection, provider: 'codex-subscription' as const }
+    state.fetch.mockImplementation(async (url: string) => Response.json({
+      status: url.endsWith('?refreshCredentials=1') ? 'available' : 'unavailable',
+      observedAt: new Date().toISOString(), limits: [],
+    }))
+    const informational = renderHook(() => useProviderUsage(subscription), { wrapper })
+    await waitFor(() => expect(informational.result.current.data?.status).toBe('unavailable'))
+    const paywall = renderHook(() => useProviderUsages([subscription], { refreshCredentials: true }), { wrapper })
+    await waitFor(() => expect(paywall.result.current[0].data?.status).toBe('available'))
+    expect(state.fetch).toHaveBeenCalledWith('/api/llm-connections/global/usage?refreshCredentials=1')
+    expect(state.fetch).toHaveBeenCalledTimes(2)
+    informational.unmount()
+    paywall.unmount()
+    client.clear()
+  })
+
   it('separates Platform query caches by signed-in member and hides a failed refresh', async () => {
     state.fetch.mockImplementation(async () => new Response(JSON.stringify({ status: 'available', observedAt: new Date().toISOString(), limits: [{ kind: 'balance', id: 'seat', label: 'Seat', remaining: state.userId === 'alice' ? 10 : 20, unit: 'USD' }] })))
     const { result, rerender, client } = setup()

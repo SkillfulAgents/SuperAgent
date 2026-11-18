@@ -139,6 +139,15 @@ describe('openDatabase', () => {
     expect(isDatabaseOpen()).toBe(true)
   })
 
+  it('opens without migrating when the host migrates beforehand', async () => {
+    const db = await openDatabase({ migrate: false })
+
+    const tables = await db.all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE type = 'table'`)
+    expect(tables.map((t) => t.name)).not.toContain(MIGRATIONS_TABLE)
+    expect(runDataMigrations).not.toHaveBeenCalled()
+    expect(getDb()).toBe(db)
+  })
+
   it('opens once when two callers race', async () => {
     const [a, b] = await Promise.all([openDatabase(), openDatabase()])
     expect(a).toBe(b)

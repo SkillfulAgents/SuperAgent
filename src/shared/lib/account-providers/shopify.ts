@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { ownerScope } from '@shared/lib/auth/ownership'
-import { composioFetch, getOrCreateAuthConfig } from '@shared/lib/composio/client'
+import { composioFetch, getOrCreateAuthConfig, resolveComposioAuth } from '@shared/lib/composio/client'
 import type { ProviderServerAdapter } from './server-adapters'
 import { ConnectionStoreSchema, CreateConnectionResponseSchema } from './shopify-schema'
 
@@ -44,7 +44,9 @@ export const shopifyAdapter: ProviderServerAdapter = {
     // Shopify reopens the install on every admin visit: a connected store opens its account.
     const existing = reconnecting ? undefined : await findStoreAccount(c, store)
     if (existing?.status === 'active') return { accountId: existing.id }
-    const authConfig = await getOrCreateAuthConfig('shopify')
+    // One credential for the auth-config lookup and the connect.
+    const auth = await resolveComposioAuth()
+    const authConfig = await getOrCreateAuthConfig('shopify', auth)
     const raw = await composioFetch<unknown>('/connected_accounts', {
       method: 'POST',
       body: JSON.stringify({
@@ -55,7 +57,7 @@ export const shopifyAdapter: ProviderServerAdapter = {
           state: { authScheme: 'OAUTH2', val: { status: 'INITIALIZING', subdomain: store.replace(/\.myshopify\.com$/, '') } },
         },
       }),
-    })
+    }, 'v3', auth)
     const created = CreateConnectionResponseSchema.parse(raw)
     return { connectionId: created.id, redirectUrl: created.redirect_url }
   },

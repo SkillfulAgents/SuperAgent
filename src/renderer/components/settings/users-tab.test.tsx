@@ -62,7 +62,7 @@ describe('UsersTab', () => {
       platformControlled: true,
       platformInviteHref: 'https://platform.example/dashboard/organizations/org_1?tab=team',
     })
-    expect(screen.getByText(/Invite members on Platform/i)).toBeInTheDocument()
+    expect(screen.getByText(/Invite members on Platform\. They join with their Platform role/i)).toBeInTheDocument()
     await user.click(screen.getByTestId('users-invite-button'))
     expect(openExternalUrl).toHaveBeenCalledWith(
       'https://platform.example/dashboard/organizations/org_1?tab=team',

@@ -41,10 +41,15 @@ export class AccessPage {
 
   /** Change a user's role in the access list */
   async changeRole(userId: string, newRole: 'viewer' | 'user' | 'owner') {
-    await this.page.locator(`[data-testid="access-role-${userId}"]`).click()
+    const roleTrigger = this.page.locator(`[data-testid="access-role-${userId}"]`)
+    await roleTrigger.click()
     const label = newRole === 'viewer' ? 'Viewer' : newRole === 'user' ? 'User' : 'Owner'
     await this.page.getByRole('option', { name: label }).click()
-    await expect(this.page.locator(`[data-testid="access-role-${userId}"]`)).toContainText(label)
+    await expect(roleTrigger).toContainText(label)
+    // The saved role can update before the nested Select's exit animation
+    // finishes. Wait for focus to return before dismissing the Share popover.
+    await expect(this.page.getByRole('listbox')).not.toBeVisible()
+    await expect(roleTrigger).toBeFocused()
   }
 
   /** Remove a user via the Remove item inside their role dropdown */

@@ -1,0 +1,38 @@
+{
+  "sessionId": "a44e895f-2d5f-406d-ab35-9c917425057b",
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.321",
+  "cliVersion": "2.1.321",
+  "capturedAt": "2026-11-09",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [
+    {
+      "parentToolId": "toolu_016G44Pw7zkVjTSyyxr3NuwQ",
+      "taskId": "aea8c7322111e3dd3",
+      "agentId": "aea8c7322111e3dd3",
+      "subagentType": "general-purpose",
+      "description": "word probe"
+    }
+  ],
+  "source": "capture-fixtures.mjs (.claude/skills/update-claude-deps): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; host capture wrapper (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (SDK 0.3.321 / CLI 2.1.321). A background subagent completes, then the lead resumes it with SendMessage; probes agent_id / run_id across the two runs.",
+  "backgroundTasks": [
+    {
+      "taskId": "aea8c7322111e3dd3",
+      "taskType": "local_agent",
+      "startedT": 2971,
+      "prematureIdleT": null,
+      "realCompletionT": 3885
+    },
+    {
+      "taskId": "aea8c7322111e3dd3",
+      "taskType": "local_agent",
+      "startedT": 6040,
+      "prematureIdleT": null,
+      "realCompletionT": 6811
+    }
+  ],
+  "settledT": 7781,
+  "totalEntries": 127
+}

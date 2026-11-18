@@ -1,5 +1,6 @@
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
-import type { AccountReauthDetails, AccountReauthWaits } from './reauth-waits'
+import type { AccountReauthDetails, AccountReauthWaits, ReauthOutcome } from './reauth-waits'
+import { awaitReauth } from './reauth-request'
 
 export {
   ACCOUNT_REAUTH_TIMEOUT_MS,
@@ -12,9 +13,7 @@ export {
 /**
  * The router in front of every agent's account re-auth waits. The waits live
  * in each agent's actor (`AgentReauthWaits`, see `reauth-waits`); this
- * singleton dispatches the calls that arrive with a slug and runs the ones
- * that span agents — completing an account resumes every agent's requests
- * parked on it, and shutdown rejects them all.
+ * singleton dispatches the calls that arrive with a slug.
  */
 export class AccountReauthManager {
   private readonly agents = new AttachedStores<AccountReauthWaits>('account re-auth waits')
@@ -24,8 +23,20 @@ export class AccountReauthManager {
     this.agents.attach(directory)
   }
 
-  requestReauth(details: AccountReauthDetails, signal?: AbortSignal): Promise<void> {
-    return this.agents.get(details.agentSlug).request(details, signal)
+  /** Park a request of the agent on its re-auth card and wait for how it ends (see `awaitReauth`). */
+  requestReauth(details: AccountReauthDetails, signal?: AbortSignal): Promise<ReauthOutcome> {
+    const waits = this.agents.get(details.agentSlug)
+    return awaitReauth(waits, details, signal)
+  }
+
+  /** `AgentReauthWaits.request` on the agent's waits: the outcome as data. */
+  request(agentSlug: string, details: Omit<AccountReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome> {
+    return this.agents.get(agentSlug).request(details, options)
+  }
+
+  /** `AgentReauthWaits.withdraw` on the agent's waits. */
+  withdraw(agentSlug: string, waitId: string): void {
+    this.agents.peek(agentSlug)?.withdraw(waitId)
   }
 
   /** `AgentReauthWaits.dismiss` on the agent's waits; false when it holds no such card. */
@@ -38,15 +49,9 @@ export class AccountReauthManager {
     return this.agents.peek(agentSlug)?.replace(entryId, replacementAccountId) ?? false
   }
 
-  /** Resume every parked proxy request, of every agent, that uses the reconnected account. */
-  completeAccount(accountId: string): number {
-    let completed = 0
-    for (const waits of this.agents.all()) completed += waits.complete(accountId)
-    return completed
-  }
-
-  rejectAll(): void {
-    for (const waits of this.agents.all()) waits.rejectAll()
+  /** Resume the agent's parked proxy requests that use the reconnected account. */
+  completeAccount(agentSlug: string, accountId: string): number {
+    return this.agents.peek(agentSlug)?.complete(accountId) ?? 0
   }
 }
 

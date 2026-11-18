@@ -11,7 +11,7 @@ export function GenericIntegrationMessage({ display, message, iconClassName }: I
   const sourceLabel = [source.identifier, source.title].filter(Boolean).join(' · ')
   return (
     <div className="flex w-full max-w-[560px] flex-col items-end gap-1.5" data-testid="integration-message" data-provider={display.integration.provider}>
-      <div className="w-full rounded-xl border border-border bg-background p-3 text-sm shadow-sm">
+      <div className="w-full rounded-card border border-border bg-background p-3 text-sm shadow-sm">
         <IntegrationEventLine display={display} iconClassName={iconClassName}>
           {sentAt && <span className="ml-auto shrink-0 tabular-nums">{sentAt}</span>}
         </IntegrationEventLine>

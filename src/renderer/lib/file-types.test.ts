@@ -44,9 +44,13 @@ describe('isPreviewableImage', () => {
     (path) => expect(isPreviewableImage(path)).toBe(true),
   )
 
-  // Browsers report these as image/*, but no renderer here can display one, so
-  // calling them pictures is how the composer and the sent message disagreed.
-  it.each(['scan.tiff', 'scan.tif', 'photo.heic', 'art.psd', 'design.fig'])(
+  it.each(['photo.heic', 'photo.HEIF'])(
+    'draws %s as a converted picture',
+    (path) => expect(isPreviewableImage(path)).toBe(true),
+  )
+
+  // Browsers report some of these as image/*, but no renderer here can display one.
+  it.each(['scan.tiff', 'scan.tif', 'art.psd', 'design.fig'])(
     'draws %s as a chip despite its image MIME',
     (path) => expect(isPreviewableImage(path)).toBe(false),
   )

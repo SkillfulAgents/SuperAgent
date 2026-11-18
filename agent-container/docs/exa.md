@@ -68,6 +68,27 @@ response. Keep `stream` unset for ordinary scripts so the response is JSON.
 Use `includeDomains` or date filters when the task calls for a particular
 source or time range. Omit `contents` when titles and URLs are sufficient.
 
+## Choose a Search Type
+
+| Type | Use it for |
+|---|---|
+| `auto` | Default. Best quality; supports every search parameter. |
+| `lite` | Large or repeated script batches where cost matters more than quality. |
+| `deep` | Multi-step research that needs more thorough results. |
+
+`lite` serves page content from Exa's cache and supports only a focused set of
+parameters: query, `numResults`, `text`, `highlights`, categories, domain and
+published-date filters, location, and moderation. It does not support
+summaries. An unsupported parameter returns a `400` that names it; remove it
+or use `auto`.
+
+`fast`, `instant`, and `deep-reasoning` are legacy types. Use `lite` instead
+of `fast` or `instant`, and `deep` instead of `deep-reasoning`.
+
+Search responses can include `warnings` (request fields that had no effect)
+and `notices` (how the results were produced). Read them and fix the request
+rather than ignoring them.
+
 ## Retrieve Known Pages
 
 Use the normal page-fetch tool for a single page when it works. Use
@@ -102,7 +123,8 @@ it estimates usage using these rates:
 
 | Operation | Fallback estimate |
 |---|---|
-| Search: `auto`, `fast`, or `instant` | $0.007 base |
+| Search: `lite` or `instant` | $0.004 base |
+| Search: `auto` or `fast` | $0.007 base |
 | Search: `deep-lite` or `deep` | $0.012 base |
 | Search: `deep-reasoning` | $0.015 base |
 | Search results beyond 10 | Add $0.001 per extra requested result |

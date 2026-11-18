@@ -5,6 +5,8 @@
  * and managing skills from shared git repositories.
  */
 
+import type { AgentAvatar } from './agent-avatar'
+
 // ============================================================================
 // Skillset Index (from repository index.json)
 // ============================================================================
@@ -174,6 +176,8 @@ export interface SkillsetIndexAgent {
   category?: string
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon?: string
+  /** The template's orb; agents installed from it start with this avatar. */
+  avatar?: AgentAvatar
   tags?: string[]
   works_with?: SkillsetAgentConnection[]
   developer?: { name: string; url?: string }
@@ -243,6 +247,7 @@ export interface DiscoverableAgent {
   details?: string
   category?: string
   icon?: string
+  avatar?: AgentAvatar
   tags?: string[]
   worksWith?: SkillsetAgentConnection[]
   developer?: { name: string; url?: string }

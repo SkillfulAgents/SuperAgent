@@ -1,14 +1,12 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useMemo, useState } from 'react'
-import { GitBranch, Bot, ChevronDown } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { GitBranch, Bot } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { parseWorkflowScript } from '@shared/lib/workflows/workflow-script-parser'
 import type { ParsedScript } from '@shared/lib/workflows/workflow-schemas'
-import { DeclineButton } from '../requests/decline-button'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
+import { ApprovalActions } from '../requests/approval-actions'
 
 interface CapabilityReviewRequestItemProps {
   toolUseId: string
@@ -54,7 +52,6 @@ export function CapabilityReviewRequestItem({
 }: CapabilityReviewRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
-  const [runMenuOpen, setRunMenuOpen] = useState(false)
 
   const isWorkflow = capability === 'workflows'
   const parsed = useParsedWorkflow(capability, input)
@@ -112,7 +109,7 @@ export function CapabilityReviewRequestItem({
         <p className="text-sm text-foreground/85">{description}</p>
       )}
       {isWorkflow && parsed && parsed.phases.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background p-2">
+        <div className="overflow-hidden rounded-card border border-border bg-white dark:bg-background p-2">
           <p className="mb-1 text-xs font-medium text-foreground/80">
             {parsed.phases.length} {parsed.phases.length === 1 ? 'phase' : 'phases'}
             {parsed.agentCalls.length > 0 && (
@@ -134,7 +131,7 @@ export function CapabilityReviewRequestItem({
         </div>
       )}
       {!isWorkflow && prompt && (
-        <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
+        <div className="overflow-hidden rounded-card border border-border bg-white dark:bg-background">
           <pre className="max-h-40 overflow-y-auto overflow-x-auto whitespace-pre-wrap break-words p-2 text-xs font-mono text-foreground/75">
             <code>{prompt}</code>
           </pre>
@@ -166,7 +163,7 @@ export function CapabilityReviewRequestItem({
                 />
               ),
               label: <>{isWorkflow ? workflowName || 'Workflow' : subagentType || 'Subagent'}</>,
-              statusLabel: status === 'approved' ? 'Approved' : 'Blocked',
+              statusLabel: status === 'approved' ? 'Allowed' : 'Denied',
               isSuccess: status === 'approved',
             }
           : null
@@ -180,52 +177,14 @@ export function CapabilityReviewRequestItem({
       {detailBlock}
 
       <RequestItemActions>
-        <DeclineButton
-          onDecline={handleBlock}
+        <ApprovalActions
+          testIdPrefix="capability-review"
           disabled={status === 'submitting'}
-          label="Block"
-          showIcon={false}
-          className="bg-transparent border-border dark:border-white/20 text-foreground hover:bg-muted"
-          data-testid="capability-review-block-btn"
+          onDeny={handleBlock}
+          allowLabel="Run"
+          onAllow={() => handleRun('once')}
+          expanded={{ label: 'Allow for this session', hint: isWorkflow ? 'Run workflows in this session without asking again' : 'Launch subagents in this session without asking again', onSelect: () => handleRun('session') }}
         />
-
-        <div className="flex items-stretch">
-          <Button
-            onClick={() => handleRun('once')}
-            loading={status === 'submitting'}
-            size="xs"
-            className="min-w-20 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
-            data-testid="capability-review-run-btn"
-          >
-            Run
-          </Button>
-          <Popover open={runMenuOpen} onOpenChange={setRunMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                disabled={status === 'submitting'}
-                size="xs"
-                className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
-                data-testid="capability-review-run-btn-chevron"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-52 p-1">
-              <Button
-                onClick={() => {
-                  setRunMenuOpen(false)
-                  handleRun('session')
-                }}
-                variant="ghost"
-                size="xs"
-                className="w-full justify-start text-foreground hover:bg-muted"
-                data-testid="capability-review-allow-session-btn"
-              >
-                Allow for this session
-              </Button>
-            </PopoverContent>
-          </Popover>
-        </div>
       </RequestItemActions>
     </RequestItemShell>
   )

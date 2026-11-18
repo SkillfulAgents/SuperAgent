@@ -12,7 +12,7 @@ export function useCreateAgentForPrompt(): (prompt: string, warmSlug?: string | 
   const { mutateAsync: createAgent } = useCreateAgent()
   const { mutateAsync: updateAgent } = useUpdateAgent()
   return useCallback(async (prompt, warmSlug) => {
-    const name = await deriveAgentName(prompt)
-    return warmSlug ? updateAgent({ slug: warmSlug, name }) : createAgent({ name })
+    const { name, description } = await deriveAgentName(prompt)
+    return warmSlug ? updateAgent({ slug: warmSlug, name, description }) : createAgent({ name, description })
   }, [createAgent, updateAgent])
 }

@@ -7,9 +7,12 @@ export interface IntegrationSetupProps {
   onClose: () => void
 }
 
-/** Renderer-only provider definition; independent of host implementations. */
+/**
+ * Renderer-only provider definition; independent of host implementations.
+ * Whether a provider can be set up on this deployment is the server's answer
+ * (`/api/agent-integrations/providers`), not a flag here.
+ */
 export interface IntegrationSetupProvider {
-  platformOnly?: boolean
   slug: string
   label: string
   managementAccess?: 'user' | 'owner'

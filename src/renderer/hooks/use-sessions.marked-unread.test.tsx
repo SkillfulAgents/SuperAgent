@@ -103,7 +103,6 @@ describe('clearSessionUnreadInCache', () => {
       name: id,
       createdAt: new Date(0),
       lastActivityAt: new Date(0),
-      messageCount: 1,
       hasUnreadNotifications,
     }
   }

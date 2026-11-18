@@ -1,9 +1,11 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
+import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
+import { notePlatformRole } from './platform-role'
 import { z } from 'zod'
 
 // Shape of each entry in the AUTH_PROVIDERS_JSON env bundle. Provider
-// secrets belong in deployment env, not user-writable settings.json — so
+// secrets belong in deployment env, not admin-writable settings — so
 // this lives next to the resolver instead of in shared settings types.
 export type AuthProviderType = 'oidc'
 
@@ -43,19 +45,19 @@ export interface PublicAuthProviderConfig {
 // (which carry `clientSecret`) into public surfaces.
 export interface GenericOAuthProviderConfig {
   providerId: string
-  discoveryUrl?: string
-  issuer?: string
+  discoveryUrl: string
+  redirectURI: string
   clientId: string
   clientSecret?: string
   scopes?: string[]
   pkce: true
   accessType: 'offline'
-  requireIssuerValidation: true
+  requireIdTokenVerification: true
+  disableProviderLogout: true
   overrideUserInfo: true
-  mapProfileToUser?: (profile: Record<string, unknown>) => Record<string, unknown>
+  accountSubject: (context: { profile: Record<string, unknown> }) => string
+  mapProfileToUser?: (profile: Record<string, unknown>) => Record<string, never>
 }
-
-const PLATFORM_ORG_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/org_id'
 
 abstract class AuthProviderDefinition {
   constructor(protected readonly config: AuthProviderSettings) {}
@@ -82,7 +84,7 @@ abstract class AuthProviderDefinition {
   }
 
   protected abstract getReadiness(): PublicAuthProviderReadiness
-  abstract toGenericOAuthConfig(): GenericOAuthProviderConfig | null
+  abstract toGenericOAuthConfig(appBaseUrl: string): GenericOAuthProviderConfig | null
 }
 
 class OidcAuthProviderDefinition extends AuthProviderDefinition {
@@ -102,23 +104,38 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
     }
   }
 
-  toGenericOAuthConfig(): GenericOAuthProviderConfig | null {
-    const discoveryUrl = this.config.discoveryUrl?.trim() || undefined
+  toGenericOAuthConfig(appBaseUrl: string): GenericOAuthProviderConfig | null {
     const issuer = this.config.issuer?.trim() || undefined
+    const discoveryUrl = this.config.discoveryUrl?.trim()
+      || (issuer ? `${issuer.replace(/\/+$/, '')}/.well-known/openid-configuration` : undefined)
     const clientId = this.config.clientId?.trim()
-    if ((!discoveryUrl && !issuer) || !clientId) return null
+    if (!discoveryUrl || !clientId) return null
 
     return {
       providerId: this.config.id,
       discoveryUrl,
-      issuer,
+      // This callback is already registered by the deployment controller and
+      // self-hosted IdPs. The route adapter dispatches it to Better Auth 1.7's
+      // core callback without changing the redirect URI sent to the provider.
+      redirectURI: `${appBaseUrl.replace(/\/+$/, '')}/api/auth/oauth2/callback/${encodeURIComponent(this.config.id)}`,
       clientId,
       clientSecret: this.config.clientSecret?.trim() || undefined,
       scopes: this.config.scopes,
       pkce: true,
       accessType: 'offline',
-      requireIssuerValidation: true,
+      requireIdTokenVerification: true,
+      // Preserve deployment-only logout: signing out here must not also sign
+      // the user out of the platform or another app sharing the same IdP.
+      disableProviderLogout: true,
       overrideUserInfo: true,
+      accountSubject: ({ profile }) => {
+        // Every configured provider is OIDC. Never fall back to a mutable
+        // profile id if discovery omits its signing-algorithm advertisement.
+        if (typeof profile.sub !== 'string' || !profile.sub) {
+          throw new Error('OIDC profile is missing its subject')
+        }
+        return profile.sub
+      },
       mapProfileToUser: (profile: Record<string, unknown>) => {
         // Platform-only: require verified email before first-time link/provision.
         if (this.config.id === 'platform' && profile.email_verified !== true) {
@@ -128,11 +145,13 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
         // before Better Auth creates the user/account/session.
         const deploymentOrg = decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '')
         if (deploymentOrg) {
-          const tokenOrg = profile[PLATFORM_ORG_ID_CLAIM]
+          const tokenOrg = profile[PLATFORM_CLAIMS.orgId]
           if (typeof tokenOrg !== 'string' || tokenOrg !== deploymentOrg) {
             throw new Error('Account belongs to a different organization')
           }
         }
+        // Held for the user create hook, should this sign-in create the user.
+        if (this.config.id === 'platform') notePlatformRole(profile[PLATFORM_CLAIMS.role])
         // Never override id: account.accountId must stay the OIDC sub.
         return {}
       },
@@ -200,9 +219,10 @@ function getEnabledProviderDefinitions(
     .map(createProviderDefinition)
 }
 
-export function getGenericOAuthProviderConfigs(): GenericOAuthProviderConfig[] {
+/** The enabled OIDC providers' Better Auth configs; their callbacks live under `appBaseUrl`. */
+export function getGenericOAuthProviderConfigs(appBaseUrl: string): GenericOAuthProviderConfig[] {
   return getEnabledProviderDefinitions()
-    .map((definition) => definition.toGenericOAuthConfig())
+    .map((definition) => definition.toGenericOAuthConfig(appBaseUrl))
     .filter((config): config is GenericOAuthProviderConfig => config !== null)
 }
 
@@ -217,6 +237,13 @@ export function getPublicAuthProviders(
 // been turned off, matching the interactive-login surface.
 export function isAuthProviderEnabled(id: string): boolean {
   return resolveEnvAuthProviders().some((p) => p.id === id && p.enabled !== false)
+}
+
+// An explicit operator pin must not be replaced with discovery's issuer. Unlike
+// getAuthProviderIssuer, this deliberately has no discovery-URL fallback.
+export function getExplicitAuthProviderIssuer(id: string): string | undefined {
+  return resolveEnvAuthProviders()
+    .find((provider) => provider.id === id && provider.enabled !== false)?.issuer?.trim() || undefined
 }
 
 // Issuer for the named provider, derived from `issuer` or `discoveryUrl`.

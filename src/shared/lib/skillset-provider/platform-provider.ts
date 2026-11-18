@@ -5,7 +5,10 @@ import { pipeline } from 'stream/promises'
 import { execFileSync } from 'child_process'
 import * as tar from 'tar'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import {
+  getPlatformAccessToken,
+  getPlatformAuthStatus,
+} from '@shared/lib/services/platform-auth-service'
 import type {
   InstalledAgentMetadata,
   InstalledSkillMetadata,
@@ -17,6 +20,8 @@ import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
 import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
 import { captureException } from '@shared/lib/error-reporting'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { atomicSwapCacheDir } from './atomic-cache-swap'
 import {
   BaseSkillsetProvider,
@@ -26,6 +31,7 @@ import {
   type SkillsetProviderRef,
   type SkillsetRemoteDescriptor,
   type SkillsetSourceInfo,
+  type SkillsetAuthContext,
 } from './base-skillset-provider'
 
 type PlatformProviderData = {
@@ -39,6 +45,8 @@ let cachedGitAvailable: boolean | null = null
 
 function isGitAvailableSync(): boolean {
   if (cachedGitAvailable !== null) return cachedGitAvailable
+  // The sandbox downloads the archive, without probing macOS's git stub.
+  if (!runsHostGit(getServerFacts())) return (cachedGitAvailable = false)
   try {
     execFileSync('git', ['--version'], { timeout: 2000, stdio: 'ignore' })
     cachedGitAvailable = true
@@ -114,7 +122,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override async resolveCloneUrl(url: string, options?: SkillsetProviderRef): Promise<string> {
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = await getPlatformAccessToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
@@ -171,7 +179,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override async populateCache(cacheDir: string, ref: SkillsetProviderRef): Promise<void> {
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = await getPlatformAccessToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
@@ -284,7 +292,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   private async submitUpdate(input: SkillsetHostedUpdateInput): Promise<PlatformSubmitResult> {
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = await getPlatformAccessToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
@@ -324,7 +332,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     if (ids.length === 0) return result
 
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = await getPlatformAccessToken()
     if (!proxyBase || !token) {
       for (const id of ids) result.set(id, null)
       return result
@@ -374,7 +382,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override async listRemoteSkillsets(): Promise<SkillsetRemoteDescriptor[]> {
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = await getPlatformAccessToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
@@ -406,17 +414,17 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   }
 
   override async ensureSyncPreconditions(): Promise<void> {
-    const auth = getPlatformAuthStatus()
+    const auth = await getPlatformAuthStatus()
     if (!auth.connected) {
       throw new Error('Platform not connected')
     }
   }
 
-  override buildSkillsetConfig(remote: SkillsetRemoteDescriptor): SkillsetConfig {
-    const auth = getPlatformAuthStatus()
+  override buildSkillsetConfig(remote: SkillsetRemoteDescriptor, context: SkillsetAuthContext): SkillsetConfig {
+    const auth = context.platform
     const trustedOrgId = auth.source === 'settings' ? auth.orgId : null
     return {
-      ...super.buildSkillsetConfig(remote),
+      ...super.buildSkillsetConfig(remote, context),
       providerData: {
         repoId: remote.repoId,
         ...(trustedOrgId ? { orgId: trustedOrgId } : {}),
@@ -425,9 +433,13 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     }
   }
 
-  override updateSkillsetConfig(existing: SkillsetConfig, remote: SkillsetRemoteDescriptor): boolean {
-    let changed = super.updateSkillsetConfig(existing, remote)
-    const auth = getPlatformAuthStatus()
+  override updateSkillsetConfig(
+    existing: SkillsetConfig,
+    remote: SkillsetRemoteDescriptor,
+    context: SkillsetAuthContext,
+  ): boolean {
+    let changed = super.updateSkillsetConfig(existing, remote, context)
+    const auth = context.platform
     const trustedOrgId = auth.source === 'settings' ? auth.orgId : null
     const current = this.getPlatformData(existing)
     const nextFields: PlatformProviderData = {
@@ -451,9 +463,9 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     return changed
   }
 
-  override isConfigValid(config: SkillsetConfig): boolean {
+  override isConfigValid(config: SkillsetConfig, context: SkillsetAuthContext): boolean {
     if (config.provider !== 'platform') return true
-    const auth = getPlatformAuthStatus()
+    const auth = context.platform
     const currentOrgId = auth.source === 'settings' ? auth.orgId ?? null : null
     const configOrgId = this.getPlatformData(config).orgId ?? null
     // If the user isn't signed in, no platform configs are valid.
@@ -464,9 +476,10 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override isInstalledValid(
     meta: Pick<InstalledSkillMetadata | InstalledAgentMetadata, 'provider' | 'providerData'>,
+    context: SkillsetAuthContext,
   ): boolean {
     if (meta.provider !== 'platform') return true
-    const auth = getPlatformAuthStatus()
+    const auth = context.platform
     const currentOrgId = auth.source === 'settings' ? auth.orgId ?? null : null
     const metaOrgId = this.getPlatformData(meta).orgId ?? null
     if (!auth.connected) return false

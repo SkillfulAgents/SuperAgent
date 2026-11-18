@@ -4,9 +4,16 @@ import { renderHook } from '@testing-library/react'
 
 // Capture the options object each hook hands to useQuery so we can pin the
 // deliberately-chosen polling cadence. These intervals were lowered from their
-// original values (messages 5s, chat sessions 10s) as a reviewed perf trade-off;
-// this test makes an accidental revert or further drift fail loudly.
+// original values (messages 5s, chat sessions 10s, unread count 10s) as a
+// reviewed perf trade-off; this test makes an accidental revert or further drift
+// fail loudly.
 const capturedOptions: Record<string, unknown>[] = []
+
+// Sessions whose own event stream is open.
+const openStreams = vi.hoisted(() => new Set<string>())
+vi.mock('./use-message-stream', () => ({
+  isSessionStreamOpen: (sessionId: string) => openStreams.has(sessionId),
+}))
 
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-query')>()
@@ -23,6 +30,7 @@ import { createElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useMessages } from './use-messages'
 import { useAgentIntegrationSessions } from './use-agent-integrations'
+import { useUnreadNotificationCount } from './use-notifications'
 
 // useMessages reads the query cache via useQueryClient (delta anchoring), so a
 // real provider is needed even with useQuery itself mocked out.
@@ -32,15 +40,34 @@ const wrapper = ({ children }: { children: React.ReactNode }) =>
 describe('polling cadence (reviewed interval constants)', () => {
   beforeEach(() => {
     capturedOptions.length = 0
+    openStreams.clear()
   })
 
-  it('useMessages polls every 15s as the SSE safety net', () => {
+  function messagesPollMs() {
     renderHook(() => useMessages('session-1', 'agent-1'), { wrapper })
     const messagesQuery = capturedOptions.find((opts) => {
       const key = opts.queryKey as unknown[] | undefined
       return Array.isArray(key) && key[0] === 'messages'
     })
-    expect(messagesQuery?.refetchInterval).toBe(15000)
+    return (messagesQuery?.refetchInterval as () => number)()
+  }
+
+  it('useMessages polls every 15s while the session has no open stream', () => {
+    expect(messagesPollMs()).toBe(15000)
+  })
+
+  it('useMessages polls every 60s while the session\'s own stream is open', () => {
+    openStreams.add('session-1')
+    expect(messagesPollMs()).toBe(60000)
+  })
+
+  it('useUnreadNotificationCount polls every 60s behind the notifications stream', () => {
+    renderHook(() => useUnreadNotificationCount())
+    const opts = capturedOptions.find((options) => {
+      const key = options.queryKey as unknown[] | undefined
+      return Array.isArray(key) && key[0] === 'notifications' && key[1] === 'unread-count'
+    })
+    expect(opts?.refetchInterval).toBe(60000)
   })
 
   it('useAgentIntegrationSessions polls every 20s and not while backgrounded', () => {

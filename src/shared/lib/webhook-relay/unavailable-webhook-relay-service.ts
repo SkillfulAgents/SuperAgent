@@ -15,6 +15,9 @@ import type {
  */
 export class UnavailableWebhookRelayService implements WebhookRelayService {
   readonly kind = 'unavailable' as const
+  readonly id = 'webhook-relay'
+  readonly phase = 'eager' as const
+  readonly critical = true
 
   constructor(private readonly reason: WebhookRelayUnavailableReason) {}
 
@@ -27,7 +30,7 @@ export class UnavailableWebhookRelayService implements WebhookRelayService {
   }
 
   register(): RelayConsumerHandle {
-    return { update: () => {}, dispose: () => {} }
+    return { update: () => {}, retryNow: () => {}, dispose: () => {} }
   }
 
   async createEndpoint(): Promise<RelayEndpoint> {

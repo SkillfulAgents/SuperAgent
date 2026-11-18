@@ -39,7 +39,7 @@ function DestructiveBannerCard({
         }
       } : undefined}
       className={cn(
-        'flex items-center gap-3 rounded-lg shadow-md bg-background pl-3 pr-4 py-2 text-destructive',
+        'flex items-center gap-3 rounded-card shadow-md bg-background pl-3 pr-4 py-2 text-destructive',
         onClick && 'cursor-pointer hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
       )}
     >
@@ -133,7 +133,7 @@ export function FirewallBlockedSidebarBanner({
 // trail the text (Alert's grid forces the svg into column 1).
 function LoadingBannerCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg shadow-md bg-background pl-4 pr-3 py-2">
+    <div className="flex items-center gap-3 rounded-card shadow-md bg-background pl-4 pr-3 py-2">
       <div className="text-xs flex-1 min-w-0">{children}</div>
       <Loader2 className="h-4 w-4 animate-spin shrink-0 text-muted-foreground" />
     </div>

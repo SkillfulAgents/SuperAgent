@@ -1,25 +1,12 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getEffectiveModels } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createSummarizerText,
-  getConfiguredLlmClient,
+  getConfiguredLlmClientAndModel,
 } from '@shared/lib/llm-provider/helpers'
-import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
-import type {
-  ContentBlock,
-  JsonlMessageEntry,
-  JsonlSystemEntry,
-} from '@shared/lib/types/agent'
-import {
-  isTaskNotificationMessage,
-  isToolResultOnlyMessage,
-  parseCommandMessage,
-} from '@shared/lib/utils/message-transform'
-import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
-import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
+import { userRequestText } from '@shared/lib/utils/user-request-text'
 
 /** One compact body that remains useful on APNs, Web Push, and desktop OS UI. */
 export const SESSION_COMPLETE_BODY_MAX_CHARS = 240
@@ -68,47 +55,6 @@ export function toSessionCompletePreview(responseText: string): string {
   return stripMarkdownPreview(cleanText)
 }
 
-function userRequestText(
-  entry: JsonlMessageEntry | JsonlSystemEntry,
-): string | null {
-  if (
-    entry.type !== 'user' ||
-    entry.isCompactSummary ||
-    isToolResultOnlyMessage(entry) ||
-    isTaskNotificationMessage(entry)
-  ) {
-    return null
-  }
-
-  const content = entry.message.content
-  let text = ''
-  if (typeof content === 'string') {
-    text = content
-  } else if (Array.isArray(content)) {
-    text = (content as ContentBlock[])
-      .filter((block): block is ContentBlock & { type: 'text'; text: string } =>
-        block.type === 'text' &&
-        typeof (block as { text?: unknown }).text === 'string',
-      )
-      .map((block) => block.text)
-      .join('')
-  }
-
-  if (!text.trim() || isSystemMessageText(text)) {
-    return null
-  }
-
-  const command = parseCommandMessage(text)
-  if (command?.type === 'command-output') return null
-  if (command?.type === 'slash-command') {
-    text = command.args ? `/${command.name} ${command.args}` : `/${command.name}`
-  }
-
-  // Same peel as the transcript bubble.
-  text = parseUserMessageParts(text).text
-  return text.trim() || null
-}
-
 async function findLastUserRequest(
   agentSlug: string,
   sessionId: string,
@@ -122,7 +68,7 @@ async function findLastUserRequest(
   try {
     const entry = await agentRegistry.get(agentSlug).messages.findLastEntry(
       sessionId,
-      (candidate) => userRequestText(candidate) !== null,
+      { kind: 'user-request' },
       { endOffset: responseTranscriptEndOffset },
     )
     return entry ? userRequestText(entry) : null
@@ -151,11 +97,7 @@ async function summarizeResponse(
   if (process.env.E2E_MOCK === 'true') return null
 
   try {
-    const client = await getConfiguredLlmClient()
-    const model = resolveActiveProviderModel(
-      getEffectiveModels().summarizerModel,
-      'summarizer',
-    )
+    const { client, model } = await getConfiguredLlmClientAndModel()
     const text = await createSummarizerText(
       client,
       {

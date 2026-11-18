@@ -7,6 +7,7 @@ import {
   dashboardDispatchRequestSchema,
   type DashboardDispatchResult,
 } from '@shared/lib/dashboard-dispatch-schema'
+import { postToDashboardFrame } from './post-to-dashboard-frame'
 
 /**
  * Host side of the dashboard session-dispatch protocol
@@ -32,19 +33,7 @@ export function useDashboardDispatch(iframeRef: RefObject<HTMLIFrameElement | nu
   const cooldownUntilRef = useRef(0)
 
   const postToDashboard = useCallback(
-    (message: Record<string, unknown>) => {
-      const frame = iframeRef.current
-      if (!frame?.contentWindow) return
-      // The iframe origin is the API origin, which differs from the renderer
-      // origin in Electron — target it explicitly rather than '*'.
-      let targetOrigin: string
-      try {
-        targetOrigin = new URL(frame.src, window.location.href).origin
-      } catch {
-        return
-      }
-      frame.contentWindow.postMessage(message, targetOrigin)
-    },
+    (message: Record<string, unknown>) => { postToDashboardFrame(iframeRef.current, message) },
     [iframeRef],
   )
 

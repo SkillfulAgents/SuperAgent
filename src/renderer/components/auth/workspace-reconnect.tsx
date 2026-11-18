@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { switchToLocalTarget } from '@renderer/lib/api-target'
+import type { CloudWait } from '@renderer/context/user-context'
+
+const WAITING_HEADINGS: Record<CloudWait, string> = {
+  starting: 'Starting your cloud workspace…',
+  reconnecting: 'Reconnecting to your cloud workspace…',
+}
 
 /**
  * Shown instead of the login form when the app is driving a cloud workspace but
@@ -12,8 +18,11 @@ import { switchToLocalTarget } from '@renderer/lib/api-target'
  * are reconnecting the platform account (from the local app's settings) and
  * getting back to a working app in the meantime — so returning to local is the
  * primary action rather than a footnote.
+ *
+ * With `waiting`, the workspace didn't answer at all, so its session is still
+ * being retried and the same way out stays available meanwhile.
  */
-export function WorkspaceReconnect() {
+export function WorkspaceReconnect({ waiting }: { waiting?: CloudWait | null }) {
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -35,12 +44,21 @@ export function WorkspaceReconnect() {
   return (
     <div className="flex items-center justify-center h-screen bg-background p-6">
       <div className="max-w-md text-center space-y-4">
-        <h1 className="text-lg font-medium">Can’t reach your cloud workspace</h1>
-        <p className="text-sm text-muted-foreground">
-          The app couldn’t establish a session with your organization’s workspace. Its access may
-          have expired or been revoked. Reconnect your account from Settings → Account in the local
-          app, then switch back.
-        </p>
+        {waiting ? (
+          <>
+            <h1 className="text-lg font-medium">{WAITING_HEADINGS[waiting]}</h1>
+            <p className="text-sm text-muted-foreground">This usually takes a minute or two.</p>
+          </>
+        ) : (
+          <>
+            <h1 className="text-lg font-medium">Can’t reach your cloud workspace</h1>
+            <p className="text-sm text-muted-foreground">
+              The app couldn’t establish a session with your organization’s workspace. Its access may
+              have expired or been revoked. Reconnect your account from Settings → Account in the local
+              app, then switch back.
+            </p>
+          </>
+        )}
         <Button onClick={switchToLocal} disabled={switching}>
           {switching ? 'Switching…' : 'Use this computer instead'}
         </Button>

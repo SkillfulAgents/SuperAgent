@@ -60,7 +60,8 @@ describe('sanitizeMcpName', () => {
     expect(RESERVED_MCP_NAMES.has('user_input')).toBe(true)
     expect(RESERVED_MCP_NAMES.has('browser')).toBe(true)
     expect(RESERVED_MCP_NAMES.has('dashboards')).toBe(true)
-    expect(RESERVED_MCP_NAMES.size).toBe(3)
+    expect(RESERVED_MCP_NAMES.has('rules')).toBe(true)
+    expect(RESERVED_MCP_NAMES.size).toBe(4)
   })
 })
 

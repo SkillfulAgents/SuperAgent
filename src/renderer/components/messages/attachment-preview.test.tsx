@@ -2,14 +2,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AttachmentPreview, type Attachment, type FolderAttachment, type MountAttachment, type UploadState } from './attachment-preview'
+import { AttachmentPreview, type Attachment, type FileAttachment, type FolderAttachment, type MountAttachment, type UploadState } from './attachment-preview'
 
 function createFile(name: string, size: number, type: string): File {
   const blob = new Blob(['x'.repeat(size)], { type })
   return new File([blob], name, { type })
 }
 
-function createAttachment(overrides: { name?: string; size?: number; type?: string; id?: string; preview?: string; upload?: UploadState; error?: string } = {}): Attachment {
+function createAttachment(overrides: { name?: string; size?: number; type?: string; id?: string; preview?: string; upload?: UploadState; error?: string } = {}): FileAttachment {
   const { name = 'file.txt', size = 1024, type = 'text/plain', id = 'att-1', preview, upload, error } = overrides
   return { type: 'file', file: createFile(name, size, type), id, preview, upload, error }
 }
@@ -37,6 +37,20 @@ describe('AttachmentPreview', () => {
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
   })
 
+  it.each(['file', 'image', 'folder'] as const)('shows a non-retryable %s failure with removal but no retry control', async (kind) => {
+    const attachment = kind === 'folder' ? createFolderAttachment() : createAttachment({
+      name: kind === 'image' ? 'photo.png' : 'report.txt',
+      ...(kind === 'image' ? { type: 'image/png', preview: 'blob:x' } : {}),
+    })
+    const onRemove = vi.fn()
+    render(<AttachmentPreview attachments={[{ ...attachment, error: 'Upload rejected', errorRetryable: false }]} onRemove={onRemove} onRetry={vi.fn()} />)
+    expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'error')
+    expect(screen.getByTitle('Upload rejected')).toBeInTheDocument()
+    expect(screen.queryByTestId('attachment-retry')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /^Remove / }))
+    expect(onRemove).toHaveBeenCalledWith(attachment.id)
+  })
+
   it('renders formatted file size in bytes', () => {
     const attachments = [createAttachment({ size: 512 })]
     render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
@@ -55,16 +69,20 @@ describe('AttachmentPreview', () => {
     expect(screen.getByText('5.0 MB')).toBeInTheDocument()
   })
 
-  it('renders image preview when attachment is an image with preview URL', () => {
+  it.each([
+    ['photo.png', 'image/png'],
+    ['photo.heic', 'image/heic'],
+    ['photo.heif', 'image/heif'],
+  ])('renders %s as an image when a displayable preview URL is available', (name, type) => {
     const attachments = [
       createAttachment({
-        name: 'photo.png',
-        type: 'image/png',
+        name,
+        type,
         preview: 'blob:http://localhost/abc123',
       }),
     ]
     render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
-    const img = screen.getByAltText('photo.png')
+    const img = screen.getByAltText(name)
     expect(img).toBeInTheDocument()
     expect(img).toHaveAttribute('src', 'blob:http://localhost/abc123')
   })
@@ -339,4 +357,3 @@ describe('upload status', () => {
     expect(screen.getByTestId('attachment-preview')).not.toHaveAttribute('data-attachment-status')
   })
 })
-

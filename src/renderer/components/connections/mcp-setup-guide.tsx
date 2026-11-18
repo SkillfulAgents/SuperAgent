@@ -99,7 +99,7 @@ export function McpSetupGuide({ guide, redirectUri }: McpSetupGuideProps) {
 
   return (
     <div
-      className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 space-y-2"
+      className="rounded-card border border-amber-500/30 bg-amber-500/5 p-2.5 space-y-2"
       data-testid="mcp-setup-guide"
     >
       <div className="text-[11px] font-medium">Set this up with the provider first</div>

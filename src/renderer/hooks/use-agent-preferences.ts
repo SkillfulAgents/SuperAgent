@@ -35,10 +35,12 @@ export function useUpdateAgentPreferences(agentSlug: string) {
       }
       return res.json()
     },
-    // Keep saved-setting controls pending until their authoritative props refresh.
-    onSuccess: () => Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['agent-preferences', agentSlug] }),
-      queryClient.invalidateQueries({ queryKey: ['agents'] }),
-    ]),
+    // The PUT answers with the preferences as the GET would (default model
+    // resolved against the connections), so the response is the refresh: the
+    // cache holds it before the control leaves its pending state, and nothing
+    // is read again. No agent list or detail field comes from preferences.
+    onSuccess: (preferences) => {
+      queryClient.setQueryData<AgentPreferences>(['agent-preferences', agentSlug], preferences)
+    },
   })
 }

@@ -15,6 +15,11 @@ export const AGENT_IMAGE_REGISTRY = 'ghcr.io/skillfulagents/superagent-agent-con
  * Development uses :main.
  */
 export function getDefaultAgentImage(): string {
-  const tag = APP_VERSION === '0.0.0-dev' ? 'main' : APP_VERSION
+  return agentImageForVersion(APP_VERSION)
+}
+
+/** The agent image an app of `version` runs; scripts/fetch-agent-image.ts bundles the same one. */
+export function agentImageForVersion(version: string): string {
+  const tag = version === '0.0.0-dev' ? 'main' : version
   return `${AGENT_IMAGE_REGISTRY}:${tag}`
 }

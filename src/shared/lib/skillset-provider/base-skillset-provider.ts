@@ -1,5 +1,7 @@
 import path from 'path'
 import { directoryExists } from '@shared/lib/utils/file-storage'
+import type { AppSettings } from '@shared/lib/config/settings'
+import { platformAuthStatusFrom, type PlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import type {
   InstalledAgentMetadata,
   InstalledSkillMetadata,
@@ -77,6 +79,32 @@ export type SkillsetDisplayInfo = {
   showUrl: boolean
 }
 
+/**
+ * The auth state a provider judges skillset records against, derived once from
+ * the settings an operation holds (a sweep's screen, a listing, or one attempt
+ * of a settings mutation, from its own draft) and passed to every check in it.
+ * Derived rather than read, so the checks stay synchronous inside a mutator and
+ * see the very settings it writes; never kept past the operation or attempt.
+ */
+export interface SkillsetAuthContext {
+  /** The platform connection in those settings. */
+  readonly platform: PlatformAuthStatus
+}
+
+/**
+ * {@link SkillsetAuthContext} from `settings`, derived on the first check that
+ * needs it and then shared by the rest. Reports nothing (a corrupt connection
+ * reads as disconnected), since it runs inside settings mutators.
+ */
+export function skillsetAuthContextFrom(settings: Readonly<Pick<AppSettings, 'platformAuth'>>): SkillsetAuthContext {
+  let platform: PlatformAuthStatus | undefined
+  return {
+    get platform() {
+      return (platform ??= platformAuthStatusFrom(settings, { report: false }))
+    },
+  }
+}
+
 export abstract class BaseSkillsetProvider {
   abstract readonly id: SkillProvider
   abstract readonly name: string
@@ -127,18 +155,18 @@ export abstract class BaseSkillsetProvider {
   }
 
   /** Add provider-specific authentication to a Git child process environment. */
-  getGitEnvironment(
+  async getGitEnvironment(
     _ref: SkillsetProviderRef,
     baseEnvironment: NodeJS.ProcessEnv,
-  ): NodeJS.ProcessEnv {
+  ): Promise<NodeJS.ProcessEnv> {
     return baseEnvironment
   }
 
   /** Add provider-specific authentication to a provider CLI child process. */
-  getCliEnvironment(
+  async getCliEnvironment(
     _ref: SkillsetProviderRef,
     baseEnvironment: NodeJS.ProcessEnv,
-  ): NodeJS.ProcessEnv {
+  ): Promise<NodeJS.ProcessEnv> {
     return baseEnvironment
   }
 
@@ -170,21 +198,22 @@ export abstract class BaseSkillsetProvider {
   }
 
   /**
-   * Whether a persisted SkillsetConfig is still valid for the current auth
-   * state. Providers with no scoping (github) return true; platform checks
+   * Whether a persisted SkillsetConfig is still valid for the auth state in
+   * `auth`. Providers with no scoping (github) return true; platform checks
    * orgId match. Callers use this to reconcile settings after auth changes.
    */
-  isConfigValid(_config: SkillsetConfig): boolean {
+  isConfigValid(_config: SkillsetConfig, _auth: SkillsetAuthContext): boolean {
     return true
   }
 
   /**
    * Whether an installed skill/agent-template metadata record is still valid
-   * for the current auth state. Used for lazy cleanup on read.
+   * for the auth state in `auth`. Used for lazy cleanup on read.
    */
   isInstalledValid(
     _meta: Pick<InstalledSkillMetadata | InstalledAgentMetadata,
       'provider' | 'providerData'>,
+    _auth: SkillsetAuthContext,
   ): boolean {
     return true
   }
@@ -199,7 +228,8 @@ export abstract class BaseSkillsetProvider {
     throw new Error(`${this.name} does not support remote sync`)
   }
 
-  buildSkillsetConfig(remote: SkillsetRemoteDescriptor): SkillsetConfig {
+  /** A config for a remote skillset, under the auth state in `auth`. */
+  buildSkillsetConfig(remote: SkillsetRemoteDescriptor, _auth: SkillsetAuthContext): SkillsetConfig {
     return {
       id: `${this.id}--${remote.repoId}--${remote.name}`,
       url: this.getRegistrationUrl(`${this.id}://skills/repo`),
@@ -210,7 +240,12 @@ export abstract class BaseSkillsetProvider {
     }
   }
 
-  updateSkillsetConfig(existing: SkillsetConfig, remote: SkillsetRemoteDescriptor): boolean {
+  /** Update `existing` in place from `remote`, under the auth state in `auth`; true if it changed. */
+  updateSkillsetConfig(
+    existing: SkillsetConfig,
+    remote: SkillsetRemoteDescriptor,
+    _auth: SkillsetAuthContext,
+  ): boolean {
     let changed = false
     if (existing.name !== remote.name) {
       existing.name = remote.name

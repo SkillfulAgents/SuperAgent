@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
@@ -9,28 +10,48 @@ import { MockChatAgentIntegration } from '../chat-integrations/mock-connector'
 import { TaskManagerAgentIntegration } from '../task-manager-integrations/task-manager-agent-integration'
 import type { TaskEvent } from '../task-manager-integrations/types'
 import type { AgentIntegrationRecord } from './types'
-import { getAgentIntegration } from '../services/agent-integration-service'
+import { getAgentIntegration, updateAgentIntegration } from '../services/agent-integration-service'
+import { backgroundSettled } from '../background'
 import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../services/agent-integration-session-service'
 import { requireIntegrationReconnect } from './lifecycle'
+import { appState } from '../app-state'
 import { deliveryStore } from './delivery-store'
-import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { DeliveryError } from '../agent-actor/delivery-errors'
+import { IntegrationRelays, relayAcceptResult } from './relay-transport'
+import type { IntegrationRelayAttachment } from './transport'
+import { createFakeWebhookRelay, type FakeWebhookRelay } from '../webhook-relay/testing/fake-webhook-relay'
 import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
-const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn() }))
-vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
-  container: { start: runtime.start }, inputs: { open: () => [], cancelAwaiting: async () => {} },
+const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn(),
+  // The sessions running a turn, as the actor reports them.
+  running: [] as string[],
+  // Sends to the session's last event stream.
+  emit: (_event: unknown) => {} }))
+// Through the serializing transport in the transport suite, as callers reach a real actor.
+vi.mock('../agent-actor', async () => {
+  const { viaTestTransport } = await import('../agent-actor/testing/via-test-transport')
+  return { agentRegistry: { get: () => viaTestTransport({
+  live: async () => ({ activeSessionIds: runtime.running, awaitingSessionIds: [] }),
+  container: { start: runtime.start }, inputs: { cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
-    subscribeStream: runtime.attach, isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false, isActive: () => true },
-  messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
-    subscribe: runtime.subscribe, withSend: (_id: string, send: () => Promise<void>) => send() },
-}) } }))
+    attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
+    live: async (id: string) => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: runtime.subscribed(id), openRequests: [], runtime: null }) },
+  messages: { findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
+    subscribe: runtime.subscribe,
+    // The actor's delivery: the echo with its queued flag, then the message.
+    deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
+      if (request.echo) runtime.broadcast(request.sessionId, { type: 'user_message', ...request.echo, uuid: request.uuid, queued: true })
+      await runtime.send(request.sessionId, request.content, request.uuid)
+      return { status: 'sent', queued: true }
+    } },
+  }) } }
+})
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }) }))
+vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }), effectiveModelsFrom: () => ({ agentModel: 'test' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('../container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))
 vi.mock('../notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 vi.mock('../services/connection-sync-service', () => ({ syncRemoteMcpAgents: async () => {} }))
@@ -51,7 +72,26 @@ class Tasks extends TaskManagerAgentIntegration {
   protected taskGuidance() { return 'Reply to this issue.' }
   protected async hydrateTask() { return { id: 'conversation', identifier: 'TEST-1', title: 'Test', description: '', url: 'https://example.com', updatedAt: '', properties: {}, comments: [], attachments: [], truncated: false } }
   input(id = 'input') { return this.acceptTaskEvent({ id, taskId: 'conversation', interactionId: 'conversation', kind: 'invocation', timestamp: new Date().toISOString(), text: id, replyTarget: { commentId: 'thread' }, payload: {} } satisfies TaskEvent) }
+  context(id: string) { return this.acceptTaskEvent({ id, taskId: 'conversation', interactionId: 'conversation', kind: 'context', timestamp: new Date().toISOString(), text: id, replyTarget: {}, payload: {} } satisfies TaskEvent) }
 }
+/** A provider in relay mode: the relay's events go through the same handoff as direct input. */
+class RelayTasks extends Tasks {
+  private attachment?: IntegrationRelayAttachment
+  /** Which path the last connect took. */
+  path?: 'relay' | 'direct'
+  async connect() {
+    this.connected = true
+    // Uses the relay when the host offers one; otherwise its own (here, imaginary) socket.
+    const relay = this.host.relay
+    this.path = relay ? 'relay' : 'direct'
+    this.attachment = relay?.attach(relayBinding, async events => new Map(await Promise.all(events.map(async event =>
+      [event.id, relayAcceptResult(await this.input(event.id))] as const))))
+  }
+  async disconnect() { this.connected = false; this.attachment?.detach(); this.attachment = undefined }
+  isConnected() { return this.connected && (this.attachment?.isAttached() ?? true) }
+}
+const relayBinding = { endpointId: 'whep_tasks', url: 'https://relay.test/v1/hooks/whep_tasks', scope: 'sub_owner' }
+const relayEvent = (id: string) => ({ id, endpointId: 'whep_tasks', type: 'CUSTOM_WEBHOOK', payload: {}, createdAt: '' })
 let manager: AgentIntegrationManager
 let adapter: Chat | Tasks
 async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 'slack') {
@@ -61,10 +101,30 @@ async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 's
   adapter = provider === 'linear' ? new Tasks((await getAgentIntegration('integration'))!) : Object.assign(new Chat(), { provider })
   const registry = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => adapter }])
   manager = new AgentIntegrationManager(registry)
+  registerTasks(manager)
+  await manager.start()
+}
+async function startRelay(relay: FakeWebhookRelay) {
+  await database.insert(chatIntegrations).values({
+    id: 'integration', provider: 'linear', agentSlug: 'agent', config: JSON.stringify({ relay: relayBinding }),
+    requireApproval: false, createdAt: new Date(), updatedAt: new Date(),
+  }).run()
+  adapter = new RelayTasks((await getAgentIntegration('integration'))!)
+  const relays = new IntegrationRelays(() => relay)
+  manager = new AgentIntegrationManager(
+    new AgentIntegrationRegistry([{ definition: { ...adapter.definition, transports: ['direct', 'relay'] }, policy: adapter, create: async () => adapter }]),
+    id => relays.hostFor(id),
+  )
+  registerTasks(manager)
   await manager.start()
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('../services/session-defaults') })
 beforeEach(async () => {
+  runtime.running = []
   handle = await createTestDatabase(); database = handle.db; vi.clearAllMocks()
   runtime.create.mockImplementation(async (options: CreateSessionOptions) => {
     // POST /sessions and SessionManager both reject a missing/empty first input.
@@ -74,11 +134,72 @@ beforeEach(async () => {
     return { id: `session-${runtime.create.mock.calls.length}` }
   })
   runtime.attach.mockResolvedValue(undefined); runtime.subscribed.mockReturnValue(true)
-  runtime.subscribe.mockImplementation(() => () => {})
-  runtime.send.mockResolvedValue(undefined); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
-  runtime.interrupt.mockResolvedValue({ interrupted: true })
+  runtime.subscribe.mockImplementation(async () => new ReadableStream({ start(controller) {
+    runtime.emit = (event) => controller.enqueue(event)
+  } }))
+  runtime.send.mockResolvedValue({}); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
 })
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
+
+describe('relay transport', () => {
+  it('accepts relayed events durably, acknowledges duplicates, and holds them while paused', async () => {
+    const relay = createFakeWebhookRelay()
+    await startRelay(relay)
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'accepted']]))
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'duplicate']]))
+
+    await manager.pauseIntegration('integration')
+    expect(relay.consumers.get('integration:integration')?.endpointIds).toEqual([])
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_2')])).toEqual(new Map([['whe_2', 'retry']]))
+
+    await manager.resumeIntegration('integration')
+    expect(relay.log.at(-1)).toEqual({ op: 'retryNow', id: 'integration:integration' })
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_2')])).toEqual(new Map([['whe_2', 'accepted']]))
+    await vi.waitFor(async () => expect((await rows()).filter(row => row.state === 'delivered')).toHaveLength(2))
+    expect(relay.log.filter(entry => entry.op === 'register')).toHaveLength(1)
+  })
+
+  it('connects directly when the host has no relay as it connects', async () => {
+    const relay = createFakeWebhookRelay()
+    relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
+    await startRelay(relay)
+
+    expect((adapter as RelayTasks).path).toBe('direct')
+    expect(relay.consumers.size).toBe(0)
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+  })
+})
+
+describe('input handoff results', () => {
+  it('tells the provider whether its input was accepted, a duplicate, or rejected', async () => {
+    await start()
+    expect(await adapter.input('first')).toBe('accepted')
+    expect(await adapter.input('first')).toBe('duplicate')
+    // The row stops taking input underneath a live connection.
+    await database.update(chatIntegrations).set({ status: 'paused' }).run()
+    expect(await adapter.input('second')).toBe('rejected')
+    expect(await rows()).toHaveLength(1)
+  })
+  it('asks for a retry once the manager no longer listens to the connection', async () => {
+    await start()
+    manager.stop()
+    expect(await adapter.input('late')).toBe('retry')
+    expect(await rows()).toEqual([])
+  })
+  it('asks for a retry from a task connection that is disconnected, and rejects context', async () => {
+    await start('linear')
+    const tasks = adapter as Tasks
+    expect(await tasks.input('first')).toBe('accepted')
+    expect(await tasks.context('edit')).toBe('rejected')
+    await tasks.disconnect()
+    expect(await tasks.input('second')).toBe('retry')
+    // Context is never input, connected or not.
+    expect(await tasks.context('edit-while-down')).toBe('rejected')
+  })
+})
 
 describe('shared manager durability with real integration storage', () => {
   it.each(['slack', 'linear'] as const)('keys each %s card by its delivery, for the first input and a follow-up', async provider => {
@@ -110,6 +231,56 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.send.mock.calls[0][0]).toBe('session-1')
     if (adapter instanceof Chat) expect(adapter.acknowledgeInput).toHaveBeenCalledTimes(2)
   })
+  /** Holds every hint back, as a slow backend would; `deliver` sends them. */
+  function holdHints() {
+    const state = appState()
+    const publish = state.publish.bind(state)
+    const held: Array<() => Promise<void>> = []
+    vi.spyOn(state, 'publish').mockImplementation(async (channel, event) => { held.push(() => publish(channel, event)) })
+    return { deliver: async () => { await Promise.all(held.map(send => send())); await backgroundSettled() } }
+  }
+  it.each(['a later millisecond', 'the same millisecond'] as const)('keeps credentials a config edit put in place in %s when the loss hint arrives after it reconnected', async when => {
+    await start('telegram')
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+    const hints = holdHints()
+    if (when === 'the same millisecond') vi.useFakeTimers({ toFake: ['Date'], now: Date.now() })
+    try {
+      expect(await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: { revoked: true }, message: 'Reconnect' })).toBe(true)
+      const revoked = (await getAgentIntegration('integration'))!
+      if (when === 'a later millisecond') await new Promise(resolve => setTimeout(resolve, 2))
+      // PATCH with replacement credentials: saved with the row still `disconnected`, then remove + add.
+      expect(await updateAgentIntegration('integration', { config: { botToken: '123:replacement' } })).toBe(true)
+      const replaced = (await getAgentIntegration('integration'))!
+      expect(replaced.updatedAt.getTime() === revoked.updatedAt.getTime()).toBe(when === 'the same millisecond')
+      await manager.removeIntegration('integration')
+      await manager.addIntegration('integration')
+      expect(manager.isIntegrationConnected('integration')).toBe(true)
+      expect(replaced.status).toBe('disconnected')
+      await hints.deliver()
+      expect(manager.isIntegrationConnected('integration')).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
+  it('stops a connect that read the row before the loss, even after an unrelated write moved the row on', async () => {
+    await start('telegram')
+    manager.stop()
+    // A fresh owner whose startup connect is parked while it makes the connector.
+    let release!: () => void, reached!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const parked = new Promise<void>(resolve => { reached = resolve })
+    manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter,
+      create: async () => { reached(); await gate; return adapter } }]))
+    registerTasks(manager)
+    const starting = manager.start()
+    await parked
+    const hints = holdHints()
+    expect(await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: { revoked: true }, message: 'Reconnect' })).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 2))
+    expect(await updateAgentIntegration('integration', { name: 'Renamed' })).toBe(true)
+    await hints.deliver()
+    release(); await starting
+    expect(manager.getActiveIntegrationIds()).toEqual([])
+    expect(adapter.isConnected()).toBe(false)
+  })
   it('recovers locally accepted input after a manager restart', async () => {
     await start(); await adapter.disconnect()
     await adapter.input('saved') // manager persists before a live transport is available
@@ -119,7 +290,7 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.create).toHaveBeenCalledOnce()
     expect(runtime.send).not.toHaveBeenCalled()
   })
-  it.each(['pause', 'authorization', 'reset', 'cancel'] as const)('%s during preparation prevents spending and does not resume the old input', async action => {
+  it.each(['pause', 'authorization', 'authorization without its hint', 'reset', 'cancel'] as const)('%s during preparation prevents spending and does not resume the old input', async action => {
     await start()
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
@@ -127,7 +298,9 @@ describe('shared manager durability with real integration storage', () => {
     await adapter.input()
     await vi.waitFor(() => expect(prepare).toHaveBeenCalled())
     if (action === 'pause') await manager.pauseIntegration('integration')
-    if (action === 'authorization') await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: {}, message: 'Reconnect' })
+    // The owner never hears of it: the write alone must stop the input.
+    if (action === 'authorization without its hint') vi.spyOn(appState(), 'publish').mockResolvedValue(undefined)
+    if (action.startsWith('authorization')) await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: {}, message: 'Reconnect' })
     if (action === 'reset') {
       // Clearing by mapping ID also covers sessions not currently observed by a connector.
       await database.insert((await import('../db/schema')).chatIntegrationSessions).values({ id: 'mapping', integrationId: 'integration', externalChatId: 'conversation', sessionId: 'old', createdAt: new Date(), updatedAt: new Date() }).run()
@@ -150,7 +323,7 @@ describe('shared manager durability with real integration storage', () => {
       vi.spyOn(adapter, 'sessionPolicy').mockReturnValue({ name: 'Chat', metadata: {}, timeoutHours: 1 })
       await database.update(chatIntegrationSessions).set({ updatedAt: new Date(0) }).run()
     } else {
-      runtime.send.mockRejectedValueOnce(new MessageNotAcceptedError('session-gone', 'Session not found'))
+      runtime.send.mockRejectedValueOnce(new DeliveryError('session-gone', 'Session not found'))
     }
     await adapter.input('after')
     await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'after')?.state).toBe('delivered'))
@@ -165,8 +338,8 @@ describe('shared manager durability with real integration storage', () => {
     if (path === 'attach') {
       runtime.subscribed.mockReturnValue(false)
       runtime.attach.mockRejectedValueOnce(new Error('Session not found'))
-    } else runtime.send.mockRejectedValueOnce(new MessageNotAcceptedError('session-gone', 'Session not found'))
-    runtime.create.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container stopped'))
+    } else runtime.send.mockRejectedValueOnce(new DeliveryError('session-gone', 'Session not found'))
+    runtime.create.mockRejectedValueOnce(new DeliveryError('unavailable', 'Container stopped'))
     await adapter.input('retry-me')
     await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'retry-me')).toMatchObject({ state: 'pending', sessionId: null, attempts: 1 }))
     // A newer input creates a replacement mapping during the first input's backoff.
@@ -207,7 +380,7 @@ describe('shared manager durability with real integration storage', () => {
     finishCreate()
     await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1' }))
     expect((await getAgentIntegrationSession('integration', 'conversation'))?.sessionId).toBe('session-1')
-    runtime.subscribe.mock.calls.at(-1)![1]({ type: 'session_idle' })
+    runtime.emit({ type: 'session_idle' })
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
     await adapter.input('follow-up')
     await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledWith('session-1', expect.stringContaining('follow-up'), expect.any(String)))
@@ -227,6 +400,8 @@ describe('shared manager durability with real integration storage', () => {
     const disconnect = vi.spyOn(old, 'disconnect').mockImplementation(async () => { await disconnectGate })
     adapter = Object.assign(new Chat(), { provider: 'slack' })
     runtime.subscribed.mockReturnValue(false)
+    // The session the creation starts runs its turn through the reconnect.
+    runtime.running = ['session-1']
     const reconnect = manager.reconnectAll()
     await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce())
     try {
@@ -237,7 +412,7 @@ describe('shared manager durability with real integration storage', () => {
     } finally { finishDisconnect(); await reconnect }
     await vi.waitFor(() => expect(runtime.attach).toHaveBeenCalledWith('session-1', 'session-1'))
     const deliver = vi.spyOn(adapter, 'deliver')
-    runtime.subscribe.mock.calls.at(-1)![1]({ type: 'session_idle' })
+    runtime.emit({ type: 'session_idle' })
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
   })
   it.each(['pause', 'cancel', 'authorization'] as const)('%s while creation is in flight prevents a late mapping', async action => {
@@ -297,11 +472,10 @@ describe('shared manager durability with real integration storage', () => {
     manager.stop()
     const row = (await rows())[0]
     await database.update(integrationDeliveries).set({ state: 'sending', owner: 'dead-host' }).where(eq(integrationDeliveries.id, row.id)).run()
-    runtime.receipt.mockImplementation(async (_session, predicate: (entry: unknown) => boolean) => {
-      const receipt = { type: 'user', uuid: row.id }
-      expect(predicate(receipt)).toBe(true)
-      expect(predicate({ type: 'user', uuid: 'different-message' })).toBe(false)
-      return receipt
+    runtime.receipt.mockImplementation(async (_session, query: unknown) => {
+      // Positive evidence only: the user message sent with the delivery's uuid.
+      expect(query).toEqual({ kind: 'user', uuid: row.id })
+      return { type: 'user', uuid: row.id }
     })
     await start()
     await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))

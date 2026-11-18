@@ -1,8 +1,6 @@
 import { randomUUID } from 'crypto'
-import { containerHost } from './container-host'
-import { messagePersister } from './message-persister'
-import { syncAgentConnectionEnvironment, type ConnectionRuntimeKind } from './connection-runtime-sync'
-import type { ContainerClient } from './types'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import type { ConnectionRuntimeKind } from './connection-runtime-sync'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
 
 export interface ConnectionReplacement {
@@ -19,32 +17,26 @@ export interface ConnectionReplacement {
  * new projection on their next normal message; replacement does not wake them. */
 export async function finishConnectionReplacement(
   change: ConnectionReplacement,
-  releaseRequests: () => void,
+  releaseRequests: () => Promise<unknown>,
 ): Promise<{ liveRefresh: boolean; sessionNotification: boolean }> {
-  const { agentSlug } = change
+  const actor = agentRegistry.get(change.agentSlug)
   let liveRefresh = false
   let sessionNotification = true
-  const ready: Array<{ sessionId: string; client: ContainerClient }> = []
+  const ready: string[] = []
   try {
-    const runtime = containerHost.runtime(agentSlug)
-    const sessionIds = messagePersister.getActiveSessionIdsForAgent(agentSlug)
-    liveRefresh = await syncAgentConnectionEnvironment(agentSlug, change.kind, runtime)
+    const sessionIds = (await actor.live()).activeSessionIds
+    liveRefresh = await actor.container.syncConnectionEnvironment(change.kind)
     if (!liveRefresh) return { liveRefresh: false, sessionNotification: false }
-    if (sessionIds.length === 0 || runtime.getCachedInfo().status !== 'running') {
+    if (sessionIds.length === 0 || (await actor.container.status()).status !== 'running') {
       return { liveRefresh: true, sessionNotification: true }
     }
 
-    const client = runtime.getClient()
     const interrupted = await Promise.allSettled(sessionIds.map(async (sessionId) => {
       // A user may have stopped a session while the projection was being updated.
-      if (!messagePersister.isSessionActive(agentSlug, sessionId)) return null
-      const turnGenerationBefore = messagePersister.getTurnGeneration(agentSlug, sessionId)
-      const result = await client.interruptSession(sessionId, { scope: 'turn' })
+      // A turn the container did not confirm stopping is left running, and gets no notice.
+      const result = await actor.messages.stop(sessionId, { scope: 'turn', ifActive: true, onlyIfConfirmed: true })
+      if (result.path === 'skipped-idle') return null
       if (!result.interrupted) throw new Error(`Failed to interrupt session ${sessionId}`)
-      await messagePersister.markSessionInterrupted(agentSlug, sessionId, {
-        processKept: result.processKept,
-        turnGenerationBefore,
-      })
       return sessionId
     }))
     for (const result of interrupted) {
@@ -52,7 +44,7 @@ export async function finishConnectionReplacement(
         sessionNotification = false
         console.warn('[ConnectionReplacement] Failed to interrupt a session:', result.reason)
       } else if (result.value) {
-        ready.push({ sessionId: result.value, client })
+        ready.push(result.value)
       }
     }
   } catch (error) {
@@ -61,13 +53,16 @@ export async function finishConnectionReplacement(
   } finally {
     // The mapping has already changed. Never leave a parked call waiting for
     // the removed connection, even if runtime preparation fails unexpectedly.
-    releaseRequests()
+    await releaseRequests()
   }
 
-  const deliveries = await Promise.allSettled(ready.map(({ sessionId, client }) =>
-    messagePersister.withSessionSend(agentSlug, sessionId, client, () =>
-      client.sendMessage(sessionId, buildConnectionReplacementMessage(change), randomUUID(), { shouldQuery: true }),
-    ),
+  const deliveries = await Promise.allSettled(ready.map((sessionId) =>
+    actor.messages.deliver({
+      sessionId,
+      content: buildConnectionReplacementMessage(change),
+      uuid: randomUUID(),
+      options: { shouldQuery: true },
+    }),
   ))
   for (const result of deliveries) {
     if (result.status === 'rejected') {

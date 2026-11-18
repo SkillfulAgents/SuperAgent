@@ -13,12 +13,14 @@ import { betterSqlite3 } from '../drivers/better-sqlite3'
 import { libsql } from '../drivers/libsql'
 import type { AppDatabase, DatabaseDriver } from '../drivers/types'
 import { migrateFromBundle } from '../open-database'
+import type { MigrationMeta } from 'drizzle-orm/migrator'
 
 export type TestDriverName = 'better-sqlite3' | 'libsql'
 
-const TEST_DRIVERS: Record<TestDriverName, () => DatabaseDriver> = {
-  'better-sqlite3': () => betterSqlite3(':memory:'),
-  libsql: () => libsql(':memory:'),
+/** Each driver at a location: a private in-memory database, or a file that several handles can share. */
+const TEST_DRIVERS: Record<TestDriverName, (file?: string) => DatabaseDriver> = {
+  'better-sqlite3': (file) => betterSqlite3(file ?? ':memory:'),
+  libsql: (file) => libsql(file ? `file:${file}` : ':memory:'),
 }
 
 /** The driver `DB_DRIVER` names; better-sqlite3 when unset. */
@@ -36,10 +38,20 @@ export interface TestDatabase {
   close(): Promise<void>
 }
 
-export async function createTestDatabase(): Promise<TestDatabase> {
+export interface CreateTestDatabaseOptions {
+  migrations?: readonly MigrationMeta[]
+  /**
+   * A database file instead of a private in-memory database. Two handles on
+   * one file stand in for two processes of a deployment sharing a database.
+   * Migrating an already-migrated file is a no-op.
+   */
+  file?: string
+}
+
+export async function createTestDatabase(options: CreateTestDatabaseOptions = {}): Promise<TestDatabase> {
   const driver = testDriverName()
-  const handle = await TEST_DRIVERS[driver]().open()
-  await migrateFromBundle(handle.db)
+  const handle = await TEST_DRIVERS[driver](options.file).open()
+  await migrateFromBundle(handle.db, options.migrations)
   return {
     db: handle.db,
     driver,

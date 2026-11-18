@@ -2,7 +2,7 @@ import { CredentialRefreshError } from '../../../../agent-container/src/credenti
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
-import { llmConnections } from '../db/schema'
+import { llmConnections, user } from '../db/schema'
 import { connectionConfigSchema } from './connection-schema'
 
 const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null, exchange: vi.fn() }))
@@ -12,6 +12,7 @@ vi.mock('./grok-oauth', () => ({ refreshGrokCredential: state.exchange }))
 vi.mock('./kimi-oauth', () => ({ refreshKimiCredential: state.exchange }))
 vi.mock('./minimax-oauth', () => ({ refreshMinimaxCredential: state.exchange }))
 import { resolveConnectionCredential } from './connection-credentials'
+import { shareConnection } from './connections'
 let handle: TestDatabase
 const expired = { accessToken: 'old', refreshToken: 'refresh-old', expiresAt: 0 }
 const fresh = { accessToken: 'new', refreshToken: 'refresh-new', expiresAt: Date.now() + 3_600_000 }
@@ -51,6 +52,30 @@ describe('app-owned subscription credentials', () => {
     })
     expect((await resolveConnectionCredential('connection')).accessToken).toBe('reconnected')
     expect((await row())!.generation).toBe(7)
+  })
+  it('preserves rotated credentials when the owner shares during a refresh', async () => {
+    await handle.db.insert(user).values({ id: 'admin', name: 'Admin', email: 'admin@example.test' }).run()
+    await seed()
+    await handle.db.update(llmConnections).set({ userId: 'admin' }).where(eq(llmConnections.id, 'connection')).run()
+    const startedAt = Date.now()
+    let elapsed = 0
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => startedAt + elapsed)
+    state.exchange.mockImplementationOnce(async () => {
+      await shareConnection('connection', { userId: 'admin', admin: true })
+      // If sharing loses the rotated pair, skip waiting for the old lease and
+      // simulate the provider rejecting reuse of its consumed refresh token.
+      elapsed = 60_001
+      return fresh
+    }).mockRejectedValue(new CredentialRefreshError(401))
+    try {
+      await expect(resolveConnectionCredential('connection')).resolves.toMatchObject(fresh)
+      expect(state.exchange).toHaveBeenCalledTimes(1)
+      const shared = (await row())!
+      expect(shared.userId).toBeNull()
+      expect(connectionConfigSchema.parse(JSON.parse(shared.config)).oauth).toEqual(fresh)
+    } finally {
+      now.mockRestore()
+    }
   })
   it('cannot resurrect a connection deleted during refresh', async () => {
     await seed()

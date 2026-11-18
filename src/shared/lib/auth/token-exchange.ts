@@ -9,6 +9,7 @@ import { getAuth } from './index'
 import { getAppBaseUrl } from './config'
 import { verifyOidcJwt } from './oidc-jwt'
 import { getAuthProviderIssuer, isAuthProviderEnabled } from './provider-config'
+import { runPlatformSignIn } from './platform-role'
 import {
   InstalledClientSessionError,
   mintInstalledClientSession,
@@ -95,7 +96,7 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
   // Same canonical form the platform signs (origin + path, no trailing slash),
   // so neither an operator-supplied trailing slash nor an explicit default port
   // can break verification.
-  const audience = canonicalAudience(getAppBaseUrl())
+  const audience = canonicalAudience(await getAppBaseUrl())
 
   let payload: unknown
   try {
@@ -189,7 +190,7 @@ async function consumeJti(jti: string, expSec: number): Promise<void> {
   }
 }
 
-type AuthContext = Awaited<ReturnType<typeof getAuth>['$context']>
+type AuthContext = Awaited<Awaited<ReturnType<typeof getAuth>>['$context']>
 
 /**
  * Resolve the Better Auth user for the grant, provisioning on first exchange.
@@ -201,16 +202,34 @@ type AuthContext = Awaited<ReturnType<typeof getAuth>['$context']>
  *     (linking the platform identity) or provisions a new user.
  *
  * All writes go through Better Auth's internal adapter so database hooks run:
- * first-user bootstrap, pending-approval banning, and session limits behave
- * exactly as they do for browser OIDC login.
+ * pending-approval banning, session limits and the Platform role a new user
+ * is created with (run under `runPlatformSignIn`) behave exactly as they do for
+ * browser OIDC login. Linking an existing user leaves their role alone.
  */
 async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
   const providerId = PLATFORM_AUTH_PROVIDER_ID
   const email = claims.email.trim().toLowerCase()
 
   type FoundUser = NonNullable<
-    Awaited<ReturnType<AuthContext['internalAdapter']['findOAuthUser']>>
+    Awaited<ReturnType<AuthContext['internalAdapter']['findUserByEmail']>>
   >['user']
+
+  // Better Auth 1.7 separates stable account ownership from email lookup.
+  // Consult the subject first even if the verified email now belongs to a
+  // different local user. An orphaned mapping must never fall through to
+  // email linking and silently reassign an existing platform identity.
+  const findExistingUser = async () => {
+    const owner = await ctx.internalAdapter.findAccountOwnerByKey({
+      providerId,
+      accountId: claims.sub,
+    })
+    if (owner?.kind === 'orphaned') {
+      throw new TokenExchangeError('invalid_grant')
+    }
+    if (owner) return { user: owner.user, linkedAccount: true }
+    const found = await ctx.internalAdapter.findUserByEmail(email)
+    return found ? { user: found.user, linkedAccount: false } : null
+  }
 
   // Link the platform identity to an existing user, honoring the app's
   // account-linking policy.
@@ -245,7 +264,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
   }
 
   const attempt = async () => {
-    const found = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
+    const found = await findExistingUser()
     if (found?.linkedAccount) {
       return refreshImage(found.user)
     }
@@ -287,7 +306,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
     //    this subject's mapping does not exist yet.
     // Either way, reload and make sure THIS subject's mapping is persisted
     // before any session is minted for it.
-    const winner = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
+    const winner = await findExistingUser()
     if (!winner) {
       throw new TokenExchangeError('invalid_grant')
     }
@@ -301,7 +320,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
       if (linkError instanceof TokenExchangeError) throw linkError
       if (!isUniqueConstraintError(linkError)) throw linkError
     }
-    const final = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
+    const final = await findExistingUser()
     if (!final?.linkedAccount) {
       throw new TokenExchangeError('invalid_grant')
     }
@@ -323,10 +342,10 @@ export async function exchangeDeploymentGrant(
   // Only after full cryptographic + claim validation: burn the jti.
   await consumeJti(claims.jti, claims.exp)
 
-  const auth = getAuth()
+  const auth = await getAuth()
   const ctx = await auth.$context
 
-  const user = await resolveUser(ctx, claims)
+  const user = await runPlatformSignIn(claims.role, () => resolveUser(ctx, claims))
 
   let session: Awaited<ReturnType<typeof mintInstalledClientSession>>['session']
   try {

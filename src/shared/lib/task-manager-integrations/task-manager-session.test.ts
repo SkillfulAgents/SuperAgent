@@ -1,12 +1,13 @@
 vi.mock('../agent-integrations/delivery-store', async () => ({ deliveryStore: (await import('../agent-integrations/testing/memory-delivery-store')).memoryDeliveryStore() }))
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { TaskManagerAgentIntegration } from './task-manager-agent-integration'
 import { AgentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { AgentIntegrationRegistry } from '../agent-integrations/registry'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { TaskEvent } from './types'
 const runtime = vi.hoisted(() => ({
-  create: vi.fn(async () => ({ id: 'session' })), send: vi.fn(async () => {}),
+  create: vi.fn(async () => ({ id: 'session' })), send: vi.fn(async (..._args: unknown[]) => ({})),
   mapping: undefined as { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string } | undefined,
   row: { id: 'integration', agentSlug: 'agent', provider: 'tasks', config: '{}', status: 'active', name: null,
     errorMessage: null, model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() } as AgentIntegrationRecord,
@@ -20,17 +21,22 @@ vi.mock('../services/agent-integration-session-service', () => ({
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: async () => {} },
   sessions: { create: runtime.create, register: async () => {}, updateMetadata: async () => {}, markActive: () => {},
-    subscribeStream: async () => {}, isStreamSubscribed: () => true, activity: () => 'working' },
-  messages: { send: runtime.send, subscribe: () => () => {}, withSend: (_id: string, send: () => Promise<void>) => send() },
+    attach: async () => {},
+    live: async () => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: true, openRequests: [], runtime: null }) },
+  messages: {
+    subscribe: async () => new ReadableStream(),
+    deliver: async (request: { sessionId: string; content: string; uuid?: string }) => {
+      await runtime.send(request.sessionId, request.content, request.uuid)
+      return { status: 'sent', queued: true }
+    },
+  },
 }) } }))
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
+vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }), effectiveModelsFrom: () => ({ agentModel: 'test-model' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('../container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))
 vi.mock('../notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
-vi.mock('../agent-integrations/lifecycle', () => ({ onIntegrationAuthorizationLost: () => () => {} }))
 class Tasks extends TaskManagerAgentIntegration {
   readonly provider = 'tasks'
   readonly definition = { provider: 'tasks', name: 'Tasks', family: 'task-manager', capabilities: [], settings: [], setup: { kind: 'test', credentialFields: [] } }
@@ -49,6 +55,7 @@ describe('task inputs through the shared integration manager', () => {
     runtime.mapping = undefined
     const tasks = new Tasks()
     manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: tasks.definition, policy: tasks, create: async () => tasks }]))
+    registerTasks(manager)
     await manager.start()
     await tasks.input('first-thread')
     await vi.waitFor(() => expect(runtime.mapping?.sessionId).toBe('session'))

@@ -16,8 +16,8 @@
  *   3. Launches the built Electron app with a fresh data dir and
  *      --remote-debugging-port, connects over CDP, and asserts the
  *      onboarding button reads "Continue as <email>".
- *   4. Clicks it and verifies the redeemed plat_sa_ token lands in
- *      settings.json (and, when docker is available, that the nonce row is
+ *   4. Clicks it and verifies the redeemed plat_sa_ token lands in the
+ *      app's persisted settings (and, when docker is available, that the nonce row is
  *      consumed in the local Supabase DB). Then replays the redeem with the
  *      consumed code and requires the uniform 404.
  *   5. Negative pass: relaunches with another fresh data dir while the same
@@ -32,7 +32,6 @@
  *   - Platform web dev server on http://localhost:3000.
  *   - App built for electron:  npm run build:electron
  *     (with PLATFORM_BASE_URL/PLATFORM_PROXY_URL pointing at the local stack)
- *   - Native modules rebuilt for Electron:  npx electron-rebuild -f
  *
  * Note: the platform's nonce endpoints share a 30/min/IP rate limiter across
  * mint/resolve/redeem — rapid back-to-back runs can surface as 429s; wait a
@@ -51,6 +50,8 @@ import path from 'node:path'
 import process from 'node:process'
 
 import { chromium } from '@playwright/test'
+
+import { readInstallSettings } from './lib/install-settings.mjs'
 
 const execFileAsync = promisify(execFile)
 const require = createRequire(import.meta.url)
@@ -361,17 +362,15 @@ async function redeemAndVerify(page, button, dataDir, code) {
   await button.click()
   const settings = await expectEventually(
     async () => {
-      const raw = await fs.readFile(path.join(dataDir, 'settings.json'), 'utf8').catch(() => null)
-      if (!raw) return null
       let parsed
       try {
-        parsed = JSON.parse(raw)
+        parsed = readInstallSettings(dataDir)
       } catch {
-        return null // mid-write; poll again
+        return null // database busy or not created yet; poll again
       }
-      return parsed.platformAuth?.token ? parsed : null
+      return parsed?.platformAuth?.token ? parsed : null
     },
-    'platformAuth record in settings.json',
+    'platformAuth record in the persisted settings',
     30_000,
   )
   const auth = settings.platformAuth

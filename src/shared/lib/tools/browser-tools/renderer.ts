@@ -1,7 +1,9 @@
 import { defineToolRenderer } from '../renderer-types'
 import {
+  BookOpen,
   Braces,
   Download,
+  Network,
   Globe,
   MousePointerClick,
   TextCursorInput,
@@ -12,12 +14,15 @@ import {
   CircleDot,
   MousePointer2,
   Terminal,
+  ScanEye,
+  Upload,
 } from 'lucide-react'
 import {
-  browserOpenDef, browserCloseDef, browserSnapshotDef,
+  browserOpenDef, browserCloseDef, browserSnapshotDef, browserReadDef, browserCaptureTrafficDef,
   browserClickDef, browserFillDef, browserScrollDef,
   browserWaitDef, browserPressDef, browserTypeDef, browserScreenshotDef,
   browserSelectDef, browserHoverDef, browserDownloadDef, browserEvalDef, browserRunDef,
+  browserUploadDef, browserGetStateDef,
 } from './definition'
 
 export const browserOpenRenderer = defineToolRenderer(browserOpenDef, {
@@ -28,6 +33,12 @@ export const browserCloseRenderer = defineToolRenderer(browserCloseDef, {
 })
 export const browserSnapshotRenderer = defineToolRenderer(browserSnapshotDef, {
   icon: Camera,
+})
+export const browserReadRenderer = defineToolRenderer(browserReadDef, {
+  icon: BookOpen,
+})
+export const browserCaptureTrafficRenderer = defineToolRenderer(browserCaptureTrafficDef, {
+  icon: Network,
 })
 export const browserClickRenderer = defineToolRenderer(browserClickDef, {
   icon: MousePointerClick,
@@ -57,6 +68,9 @@ export const browserSelectRenderer = defineToolRenderer(browserSelectDef, {
 export const browserHoverRenderer = defineToolRenderer(browserHoverDef, {
   icon: MousePointer2,
 })
+export const browserUploadRenderer = defineToolRenderer(browserUploadDef, {
+  icon: Upload,
+})
 export const browserDownloadRenderer = defineToolRenderer(browserDownloadDef, {
   icon: Download,
 })
@@ -65,4 +79,7 @@ export const browserEvalRenderer = defineToolRenderer(browserEvalDef, {
 })
 export const browserRunRenderer = defineToolRenderer(browserRunDef, {
   icon: Terminal,
+})
+export const browserGetStateRenderer = defineToolRenderer(browserGetStateDef, {
+  icon: ScanEye,
 })

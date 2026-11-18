@@ -1,7 +1,7 @@
 import webPush from 'web-push'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
+import { getPushableAgentSlugs } from '@shared/lib/services/notification-service'
 import {
   listPushSubscriptions,
   deletePushSubscriptionById,
@@ -21,7 +21,7 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
 
 /**
  * How long the push service may hold an undelivered push for an offline
@@ -32,6 +32,7 @@ const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_w
 const PUSH_TTL_SECONDS: Record<string, number> = {
   session_waiting: 10 * 60,
   session_complete: 60 * 60,
+  session_mention: 24 * 60 * 60,
 }
 const DEFAULT_PUSH_TTL_SECONDS = 60 * 60
 
@@ -118,9 +119,13 @@ export class WebPushChannel implements NotificationChannel {
       if (!subscription.userId) {
         return
       }
+      // A mention is for the person tagged, on all of their devices.
+      if (event.recipientUserId && subscription.userId !== event.recipientUserId) {
+        return
+      }
       let access = accessCache.get(subscription.userId)
       if (!access) {
-        access = getAccessibleAgentSlugs(subscription.userId)
+        access = getPushableAgentSlugs(subscription.userId)
         accessCache.set(subscription.userId, access)
       }
       if (!(await access).includes(event.agentSlug)) {

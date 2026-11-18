@@ -2,9 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { composeEmailReply } from './composition'
 import { emailMessageSchema } from './config-schema'
 const model = vi.hoisted(() => vi.fn())
-vi.mock('../config/settings', () => ({ getEffectiveModels: () => ({ summarizerModel: 'configured-summary' }) }))
-vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: (model: string) => model }))
-vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: async () => ({}), createSummarizerText: model }))
+vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClientAndModel: async () => ({ client: {}, model: 'configured-summary' }), createSummarizerText: model }))
 const mail = emailMessageSchema.parse({ id: 'm', mailboxId: 'b', threadId: 't', direction: 'inbound', messageId: null, replyToMessageId: null, from: 'a@company.com', to: ['agent@company.com'], cc: [], bcc: [], replyTo: [], subject: 'Report?', text: 'Send the report', html: null, status: 'received', createdAt: 1 })
 beforeEach(() => model.mockReset())
 it('uses the configured model with structured output and all answer blocks', async () => {

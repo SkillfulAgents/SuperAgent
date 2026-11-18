@@ -136,6 +136,39 @@ describe('observerScript', () => {
     expect(p.run().stateHash).toBe(c.stateHash)
   })
 
+  it('leaves controls without state out of the state hash: a link added is a census change only', () => {
+    const box = el({ tag: 'input', type: 'checkbox', checked: false })
+    const sel: Record<string, unknown[]> = { [INTERACTIVE]: [box] }
+    const p = makePage({ sel })
+    const a = p.run()
+    sel[INTERACTIVE] = [box, el({ tag: 'a', text: 'More' })]
+    const b = p.run()
+    expect(b.interactive).toBe(2)
+    expect(b.stateHash).toBe(a.stateHash)
+  })
+
+  it('counts visible progress indicators', () => {
+    const BUSY = '[aria-busy="true"],[role="progressbar"],progress,[class*="spinner" i],[class*="loader" i],[class*="loading" i],[class*="skeleton" i],[id*="spinner" i],[id*="loading" i]'
+    const { run } = makePage({ sel: { [BUSY]: [el({ role: 'progressbar' }), el({ role: 'progressbar', visible: false })] } })
+    expect(run().busy).toBe(1)
+  })
+
+  it('reads the controls and text of a visible same-origin frame, and the focus inside it', () => {
+    const inner = el({ tag: 'button', label: 'Options', attrs: { 'aria-expanded': 'true' } })
+    const frameDoc = {
+      body: { innerText: 'Edit Duplicate' },
+      activeElement: inner,
+      querySelectorAll: (q: string) => (q === INTERACTIVE ? [inner] : []),
+    }
+    const frame = { ...el({ tag: 'iframe', sameOrigin: true }), contentDocument: frameDoc }
+    inner.getAttribute = (k: string) => ({ 'aria-label': 'Options', 'aria-expanded': 'true' } as Record<string, string>)[k] ?? null
+    const { run } = makePage({ sel: { iframe: [frame], [INTERACTIVE]: [] }, body: 'Page', active: frame })
+    const o = run()
+    expect(o.interactive).toBe(1)
+    expect(o.contentChars).toBe('Page Edit Duplicate'.length)
+    expect(o.focus).toBe('button "Options"')
+  })
+
   it('names open dialogs and dedupes them', () => {
     const { run } = makePage({ sel: { [TOP]: [el({ tag: 'dialog', heading: 'Delete project?' }), el({ role: 'alertdialog', label: 'Confirm' }), el({ tag: 'dialog', heading: 'Delete project?' }), el({ tag: 'dialog', visible: false })] } })
     expect(run().top).toEqual([{ kind: 'dialog', name: 'Delete project?' }, { kind: 'alertdialog', name: 'Confirm' }])
@@ -217,6 +250,29 @@ describe('observerScript', () => {
     // Chrome's own error page.
     expect(makePage({ body: "This site can't be reached ERR_NAME_NOT_RESOLVED", errorPage: true }).run().netError).toBe('ERR_NAME_NOT_RESOLVED')
     expect(makePage({ href: 'chrome-error://chromewebdata/' }).run().netError).toBe('net error')
+  })
+
+  it('recognises a vendor challenge frame laid over a normal page, only when it covers most of the viewport', () => {
+    // Target (bench, SUP-1265): PerimeterX's "Press & hold" frame over a 200 page that keeps all its controls.
+    const g = globalThis as { innerWidth?: number; innerHeight?: number }
+    g.innerWidth = 1280
+    g.innerHeight = 800
+    try {
+      const frame = (right: number, bottom: number) => Object.assign(
+        el({ tag: 'iframe', title: 'Human verification challenge' }),
+        { getBoundingClientRect: () => ({ left: 0, top: 0, right, bottom }) },
+      )
+      const controls = Array.from({ length: 40 }, () => el({ tag: 'a' }))
+      const sel = (f: unknown) => ({ [INTERACTIVE]: controls, 'iframe#px-captcha-modal,iframe[title="Human verification challenge"]': [f] })
+      expect(makePage({ body: 'Search results', sel: sel(frame(1280, 800)) }).run().blocker).toBe('PerimeterX')
+      // A small frame (a widget, not the overlay) is not the wall.
+      expect(makePage({ body: 'Search results', sel: sel(frame(300, 200)) }).run().blocker).toBe('')
+      // The wording, with an apostrophe, on a challenge status.
+      expect(makePage({ body: "Press & Hold to confirm you're a human (and not a bot).", status: 403, sel: { [INTERACTIVE]: controls } }).run().blocker).toBe('PerimeterX')
+    } finally {
+      delete g.innerWidth
+      delete g.innerHeight
+    }
   })
 
   it('survives a page whose DOM throws at every turn', () => {
