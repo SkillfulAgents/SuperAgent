@@ -23,6 +23,16 @@ beforeEach(() => {
   })
 })
 
+// Ambient animation runs only in the window in use (ambient-frames.ts), and
+// jsdom's document has focus only once something in it is focused. A test's DOM
+// stands for a window someone is using; one about a window in the background
+// mocks `document.hasFocus` itself.
+if (typeof document !== 'undefined') {
+  beforeEach(() => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+  })
+}
+
 // Server code reads shared state through AppState, which throws until an entry
 // point initializes it. Node-environment tests (the server's) get a fresh
 // LocalAppState per test here, so no state or listener crosses tests. A test
@@ -177,4 +187,11 @@ vi.mock('@renderer/context/dialog-context', async () => {
 // that depends on the active view/slug.
 vi.mock('@renderer/router/use-route-location', () => ({
   useRouteLocation: () => ({ selectedAgentSlug: null, view: { kind: 'home' } }),
+}))
+
+// The same for the per-agent route selections (sidebar rows, the agent menu):
+// off every agent's route by default.
+vi.mock('@renderer/router/use-route-agent', () => ({
+  useRouteAgentRow: () => ({ isSelected: false, isViewingSubItem: false }),
+  useIsRouteAgent: () => false,
 }))

@@ -9,7 +9,7 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { ContextMenuMoreButton } from '@renderer/components/ui/context-menu'
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { targetIsRemote } from '@renderer/lib/api-target'
@@ -52,8 +52,9 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useListedAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { useAgents, useListedAgents, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useSessions, useRecentSessions, useSessionTotal, recentSessionsQueryOptions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { RECENT_SESSIONS_LIMIT } from '@renderer/lib/agent-cache'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -75,7 +76,7 @@ import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-
 import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
-import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useRouteAgentRow } from '@renderer/router/use-route-agent'
 import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
 import { useCmdHintTarget, CmdHintBadge } from '@renderer/context/cmd-hint-context'
@@ -199,17 +200,20 @@ type FolderDropCue = { folderId: string; edge: 'above' | 'below' }
 function SessionSubItem({
   session,
   agentSlug,
+  isAgentSelected,
 }: {
   session: ApiSession
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
   useRenderTracker('SessionSubItem')
   // Active state is route-derived (URL is authoritative, read from useParams) so
   // the highlight + the stream subscription are correct on a cold reload, with no
-  // in-memory selection state to wait on.
-  const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
+  // in-memory selection state to wait on. Selected down to the one boolean, so
+  // a navigation re-renders the rows it leaves and enters, not every open one.
+  const isRouteSession = useParams({ strict: false, select: (params) => params.sessionId === session.id })
+  const isSelected = isAgentSelected && isRouteSession
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
@@ -240,7 +244,6 @@ function SessionSubItem({
         activity={{
           isActive: !!session.isActive,
           isAwaitingInput: !!session.isAwaitingInput,
-          isStreaming,
         }}
       >
         {/* The row (menu target) wraps the link and the 3-dot button, which
@@ -317,13 +320,15 @@ function SessionSubItem({
 function DashboardSubItem({
   artifact,
   agentSlug,
+  isAgentSelected,
 }: {
   artifact: ArtifactInfo
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
-  const { dashSlug: routeDashSlug } = useParams({ strict: false }) as { dashSlug?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
+  const isRouteDashboard = useParams({ strict: false, select: (params) => params.dashSlug === artifact.slug })
+  const isSelected = isAgentSelected && isRouteDashboard
   const [isRenaming, setIsRenaming] = useState(false)
   const { ref: hintRef, hint } = useCmdHintTarget()
 
@@ -543,14 +548,14 @@ const AgentMenuItemInner = React.forwardRef<
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { view } = useRouteLocation()
   const { isAuthMode, agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
-  // no slug). Drives the highlight AND the submenu auto-expand below.
-  const routeAgentId = useRouteAgentId()
-  const isSelected = agent.slug === routeAgentId
+  // no slug). Drives the highlight AND the submenu auto-expand below. Both
+  // answers are selected per row, so a navigation re-renders only the rows it
+  // changes them for: this subtree is the expensive part of the sidebar.
+  const { isSelected, isViewingSubItem } = useRouteAgentRow(agent)
   // Auto-expand on selection only if the agent has content to show. Brand-new
   // agents (no sessions / dashboards yet) start collapsed - the empty submenu
   // would just be visual noise.
@@ -568,28 +573,34 @@ const AgentMenuItemInner = React.forwardRef<
   // The mount-time `useState` can't catch this — sessionCount is 0 at mount on
   // a freshly-created agent, then jumps to 1 once the first message creates a
   // session. Reactively expand here.
-  const isViewingSubItem =
-    isSelected &&
-    (view.kind === 'session' ||
-      view.kind === 'task' ||
-      view.kind === 'webhook' ||
-      view.kind === 'chat' ||
-      view.kind === 'dashboard' ||
-      view.kind === 'completedTasks')
   useEffect(() => {
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const toggleShowAll = () => {
+    if (showAll) requestAnimationFrame(() => rowRef.current?.scrollIntoView({ block: 'nearest' }))
+    setShowAll(!showAll)
+  }
   const [showSkeleton, setShowSkeleton] = useState(false)
   const memberCount = agentMemberCount(agent.slug)
   const isShared = isAuthMode && memberCount > 1
 
-  // Lazy-load detail data only when expanded
-  const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
+  // Lazy-load detail data only when expanded. The row shows five sessions, so
+  // it reads the bounded recent slice and its count; every session is read
+  // only once "Show all" asks for them (or to count them, where the server
+  // does not report the total).
+  const { data: recentSessions, isLoading: sessionsLoading } = useRecentSessions(isOpen ? agent.slug : null)
+  const reportedTotal = useSessionTotal(isOpen ? agent.slug : null)
+  const recentIsCut = (recentSessions?.length ?? 0) >= RECENT_SESSIONS_LIMIT
+  const needsAllSessions = isOpen && (showAll || (recentIsCut && reportedTotal === undefined))
+  const { data: allSessions } = useSessions(needsAllSessions ? agent.slug : null)
+  const sessions = allSessions ?? recentSessions
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
 
-  const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
-  const hasMore = (sessions?.length ?? 0) > 5
+  const visibleSessions = showAll && allSessions ? allSessions : sessions?.slice(0, 5)
+  const sessionTotal = allSessions?.length ?? (recentIsCut ? reportedTotal : undefined) ?? recentSessions?.length ?? 0
+  const hasMore = sessionTotal > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
   const avatarState = agentAvatarState(agent, sessions)
   const badgeKind = agentBadgeKind(agent, sessions, isOpen)
@@ -616,15 +627,8 @@ const AgentMenuItemInner = React.forwardRef<
   // Prefetch sessions on hover so expand is instant
   const handleMouseEnter = useCallback(() => {
     if (!isOpen) {
-      queryClient.prefetchQuery({
-        queryKey: ['sessions', agent.slug],
-        queryFn: async () => {
-          const res = await apiFetch(`/api/agents/${agent.slug}/sessions`)
-          if (!res.ok) throw new Error('Failed to fetch sessions')
-          return res.json()
-        },
-        staleTime: 30_000,
-      })
+      // The same bounded read, under the same key, the open row makes.
+      queryClient.prefetchQuery({ ...recentSessionsQueryOptions(queryClient, agent.slug), staleTime: 30_000 })
     }
   }, [isOpen, agent.slug, queryClient])
 
@@ -672,7 +676,7 @@ const AgentMenuItemInner = React.forwardRef<
             isActive={isSelected}
             className={cn('group/agent-row relative h-11 gap-1.5 overflow-visible pl-[50px]', SIDEBAR_FILE_DROP_CUE)}
           >
-            <div {...dragHandlers}>
+            <div {...dragHandlers} ref={rowRef}>
               {/* Stretch the native link across the row; the roster and
                   chevron sit above it as separate interactive controls. */}
               <AppLink
@@ -827,7 +831,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-12')}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -838,6 +842,7 @@ const AgentMenuItemInner = React.forwardRef<
                         key={artifact.slug}
                         artifact={artifact}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {/* Regular sessions */}
@@ -846,21 +851,27 @@ const AgentMenuItemInner = React.forwardRef<
                         key={session.id}
                         session={session}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {hasMore && (
-                      <SidebarMenuSubItem>
+                      // `!` beats the tree connectors' `[&>li]` rules; pinned, the row covers their gutter and its ::before becomes a blurred fade.
+                      <SidebarMenuSubItem
+                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 mt-4 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
+                      >
                         <SidebarMenuSubButton
                           asChild
                           className="text-muted-foreground"
                         >
                           <button
-                            onClick={() => setShowAll((prev) => !prev)}
-                            className="w-full"
+                            onClick={toggleShowAll}
+                            aria-expanded={showAll}
+                            className="w-full focus-visible:ring-inset"
                           >
                             <span>
-                              {showAll ? 'Show less' : `Show all (${sessions?.length})`}
+                              {showAll ? 'Show less' : `Show all (${sessionTotal})`}
                             </span>
+                            <ChevronDown className={cn('ml-auto !size-3.5 transition-transform', showAll && 'rotate-180')} aria-hidden="true" />
                           </button>
                         </SidebarMenuSubButton>
                       </SidebarMenuSubItem>

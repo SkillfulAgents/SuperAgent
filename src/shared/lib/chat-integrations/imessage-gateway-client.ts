@@ -98,7 +98,7 @@ export const SEND_RETRY_DELAYS_MS = [1_000, 3_000]
  * carry. Repeated under one idempotency key while the gateway or Linq is
  * unavailable, so it is sent at most once.
  */
-export async function sendGatewayMessage(config: GatewayCredentials, message: { chatId?: string; parts: GatewayMessagePart[]; textDecorations?: GatewayTextDecoration[] }): Promise<GatewaySentMessage> {
+export async function sendGatewayMessage(config: GatewayCredentials, message: { chatId?: string; parts: GatewayMessagePart[]; textDecorations?: GatewayTextDecoration[]; replyTo?: { messageId: string; partIndex: number } }): Promise<GatewaySentMessage> {
   const body = { ...message, idempotencyKey: randomUUID() }
   for (let attempt = 0; ; attempt++) {
     try {

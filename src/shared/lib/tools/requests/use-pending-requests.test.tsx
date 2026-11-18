@@ -25,6 +25,10 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 const mockStreamState = {
   isActive: false,
   streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string; ready?: boolean }>,
+  // What the real hook derives: the hook under test selects only this.
+  get readyStreamingToolUses() {
+    return this.streamingToolUses.filter((tool) => tool.ready)
+  },
   autoApprovedScriptRunIds: new Set<string>(),
   autoApprovedComputerUseIds: new Set<string>(),
 }

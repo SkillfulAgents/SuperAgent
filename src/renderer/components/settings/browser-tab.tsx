@@ -20,6 +20,7 @@ import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/co
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import { PasswordManagersSettings } from './password-managers-settings'
 import { useSteelCredentials, type SteelCredentialsForm } from '@renderer/hooks/use-steel-credentials'
+import { useTabtenderCredentials, type TabtenderCredentialsForm } from '@renderer/hooks/use-tabtender-credentials'
 
 // Value used for "Container (built-in)" — no host browser provider
 const CONTAINER_VALUE = '__container__'
@@ -46,6 +47,15 @@ const HOST_DESCRIPTIONS: Record<string, ReactNode> = {
       Remote cloud browser with a persistent profile for each agent, so agents stay signed in.
       <br />
       Requires a Steel account.
+    </>
+  ),
+  tabtender: (
+    <>
+      Your own browser server: native Chrome on a Mac or Windows machine you run, with a persistent profile for each agent.
+      <br />
+      Requires a running{' '}
+      <a href="https://github.com/SkillfulAgents/tabtender" target="_blank" rel="noreferrer" className="underline underline-offset-2">Tab Tender</a>
+      {' '}server.
     </>
   ),
 }
@@ -182,6 +192,7 @@ export function BrowserTab() {
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
   const steelCredentials = useSteelCredentials()
+  const tabtenderCredentials = useTabtenderCredentials()
 
   const effectiveProvider = hostProvider ?? settings?.app?.hostBrowserProvider ?? CONTAINER_VALUE
 
@@ -412,6 +423,14 @@ export function BrowserTab() {
                       onUpdate={(updates) => updateSettings.mutate({ app: updates })}
                     />
                   </div>
+                ) : provider.id === 'tabtender' ? (
+                  <TabtenderSettings
+                    layout="rows"
+                    form={tabtenderCredentials}
+                    hasSavedCredentials={!!settings?.apiKeyStatus?.tabtender?.isConfigured}
+                    credentialSource={settings?.apiKeyStatus?.tabtender?.source}
+                    disabled={isLoading}
+                  />
                 ) : provider.id === 'platform' ? (
                   <div className="space-y-4">
                     <p className="text-xs text-muted-foreground">
@@ -909,6 +928,128 @@ export function SteelSettings({
         <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
           <Check className="h-3 w-3" />
           API key saved
+        </p>
+      )}
+    </div>
+  )
+}
+
+export interface TabtenderSettingsProps {
+  form: TabtenderCredentialsForm
+  hasSavedCredentials: boolean
+  credentialSource?: 'settings' | 'env' | 'none'
+  disabled: boolean
+  /** 'rows' puts label + supporting text left, input right (settings tab).
+      'stacked' (default) keeps label-above-input for the setup wizard's narrow column. */
+  layout?: 'stacked' | 'rows'
+}
+
+/** The Tab Tender server URL and API key: enter and connect (checked with the server before they are saved), or remove them. */
+export function TabtenderSettings({
+  form,
+  hasSavedCredentials,
+  credentialSource,
+  disabled,
+  layout = 'stacked',
+}: TabtenderSettingsProps) {
+  const { url, setUrl, apiKey, setApiKey, isValidating, validationResult, validateAndSave, remove } = form
+  const hasInput = url.trim().length > 0 && apiKey.trim().length > 0
+  const rows = layout === 'rows'
+
+  const urlInput = (
+    <Input
+      id="tabtender-url"
+      type="url"
+      inputMode="url"
+      autoComplete="off"
+      spellCheck={false}
+      placeholder="https://browsers.example.com"
+      value={url}
+      onChange={(e) => setUrl(e.target.value)}
+      disabled={disabled || isValidating}
+      className={cn('bg-background', rows && 'h-8 w-full md:w-[340px]')}
+    />
+  )
+  const apiKeyInput = (
+    <Input
+      id="tabtender-api-key"
+      type="password"
+      autoComplete="off"
+      placeholder={hasSavedCredentials ? '••••••••••••••••' : 'tt_...'}
+      value={apiKey}
+      onChange={(e) => setApiKey(e.target.value)}
+      disabled={disabled || isValidating}
+      className={cn('bg-background', rows && 'h-8 w-full md:w-[340px]')}
+    />
+  )
+
+  return (
+    <div className="space-y-4">
+      {hasSavedCredentials && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
+            {credentialSource === 'env' ? 'Using environment variables' : 'Server connected'}
+          </span>
+        </div>
+      )}
+
+      {rows ? (
+        <>
+          <FieldRow
+            name="Server URL"
+            subtitle="Where this app reaches your Tab Tender server, e.g. its tunnel URL"
+            htmlFor="tabtender-url"
+            stack
+            right={urlInput}
+          />
+          <FieldRow
+            name="API Key"
+            subtitle="From Tab Tender's Settings → API Key"
+            htmlFor="tabtender-api-key"
+            stack
+            right={apiKeyInput}
+          />
+        </>
+      ) : (
+        <>
+          <div className="space-y-2">
+            <Label htmlFor="tabtender-url" className="font-normal text-muted-foreground">Tab Tender Server URL</Label>
+            {urlInput}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="tabtender-api-key" className="font-normal text-muted-foreground">Tab Tender API Key</Label>
+            {apiKeyInput}
+          </div>
+        </>
+      )}
+
+      <div className="flex justify-end gap-2">
+        {hasInput && (
+          <Button size="sm" onClick={validateAndSave} disabled={isValidating}>
+            {isValidating ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Checking...
+              </>
+            ) : (
+              'Connect'
+            )}
+          </Button>
+        )}
+        {hasSavedCredentials && credentialSource !== 'env' && (
+          <Button size="sm" variant="outline" onClick={remove} disabled={isValidating}>
+            Remove Server
+          </Button>
+        )}
+      </div>
+
+      {validationResult && !validationResult.valid && (
+        <RequestError message={validationResult.error || 'Could not connect to the server'} />
+      )}
+      {validationResult?.valid && (
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          Server connected
         </p>
       )}
     </div>

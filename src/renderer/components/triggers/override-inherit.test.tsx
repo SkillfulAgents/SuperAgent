@@ -56,9 +56,7 @@ function cronCard(onUpdate = vi.fn()) {
   return (
     <RuntimeOptionsCard
       agentSlug="a"
-      model={null}
-      effort={null}
-      speed={null}
+      stored={{ llmProviderId: null, model: null, effort: null, speed: null }}
       onUpdate={onUpdate}
     />
   )
@@ -166,9 +164,7 @@ describe('override-card inherit', () => {
     render(
       <RuntimeOptionsCard
         agentSlug="a"
-        model="claude-opus-4-8"
-        effort="high"
-        speed={null}
+        stored={{ llmProviderId: null, model: 'claude-opus-4-8', effort: 'high', speed: null }}
         onUpdate={onUpdate}
       />,
     )

@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { noteTurnStarted } from '@renderer/lib/session-turns'
 import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
@@ -538,6 +539,9 @@ function getOrCreateEventSource(
       const current = streamStates.get(sessionId)
 
       if (data.type === 'connected') {
+        // A snapshot stands in for frames this viewer never got, and a turn may have started
+        // among them. Counting it as one can split an edit highlight, but never merges two turns.
+        noteTurnStarted(sessionId)
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
@@ -633,7 +637,11 @@ function getOrCreateEventSource(
         // opting it out is an explicit line in the turn-scoped group.
         const queuedMidTurn = data.queuedMidTurn === true
         // The thinking stream lives outside StreamState but is turn-scoped too.
-        if (!queuedMidTurn) sessionThinking.delete(sessionId)
+        // A message queued mid-turn waits for its own turn; so does the next edit highlight.
+        if (!queuedMidTurn) {
+          sessionThinking.delete(sessionId)
+          noteTurnStarted(sessionId)
+        }
         streamStates.set(sessionId, {
           ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
@@ -1669,6 +1677,7 @@ export function clearBrowserActive(sessionId: string): void {
 }
 
 const EMPTY_SLASH_COMMANDS: SlashCommandInfo[] = []
+const EMPTY_READY_TOOL_USES: StreamState['streamingToolUses'] = []
 
 export interface MessageStreamValue extends StreamState {
   slashCommands: SlashCommandInfo[]
@@ -1677,6 +1686,14 @@ export interface MessageStreamValue extends StreamState {
   workflows: WorkflowRunLive[]
   isThinking: boolean
   thinkingBlocks: ThinkingBlock[]
+  /**
+   * The entries of `streamingToolUses` whose input is complete (`ready`).
+   * Derived on read, so it follows every path that clears or replaces
+   * `streamingToolUses`. Its identity changes only when that set changes, not
+   * on each tool-input delta: select it instead of `streamingToolUses` when
+   * partial input is of no interest.
+   */
+  readyStreamingToolUses: StreamState['streamingToolUses']
 }
 
 export type MessageStreamField = keyof MessageStreamValue
@@ -1689,6 +1706,7 @@ const EMPTY_MESSAGE_STREAM_VALUE: MessageStreamValue = {
   workflows: EMPTY_WORKFLOWS,
   isThinking: EMPTY_THINKING.isThinking,
   thinkingBlocks: EMPTY_THINKING.blocks,
+  readyStreamingToolUses: EMPTY_READY_TOOL_USES,
 }
 
 // The global sets are mutated in place, so reuse the previous snapshot when the contents match.
@@ -1704,10 +1722,32 @@ function snapshotIdSet(prev: ReadonlySet<string>, current: Set<string> | undefin
   return new Set(current)
 }
 
+// The reducer keeps a tool's object when another tool changes and replaces it
+// when its own input or `ready` flag does, so comparing entries by reference
+// is exact: the previous snapshot is reused until a tool becomes ready, a
+// ready tool is replaced, or the list is cleared.
+function snapshotReadyToolUses(
+  prev: StreamState['streamingToolUses'],
+  tools: StreamState['streamingToolUses'],
+): StreamState['streamingToolUses'] {
+  let count = 0
+  let identical = true
+  for (const tool of tools) {
+    if (!tool.ready) continue
+    if (prev[count] !== tool) identical = false
+    count++
+  }
+  if (identical && count === prev.length) return prev
+  if (count === 0) return EMPTY_READY_TOOL_USES
+  return tools.filter((tool) => tool.ready)
+}
+
 function readMessageStream(sessionId: string, prev: MessageStreamValue): MessageStreamValue {
   const thinking = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+  const state = streamStates.get(sessionId) ?? prev
   return {
-    ...(streamStates.get(sessionId) ?? prev),
+    ...state,
+    readyStreamingToolUses: snapshotReadyToolUses(prev.readyStreamingToolUses, state.streamingToolUses),
     slashCommands: sessionSlashCommands.get(sessionId) ?? EMPTY_SLASH_COMMANDS,
     autoApprovedScriptRunIds: snapshotIdSet(prev.autoApprovedScriptRunIds, sessionAutoApprovedScriptRunIds.get(sessionId)),
     autoApprovedComputerUseIds: snapshotIdSet(prev.autoApprovedComputerUseIds, sessionAutoApprovedComputerUseIds.get(sessionId)),

@@ -60,9 +60,14 @@ export interface PreparedScreenshot {
   unalignedReason?: string
 }
 
-/** The longest edge and the pixel count the model takes without shrinking an image itself. */
+/** The longest edge the model takes without shrinking an image itself. */
 export const MAX_IMAGE_EDGE = 1568
-export const MAX_IMAGE_PIXELS = 1_200_000
+/**
+ * XGA's pixel count (1024x768), the size Anthropic recommends for computer
+ * use. Below the model's own 1.15 MP limit, because a desktop PNG is about
+ * twice the bytes of a browser one and the request has a byte limit.
+ */
+export const MAX_IMAGE_PIXELS = 1024 * 768
 
 /** The size an image is shown at: shrunk, keeping its shape, to fit both limits. */
 export function fitImageSize(width: number, height: number): { width: number; height: number } {
@@ -89,7 +94,13 @@ interface Rgba {
   data: Uint8Array
 }
 
-/** A decoded capture, and a way to cut a region out of it and shrink that to a PNG. */
+/**
+ * A decoded capture, and a way to cut a region out of it and shrink that to a PNG.
+ *
+ * `data` may be a getter that makes the pixels when first asked: a capture of
+ * a display, or one taken on Windows, is placed by its size alone, and a
+ * Retina display's pixels are a 24 MB copy. It is read at most once a capture.
+ */
 export interface DecodedCapture extends Rgba {
   shrink(region: PixelRect, width: number, height: number): Buffer
 }
@@ -130,23 +141,57 @@ const OPAQUE = 250
  */
 const SCALE_TOLERANCE = 0.005
 
-function opaqueBounds(image: Rgba): PixelRect | null {
+/**
+ * The smallest rectangle holding every opaque pixel, or null when there is
+ * none.
+ *
+ * Read from the outside in: rows from the top and from the bottom until one
+ * has an opaque pixel, then each row between from its left and its right
+ * ends, no further in than the bounds found so far. A window capture is
+ * opaque nearly everywhere, so that is its shadow and little else, not all
+ * ten million pixels of it.
+ */
+export function opaqueBounds(image: Rgba): PixelRect | null {
   const { width, height, data } = image
-  let minX = width
-  let minY = height
-  let maxX = -1
-  let maxY = -1
-  for (let y = 0; y < height; y++) {
-    const row = y * width * 4
-    for (let x = 0; x < width; x++) {
-      if (data[row + x * 4 + 3] < OPAQUE) continue
-      if (x < minX) minX = x
-      if (x > maxX) maxX = x
-      if (y < minY) minY = y
-      if (y > maxY) maxY = y
-    }
+  /** The first opaque pixel of row `y` at or after `from` and before `to`, or -1. */
+  const firstOpaque = (y: number, from: number, to: number): number => {
+    const alpha = y * width * 4 + 3
+    for (let x = from; x < to; x++) if (data[alpha + x * 4] >= OPAQUE) return x
+    return -1
   }
-  return maxX < 0 ? null : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+  /** The last opaque pixel of row `y` at or before `from` and after `to`, or -1. */
+  const lastOpaque = (y: number, from: number, to: number): number => {
+    const alpha = y * width * 4 + 3
+    for (let x = from; x > to; x--) if (data[alpha + x * 4] >= OPAQUE) return x
+    return -1
+  }
+
+  let minY = 0
+  let minX = -1
+  for (; minY < height; minY++) {
+    minX = firstOpaque(minY, 0, width)
+    if (minX >= 0) break
+  }
+  if (minX < 0) return null
+  let maxX = lastOpaque(minY, width - 1, minX - 1)
+
+  let maxY = height - 1
+  for (; maxY > minY; maxY--) {
+    const first = firstOpaque(maxY, 0, width)
+    if (first < 0) continue
+    if (first < minX) minX = first
+    const last = lastOpaque(maxY, width - 1, maxX)
+    if (last > maxX) maxX = last
+    break
+  }
+
+  for (let y = minY + 1; y < maxY && (minX > 0 || maxX < width - 1); y++) {
+    const first = firstOpaque(y, 0, minX)
+    if (first >= 0) minX = first
+    const last = lastOpaque(y, width - 1, maxX)
+    if (last >= 0) maxX = last
+  }
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
 }
 
 function sameScale(a: number, b: number): boolean {
@@ -163,11 +208,18 @@ function sameScale(a: number, b: number): boolean {
  * smaller of the two pixels-per-point is the true scale, and the window sits
  * in one corner of the opaque area: the corner whose edges are real edges,
  * opaque just inside and shadow just outside.
+ *
+ * `opaque` is the image's `opaqueBounds`, for a caller that tries several
+ * windows against one capture and has them already: they depend on the image
+ * alone, and finding them is the costly part.
  */
-export function locateWindowFrame(image: Rgba, bounds: ScreenArea, pixelsPerPoint?: number): PixelRect | null {
-  if (bounds.width <= 0 || bounds.height <= 0) return null
-  const opaque = opaqueBounds(image)
-  if (!opaque) return null
+export function locateWindowFrame(
+  image: Rgba,
+  bounds: ScreenArea,
+  pixelsPerPoint?: number,
+  opaque: PixelRect | null = opaqueBounds(image),
+): PixelRect | null {
+  if (bounds.width <= 0 || bounds.height <= 0 || !opaque) return null
   const scaleX = opaque.width / bounds.width
   const scaleY = opaque.height / bounds.height
   // With the capture's own scale known, a window of another size cannot pass
@@ -371,7 +423,7 @@ export function prepareScreenshot(
   /** The OS that took the capture: a Windows window capture has no shadow and its bounds take in borders it does not show. */
   platform: NodeJS.Platform = process.platform,
 ): PreparedScreenshot {
-  const image = nativeDecoder?.(capture) ?? decodeInJavaScript(capture)
+  let image = nativeDecoder?.(capture) ?? decodeInJavaScript(capture)
   let region: PixelRect = { x: 0, y: 0, width: image.width, height: image.height }
   let frame: ScreenshotFrame | null = null
   let unalignedReason = unknownTargetReason
@@ -385,12 +437,29 @@ export function prepareScreenshot(
   } else if (target?.kind === 'window') {
     type Fit = { window: WindowCandidate; rect: PixelRect; area: ScreenArea }
     const whole: PixelRect = { x: 0, y: 0, width: image.width, height: image.height }
+    // The capture's pixels and where the opaque ones are: read when the first
+    // window is tried against them, and kept for the rest.
+    let pixels: { image: Rgba; opaque: PixelRect | null } | undefined
+    const readPixels = () => {
+      if (pixels) return pixels
+      let data = image.data
+      // Not four bytes a pixel: the native decoder's pixels are not what is
+      // read here, so the capture is left to the JavaScript decoder.
+      if (data.length !== image.width * image.height * 4) {
+        image = decodeInJavaScript(capture)
+        data = image.data
+      }
+      const read: Rgba = { width: image.width, height: image.height, data }
+      pixels = { image: read, opaque: opaqueBounds(read) }
+      return pixels
+    }
     const fit = (window: WindowCandidate): Fit | null => {
       if (platform === 'win32') {
         const area = locateWindowsFrame(image, window.bounds, pixelsPerPoint)
         return area && { window, rect: whole, area }
       }
-      const rect = locateWindowFrame(image, window.bounds, pixelsPerPoint)
+      const { image: read, opaque } = readPixels()
+      const rect = locateWindowFrame(read, window.bounds, pixelsPerPoint, opaque)
       return rect && { window, rect, area: window.bounds }
     }
     let fits = target.candidates.map(fit).filter((entry): entry is Fit => entry !== null)

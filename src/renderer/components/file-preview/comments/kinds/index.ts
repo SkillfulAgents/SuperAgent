@@ -31,7 +31,10 @@ export type SurfaceOf<K extends AnchorKind> = Specs[K] extends AnchorKindSpec<An
 /** Where a comment points in its file, and on which part of it. */
 export type CommentAnchor = AnchorOf<AnchorKind> & { part?: Part }
 
-/** What a viewer offers to comment on: each kind's piece, under the kind's name, and the part it shows. */
-export type CommentSurface = { [K in AnchorKind]?: SurfaceOf<K> } & { part?: Part }
+/**
+ * What a viewer offers to comment on: each kind's piece, under the kind's name, and the part it shows. `null` turns off
+ * a kind that is on by default, as `file: null` does for a viewer that shows only part of its file.
+ */
+export type CommentSurface = { [K in AnchorKind]?: SurfaceOf<K> | null } & { part?: Part }
 
 export type { CellRef } from './cell'

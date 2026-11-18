@@ -212,6 +212,12 @@ test.describe('Settings Page', () => {
       await expect(steel).toBeVisible()
       await steel.getByRole('radio').click()
       await expect(page.locator('#steel-api-key')).toBeVisible()
+      // Tab Tender needs a server URL and a key.
+      const tabtender = page.locator('[data-testid="browser-host-card-tabtender"]')
+      await expect(tabtender).toBeVisible()
+      await tabtender.getByRole('radio').click()
+      await expect(page.locator('#tabtender-url')).toBeVisible()
+      await expect(page.locator('#tabtender-api-key')).toBeVisible()
     } finally {
       await page.request.put('/api/settings', { data: { app: { hostBrowserProvider: before } } })
     }

@@ -1,5 +1,6 @@
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -265,6 +266,7 @@ describe('agent-cleanup-service', () => {
       await cleanupAgentData(AGENT_SLUG)
 
       expect(testDb.select().from(schema.proxyRules).all().map((r) => r.id)).toEqual(['rule-shared'])
+      await backgroundSettled()
       const audit = testDb.select().from(schema.auditLog).all().filter((row) => row.object === 'proxy_rule')
       expect(audit).toHaveLength(1)
       expect(audit[0]).toMatchObject({ action: 'deleted', objectId: 'acct-1' })

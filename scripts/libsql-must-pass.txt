@@ -5,6 +5,7 @@ src/shared/lib/db/batch.test.ts
 src/shared/lib/db/migrations/bundle.test.ts
 src/shared/lib/db/migrations/agent-avatars.test.ts
 src/shared/lib/db/migrations/user-ownership-fks.test.ts
+src/shared/lib/db/migrations/query-indexes.test.ts
 src/shared/lib/db/data-migrations/index.test.ts
 src/shared/lib/db/data-migrations/0003-import-llm-connections.test.ts
 src/shared/lib/db/data-migrations/0002-global-model-pricing.test.ts
@@ -18,7 +19,10 @@ src/api/routes/llm-connections.test.ts
 src/api/routes/llm-runtime.test.ts
 src/shared/lib/notifications/push/apns-device-service.test.ts
 src/shared/lib/notifications/push/push-subscription-service.test.ts
+src/shared/lib/notifications/channels/push-recipients.integration.test.ts
 src/shared/lib/agent-actor/agent-catalog.test.ts
+src/api/middleware/auth.agent-role.integration.test.ts
+src/api/middleware/is-agent.integration.test.ts
 src/shared/lib/services/user-settings-service.test.ts
 src/shared/lib/services/chat-integration-access-service.test.ts
 src/shared/lib/services/agent-integration-service.test.ts
@@ -63,6 +67,7 @@ src/shared/lib/services/mount-service.atomic.test.ts
 src/shared/lib/services/volume-service.test.ts
 src/shared/lib/db/data-migrations/0006-import-volume-definitions.test.ts
 src/api/routes/volumes.test.ts
+src/api/routes/volumes.access.integration.test.ts
 src/api/routes/volume-definitions.test.ts
 src/shared/lib/volumes/volumes.e2e.test.ts
 src/api/routes/dropbox-volumes.test.ts
@@ -86,6 +91,7 @@ src/shared/lib/auth/oidc-issuer-policy.integration.test.ts
 src/shared/lib/auth/oidc-discovery-timeout.integration.test.ts
 src/shared/lib/auth/user-deletion.integration.test.ts
 src/shared/lib/auth/session-user-join.integration.test.ts
+src/shared/lib/auth/auth-inputs.integration.test.ts
 src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts
@@ -125,3 +131,7 @@ src/shared/lib/services/session-service.listing-cost.test.ts
 src/shared/lib/services/session-service.lifecycle.test.ts
 src/shared/lib/db/data-migrations/0010-import-session-metadata.test.ts
 src/shared/lib/services/session-deletion.test.ts
+src/shared/lib/config/settings-request-memo.test.ts
+src/shared/lib/services/audit-log-service.test.ts
+src/shared/lib/db/migrations/todos-connection-fk.test.ts
+src/shared/lib/services/message-author-annotation-service.test.ts

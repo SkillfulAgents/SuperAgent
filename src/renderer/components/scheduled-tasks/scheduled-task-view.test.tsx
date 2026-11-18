@@ -111,6 +111,7 @@ function createTask(overrides: Partial<ApiScheduledTask> = {}): ApiScheduledTask
     lastSessionId: null,
     createdBySessionId: null,
     timezone: 'UTC',
+    llmProviderId: null,
     model: null,
     effort: null,
     speed: null,

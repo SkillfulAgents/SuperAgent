@@ -1,3 +1,4 @@
+import { background } from '@shared/lib/background'
 import { db } from '@shared/lib/db'
 import { auditLog, user, type AuditLogEntry } from '@shared/lib/db/schema'
 import { desc, and, eq, count, isNotNull, inArray, type SQL } from 'drizzle-orm'
@@ -72,12 +73,36 @@ export async function logAuditEventOrThrow(params: LogAuditEventParams): Promise
   })
 }
 
-export async function logAuditEvent(params: LogAuditEventParams): Promise<void> {
+/**
+ * Write an audit event, best effort, and resolve once the row is stored (or the
+ * write has failed and been logged).
+ *
+ * Only for a caller that needs the row itself: one that reads the audit log
+ * back to decide something (the Browser Vault counts its `used` rows before it
+ * fills a password again), or one whose result is a credential (a new session).
+ * Everything else uses logAuditEvent(), which does not hold the response.
+ */
+export async function logAuditEventAndWait(params: LogAuditEventParams): Promise<void> {
   try {
     await logAuditEventOrThrow(params)
   } catch (error) {
     console.error('[audit] Failed to write audit log:', error)
   }
+}
+
+/**
+ * Record an audit event without waiting for it: the write is started here, in
+ * call order and with this moment as its time, and finishes in the background
+ * (on Workers, under `waitUntil`). A failure is logged and never reaches the
+ * caller, as before, so nothing was gained by holding the response for it.
+ *
+ * It still returns a Promise, already resolved, so `await logAuditEvent(...)`
+ * at a call site keeps working; the row may not be there yet when it resolves.
+ * A test that reads the audit log afterwards waits with `backgroundSettled()`.
+ */
+export function logAuditEvent(params: LogAuditEventParams): Promise<void> {
+  background(logAuditEventAndWait(params), { name: 'audit.log' })
+  return Promise.resolve()
 }
 
 export interface AuditLogQuery {

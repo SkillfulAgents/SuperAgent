@@ -10,7 +10,9 @@
 import * as Sentry from '@sentry/node'
 import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 import { ERROR_REPORTING_INGEST_URL } from './config'
-import { collectEnvironmentData } from './environment'
+import { isTelegramTemporary } from '../chat-integrations/telegram-error'
+import { collectEnvironmentData, probeEnvironmentData } from './environment'
+import { background } from '../background'
 import { APP_VERSION } from '../config/version'
 
 function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
@@ -91,7 +93,7 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
       }),
     ],
     // Consent is read fresh for every event, never from an earlier read.
-    async beforeSend(event) {
+    async beforeSend(event, hint) {
       try {
         // Loaded here, not at the top: error reporting is part of the
         // database's boot graph, and settings reads go through the database.
@@ -106,6 +108,8 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
       }
       // A throw here makes the SDK send its own report, unscrubbed; dropping the event is safe.
       try {
+        // Telegram being busy or unreachable is reported as a warning.
+        if (isTelegramTemporary(hint.originalException)) event.level = 'warning'
         return redactBotTokensInEvent(scrubCredentialRequestBody(event))
       } catch {
         return null
@@ -122,10 +126,16 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
     },
   })
 
-  // Collect and attach environment fingerprint data
+  // Attach the environment fingerprint: what the process knows itself now, so
+  // a report from an early failure has it, and what another program has to
+  // answer once it does. Nothing here spawns synchronously.
   try {
     const envData = collectEnvironmentData()
     Sentry.setContext('environment_info', envData)
+    background(async () => {
+      const probed = await probeEnvironmentData()
+      if (Object.keys(probed).length > 0) Sentry.setContext('environment_info', { ...envData, ...probed })
+    }, { name: 'error-reporting.environment-probe' })
   } catch {
     // Non-critical
   }

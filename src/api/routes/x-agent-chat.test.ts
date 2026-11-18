@@ -242,6 +242,31 @@ describe('x-agent chat route', () => {
     expect(mockAddIntegration).toHaveBeenCalledExactlyOnceWith('created-imessage')
   })
 
+  it("records the agent's first owner as the creator of an integration the agent adds", async () => {
+    vi.stubEnv('AUTH_MODE', 'true')
+    try {
+      for (const [id, email] of [['user-dana', 'dana@example.com'], ['user-lee', 'lee@example.com']]) {
+        testSqlite.prepare('INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 1, 0, 0)').run(id, id, email)
+      }
+      const acl = testSqlite.prepare('INSERT INTO agent_acl (id, user_id, agent_slug, role, created_at) VALUES (?, ?, ?, ?, ?)')
+      acl.run('acl-2', 'user-lee', 'agent-one', 'owner', 2000)
+      acl.run('acl-1', 'user-dana', 'agent-one', 'owner', 1000)
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ token: 'issued-token' })))
+      mockCreateChatIntegration.mockResolvedValue('created-imessage')
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-imessage', provider: 'imessage', status: 'active' }))
+
+      const response = await app.request('/api/x-agent/chat/add', {
+        method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'imessage', config: { phoneNumber: '+15555550100', code: '123456' } }),
+      })
+
+      expect(response.status).toBe(201)
+      expect(mockCreateChatIntegration).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentSlug: 'agent-one', createdByUserId: 'user-dana' }))
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('persists a provider-prepared disconnected status without starting the runtime', async () => {
     agentIntegrationRegistry.register({
       definition: { provider: 'test-agent-setup', name: 'Test', family: 'chat', managementAccess: 'user', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },

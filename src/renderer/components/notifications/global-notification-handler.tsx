@@ -2,6 +2,8 @@ import { readPlatformNotifications } from '@renderer/lib/platform-notification-r
 import { notificationChangeSchema } from '@shared/lib/notifications/notification-change-schema'
 import { readNotifications, noteNotificationChange, invalidateNotificationCaches, notificationClientId } from '@renderer/lib/notification-read-cache'
 import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
+import { LLM_CONNECTIONS_CHANGED_EVENT } from '@shared/lib/llm-provider/connection-events'
+import { invalidateModelCatalog } from '@renderer/lib/model-catalog-query'
 import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import type { ApiAgent } from '@shared/lib/types/api'
 /**
@@ -332,7 +334,8 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
             }
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-            invalidateNotificationCaches(queryClient)
+            // An agent this tab does not list yet (it was just shared) refreshes everything.
+            invalidateNotificationCaches(queryClient, change.agentSlug)
             break
           }
 
@@ -464,6 +467,7 @@ export function GlobalNotificationHandler() {
                 agentSlug: agentSlug ?? baseContext.agentSlug,
                 sessionId: notificationSessionId ?? baseContext.sessionId,
                 notificationId: data.notificationId ?? baseContext.notificationId,
+                messageUuid: data.messageUuid,
               }
               // Web Notifications have no context round-trip — wire the click
               // straight to the platform detail route (Electron routes the
@@ -524,7 +528,8 @@ export function GlobalNotificationHandler() {
             const lists = (raise || data.type === 'session_input_provided') && eventAgentSlug && eventSessionId
               ? sessionListMembership(queryClient, eventAgentSlug, eventSessionId)
               : []
-            const listed = lists.some((list) => list.full && list.holds)
+            // The full list, or the sidebar's recent slice where that is what the tab holds.
+            const listed = lists.some((list) => list.rows && list.holds)
             const sessionsKey = eventAgentSlug ? ['sessions', eventAgentSlug] : ['sessions']
             if (listed) {
               // Only the server can add the session to a list that lacks it,
@@ -760,6 +765,15 @@ export function GlobalNotificationHandler() {
 
           case 'webhook_relay_changed':
             queryClient.setQueryData(WEBHOOK_RELAY_QUERY_KEY, data.status)
+            break
+
+          case LLM_CONNECTIONS_CHANGED_EVENT:
+            // The server changed a saved connection by itself (it needs a
+            // reconnect, or a local server's models changed): every list of
+            // connections, and the model catalog, which carries them too.
+            queryClient.invalidateQueries({ queryKey: ['settings', 'llm-connections'] })
+            queryClient.invalidateQueries({ queryKey: ['settings', 'models'] })
+            void invalidateModelCatalog(queryClient)
             break
         }
       } catch {

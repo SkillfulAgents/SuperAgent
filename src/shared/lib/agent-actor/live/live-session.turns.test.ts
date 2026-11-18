@@ -111,6 +111,16 @@ describe('replayable turn outcomes', () => {
   const idle = () => emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
   const text = (value: string) => emit({ type: 'assistant', message: { id: 'answer', role: 'assistant', content: [{ type: 'text', text: value }] } })
 
+  it('names the sends each turn answered, and nothing when the runtime does not say', () => {
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {}, user_message_uuids: ['send-a', 'send-b'] })
+    sessions().markActive(SESSION_ID)
+    result()
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'resume', num_turns: 1, usage: {}, user_message_uuids: ['send-c'] })
+    expect(sseEvents.filter(e => e.type === 'turn_output_complete').map(e => e.answered)).toEqual([['send-a', 'send-b'], undefined, undefined])
+  })
+
   it('retains streamed text when no complete assistant frame was delivered', () => {
     sessions().markActive(SESSION_ID)
     emit({ type: 'stream_event', event: { type: 'message_start' } })
@@ -1635,5 +1645,25 @@ describe('agent tags', () => {
       text: '@Mike Smith one more thing',
     }])
     expect(completions().at(-1)?.taggedUserIds).toEqual(['u_mike1'])
+  })
+
+  it("points at the message's first frame when the tag is in a later one", async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    // The transcript shows a message of several frames under its first frame's uuid.
+    mockClient.emit({ type: 'assistant', uuid: 'think-entry', message: { id: 'msg-think', content: [{ type: 'thinking', thinking: 'Who decides?' }] } })
+    mockClient.emit({ type: 'assistant', uuid: 'text-entry', message: { id: 'msg-think', content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] } })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions').map((n) => n.messageUuid)).toEqual(['think-entry'])
+  })
+
+  it('points at the frame itself when the message carries no id', async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    mockClient.emit({ type: 'assistant', uuid: 'lone-entry', message: { content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] } })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions').map((n) => n.messageUuid)).toEqual(['lone-entry'])
   })
 })

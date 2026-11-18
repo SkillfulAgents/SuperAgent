@@ -398,6 +398,153 @@ describe('useMessageStream', () => {
     expect(selectedRenders).toBe(selectedBefore + 1)
   })
 
+  describe('readyStreamingToolUses', () => {
+    // The field list usePendingRequests selects, in the parent of the session column.
+    const PENDING_REQUEST_FIELDS = ['isActive', 'readyStreamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'] as const
+    const DELTAS = 25
+
+    async function setup() {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const counts = { ready: 0, perDelta: 0 }
+      const ready = renderHook(() => {
+        counts.ready++
+        return useMessageStream('session-1', 'agent-1', PENDING_REQUEST_FIELDS)
+      }, { wrapper })
+      // The selection usePendingRequests made before: one render per delta.
+      const perDelta = renderHook(() => {
+        counts.perDelta++
+        return useMessageStream('session-1', 'agent-1', ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
+      }, { wrapper })
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+        es.simulateMessage({ type: 'session_active' })
+        es.simulateMessage({ type: 'stream_start' })
+      })
+      return { ready, perDelta, counts, es }
+    }
+
+    function streamInput(es: MockEventSource, toolId: string, toolName: string, deltas: number) {
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_start', toolId, toolName, partialInput: '' })
+      })
+      let partialInput = ''
+      for (let i = 0; i < deltas; i++) {
+        partialInput += 'x'
+        act(() => {
+          es.simulateMessage({ type: 'tool_use_streaming', toolId, toolName, partialInput })
+        })
+      }
+      return partialInput
+    }
+
+    it('does not re-render its selector on tool-input deltas', async () => {
+      const { ready, perDelta, counts, es } = await setup()
+      const readyBefore = counts.ready
+      const perDeltaBefore = counts.perDelta
+      const identityBefore = ready.result.current.readyStreamingToolUses
+
+      streamInput(es, 'tc-1', 'AskUserQuestion', DELTAS)
+
+      expect(perDelta.result.current.streamingToolUses).toHaveLength(1)
+      expect(counts.perDelta - perDeltaBefore).toBe(DELTAS + 1)
+      expect(counts.ready).toBe(readyBefore)
+      expect(ready.result.current.readyStreamingToolUses).toBe(identityBefore)
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it('updates once on tool_use_ready, with the complete input', async () => {
+      const { ready, counts, es } = await setup()
+      const partialInput = streamInput(es, 'tc-1', 'AskUserQuestion', 3)
+      const readyBefore = counts.ready
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+
+      expect(counts.ready).toBe(readyBefore + 1)
+      expect(ready.result.current.readyStreamingToolUses).toEqual([
+        { id: 'tc-1', name: 'AskUserQuestion', partialInput, ready: true },
+      ])
+    })
+
+    it('keeps its identity while another tool streams, and lists both once that one is ready', async () => {
+      const { ready, counts, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 2)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      const readyBefore = counts.ready
+      const identityBefore = ready.result.current.readyStreamingToolUses
+
+      streamInput(es, 'tc-2', 'Bash', DELTAS)
+      expect(counts.ready).toBe(readyBefore)
+      expect(ready.result.current.readyStreamingToolUses).toBe(identityBefore)
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-2', toolName: 'Bash' })
+      })
+      expect(counts.ready).toBe(readyBefore + 1)
+      expect(ready.result.current.readyStreamingToolUses.map((tool) => tool.id)).toEqual(['tc-1', 'tc-2'])
+    })
+
+    it('drops a ready tool whose input streams again', async () => {
+      const { ready, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toHaveLength(1)
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_streaming', toolId: 'tc-1', toolName: 'AskUserQuestion', partialInput: '{}' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it.each([
+      ['session_idle', (es: MockEventSource) => es.simulateMessage({ type: 'session_idle' })],
+      ['session_error', (es: MockEventSource) => es.simulateMessage({ type: 'session_error', error: 'boom' })],
+      ['stream_start', (es: MockEventSource) => es.simulateMessage({ type: 'stream_start' })],
+      ['a reconnect', (es: MockEventSource) => es.simulateMessage({ type: 'connected', isActive: true })],
+      ['a connection error', (es: MockEventSource) => es.simulateError()],
+    ])('is emptied by %s, like streamingToolUses', async (_name, clear) => {
+      const { ready, perDelta, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toHaveLength(1)
+
+      act(() => {
+        clear(es)
+      })
+      expect(perDelta.result.current.streamingToolUses).toEqual([])
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it('is empty for a caller that switches to another session', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result, rerender } = renderHook(
+        ({ sessionId }: { sessionId: string }) => useMessageStream(sessionId, 'agent-1', PENDING_REQUEST_FIELDS),
+        { wrapper: createWrapper(), initialProps: { sessionId: 'session-1' } },
+      )
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(result.current.readyStreamingToolUses).toHaveLength(1)
+
+      rerender({ sessionId: 'session-2' })
+      expect(result.current.readyStreamingToolUses).toEqual([])
+    })
+  })
+
   it('handles session_idle event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -3989,4 +4136,21 @@ describe('typing leases', () => {
       vi.useRealTimers()
     }
   })
+
+  it('counts a turn when one starts or the stream takes a snapshot, not when a message is queued mid-turn', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { useSessionTurn } = await import('@renderer/lib/session-turns')
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    const { result } = renderHook(() => useSessionTurn('session-1'))
+    const es = MockEventSource.instances[0]
+    const start = result.current
+
+    act(() => es.simulateMessage({ type: 'session_active', queuedMidTurn: true }))
+    expect(result.current).toBe(start)
+    act(() => es.simulateMessage({ type: 'session_active' }))
+    expect(result.current).toBe(start + 1)
+    act(() => es.simulateMessage({ type: 'connected', isActive: true }))
+    expect(result.current).toBe(start + 2)
+  })
+
 })

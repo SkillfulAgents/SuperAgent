@@ -323,7 +323,7 @@ describe('TelegramConnector through the webhook', () => {
     const instance = await connected()
 
     expect(instance.activeTransport()).toBe('direct')
-    expect(vi.mocked(captureException)).toHaveBeenCalled()
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.any(HttpError), expect.anything())
     expect(inspect([error.mock.calls, vi.mocked(captureException).mock.calls], { depth: 10 })).not.toContain(BOT_TOKEN)
     error.mockRestore()
     await instance.disconnect()

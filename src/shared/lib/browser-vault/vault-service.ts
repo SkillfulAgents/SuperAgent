@@ -6,7 +6,7 @@ import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { agentBrowserAccounts, agents, auditLog, browserAccounts, type BrowserAccount } from '@shared/lib/db/schema'
 import { KeyUnavailableError } from '@shared/lib/keys/key-manager'
-import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { logAuditEvent, logAuditEventAndWait } from '@shared/lib/services/audit-log-service'
 import { providerOf } from './providers'
 import { registrableDomain, usernameKey } from './site'
 import { openJson, sealJson, VaultSealError } from './vault-crypto'
@@ -227,7 +227,9 @@ export async function recordAccountUse(input: {
       .set({ lastUsedAt: now })
       .where(and(eq(agentBrowserAccounts.agentSlug, input.agentSlug), eq(agentBrowserAccounts.accountId, input.accountId))),
   ])
-  await logAuditEvent({
+  // Waited for: the next fill counts these rows (recentPasswordFills), so the
+  // row is there before this resolves.
+  await logAuditEventAndWait({
     userId: input.userId ?? null,
     object: 'browser_account',
     objectId: input.accountId,

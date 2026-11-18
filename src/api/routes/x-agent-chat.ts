@@ -6,7 +6,7 @@ import { emailThreadRoute } from '@shared/lib/email-integrations/routing'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { Hono } from 'hono'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import {
   getAgentIntegration,
   createAgentIntegration,
@@ -28,23 +28,13 @@ import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 
 type XAgentChatVariables = { callerSlug: string }
 
 const xAgentChat = new Hono<{ Variables: XAgentChatVariables }>()
 
-xAgentChat.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const callerSlug = await validateProxyToken(token)
-  if (!callerSlug) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgentChat.use('*', requireAgentCaller)
 
 function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')
@@ -94,7 +84,10 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug), true)
+    // Setup done later in the creator's name (a webhook endpoint) needs a member of the org.
+    // Until a session can name who asked, the agent's first owner is the creator.
+    const createdByUserId = await getAgentOwnerUserId(callerSlug) ?? undefined
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug, createdByUserId), true)
 
     let id: string
     try {
@@ -104,6 +97,7 @@ xAgentChat.post('/add', async (c) => {
         name,
         config: prepared.config,
         status: prepared.status,
+        ...(createdByUserId ? { createdByUserId } : {}),
       })
     } catch (err) {
       await prepared.release()

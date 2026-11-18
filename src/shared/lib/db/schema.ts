@@ -63,6 +63,22 @@ export const llmConnections = sqliteTable('llm_connections', {
 }))
 
 /**
+ * The columns of stored runtime options (`StoredRuntimeOptions` in
+ * `@shared/lib/container/runtime-options`): a pick that overrides the agent's
+ * defaults, each null where nothing was picked. A table that keeps one spreads
+ * this in, so a new knob reaches them all. Deleting a connection drops the
+ * pick of it back to the default.
+ */
+export function runtimeOptionsColumns() {
+  return {
+    llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+    model: text('model'),
+    effort: text('effort'),
+    speed: text('speed'),
+  }
+}
+
+/**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
  * this row; the refresh secret is stored only as a SHA-256 hash and deleting
  * the row revokes every session in the device family through the FK below.
@@ -294,7 +310,7 @@ export const agentBrowserAccounts = sqliteTable('agent_browser_accounts', {
 export const browserAccountSessions = sqliteTable('browser_account_sessions', {
   id: text('id').primaryKey(),
   accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
-  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform', 'steel'] }).notNull(),
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform', 'steel', 'tabtender'] }).notNull(),
   bundle: text('bundle').notNull(), // Sealed JSON (vault-crypto, sessionBundleSchema)
   version: integer('version').notNull().default(1), // Bumped on every capture
   capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
@@ -349,10 +365,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   timezone: text('timezone'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -366,6 +379,10 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   pendingWakePerSession: uniqueIndex('scheduled_tasks_pending_wake_unique')
     .on(table.resumeSessionId)
     .where(sql`status = 'pending' AND resume_session_id IS NOT NULL`),
+  // Every per-agent read (the schedule list, Home's pending tasks, automation
+  // history, agent cleanup) names the agent and most name a status. Rows are
+  // never pruned, so without this each of them scans every agent's history.
+  agentStatusIdx: index('scheduled_tasks_agent_slug_status_idx').on(table.agentSlug, table.status),
 }))
 
 // Notifications - user notifications for session events
@@ -394,7 +411,14 @@ export const notifications = sqliteTable('notifications', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
-  agentSlugIsReadIdx: index('notifications_agent_slug_is_read_idx').on(table.agentSlug, table.isRead),
+  // The polled badge and tab counts group a viewer's whole history by type, and
+  // the unread dots read session ids: the columns after (agent_slug, is_read)
+  // let both be answered from the index alone, with no table lookup per row.
+  // Keep the (agent_slug, is_read) prefix; every unread query seeks on it.
+  agentReadTypeIdx: index('notifications_agent_read_type_idx').on(table.agentSlug, table.isRead, table.type, table.recipientUserId, table.sessionId),
+  // The list is "my agents' rows, newest first, 50 at a time": with each
+  // agent's rows in time order the read stops early instead of sorting them all.
+  agentCreatedAtIdx: index('notifications_agent_created_at_idx').on(table.agentSlug, table.createdAt),
   sessionIdIdx: index('notifications_session_id_idx').on(table.sessionId),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
   // One mention row per person per message, so a retried insert is a no-op.
@@ -879,10 +903,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -908,10 +929,8 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'), // Claude model override; null = use default
-  effort: text('effort'), // Effort level override; null = use default
-  speed: text('speed'), // Speed level override; null = use default
+  // Runtime options (override the defaults when set; null = use default)
+  ...runtimeOptionsColumns(),
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
@@ -970,7 +989,10 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
-  integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
+  // Every inbound chat message looks up its chat's session, and archived
+  // sessions pile up under an integration: seek to the one chat's rows. The
+  // integration_id prefix still serves the per-integration reads and the FK cascade.
+  integrationChatIdx: index('chat_integration_sessions_integration_chat_idx').on(table.integrationId, table.externalChatId),
   // A session that starts a turn finds its chat by this.
   sessionIdIdx: index('chat_integration_sessions_session_id_idx').on(table.sessionId),
 }))
@@ -1059,7 +1081,10 @@ export const auditLog = sqliteTable('audit_log', {
   details: text('details'), // JSON
 }, (table) => ({
   createdAtIdx: index('audit_log_created_at_idx').on(table.createdAt),
-  objectIdx: index('audit_log_object_idx').on(table.object),
+  // "This kind of object, newest first" (the audit page's filter) and "this
+  // kind within the last day" (the vault's fill-rate check) both walk it in
+  // order, with no sort and without reading the object's older history.
+  objectCreatedAtIdx: index('audit_log_object_created_at_idx').on(table.object, table.createdAt),
   userIdIdx: index('audit_log_user_id_idx').on(table.userId),
 }))
 
@@ -1088,10 +1113,7 @@ export const todos = sqliteTable('todos', {
   // brief. Never set together with agentSlug: the start assigns the new agent.
   newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
   // What to start it on, where the person picked over the agent's defaults.
-  model: text('model'),
-  llmProviderId: text('llm_provider_id'),
-  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
+  ...runtimeOptionsColumns(),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that

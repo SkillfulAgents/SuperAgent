@@ -58,7 +58,7 @@ describe('getProviderCatalog', () => {
     ])
     expect(defaultsByIcon('platform')).toEqual([
       ['anthropic', 'claude-opus-5-5'],
-      ['openai', 'gpt-6.1-sol'],
+      ['openai', 'gpt-6.2-sol'],
       ['xai', 'grok-4.7'],
       ['gemini', 'gemini-4-carbon'],
       ['kimi', 'kimi-k3'],
@@ -159,6 +159,8 @@ describe('getProviderCatalog', () => {
     ['gpt-6.1-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6.1-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-6.2-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-6.2-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['grok-4.7', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.5', ['low', 'medium', 'high']],
@@ -338,13 +340,27 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 10, outputPerMtok: 50 },
       contextWindow: 1_050_000,
     })
+    // GPT-6.2 has no Flex tier, so slow is not offered.
+    expect(catalog.find((m) => m.id === 'gpt-6.2-sol')).toMatchObject({
+      family: 'gpt-sol',
+      isDefault: true,
+      supportedSpeeds: ['normal', 'fast'],
+      pricing: { inputPerMtok: 2, outputPerMtok: 10, cacheReadPerMtok: 0.1 },
+      contextWindow: 1_050_000,
+    })
+    expect(catalog.find((m) => m.id === 'gpt-6.2-astra')).toMatchObject({
+      family: 'gpt-astra',
+      supportedSpeeds: ['normal', 'fast'],
+      pricing: { inputPerMtok: 8, outputPerMtok: 40, cacheReadPerMtok: 0.4 },
+      contextWindow: 1_050_000,
+    })
     // Each OpenAI tier is its own family, so each bare alias rides its own tier.
     const gptLatest = catalog.filter((m) => m.family?.startsWith('gpt-') && m.isLatest)
     expect(gptLatest.map((m) => [m.family, m.id])).toEqual([
       ['gpt-luna', 'gpt-6-luna'],
       ['gpt-terra', 'gpt-6.1-terra'],
-      ['gpt-sol', 'gpt-6.1-sol'],
-      ['gpt-astra', 'gpt-6-astra'],
+      ['gpt-sol', 'gpt-6.2-sol'],
+      ['gpt-astra', 'gpt-6.2-astra'],
     ])
     // Grok rides the same Responses wire (xai-responses upstream); bare id only.
     expect(catalog.find((m) => m.id === 'grok-4.7')).toMatchObject({
@@ -643,6 +659,8 @@ describe('getModelContextWindow', () => {
     expect(await getModelContextWindow('gpt-6-sol', 'platform')).toBe(1_050_000)
     expect(await getModelContextWindow('gpt-6.1-sol', 'platform')).toBe(1_050_000)
     expect(await getModelContextWindow('gpt-6.1-terra', 'platform')).toBe(1_050_000)
+    expect(await getModelContextWindow('gpt-6.2-sol', 'platform')).toBe(1_050_000)
+    expect(await getModelContextWindow('gpt-6.2-astra', 'platform')).toBe(1_050_000)
     expect(await getModelContextWindow('gpt-6-luna', 'platform')).toBe(1_050_000)
   })
 
@@ -800,8 +818,8 @@ describe('resolveModelForProvider', () => {
     expect(await resolveModelForProvider('deepseek-v4.1-flash', 'platform', 'agent')).toBe(
       'deepseek-v4.1-flash',
     )
-    expect(await resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.1-sol')
-    expect(await resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    expect(await resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.2-sol')
+    expect(await resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.2-sol')
     // Removed from the catalog, but a stored pin still passes through to the proxy.
     expect(await resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(await resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')

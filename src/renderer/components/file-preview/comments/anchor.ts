@@ -14,9 +14,10 @@ function specOf<K extends AnchorKind>(kind: K): AnchorKindSpec<AnchorOf<K>, Surf
   return SPECS[kind]
 }
 
-/** The kind's piece of the surface: what the viewer declared under its name, else its default. */
-function sliceOf<K extends AnchorKind>(surface: { [J in AnchorKind]?: SurfaceOf<J> }, kind: K): SurfaceOf<K> | undefined {
-  return surface[kind] ?? specOf(kind).defaultSurface
+/** The kind's piece of the surface: what the viewer declared under its name, else its default. `null` turns the kind off. */
+function sliceOf<K extends AnchorKind>(surface: { [J in AnchorKind]?: SurfaceOf<J> | null }, kind: K): SurfaceOf<K> | undefined {
+  const declared = surface[kind]
+  return declared === null ? undefined : declared ?? specOf(kind).defaultSurface
 }
 
 function resolveAs<K extends AnchorKind>(kind: K, surface: CommentSurface, at: Situation): CommentAnchor | null {

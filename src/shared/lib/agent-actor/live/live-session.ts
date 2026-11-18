@@ -325,6 +325,7 @@ export class LiveSession {
       emit,
       responseStarted: () => this.response.beginStreamedText(),
       textStreamed: (text) => this.response.appendStreamedText(text),
+      mayStreamLate: () => this.ctx.isCurrent(),
     })
     // The background work, and the process it belongs to, carry over with
     // the level set describing them: the incoming handshake decides whether
@@ -876,6 +877,8 @@ export class LiveSession {
    */
   dispose(options: { replaced?: boolean } = {}): void {
     this.cancelSettleAfterStop()
+    this.stream.dropHeldToolInput()
+    this.subagents.dropHeldToolInputs()
     // The session is gone: a sign-in the host is still deciding raises no card.
     this.toolCalls.dropLoginDecisions()
     if (!options.replaced) this.toolCalls.dropHostRunChecks()
@@ -1407,6 +1410,10 @@ export class LiveSession {
     // queued turn nor resets that turn's answer early.
     if (!classification.isInterrupt && content.subtype !== 'resume') this.response.turnCompleted()
     this.stream.isStreaming = false
+    // A result that cut a tool call short (an API error mid-input) leaves its
+    // last input frame held: sent after the turn settles, it would reopen
+    // the card in clients that had just reset.
+    this.stream.dropHeldToolInput()
 
     if (isError && inferOomSigkillFatal(content) && this.ctx.runtime.fatalResult(this.ctx.transport(), 'oom_sigkill') === 'defer_for_recovery') {
       this.ctx.runtime.unexpectedDeath()
@@ -1476,7 +1483,9 @@ export class LiveSession {
     // The output is complete whether or not the session settles: the
     // renderer reconciles what streamed against the transcript (whose write
     // can lag), or a follow-up turn's stream_start could blink it out.
-    this.ctx.emit({ type: 'turn_output_complete' })
+    // The sends this turn answered, a batch taken in mid-turn included. A resume pauses inside the turn.
+    const answered = content.subtype !== 'resume' && Array.isArray(content.user_message_uuids) ? content.user_message_uuids : undefined
+    this.ctx.emit({ type: 'turn_output_complete', ...(answered && { answered }) })
     // A UI hint: background tasks outlive the turn's output.
     const stillOpen = this.background.openCount()
     if (stillOpen > 0) {
@@ -1709,7 +1718,9 @@ export class LiveSession {
       this.response.taggedUserIds.add(id)
     }
     const { agentSlug, sessionId } = this.ctx
-    this.ctx.host.send('notification', { kind: 'message_mentions', agentSlug, sessionId, messageUuid: content.uuid, userIds, text: stripMarkdownPreview(text) })
+    // A message of several frames shows under its first frame's uuid, which need not be the frame with the tag.
+    const messageUuid = this.response.firstEntryUuid(messageId) ?? content.uuid
+    this.ctx.host.send('notification', { kind: 'message_mentions', agentSlug, sessionId, messageUuid, userIds, text: stripMarkdownPreview(text) })
   }
 
   /**

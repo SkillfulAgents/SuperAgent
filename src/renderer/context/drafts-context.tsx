@@ -45,6 +45,14 @@ export function seedSessionDraft(
   if (snapshot.text !== undefined) store.set(`session:${sessionId}`, snapshot.text)
 }
 
+/**
+ * The id of an agent's home composer and its file drawer, as a session's id is its composer's and drawer's: its draft
+ * is `session:` + this, where the drawer's Submit adds comments and other parts of the app put text for a new conversation.
+ */
+export function agentHomeId(agentSlug: string): string {
+  return `agent-home:${agentSlug}`
+}
+
 /** Seed a newly installed agent's home composer from its template prompt. */
 export function seedAgentTemplatePrompt(
   store: Pick<DraftsStore, 'set'>,
@@ -52,7 +60,7 @@ export function seedAgentTemplatePrompt(
   content: string | undefined,
 ): boolean {
   if (!content) return false
-  store.set(`agent:${agentSlug}`, content)
+  store.set(`session:${agentHomeId(agentSlug)}`, content)
   return true
 }
 

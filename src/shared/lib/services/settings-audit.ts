@@ -55,6 +55,7 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['apiKeys.accountProviderUserId', 'Account Provider'],
   ['apiKeys.browserbase', 'Browser Use'],
   ['apiKeys.steel', 'Browser Use'],
+  ['apiKeys.tabtender', 'Browser Use'],
   ['apiKeys.deepgramApiKey', 'Voice'],
   ['apiKeys.openaiApiKey', 'Voice'],
   ['apiKeys.exaApiKey', 'Web Search'],

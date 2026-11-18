@@ -3,7 +3,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
-import { useSessions, useSession } from '@renderer/hooks/use-sessions'
+import { useNotableSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -29,7 +29,6 @@ import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/
 interface AgentHeaderProps {
   slug: string
   isViewOnly: boolean
-  isStreaming?: boolean
   startAgent: ReturnType<typeof useStartAgent>
   stopAgent: ReturnType<typeof useStopAgent>
 }
@@ -63,7 +62,7 @@ function BreadcrumbSeparator() {
  * active styling is route-derived (`data-status`) and survives a cold reload
  * with no hand-computed leaf flag.
  */
-export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent, stopAgent }: AgentHeaderProps) {
+export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
@@ -80,7 +79,10 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
   const dashboardHeader = useDashboardHeader(slug, dashboardSlug)
 
   const { data: agent } = useAgent(slug)
-  const { data: sessions } = useSessions(slug)
+  // Only for the two activity flags below: the notable slice holds every live
+  // session, where the full list would read (and refetch, on every session
+  // event) every session the agent has.
+  const { data: sessions } = useNotableSessions(slug)
   const { data: session } = useSession(sessionId, slug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)
@@ -224,7 +226,6 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
               activity={{
                 isActive: !!session?.isActive,
                 isAwaitingInput: !!session?.isAwaitingInput,
-                isStreaming,
               }}
             >
               <span

@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { and, count, eq, exists, getTableColumns, gt, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere, type BatchStatement } from '@shared/lib/db/batch'
-import { apnsDevices, mobileDevice } from '@shared/lib/db/schema'
+import { agentAcl, apnsDevices, mobileDevice, user } from '@shared/lib/db/schema'
 
 export type ApnsDeviceRow = typeof apnsDevices.$inferSelect
 
@@ -111,6 +111,41 @@ export async function listDeliverableApnsDevices(now: Date = new Date()): Promis
     .from(apnsDevices)
     .leftJoin(mobileDevice, eq(apnsDevices.mobileDeviceId, mobileDevice.id))
     .where(or(isNull(apnsDevices.mobileDeviceId), gt(mobileDevice.expiresAt, now)))
+    .all()
+}
+
+/**
+ * The deliverable devices (see {@link listDeliverableApnsDevices}) a
+ * notification about `agentSlug` may be pushed to when people sign in: those
+ * whose owner is on the agent's access list and has joined. Someone invited
+ * who hasn't joined hears nothing, and neither does a row with no owner or
+ * whose owner is gone. With `recipientUserId` (a mention), only that person's
+ * devices, and only if they are such a member.
+ *
+ * One statement, whatever the size of the workspace: the access check is the
+ * join, not a query per owner.
+ */
+export async function listDeliverableApnsDevicesForAgentMembers(
+  agentSlug: string,
+  recipientUserId?: string,
+  now: Date = new Date()
+): Promise<ApnsDeviceRow[]> {
+  return db
+    .select(getTableColumns(apnsDevices))
+    .from(apnsDevices)
+    .innerJoin(
+      agentAcl,
+      and(eq(agentAcl.userId, apnsDevices.userId), eq(agentAcl.agentSlug, agentSlug))
+    )
+    .innerJoin(user, eq(user.id, apnsDevices.userId))
+    .leftJoin(mobileDevice, eq(apnsDevices.mobileDeviceId, mobileDevice.id))
+    .where(
+      and(
+        eq(user.status, 'active'),
+        recipientUserId === undefined ? undefined : eq(apnsDevices.userId, recipientUserId),
+        or(isNull(apnsDevices.mobileDeviceId), gt(mobileDevice.expiresAt, now))
+      )
+    )
     .all()
 }
 

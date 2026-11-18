@@ -5,6 +5,7 @@ import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
 import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
+import type { AgentStatusPush } from '../shared/lib/types/agent-status-push'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -161,9 +162,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Navigation from tray menu or deep links.
-  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void): (() => void) => {
-    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown) =>
-      callback(agentSlug as string, sessionId as string | null | undefined)
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void): (() => void) => {
+    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown, messageUuid: unknown) =>
+      callback(agentSlug as string, sessionId as string | null | undefined, typeof messageUuid === 'string' ? messageUuid : undefined)
     ipcRenderer.on('navigate-to-agent', handler)
     return () => {
       ipcRenderer.removeListener('navigate-to-agent', handler)
@@ -309,6 +310,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Set dock badge count (macOS)
   setBadgeCount: (count: number): Promise<void> => {
     return ipcRenderer.invoke('set-badge-count', count)
+  },
+
+  // Hand main this window's agent list, for the tray and the Agents menu.
+  // Null withdraws it. Resolves to whether main is now using it.
+  pushAgentStatus: (payload: AgentStatusPush): Promise<boolean> => {
+    return ipcRenderer.invoke('push-agent-status', payload)
   },
 
   // Detect host browser availability
@@ -572,7 +579,7 @@ declare global {
       cancelPlatformSignIn?: () => Promise<void>
       openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void) => () => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => () => void
       removeOpenSettings: () => void
@@ -608,6 +615,7 @@ declare global {
         >
       >
       setBadgeCount: (count: number) => Promise<void>
+      pushAgentStatus: (payload: AgentStatusPush) => Promise<boolean>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
       popupAppMenu: (x: number, y: number) => Promise<void>

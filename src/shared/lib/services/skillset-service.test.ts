@@ -161,6 +161,7 @@ import {
   validateSkillZip,
   importSkillFromZip,
 } from './skillset-service'
+import { closeAppState, initializeLocalAppState } from '@shared/lib/app-state'
 import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
 import { getSettings } from '@shared/lib/config/settings'
 
@@ -179,6 +180,8 @@ describe('skillset-service', () => {
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
     vi.clearAllMocks()
+    await closeAppState()
+    await initializeLocalAppState()
   })
 
   afterEach(async () => {
@@ -188,6 +191,7 @@ describe('skillset-service', () => {
       delete process.env.SUPERAGENT_DATA_DIR
     }
     await fs.promises.rm(testDir, { recursive: true, force: true })
+    await closeAppState()
   })
 
   // ============================================================================
@@ -927,6 +931,37 @@ Instructions here`
       await createSkillsetCache(config.id, index)
       await expect(refreshSkillset(ref, { maxAgeMs: 60_000 })).resolves.toEqual(index)
       expect(setUrlCalls).toBe(3)
+    })
+
+    it('background refresh in a process that just started reuses a refresh another process made', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let setUrlCalls = 0
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-url') setUrlCalls += 1
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(ref)).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(1)
+
+      // The service's module loaded again holds nothing in memory, as a new process does. AppState is the same.
+      vi.resetModules()
+      const startedLater = await import('./skillset-service')
+
+      await expect(startedLater.refreshSkillset(ref, { maxAgeMs: 60_000 })).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(1)
     })
 
     it('coalesces concurrent first-time cache builds for the same cache directory', async () => {

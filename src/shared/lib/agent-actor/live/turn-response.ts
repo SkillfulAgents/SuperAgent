@@ -29,7 +29,8 @@ export class TurnResponse {
   /** The completion notification's body: the newest message group's text. */
   answer = ''
   private answerMessageId: string | null = null
-  private readonly messageIds = new Set<string>()
+  /** Each message id, with the entry uuid of its first frame: the id the transcript shows the message under. */
+  private readonly messageIds = new Map<string, string | null>()
   private readonly entryUuids = new Set<string>()
   /**
    * Messages accepted into the running turn that may each become a turn of
@@ -61,7 +62,7 @@ export class TurnResponse {
     if (turnInProgress) {
       next.answer = prior.answer
       next.answerMessageId = prior.answerMessageId
-      for (const id of prior.messageIds) next.messageIds.add(id)
+      for (const [id, uuid] of prior.messageIds) next.messageIds.set(id, uuid)
       for (const uuid of prior.entryUuids) next.entryUuids.add(uuid)
       next.queuedTurns = prior.queuedTurns
       for (const id of prior.taggedUserIds) next.taggedUserIds.add(id)
@@ -131,9 +132,14 @@ export class TurnResponse {
       this.answerMessageId = messageId
       this.answer = text
     }
-    if (messageId) this.messageIds.add(messageId)
+    if (messageId && !this.messageIds.has(messageId)) this.messageIds.set(messageId, entryUuid)
     if (entryUuid) this.entryUuids.add(entryUuid)
     return text
+  }
+
+  /** The entry uuid the transcript shows this message under, when its first frame was seen. */
+  firstEntryUuid(messageId: string): string | undefined {
+    return this.messageIds.get(messageId) ?? undefined
   }
 
   /** A new response started streaming. */

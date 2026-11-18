@@ -22,6 +22,8 @@ import {
 } from './warm-profile';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 import { knownPreloadToolsets } from './preload-toolsets';
+import { restoreSourceTimestamps } from './fork-timestamps';
+import { writeFileAtomic } from './atomic-file';
 
 interface SessionData {
   session: Session;
@@ -103,14 +105,6 @@ function formatIdleThreshold(ms: number): string {
   if (ms < 0) return 'disabled';
   if (ms === 0) return 'immediate';
   return `${Math.round(ms / 60_000)}m`;
-}
-
-/** Thrown by forkSession when the source is mid-turn. The route maps it to 409. */
-export class SessionBusyError extends Error {
-  constructor(sessionId: string) {
-    super(`Session ${sessionId} is currently running`);
-    this.name = 'SessionBusyError';
-  }
 }
 
 /** Reaped or missing transcript. The fork route maps this to the same JSON 404 as an unknown source. */
@@ -923,16 +917,6 @@ export class SessionManager extends EventEmitter {
     const source = this.persistence.getSession(sourceId);
     if (!source) return null;
 
-    // A live process mid-turn is still appending to the transcript; refuse
-    // rather than copy a half-written turn. (The host checks its own view too;
-    // the residual window between this check and the SDK's read is accepted —
-    // the SDK drops a partial final line, so the fork is at worst one message
-    // short, never corrupt.)
-    const live = this.sessions.get(sourceId);
-    if (live && !live.settlement.isSettled()) {
-      throw new SessionBusyError(sourceId);
-    }
-
     // CLAUDE_CONFIG_DIR=/workspace/.claude + dir '/workspace' resolves to the
     // same projects dir the source lives in; the fork lands beside it.
     // A listing that survived CLI cleanup with no JSONL is gone: skip the SDK.
@@ -947,6 +931,9 @@ export class SessionManager extends EventEmitter {
       if (isSdkSessionNotFound(error)) return null;
       throw error;
     }
+    await this.restoreForkTimestamps(source.workingDirectory, source.claudeSessionId, newId).catch((error) =>
+      console.error(`forkSession: timestamp restore for ${newId} failed (non-fatal)`, error),
+    );
 
     const now = new Date().toISOString();
     try {
@@ -985,9 +972,25 @@ export class SessionManager extends EventEmitter {
    * (tests never plant one; a first-run workspace has no projects dir yet).
    */
   private sourceTranscriptReaped(cwd: string, claudeSessionId: string): boolean {
-    const projectDir = `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+    const projectDir = this.projectDir(cwd);
     if (!fs.existsSync(projectDir)) return false;
     return !fs.existsSync(`${projectDir}/${claudeSessionId}.jsonl`);
+  }
+
+  private projectDir(cwd: string): string {
+    return `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+  }
+
+  /** The SDK writes the fork beside its source; see restoreSourceTimestamps. */
+  private async restoreForkTimestamps(cwd: string, sourceId: string, forkId: string): Promise<void> {
+    const dir = this.projectDir(cwd);
+    const forkPath = `${dir}/${forkId}.jsonl`;
+    const [source, original] = await Promise.all([
+      fs.promises.readFile(`${dir}/${sourceId}.jsonl`, 'utf-8'),
+      fs.promises.readFile(forkPath, 'utf-8'),
+    ]);
+    const updated = restoreSourceTimestamps(source, original);
+    if (updated !== original) await writeFileAtomic(forkPath, updated);
   }
 
   async sendMessage(

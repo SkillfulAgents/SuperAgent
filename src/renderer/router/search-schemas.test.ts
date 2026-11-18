@@ -4,6 +4,7 @@ import {
   connectionsSearchSchema,
   homeSearchSchema,
   rootSearchSchema,
+  sessionSearchSchema,
   settingsSearchSchema,
   settingsTabSchema,
   SETTINGS_TABS,
@@ -195,5 +196,15 @@ describe('homeSearchSchema (signup handoff)', () => {
 
   it('accepts a valid template_slug', () => {
     expect(lenient(homeSearchSchema)({ template_slug: 'my.agent-v2' }).template_slug).toBe('my.agent-v2')
+  })
+})
+
+describe('sessionSearchSchema', () => {
+  it('keeps the message a session opens on, and drops an empty or malformed one', () => {
+    expect(lenient(sessionSearchSchema)({ message: 'msg-7' })).toEqual({ message: 'msg-7' })
+    expect(lenient(sessionSearchSchema)({ message: '' })).toEqual({ message: undefined })
+    expect(lenient(sessionSearchSchema)({ message: 42 })).toEqual({ message: undefined })
+    expect(lenient(sessionSearchSchema)({ message: 'x'.repeat(65) })).toEqual({ message: undefined })
+    expect(lenient(sessionSearchSchema)({})).toEqual({})
   })
 })

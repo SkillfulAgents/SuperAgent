@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
-import { SessionManager, SessionBusyError, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
+import { SessionManager, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
 import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
@@ -268,9 +268,6 @@ app.post('/sessions/:id/fork', async (c) => {
     }
     return c.json({ id }, 201);
   } catch (error: any) {
-    if (error instanceof SessionBusyError) {
-      return c.json({ error: error.message, code: 'session_busy' }, 409);
-    }
     if (isSdkSessionNotFound(error)) {
       return c.json({ error: 'Session not found' }, 404);
     }
@@ -417,19 +414,6 @@ app.delete('/files/*', async (c) => {
     }
     console.error('Error deleting file:', error);
     return c.json({ error: error.message || 'Failed to delete file' }, 500);
-  }
-});
-
-app.post('/files/*/mkdir', async (c) => {
-  const dirPath = (c.req.param('*') || '').replace('/mkdir', '');
-  const fullPath = path.join('/workspace', dirPath);
-
-  try {
-    await fs.promises.mkdir(fullPath, { recursive: true });
-    return c.json({ success: true, path: dirPath });
-  } catch (error: any) {
-    console.error('Error creating directory:', error);
-    return c.json({ error: error.message || 'Failed to create directory' }, 500);
   }
 });
 
@@ -3079,11 +3063,12 @@ const CDP_JSON_TIMEOUT_MS = 5_000;
 
 /**
  * Whether the browser may serve Chrome's HTTP /json: a local or host Chrome
- * does. A remote provider's TLS endpoint (wss://: Browserbase, Steel) does
+ * does, and its endpoint is Chrome's own `/devtools/browser/<id>`. A remote
+ * provider's (Browserbase, Steel, Tab Tender, over ws:// or wss://) does
  * not, and is not asked.
  */
 function cdpServesJson(): boolean {
-  return !browserState.cdpUrl?.startsWith('wss:');
+  return !browserState.cdpUrl || /^ws:\/\/[^/]+\/devtools\/browser\//.test(browserState.cdpUrl);
 }
 
 /**

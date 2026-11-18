@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.6.11",
+  "version": "0.6.13",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -51,6 +51,7 @@
     "test:live:mcp-hot-add": "node e2e/live/mcp-hot-add/run.mjs",
     "test:live:x-agent-attachments": "tsx e2e/live/x-agent-attachments/run.ts",
     "test:live:steel-provider": "tsx e2e/live/steel-provider/run.ts",
+    "test:live:tabtender-provider": "tsx e2e/live/tabtender-provider/run.ts",
     "test:e2e:electron": "E2E_MOCK=true playwright test --config=playwright.electron.config.ts",
     "test:e2e:perf": "RENDER_TRACKING=true E2E_MOCK=true playwright test --project=web-chromium e2e/specs/render-perf.spec.ts",
     "test:halftone:visual": "E2E_MOCK=true playwright test e2e/specs/halftone-visual.spec.ts --project=web-chromium --workers=1",
@@ -70,8 +71,8 @@
     "test:actor-transport": "node scripts/run-actor-transport-tests.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^1.1.1",
-    "@anthropic-ai/sdk": "^1.7.0",
+    "@anthropic-ai/bedrock-sdk": "^1.1.2",
+    "@anthropic-ai/sdk": "^1.9.0",
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
     "@aws-sdk/client-s3": "^3.1149.0",
     "@hono/node-server": "^2.1.5",
@@ -182,6 +183,7 @@
     "cronstrue": "^3.32.0",
     "cross-env": "^7.0.3",
     "d3-force": "^3.0.0",
+    "diff": "^8.0.4",
     "dompurify": "3.4.17",
     "drizzle-kit": "^0.31.9",
     "electron": "^45.0.0",

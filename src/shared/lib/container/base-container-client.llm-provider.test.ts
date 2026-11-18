@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   preferences: {} as { defaultModel?: string; defaultLlmProviderId?: string },
   signedOutConnection: null as string | null,
   settingsReads: 0,
+  runtimesBuilt: [] as string[],
   reads: [] as string[],
   writes: [] as Record<string, unknown>[],
 }))
@@ -20,6 +21,7 @@ vi.mock('@shared/lib/llm-provider/connection-runtime', async original => {
     ...actual,
     connectionRuntime: async (...args: Parameters<typeof actual.connectionRuntime>) => {
       if (args[0].llmProviderId === state.signedOutConnection) throw new CredentialRefreshError(401)
+      state.runtimesBuilt.push(args[0].llmProviderId)
       return actual.connectionRuntime(...args)
     },
   }
@@ -70,6 +72,7 @@ beforeEach(async () => {
   state.metadata = {}
   state.preferences = {}
   state.signedOutConnection = null
+  state.runtimesBuilt = []
   state.reads = []
   state.writes = []
   for (const name of ['first', 'second']) {
@@ -99,6 +102,29 @@ it('sends the default runtime for prewarming even when the session picks a diffe
     prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low',
       llmRuntime: { llmProviderId: first, model: 'model-a', env: { ANTHROPIC_AUTH_TOKEN: 'first-key' } } },
   })
+})
+
+it("builds the runtime once when the session runs on the agent's default: the prewarm is the session's own", async () => {
+  await new Client({ agentId: 'agent' }).createSession({
+    initialMessage: 'hello', model: 'model-a', llmProviderId: first,
+    prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low' },
+  })
+  expect(state.runtimesBuilt).toEqual([first])
+  expect(requests[0]).toMatchObject({
+    llmProviderId: first,
+    llmRuntime: { llmProviderId: first, model: 'model-a', env: { ANTHROPIC_AUTH_TOKEN: 'first-key' } },
+    prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low',
+      llmRuntime: { llmProviderId: first, model: 'model-a', env: { ANTHROPIC_AUTH_TOKEN: 'first-key' } } },
+  })
+
+  // Another model on the same connection is not the default session: its prewarm is built on its own.
+  state.runtimesBuilt = []
+  await new Client({ agentId: 'agent' }).createSession({
+    initialMessage: 'hello', model: 'model-b', llmProviderId: first,
+    prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low' },
+  })
+  expect(state.runtimesBuilt).toEqual([first, first])
+  expect(requests[1]).toMatchObject({ llmRuntime: { model: 'model-b' }, prewarmDefaults: { llmRuntime: { model: 'model-a' } } })
 })
 
 it('starts the session without prewarming when only the default provider is signed out', async () => {
