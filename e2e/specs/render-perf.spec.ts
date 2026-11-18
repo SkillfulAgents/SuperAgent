@@ -93,6 +93,33 @@ test.describe('Render Performance', () => {
     }
   })
 
+  test('switching agents re-renders the rows involved, not every row', async () => {
+    // Six agent creations take most of the default budget on their own.
+    test.setTimeout(120_000)
+    const stamp = Date.now()
+    const names = Array.from({ length: 6 }, (_, i) => `Perf Rows ${i} ${stamp}`)
+    for (const name of names) await agentPage.createAgent(name)
+
+    await agentPage.selectAgent(names[0])
+    await perf.sampleFor(2000)
+    await perf.resetCounters()
+
+    await agentPage.selectAgent(names[1])
+    await perf.sampleFor(1500)
+
+    const data = await perf.snapshot()
+    console.log('=== Agent Switch Render Report (1 switch, 6+ rows) ===')
+    console.log(perf.formatReport(data))
+
+    // The row left and the row entered render once each, doubled by
+    // StrictMode: 4, with room for one more render of each. Before rows
+    // selected their own route state every row rendered on a switch, so the
+    // six created here alone came to 12 (measured: 16 with 8 rows, now 4).
+    const rowRenders = data['AgentMenuItem']?.count ?? 0
+    expect(rowRenders).toBeGreaterThan(0)
+    expect(rowRenders).toBeLessThanOrEqual(8)
+  })
+
   test('chat flow render counts', async ({ page }) => {
     await agentPage.createAgent(`Perf Chat ${Date.now()}`)
 

@@ -52,7 +52,7 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useListedAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useListedAgents, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
@@ -75,7 +75,7 @@ import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-
 import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
-import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useRouteAgentRow } from '@renderer/router/use-route-agent'
 import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
 import { useCmdHintTarget, CmdHintBadge } from '@renderer/context/cmd-hint-context'
@@ -199,17 +199,20 @@ type FolderDropCue = { folderId: string; edge: 'above' | 'below' }
 function SessionSubItem({
   session,
   agentSlug,
+  isAgentSelected,
 }: {
   session: ApiSession
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
   useRenderTracker('SessionSubItem')
   // Active state is route-derived (URL is authoritative, read from useParams) so
   // the highlight + the stream subscription are correct on a cold reload, with no
-  // in-memory selection state to wait on.
-  const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
+  // in-memory selection state to wait on. Selected down to the one boolean, so
+  // a navigation re-renders the rows it leaves and enters, not every open one.
+  const isRouteSession = useParams({ strict: false, select: (params) => params.sessionId === session.id })
+  const isSelected = isAgentSelected && isRouteSession
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
@@ -317,13 +320,15 @@ function SessionSubItem({
 function DashboardSubItem({
   artifact,
   agentSlug,
+  isAgentSelected,
 }: {
   artifact: ArtifactInfo
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
-  const { dashSlug: routeDashSlug } = useParams({ strict: false }) as { dashSlug?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
+  const isRouteDashboard = useParams({ strict: false, select: (params) => params.dashSlug === artifact.slug })
+  const isSelected = isAgentSelected && isRouteDashboard
   const [isRenaming, setIsRenaming] = useState(false)
   const { ref: hintRef, hint } = useCmdHintTarget()
 
@@ -543,14 +548,14 @@ const AgentMenuItemInner = React.forwardRef<
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { view } = useRouteLocation()
   const { isAuthMode, agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
-  // no slug). Drives the highlight AND the submenu auto-expand below.
-  const routeAgentId = useRouteAgentId()
-  const isSelected = agent.slug === routeAgentId
+  // no slug). Drives the highlight AND the submenu auto-expand below. Both
+  // answers are selected per row, so a navigation re-renders only the rows it
+  // changes them for: this subtree is the expensive part of the sidebar.
+  const { isSelected, isViewingSubItem } = useRouteAgentRow(agent)
   // Auto-expand on selection only if the agent has content to show. Brand-new
   // agents (no sessions / dashboards yet) start collapsed - the empty submenu
   // would just be visual noise.
@@ -568,14 +573,6 @@ const AgentMenuItemInner = React.forwardRef<
   // The mount-time `useState` can't catch this — sessionCount is 0 at mount on
   // a freshly-created agent, then jumps to 1 once the first message creates a
   // session. Reactively expand here.
-  const isViewingSubItem =
-    isSelected &&
-    (view.kind === 'session' ||
-      view.kind === 'task' ||
-      view.kind === 'webhook' ||
-      view.kind === 'chat' ||
-      view.kind === 'dashboard' ||
-      view.kind === 'completedTasks')
   useEffect(() => {
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
@@ -843,6 +840,7 @@ const AgentMenuItemInner = React.forwardRef<
                         key={artifact.slug}
                         artifact={artifact}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {/* Regular sessions */}
@@ -851,6 +849,7 @@ const AgentMenuItemInner = React.forwardRef<
                         key={session.id}
                         session={session}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {hasMore && (
