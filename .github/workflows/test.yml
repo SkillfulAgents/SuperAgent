@@ -402,9 +402,10 @@ jobs:
   # GitHub-hosted, not Blacksmith: since #1986 gave animating avatar orbs their
   # own compositor layer, Blacksmith's macOS VMs got a runner shutdown signal
   # mid-suite in nearly every run, while GitHub's macos-15 and macos-26 ran the
-  # same commit to the end (#2071).
+  # same commit to the end (#2071). The larger runner: the standard macos-15
+  # (3 cores) took 2-2.5x as long and timed out waits on cold pages.
   e2e-webkit-macos:
-    runs-on: macos-15
+    runs-on: macos-15-xlarge
     strategy:
       # A failed repeat must not cancel the others: how many of the three
       # failed is what tells a regression from a one-off.
