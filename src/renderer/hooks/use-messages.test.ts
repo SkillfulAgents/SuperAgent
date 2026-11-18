@@ -31,6 +31,8 @@ interface InflightRequest {
   url: string
   init?: RequestInit
   resolve: (body: unknown) => void
+  /** Answer with a server error. */
+  fail: () => void
 }
 
 // apiFetch stub with real abort semantics: each call parks until the test
@@ -46,6 +48,7 @@ function installHangingFetch() {
           url,
           init,
           resolve: (body: unknown) => resolve({ ok: true, status: 200, json: async () => body }),
+          fail: () => resolve({ ok: false, status: 500, json: async () => ({}) }),
         })
         init?.signal?.addEventListener('abort', () =>
           reject(new DOMException('The operation was aborted.', 'AbortError'))
@@ -426,6 +429,62 @@ describe('useMessages forward delta', () => {
     })
     expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u3', 'a3'])
     expect(result.current.hasOlder).toBe(false)
+  })
+
+  it('starts after the repeated pages when a later page of the walk fails', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: 'c2' })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    inflight[2].fail()
+    await act(async () => {
+      expect(await olderDone).toBe(false)
+    })
+    expect(result.current.hasOlder).toBe(true)
+
+    // The repeated page is not fetched again.
+    act(() => {
+      void result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(4))
+    expect(inflight[3].url).toContain('cursor=c2')
+    warn.mockRestore()
+  })
+
+  it('reports more to load when the walk stops at its page cap', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    // Every page of the walk repeats what is on screen.
+    for (let hop = 1; hop <= 25; hop++) {
+      await waitFor(() => expect(inflight).toHaveLength(hop + 1))
+      inflight[hop].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: `c${hop}` })
+    }
+
+    // Nothing was added, but a caller loading toward a target must go on.
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(inflight).toHaveLength(26)
+    expect(result.current.hasOlder).toBe(true)
+    act(() => {
+      void result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(27))
+    expect(inflight[26].url).toContain('cursor=c25')
   })
 
   it('drops an item deleted remotely from within the covered range on a periodic full fetch', async () => {

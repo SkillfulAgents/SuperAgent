@@ -274,7 +274,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
       // page made only of these is skipped and the walk goes on in the same
       // call, so the reader doesn't have to scroll once per repeated page.
       const seen = new Set([...older, ...latestMessages].map((m) => m.id))
-      let fresh: ApiMessageOrBoundary[] = []
+      let added: ApiMessageOrBoundary[] = []
       let nextCursor: string | null = cursor
       for (let hop = 0; hop < MAX_EMPTY_OLDER_PAGE_HOPS && nextCursor; hop++) {
         const page = await fetchMessagesPage(agentSlug, sessionId, {
@@ -286,19 +286,23 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
         // or session switch): the response belongs to the previous transcript
         // generation and must not commit.
         if (gen !== olderGenRef.current) return false
-        const added = page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id))
-        for (const m of added) seen.add(m.id)
-        fresh = [...added, ...fresh]
+        added = page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id))
         nextCursor = page.nextCursor
+        // Kept per page: if a later page fails, the next call starts after
+        // the repeated pages this one already walked.
+        setOlderCursor(nextCursor)
         if (added.length > 0) break
       }
-      if (fresh.length > 0) onBeforePrepend?.()
-      setOlder((cur) => {
-        const have = new Set(cur.map((m) => m.id))
-        return [...fresh.filter((m) => !have.has(m.id)), ...cur]
-      })
-      setOlderCursor(nextCursor)
-      return fresh.length > 0
+      if (added.length > 0) {
+        onBeforePrepend?.()
+        setOlder((cur) => {
+          const have = new Set(cur.map((m) => m.id))
+          return [...added.filter((m) => !have.has(m.id)), ...cur]
+        })
+      }
+      // True too when the walk stopped at the page cap with history left, so
+      // a caller that loads until a target shows calls again.
+      return added.length > 0 || nextCursor !== null
     } catch (error) {
       // Rejection caused by our own generation reset (abort) — not an error.
       if (gen !== olderGenRef.current) return false
