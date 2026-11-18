@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ple Domain\" as expected. Screenshot step5-response-received.png captured the successful response.\n\n**No bugs found.** The browser-use feature is functioning correctly. The agent successfully opened a browser, navigated to the specified URL, retrieved the page title, and reported it back accurately.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 113134,
+  "sessionId": "08019cc7-e09b-4451-97f3-70810c5c248e",
+  "cost": {
+    "inputTokens": 544,
+    "outputTokens": 13639,
+    "cacheCreationTokens": 85508,
+    "cacheReadTokens": 1700295,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.345654
+  }
+}
