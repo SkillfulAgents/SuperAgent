@@ -1,0 +1,163 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e145]:
+            - link "Discover New Agents" [ref=e146] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e147]
+              - generic [ref=e150]: Discover New Agents
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+                - img [ref=e45]
+            - button "New agent in Your Agents" [ref=e47] [cursor=pointer]:
+              - img [ref=e48]
+            - list [ref=e50]:
+              - button "QA-20261118-202415-ttle , idle. Never active Options for QA-20261118-202415-ttle Open QA-20261118-202415-ttle New session with QA-20261118-202415-ttle" [ref=e51] [cursor=pointer]:
+                - generic [ref=e52]:
+                  - link "QA-20261118-202415-ttle , idle. Never active" [ref=e53]:
+                    - /url: /agents/qa-20261118-202415-ttle-1t097xg7u7
+                    - generic [ref=e54]: QA-20261118-202415-ttle
+                    - generic [ref=e55]: ", idle."
+                    - generic [ref=e56]: Never active
+                  - generic:
+                    - button "Options for QA-20261118-202415-ttle"
+                    - generic:
+                      - link "Open QA-20261118-202415-ttle":
+                        - /url: /agents/qa-20261118-202415-ttle-1t097xg7u7
+                      - link "New session with QA-20261118-202415-ttle":
+                        - /url: /agents/qa-20261118-202415-ttle-1t097xg7u7/sessions/new
+                        - img
+              - button "QA-20261118-202414-p4wl , idle. Never active Options for QA-20261118-202414-p4wl Open QA-20261118-202414-p4wl New session with QA-20261118-202414-p4wl" [ref=e57] [cursor=pointer]:
+                - generic [ref=e58]:
+                  - link "QA-20261118-202414-p4wl , idle. Never active" [ref=e59]:
+                    - /url: /agents/qa-20261118-202414-p4wl-col4ujjlhz
+                    - generic [ref=e60]: QA-20261118-202414-p4wl
+                    - generic [ref=e61]: ", idle."
+                    - generic [ref=e62]: Never active
+                  - generic:
+                    - button "Options for QA-20261118-202414-p4wl"
+                    - generic:
+                      - link "Open QA-20261118-202414-p4wl":
+                        - /url: /agents/qa-20261118-202414-p4wl-col4ujjlhz
+                      - link "New session with QA-20261118-202414-p4wl":
+                        - /url: /agents/qa-20261118-202414-p4wl-col4ujjlhz/sessions/new
+                        - img
+          - status [ref=e151]
+          - listitem [ref=e63]:
+            - button "Add section" [ref=e64] [cursor=pointer]:
+              - img [ref=e66]
+              - generic [ref=e67]: Add section
+      - generic [ref=e69]:
+        - button "Settings" [ref=e70] [cursor=pointer]:
+          - img [ref=e71]
+          - generic [ref=e74]: Settings
+        - button "0.6.13" [ref=e75] [cursor=pointer]:
+          - generic [ref=e76]: 0.6.13
+      - button "Toggle Sidebar" [ref=e77]
+    - main [ref=e78]:
+      - generic [ref=e165]:
+        - generic [ref=e166]:
+          - button "Toggle Sidebar" [ref=e167] [cursor=pointer]:
+            - img
+            - generic [ref=e168]: Toggle Sidebar
+          - generic [ref=e171]:
+            - generic:
+              - link:
+                - /url: /agents/qa-20261118-202414-p4wl-col4ujjlhz
+                - text: QA-20261118-202414-p4wl
+          - generic [ref=e173]:
+            - generic [ref=e174]:
+              - img [ref=e175]
+              - generic [ref=e184]: idle
+            - button "Stop Agent" [ref=e186] [cursor=pointer]:
+              - img [ref=e187]
+        - generic [ref=e193]:
+          - generic [ref=e194]:
+            - generic [ref=e196]:
+              - button "Edit QA-20261118-202414-p4wl's name and avatar" [ref=e198] [cursor=pointer]:
+                - generic [ref=e211]: QA-20261118-202414-p4wl
+              - button "Share agent" [ref=e212] [cursor=pointer]: Share
+              - button "Agent menu" [ref=e213] [cursor=pointer]:
+                - img
+            - generic [ref=e215]:
+              - button "Expand input" [ref=e217] [cursor=pointer]:
+                - img
+              - textbox "How can I help? Press cmd+enter to send" [active] [ref=e220]:
+                - paragraph [ref=e221]: Hello! What is 2+2?
+              - generic [ref=e222]:
+                - generic [ref=e223]:
+                  - button "Add files" [ref=e224] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e225] [cursor=pointer]':
+                    - generic [ref=e226]:
+                      - text: Opus 5.5
+                      - generic [ref=e227]: · Medium
+                    - img
+                - generic [ref=e228]:
+                  - button "Set up voice input" [ref=e229] [cursor=pointer]:
+                    - img
+                  - button "Send message" [ref=e287] [cursor=pointer]:
+                    - img
+            - generic [ref=e231]:
+              - paragraph [ref=e232]: Other ways to get started
+              - generic [ref=e233]:
+                - button "Browse Templates — Opens the agent template marketplace" [ref=e234] [cursor=pointer]:
+                  - img [ref=e235]
+                  - generic [ref=e239]: Browse Templates
+                - button "Import an Agent — Import an agent from a .agent or .zip template file" [ref=e240] [cursor=pointer]:
+                  - img [ref=e241]
+                  - generic [ref=e243]: Import an Agent
+          - complementary "Agent settings" [ref=e245]:
+            - generic [ref=e246]:
+              - button "Triggers" [ref=e248] [cursor=pointer]:
+                - generic [ref=e249]: Triggers
+                - generic [ref=e250]:
+                  - generic [ref=e251]: "0"
+                  - img [ref=e252]
+              - button "Connections" [ref=e255] [cursor=pointer]:
+                - generic [ref=e256]: Connections
+                - generic [ref=e257]:
+                  - generic [ref=e258]: "0"
+                  - img [ref=e259]
+              - button "Skills" [ref=e262] [cursor=pointer]:
+                - generic [ref=e263]: Skills
+                - generic [ref=e264]:
+                  - generic [ref=e265]: "0"
+                  - img [ref=e266]
+              - button "External Integrations" [ref=e269] [cursor=pointer]:
+                - generic [ref=e270]: External Integrations
+                - generic [ref=e271]:
+                  - generic [ref=e272]: "0"
+                  - img [ref=e273]
+              - button "Drives" [ref=e276] [cursor=pointer]:
+                - generic [ref=e277]: Drives
+                - generic [ref=e278]:
+                  - generic [ref=e279]: "0"
+                  - img [ref=e280]
+            - button "Show more" [ref=e283] [cursor=pointer]:
+              - generic [ref=e284]: Show more
+              - img [ref=e285]
+  - region "Notifications alt+T"
