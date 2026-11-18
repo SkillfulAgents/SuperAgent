@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { useAddMount, useRemoveMount } from '@renderer/hooks/use-mounts'
 import { useSaveVolumeDefinition, useVolumeAgents, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 /** Let `slug` message the Team Brain agent and Team Brain read `slug`'s sessions, or stop both. */
 async function setLinked(queryClient: QueryClient, slug: string, brainSlug: string, linked: boolean) {
@@ -17,6 +18,7 @@ async function setLinked(queryClient: QueryClient, slug: string, brainSlug: stri
     queryClient.invalidateQueries({ queryKey: ['x-agent-policies', brainSlug] }),
     queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', brainSlug] }),
     queryClient.invalidateQueries({ queryKey: ['home-graph'] }),
+    queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY }),
   ])
   if (results.some((result) => result.status === 'rejected' || !result.value.ok)) {
     throw new Error(linked ? 'Could not connect it to Team Brain' : 'Could not disconnect it from Team Brain')

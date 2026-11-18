@@ -2,11 +2,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
+import type { AgentMemberAgent } from '@shared/lib/types/inbound-x-agent-schema'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
+import { useAgentMemberAgents } from '@renderer/hooks/use-agent-member-agents'
 import { AgentSharePopover } from './agent-share-popover'
 import { SidebarMemberIndicator } from './sidebar-member-indicator'
 
 vi.mock('@renderer/hooks/use-agent-members', () => ({ useAgentMembers: vi.fn() }))
+vi.mock('@renderer/hooks/use-agent-member-agents', () => ({ useAgentMemberAgents: vi.fn() }))
 vi.mock('@renderer/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@renderer/lib/env', () => ({ getApiBaseUrl: () => '' }))
 vi.mock('./agent-share-popover', () => ({ AgentSharePopover: vi.fn(({ trigger }) => trigger) }))
@@ -17,6 +20,10 @@ const members: AgentMember[] = Array.from({ length: 6 }, (_, i) => ({
   id: `member-${i}`, name: `Person ${i}`, email: `person-${i}@example.test`, image: null,
   role: i === 0 ? 'owner' : 'viewer',
 }))
+const memberAgents: AgentMemberAgent[] = [
+  { slug: 'triage', displaySlug: 'inbox-triage', name: 'Inbox Triage', avatar: null, role: 'user' },
+  { slug: 'notes', displaySlug: 'release-notes', name: 'Release Notes', avatar: null, role: 'viewer' },
+]
 const props = { agentSlug: 'shared-agent', agentName: 'Shared Agent', memberCount: 6 }
 const refetch = vi.fn()
 function roster(data: AgentMember[] | undefined, state = { isLoading: false, isError: false }) {
@@ -28,6 +35,7 @@ beforeEach(() => {
   user.isAdmin = false
   user.canAdminAgent.mockReturnValue(false)
   roster(members)
+  vi.mocked(useAgentMemberAgents).mockReturnValue([])
 })
 afterEach(cleanup)
 
@@ -70,6 +78,57 @@ describe('SidebarMemberIndicator', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(count)
     expect(screen.getByText(`person-${count - 1}@example.test`)).toBeInTheDocument()
     expect(within(screen.getByRole('dialog')).queryByRole('button')).toBeNull()
+  })
+
+  it('counts member agents after the people and lists them in the roster', () => {
+    roster(members.slice(0, 1))
+    vi.mocked(useAgentMemberAgents).mockReturnValue(memberAgents)
+    render(<SidebarMemberIndicator {...props} memberCount={1} />)
+    // One person alone would be private: the agents are what make it shared.
+    expect(vi.mocked(useAgentMembers)).toHaveBeenCalledWith(props.agentSlug, true)
+    fireEvent.click(screen.getByRole('button', { name: '3 members of Shared Agent' }))
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'P0Person 0person-0@example.testowner',
+      'Inbox Triageuser',
+      'Release Notesviewer',
+    ])
+  })
+
+  it('gives the circles to people first: agents are the ones left to the count', () => {
+    roster(members.slice(0, 3))
+    vi.mocked(useAgentMemberAgents).mockReturnValue(memberAgents)
+    render(<SidebarMemberIndicator {...props} memberCount={3} />)
+    const trigger = screen.getByRole('button', { name: '5 members of Shared Agent' })
+    // Four circles for five members: three faces and the count. All three are people.
+    expect(within(trigger).getAllByRole('img', { hidden: true }).map((face) => face.getAttribute('aria-label')))
+      .toEqual(['Person 0', 'Person 1', 'Person 2'])
+    expect(within(trigger).getByTestId('sidebar-members-count-shared-agent')).toHaveTextContent('5')
+  })
+
+  it('keeps a loaded roster for a viewer who is not one of the agent\'s people', () => {
+    // A deployment admin removed from the agent: no people count of their own.
+    roster(members.slice(0, 4))
+    render(<SidebarMemberIndicator {...props} memberCount={0} />)
+    expect(vi.mocked(useAgentMembers)).toHaveBeenCalledWith(props.agentSlug, false)
+    const trigger = screen.getByRole('button', { name: '4 members of Shared Agent' })
+    expect(within(trigger).getAllByRole('img', { hidden: true })).toHaveLength(4)
+  })
+
+  it('stays hidden for one person and no agents', () => {
+    roster(members.slice(0, 1))
+    render(<SidebarMemberIndicator {...props} memberCount={1} />)
+    expect(vi.mocked(useAgentMembers)).toHaveBeenCalledWith(props.agentSlug, false)
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('shows the agents alone on a local install, where anyone can invite', () => {
+    user.isAuthMode = false
+    roster(undefined)
+    vi.mocked(useAgentMemberAgents).mockReturnValue(memberAgents.slice(0, 1))
+    render(<SidebarMemberIndicator {...props} memberCount={0} />)
+    fireEvent.click(screen.getByRole('button', { name: '1 member of Shared Agent' }))
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Invite' })).toBeVisible()
   })
 
   it('gives Agent Home its own size, test ids and five circles', () => {

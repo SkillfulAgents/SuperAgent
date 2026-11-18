@@ -12,7 +12,7 @@ import {
   type XAgentDecision,
 } from './x-agent-policy-service'
 
-interface AgentAclRow {
+export interface AgentAclRow {
   agentSlug: string
   userId: string
   role: string
@@ -26,7 +26,30 @@ interface BuildInboundXAgentDetailsInput {
   viewerUserId?: string
   viewerCanAccessAll?: boolean
   aclRows: AgentAclRow[]
-  evaluatePolicy?: (callerSlug: string, targetSlug: string) => XAgentDecision | Promise<XAgentDecision>
+  evaluatePolicy?: (callerSlug: string, targetSlug: string, operation: 'invoke' | 'read') => XAgentDecision | Promise<XAgentDecision>
+}
+
+/**
+ * In auth mode an agent can only reach another when one of its owners uses
+ * that other agent: answers whether `callerSlug` can reach `targetSlug`.
+ */
+export function callerEligibility(aclRows: AgentAclRow[]): (callerSlug: string, targetSlug: string) => boolean {
+  const usersByAgent = new Map<string, Set<string>>()
+  const ownersByAgent = new Map<string, string[]>()
+  for (const row of aclRows) {
+    if (hasMinRole(row.role as AgentRole, 'user')) {
+      const users = usersByAgent.get(row.agentSlug) ?? new Set<string>()
+      users.add(row.userId)
+      usersByAgent.set(row.agentSlug, users)
+    }
+    if (row.role === 'owner') {
+      ownersByAgent.set(row.agentSlug, [...(ownersByAgent.get(row.agentSlug) ?? []), row.userId])
+    }
+  }
+  return (callerSlug, targetSlug) => {
+    const targetUsers = usersByAgent.get(targetSlug)
+    return !!targetUsers && (ownersByAgent.get(callerSlug) ?? []).some((userId) => targetUsers.has(userId))
+  }
 }
 
 /**
@@ -42,7 +65,7 @@ export async function buildInboundXAgentDetails({
   viewerUserId,
   viewerCanAccessAll = false,
   aclRows,
-  evaluatePolicy = (callerSlug, target) => evaluateXAgentPolicy(callerSlug, 'invoke', target),
+  evaluatePolicy = (callerSlug, target, operation) => evaluateXAgentPolicy(callerSlug, operation, target),
 }: BuildInboundXAgentDetailsInput): Promise<InboundXAgentDetails> {
   const agentBySlug = new Map(agents.map((agent) => [agent.slug, agent]))
   const sessions = Object.entries(metadata)
@@ -71,39 +94,27 @@ export async function buildInboundXAgentDetails({
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 
-  const targetUsers = new Set(
-    aclRows
-      .filter((row) => row.agentSlug === targetSlug && hasMinRole(row.role as AgentRole, 'user'))
-      .map((row) => row.userId),
-  )
   const viewerAgents = new Set(
     aclRows
       .filter((row) => row.userId === viewerUserId)
       .map((row) => row.agentSlug),
   )
-  const ownerUsersByAgent = new Map<string, Set<string>>()
-  for (const row of aclRows) {
-    if (row.role !== 'owner') continue
-    const owners = ownerUsersByAgent.get(row.agentSlug) ?? new Set<string>()
-    owners.add(row.userId)
-    ownerUsersByAgent.set(row.agentSlug, owners)
-  }
+  const sharesAnOwner = callerEligibility(aclRows)
 
   const callers = (await Promise.all(agents
     .filter((agent) => agent.slug !== targetSlug)
     .map(async (agent) => {
-      if (authMode) {
-        const callerOwners = ownerUsersByAgent.get(agent.slug)
-        if (!callerOwners || ![...callerOwners].some((userId) => targetUsers.has(userId))) return []
-      }
+      if (authMode && !sharesAnOwner(agent.slug, targetSlug)) return []
 
-      const decision = await evaluatePolicy(agent.slug, targetSlug)
+      const decision = await evaluatePolicy(agent.slug, targetSlug, 'invoke')
       if (decision === 'block') return []
       return [{
         slug: agent.slug,
         displaySlug: agent.displaySlug,
         name: agent.name,
         decision,
+        readDecision: await evaluatePolicy(agent.slug, targetSlug, 'read'),
+        avatar: agent.avatar ?? null,
         canAccess: !authMode || viewerCanAccessAll || viewerAgents.has(agent.slug),
       }]
     })))

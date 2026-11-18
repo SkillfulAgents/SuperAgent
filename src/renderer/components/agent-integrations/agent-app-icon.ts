@@ -1,7 +1,6 @@
 import type { ApiAgent } from '@shared/lib/types/api'
 import { orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
-import { hexMix } from '@shared/lib/types/agent-avatar-orbs'
-import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
+import { APP_ICON_GROUND_PALENESS, avatarSource, orbGround, ORB_ON_GROUND_FILL } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { orbSvg, svgToPng } from '@renderer/components/agents/agent-avatar/orb-image'
 
 export type AppIconAgent = Pick<ApiAgent, 'slug' | 'avatar'>
@@ -17,7 +16,7 @@ const ICON_SIZE = 1024
 export async function agentAppIcon(agent: AppIconAgent): Promise<Blob> {
   if (!agent.avatar) throw new Error('This agent has no avatar')
   const { orb, shape } = avatarSource(agent.avatar)
-  const svg = orbSvg({ orb, shape, restingPhi: orbRestingPhi(agent.slug), size: ICON_SIZE, fill: 0.7, background: hexMix(orb.rim, '#FFFFFF', 0.85) })
+  const svg = orbSvg({ orb, shape, restingPhi: orbRestingPhi(agent.slug), size: ICON_SIZE, fill: ORB_ON_GROUND_FILL, background: orbGround(orb, APP_ICON_GROUND_PALENESS) })
   return svgToPng(svg, ICON_SIZE)
 }
 
