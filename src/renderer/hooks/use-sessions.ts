@@ -8,7 +8,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
 import { useSendMessage } from '@renderer/hooks/use-messages'
 import { useResolvedAgentId, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
-import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
+import { applySessionActivityStatus, patchSessionInCaches, removeSessionFromCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
@@ -186,7 +186,9 @@ export function useDeleteSession() {
       // 204 No Content - no body to parse
     },
     onSuccess: (_, variables) => {
-      invalidateNotificationCaches(queryClient, resolveAgentSlugFromCache(queryClient, variables.agentSlug))
+      const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
+      removeSessionFromCaches(queryClient, resolvedSlug, variables.id)
+      invalidateNotificationCaches(queryClient, resolvedSlug, { deletedSessionId: variables.id })
       // A Todo item started in it lets go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
