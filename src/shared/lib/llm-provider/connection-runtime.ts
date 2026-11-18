@@ -37,7 +37,9 @@ export async function resolveConnectionRuntimeInherit(
     await storedSelection(surface.model, surface.llmProviderId, current),
     await storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId, current)
   )
-  return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId }
+  return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId, wireModel: resolved.wireModel,
+    // What the catalog needs, never the row: its config holds the connection's credentials.
+    connection: { provider: resolved.connection.provider, modelOverrides: resolved.connection.modelOverrides } }
 }
 
 /**

@@ -24,7 +24,7 @@
  * (`live()`, `sessions.live()`): reads consumed together are taken together,
  * and a read → decide → write is one op, so no state changes between them.
  */
-import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import type {
   ContainerInfo,
@@ -68,7 +68,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
+import type { ReviewDecisionDetail, ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
@@ -808,7 +808,7 @@ export interface ReviewOps {
   /** One review waiting on the user, or null when this agent holds none by that id. */
   get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
-  submit(id: string, decision: 'allow' | 'deny', reason?: string): Promise<boolean>
+  submit(id: string, decision: 'allow' | 'deny', detail?: ReviewDecisionDetail): Promise<boolean>
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */
@@ -830,6 +830,7 @@ export interface ReviewOps {
       operation: 'list' | 'read' | 'invoke' | 'create'
       preview?: string
       fileTransfer?: XAgentFileTransfer
+      runtime?: XAgentRuntime
       /** The session the call came from, when the request named one. */
       callerSessionId?: string
     },
@@ -841,8 +842,8 @@ export interface ReviewOps {
   resume(id: string): Promise<ReviewOutcome>
   /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
   settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
-  /** `AgentReviews.takeDenyReason`: what the person typed with a deny, once. */
-  takeDenyReason(id: string): Promise<string | undefined>
+  /** `AgentReviews.takeDecisionDetail`: what came with the decision, once. */
+  takeDecisionDetail(id: string): Promise<ReviewDecisionDetail>
 }
 
 /** Computer-use permission grants and the active app — the agent's own `AgentComputerUse`, owned by the actor. */

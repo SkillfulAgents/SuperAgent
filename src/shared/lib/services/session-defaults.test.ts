@@ -64,7 +64,9 @@ it('resolves a session start from the settings it is given, reading none of its 
   expect(launch.customEnvVars).toEqual({ TEAM: 'blue' })
   expect(launch.maxBrowserTabs).toBe(3)
   expect(launch.agentPrefs).toMatchObject({ defaultModel: 'model-b', defaultLlmProviderId: second })
-  expect(picked).toMatchObject({ model: 'model-a', llmProviderId: first, effort: 'high' })
+  expect(picked).toMatchObject({ model: 'model-a', llmProviderId: first, effort: 'high', wireModel: 'model-a', connection: { provider: 'generic' } })
+  // The catalog source rides the result, never the connection's credentials.
+  expect(JSON.stringify(picked)).not.toContain('first-key')
   expect(prewarm).toMatchObject({ model: 'model-b', llmProviderId: second })
 })
 

@@ -497,7 +497,7 @@ async function answerRequest(
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
-    submit: async (id, decision, reason) => deps.reviewManager.submitDecision(slug, id, decision, reason),
+    submit: async (id, decision, detail) => deps.reviewManager.submitDecision(slug, id, decision, detail),
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
@@ -508,7 +508,7 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
     withdraw: async (id) => deps.reviewManager.withdraw(slug, id),
     resume: (id) => deps.reviewManager.resume(slug, id),
     settle: (id, decision) => deps.reviewManager.settle(slug, id, decision),
-    takeDenyReason: (id) => deps.reviewManager.takeDenyReason(slug, id),
+    takeDecisionDetail: (id) => deps.reviewManager.takeDecisionDetail(slug, id),
   }
 }
 

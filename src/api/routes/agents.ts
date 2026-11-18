@@ -2,10 +2,11 @@ import { agentNotificationPreview } from '@shared/lib/notifications/agent-notifi
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
-import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
+import { listConnections, getConnection, connectionCatalogFrom, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
-import { requiresOneTimeXAgentReview, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { requiresOneTimeXAgentReview, xAgentPickSchema, xAgentReviewNamesTarget, type XAgentPick, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
@@ -8153,11 +8154,39 @@ async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview
   return canUseAgent(c, review.targetAgentSlug)
 }
 
+/**
+ * The model the person allowing the card picked for the new session: a name in
+ * the catalog of the connection the card showed, whoever clicks. A deny, a
+ * review already gone, or nothing picked has nothing to check.
+ */
+async function checkXAgentPick(
+  decision: 'allow' | 'deny',
+  pending: { xAgent?: XAgentReview } | null,
+  raw: unknown,
+): Promise<{ pick?: XAgentPick } | { error: string }> {
+  if (decision !== 'allow' || !pending || raw === undefined) return {}
+  const review = pending.xAgent
+  const parsed = xAgentPickSchema.safeParse(raw)
+  if (!parsed.success) return { error: 'Invalid model choice' }
+  const connectionId = review?.operation === 'invoke' ? review.runtime?.llmProviderId : undefined
+  if (!review || !connectionId) return { error: "This request doesn't start a new session, so its model can't be changed." }
+  // The target may have moved to another connection while the card waited.
+  const settings = await getSettings()
+  const prefs = await readAgentPreferences(review.targetAgentSlug, settings)
+  const current = prefs.defaultLlmProviderId ?? (await resolveGlobalSelection(undefined, settings))?.llmProviderId
+  const row = current === connectionId ? await getConnection(connectionId) : null
+  if (!row) return { error: "This agent's model connection changed. Your choice was cleared." }
+  if (!resolveSelection({ llmProviderId: connectionId, model: parsed.data.model }, [{ id: connectionId, catalog: connectionCatalogFrom(row, settings) }])) {
+    return { error: "That model isn't available to this agent. Pick another one." }
+  }
+  return { pick: { ...parsed.data, llmProviderId: connectionId } }
+}
+
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const reviewId = c.req.param('reviewId')
-  const body = await c.req.json<{ decision: 'allow' | 'deny'; reason?: string }>()
+  const body = await c.req.json<{ decision: 'allow' | 'deny'; reason?: string; pick?: unknown }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
@@ -8177,10 +8206,14 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
     }
   }
 
+  // A gone review is answered below with the 404 the card already reads as settled.
+  const checked = await checkXAgentPick(body.decision, pendingReview, body.pick)
+  if ('error' in checked) return c.json({ error: checked.error }, 409)
+
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
-  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, cleanUserReason(body.reason))
+  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, { reason: cleanUserReason(body.reason), pick: checked.pick })
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -8202,6 +8235,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     reviewType?: 'mcp' | 'api' | 'xagent'
     // For xagent: { operation: 'list' | 'read' | 'invoke', targetSlug?: string }
     xAgent?: { operation: 'list' | 'read' | 'invoke'; targetSlug: string | null }
+    pick?: unknown
   }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
@@ -8232,6 +8266,9 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   if (body.decision === 'allow' && body.reviewType === 'xagent' && body.xAgent && await evaluateXAgentPolicy(slug, body.xAgent.operation, checkTarget) === 'block') {
     return blockedResponse()
   }
+  // Checked before the grant is saved, so a refused pick leaves none behind. A gone review saves the grant as before.
+  const checked = await checkXAgentPick(body.decision, pendingReview, body.pick)
+  if ('error' in checked) return c.json({ error: checked.error }, 409)
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
@@ -8364,7 +8401,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   // Submit decision for this review (and any others matching the same scope).
   // Pass slug so submitDecision rejects cross-agent attempts (see B1).
-  await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, { pick: checked.pick })
   await agentRegistry.get(slug).inputs.reviews.resolveMatching(body.scope, body.decision)
 
   // "Allow all <label>" saves a label sentinel ('*read'/'*write'/'*destructive'),

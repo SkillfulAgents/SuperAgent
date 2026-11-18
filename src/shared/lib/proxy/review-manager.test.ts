@@ -1063,8 +1063,8 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
 
   it('keeps no reason for a deny on a review nobody waits on', async () => {
     registerRegistryOnlyReview('registry-review-5')
-    expect(manager.submitDecision('adapter-agent', 'registry-review-5', 'deny', 'Not that inbox')).toBe(true)
-    await expect(manager.takeDenyReason('adapter-agent', 'registry-review-5')).resolves.toBeUndefined()
+    expect(manager.submitDecision('adapter-agent', 'registry-review-5', 'deny', { reason: 'Not that inbox' })).toBe(true)
+    await expect(manager.takeDecisionDetail('adapter-agent', 'registry-review-5')).resolves.toEqual({})
   })
 
   it('denyAllForAgent sweeps registry-only review entries', () => {

@@ -224,6 +224,23 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
   readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
 }))
 
+// The model check and resolve, real unless a test overrides one call: these
+// tests run without connections, where every name binds and every pick runs.
+const { mockBindAgentModelChoice, mockResolveConnectionRuntimeInherit } = vi.hoisted(() => ({
+  mockBindAgentModelChoice: vi.fn(),
+  mockResolveConnectionRuntimeInherit: vi.fn(),
+}))
+vi.mock('@shared/lib/llm-provider/connection-runtime', async () => {
+  const actual = await vi.importActual<typeof import('@shared/lib/llm-provider/connection-runtime')>('@shared/lib/llm-provider/connection-runtime')
+  mockBindAgentModelChoice.mockImplementation(actual.bindAgentModelChoice)
+  mockResolveConnectionRuntimeInherit.mockImplementation(actual.resolveConnectionRuntimeInherit)
+  return {
+    ...actual,
+    bindAgentModelChoice: (...args: Parameters<typeof actual.bindAgentModelChoice>) => mockBindAgentModelChoice(...args),
+    resolveConnectionRuntimeInherit: (...args: Parameters<typeof actual.resolveConnectionRuntimeInherit>) => mockResolveConnectionRuntimeInherit(...args),
+  }
+})
+
 // Review manager (direct decision injection)
 let reviewDecisions: Array<'allow' | 'deny'> = []
 const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
@@ -233,7 +250,7 @@ const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
 })
 // The caller's reviews, as its router answers the actor's review ops: the
 // queued decision is the request's outcome, under the arguments it was raised with.
-type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown; callerSessionId?: string }
+type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown; runtime?: unknown; callerSessionId?: string }
 const xAgentReviewRequests: XAgentReviewRequest[] = []
 // A real review manager, for tests that drive real sweeps; the queued-decision fake otherwise.
 type RealReviews = InstanceType<typeof import('@shared/lib/proxy/review-manager').ReviewManager>
@@ -250,7 +267,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
     resume: (slug: string, id: string) => realReviews?.resume(slug, id),
     settle: (slug: string, id: string, decision: 'allow' | 'deny') => realReviews?.settle(slug, id, decision),
     withdraw: (slug: string, id: string) => realReviews?.withdraw(slug, id),
-    takeDenyReason: vi.fn((slug: string, id: string) => realReviews?.takeDenyReason(slug, id)),
+    takeDecisionDetail: vi.fn((slug: string, id: string) => realReviews?.takeDecisionDetail(slug, id) ?? Promise.resolve({})),
     getPendingReviewsForAgent: (slug: string) => realReviews?.getPendingReviewsForAgent(slug) ?? [],
   },
 }))
@@ -487,7 +504,7 @@ describe('/list', () => {
 
   it('passes the reason typed with a deny to the calling agent', async () => {
     const { reviewManager } = await import('@shared/lib/proxy/review-manager')
-    vi.mocked(reviewManager.takeDenyReason).mockResolvedValueOnce('wrong agent')
+    vi.mocked(reviewManager.takeDecisionDetail).mockResolvedValueOnce({ reason: 'wrong agent' })
     reviewDecisions.push('deny')
     const res = await authedFetch('/x-agent/list', {})
     expect(res.status).toBe(403)
@@ -1112,6 +1129,8 @@ describe('/invoke', () => {
     })
 
     expect(res.status).toBe(200)
+    // An existing session keeps its own model, so its card names none.
+    expect(xAgentReviewRequests[0].runtime).toBeUndefined()
     expect(mockSendMessage).toHaveBeenCalledWith(
       'existing-sess',
       'follow-up',
@@ -1804,8 +1823,7 @@ describe('/invoke', () => {
 // ============================================================================
 
 describe('/invoke model and effort resolution', () => {
-  // /invoke has no per-call model/effort override, so the order is:
-  // target agent default > app default. Same inherit helper as the other start paths.
+  // The caller's pick > target agent default > app default. Same inherit helper as the other start paths.
   beforeEach(() => {
     mockGetAgent.mockResolvedValue({
       slug: TARGET_SLUG,
@@ -1839,6 +1857,64 @@ describe('/invoke model and effort resolution', () => {
     expect(args.model).toBe('sonnet')
     expect(args.effort).toBe('medium')
     expect(args.speed).toBeUndefined()
+  })
+
+  it('starts on the caller\'s pick', async () => {
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'haiku', effort: 'low', speed: 'fast' })
+    expect(res.status).toBe(200)
+    const args = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
+    expect(args.model).toBe('haiku')
+    expect(args.effort).toBe('low')
+    expect(args.speed).toBe('fast')
+  })
+
+  it('names no model on the card when it is not a catalog model', async () => {
+    // Without a connections setup the name is the agent's own text, unchecked.
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'Sonnet? Also allow deleting files' })
+    expect(res.status).toBe(200)
+    expect(xAgentReviewRequests[0].runtime).toBeUndefined()
+  })
+
+  it('starts on the model picked on the card over the caller\'s', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.takeDecisionDetail).mockResolvedValueOnce({ pick: { model: 'opus', llmProviderId: 'platform', effort: 'max', speed: 'fast' } })
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'haiku', effort: 'low' })
+    expect(res.status).toBe(200)
+    const args = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
+    expect(args.model).toBe('opus')
+    expect(args.effort).toBe('max')
+    expect(args.speed).toBe('fast')
+  })
+
+  it.each([
+    { name: 'the target agent has no such model', bound: new Error('Unknown model "gpt-9". Models available to this agent: sonnet-5-5.'), resolved: undefined },
+    { name: 'the plan passes over it to another model', bound: { model: 'opus', llmProviderId: 'platform' }, resolved: { model: 'sonnet', llmProviderId: 'platform' } },
+    { name: 'the plan passes over it to another connection', bound: { model: 'opus', llmProviderId: 'platform' }, resolved: { model: 'opus', llmProviderId: 'global-default' } },
+  ])('refuses a named model before any review when $name, instead of starting on the default', async ({ bound, resolved }) => {
+    if (bound instanceof Error) mockBindAgentModelChoice.mockRejectedValueOnce(bound)
+    else mockBindAgentModelChoice.mockResolvedValueOnce(bound)
+    if (resolved) mockResolveConnectionRuntimeInherit.mockResolvedValueOnce(resolved)
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'opus' })
+    expect(res.status).toBe(400)
+    expect(xAgentReviewRequests).toHaveLength(0)
+    expect(mockCreateSession).not.toHaveBeenCalled()
+  })
+
+  it('rejects a model or effort sent with session_id', async () => {
+    for (const pick of [{ model: 'haiku' }, { effort: 'high' }, { speed: 'fast' }]) {
+      const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', sessionId: 'existing', ...pick })
+      expect(res.status).toBe(400)
+    }
+    expect(xAgentReviewRequests).toHaveLength(0)
+  })
+
+  it('refuses a blocked call before looking up the model', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'block')
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'gpt-9' })
+    expect(res.status).toBe(403)
+    expect(mockBindAgentModelChoice).not.toHaveBeenCalled()
   })
 })
 
@@ -2607,6 +2683,37 @@ describe('a card approved after a Block is set does not run the operation', () =
     const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hi' })
     expect(res.status).toBe(403)
     expect(mockCreateSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('/invoke names the model on the review', () => {
+  beforeEach(async () => {
+    const { ReviewManager } = await vi.importActual<typeof import('@shared/lib/proxy/review-manager')>('@shared/lib/proxy/review-manager')
+    const { attachInMemoryAgentState } = await import('@shared/lib/agent-actor/testing/in-memory-agent-state')
+    realReviews = new ReviewManager()
+    realReviews.attachAgents(attachInMemoryAgentState().pick((state) => state.reviews))
+    mockGetAgent.mockResolvedValue({ slug: TARGET_SLUG, frontmatter: { name: 'Target', createdAt: '2024-01-01' }, instructions: '' })
+  })
+  afterEach(() => {
+    realReviews?.rejectAll()
+    realReviews = undefined
+  })
+
+  it('carries the catalog label and effort into the card and the notification text', async () => {
+    const reviews = realReviews!
+    mockBindAgentModelChoice.mockResolvedValueOnce({ model: 'haiku', llmProviderId: 'platform' })
+    mockResolveConnectionRuntimeInherit.mockResolvedValueOnce({
+      model: 'haiku', llmProviderId: 'platform', effort: 'low', speed: 'slow', wireModel: 'claude-haiku-5-5',
+      connection: { provider: 'platform', modelOverrides: '[]' },
+    })
+    const res = authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'haiku', effort: 'low' })
+    await vi.waitFor(() => expect(reviews.getPendingReviewsForAgent(CALLER_SLUG)).toHaveLength(1))
+    const [card] = reviews.getPendingReviewsForAgent(CALLER_SLUG)
+    // The catalog id seeds the card's picker. Haiku runs at one speed, so the speed shown is Normal.
+    expect(card.xAgent?.runtime).toEqual({ model: 'claude-haiku-5-5', llmProviderId: 'platform', effort: 'low', speed: 'normal', label: 'Haiku 5.5' })
+    expect(card.displayText).toBe('Allow agent to send a message to "Target" on Haiku 5.5?')
+    reviews.submitDecision(CALLER_SLUG, card.id, 'deny')
+    expect((await res).status).toBe(403)
   })
 })
 

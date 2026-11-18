@@ -43,4 +43,14 @@ describe('invoke_agent attachments', () => {
       { callerSessionId: 'caller-session' },
     )
   })
+
+  it('forwards a model and effort pick', async () => {
+    mockCallHost.mockResolvedValue({ sessionId: 'target-session', status: 'running' })
+    const { makeInvokeAgentTool } = await import('./invoke-agent')
+    const agentTool = makeInvokeAgentTool(() => 'caller-session')
+
+    await (agentTool as { handler: (args: unknown) => Promise<unknown> }).handler({ slug: 'target', prompt: 'Review', model: 'sonnet', effort: 'high', speed: 'fast' })
+
+    expect(mockCallHost).toHaveBeenCalledWith('invoke', { slug: 'target', prompt: 'Review', model: 'sonnet', effort: 'high', speed: 'fast' }, expect.anything(), expect.anything())
+  })
 })

@@ -10,6 +10,27 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
 }))
 
+// The composer's picker, reduced to one choice: it reads connections through react-query in the app.
+// It snaps effort to the model on mount, as the real one does when a model lacks it, and swaps a
+// model the viewer's plan locks ('locked') for another, as the real one does.
+vi.mock('@renderer/components/messages/composer-options', async () => {
+  const { useEffect, useState } = await import('react')
+  return {
+    useComposerOptions: ({ initial: { model: initialModel, effort: initialEffort, speed: initialSpeed } = {}, onlyLlmProviderId }: { initial?: { model?: string; effort?: string; speed?: string }; onlyLlmProviderId?: string }) => {
+      const [model, setModel] = useState(initialModel === 'locked' ? 'claude-haiku-5-5' : initialModel)
+      // 'loading': the card's connection has not arrived yet.
+      const [effort, setEffort] = useState(initialEffort)
+      const [speed, setSpeed] = useState(initialSpeed)
+      return { model, setModel, effort, setEffort, speed, setSpeed, connections: onlyLlmProviderId === 'loading' ? [] : [{ id: onlyLlmProviderId }] }
+    },
+    ComposerOptions: ({ state, onUserChange }: { state: { model?: string; setModel: (model: string) => void; setEffort: (effort: string) => void }; onUserChange?: () => void }) => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
+      useEffect(() => { state.setEffort('high') }, [])
+      return <button type="button" data-testid="picker" onClick={() => { onUserChange?.(); state.setModel('claude-opus-5-5') }}>{state.model}</button>
+    },
+  }
+})
+
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(),
 }))
@@ -167,6 +188,69 @@ describe('XAgentReviewRequestItem buttons', () => {
     fireEvent.change(input, { target: { value: 'wrong agent' } })
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
     expect(vi.mocked(apiFetch).mock.calls[0]).toEqual(['/api/agents/caller/proxy-review/review-7', expect.objectContaining({ body: JSON.stringify({ decision: 'deny', reason: 'wrong agent' }) })])
+  })
+})
+
+describe('XAgentReviewRequestItem model', () => {
+  const invokeCard: XAgentReview = { targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke', runtime: { model: 'sonnet', llmProviderId: 'platform', effort: 'xhigh', speed: 'fast', label: 'Sonnet 5.5' } }
+  const postedBody = () => JSON.parse(String((vi.mocked(apiFetch).mock.calls[0][1] as RequestInit).body))
+  afterEach(() => { mockUser = { isAuthMode: false, rolesReady: true, canUseAgent: () => true } })
+
+  it('names the model, effort and speed in the button row for someone who cannot allow', () => {
+    mockUser = { isAuthMode: true, rolesReady: true, canUseAgent: (slug) => slug === 'caller' }
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={invokeCard} onComplete={vi.fn()} />)
+    const line = screen.getByTestId('xagent-review-model')
+    expect(line).toHaveTextContent('Model: Sonnet 5.5 · Extra High · Fast')
+    expect(line.closest('[data-request-item-actions]')).not.toBeNull()
+    expect(screen.queryByTestId('picker')).toBeNull()
+  })
+
+  it('offers whoever can allow the picker, and an untouched Allow sends no model after its snap or a Tab through it', async () => {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={invokeCard} onComplete={vi.fn()} />)
+    expect(screen.getByTestId('picker')).toHaveTextContent('sonnet')
+    fireEvent.keyDown(screen.getByTestId('picker'), { key: 'Tab' })
+    fireEvent.pointerDown(screen.getByTestId('picker'))
+    await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-allow-once-btn')) })
+    expect(postedBody()).toEqual({ decision: 'allow' })
+  })
+
+  it.each([
+    { name: 'until the card\'s connection has loaded', runtime: { llmProviderId: 'loading' } },
+    { name: 'when the viewer\'s plan would swap the model that runs', runtime: { model: 'locked' } },
+  ])('shows the line, not the picker, $name', ({ runtime }) => {
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={{ ...invokeCard, runtime: { ...invokeCard.runtime!, ...runtime } }} onComplete={vi.fn()} />)
+    expect(screen.queryByTestId('picker')).toBeNull()
+    expect(screen.getByTestId('xagent-review-model')).toHaveTextContent('Model: Sonnet 5.5')
+  })
+
+  it('sends the model picked on the card with the allow', async () => {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={invokeCard} onComplete={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('picker'))
+    await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-allow-once-btn')) })
+    expect(postedBody()).toEqual({ decision: 'allow', pick: { model: 'claude-opus-5-5', effort: 'high', speed: 'fast' } })
+  })
+
+  it('drops a refused pick, so the next Allow runs the card\'s model', async () => {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "That model isn't available to this agent. Pick another one." }), { status: 409 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={invokeCard} onComplete={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('picker'))
+    await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-allow-once-btn')) })
+    expect(screen.getByText("Error: That model isn't available to this agent. Pick another one.")).toBeInTheDocument()
+    expect(screen.getByTestId('picker')).toHaveTextContent('sonnet')
+    await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-allow-once-btn')) })
+    expect(JSON.parse(String((vi.mocked(apiFetch).mock.calls[1][1] as RequestInit).body))).toEqual({ decision: 'allow' })
+  })
+
+  it('names no model on a card without one', () => {
+    render(<XAgentReviewRequestItem reviewId="review-9" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke' }} onComplete={vi.fn()} />)
+    expect(screen.queryByTestId('xagent-review-model')).toBeNull()
   })
 })
 

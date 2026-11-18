@@ -89,6 +89,14 @@ describe('useComposerOptions: a locked model counts as unset', () => {
     expect(result.current.model).toBe('claude-fable-5-1')
   })
 
+  it('stays on the one connection it is limited to, even when the next runnable default is elsewhere', () => {
+    state.connections = { connections: [PLATFORM, ANTHROPIC], defaultSelection: { llmProviderId: 'anthropic-conn', model: 'claude-fable-5-1' } }
+    const { result } = render({ initial: { llmProviderId: 'platform-conn', model: 'claude-fable-5-1' }, onlyLlmProviderId: 'platform-conn' })
+    expect(result.current.llmProviderId).toBe('platform-conn')
+    expect(result.current.model).toBe('claude-opus-5-5')
+    expect(result.current.connections?.map((connection) => connection.id)).toEqual(['platform-conn'])
+  })
+
   it('returns to the saved default once it can run (the default is never rewritten)', () => {
     const { result, rerender } = render({})
     expect(result.current.model).toBe('claude-opus-5-5')
