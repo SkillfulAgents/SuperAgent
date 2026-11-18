@@ -3,6 +3,7 @@ import { getTableConfig } from 'drizzle-orm/sqlite-core'
 import { chatIntegrations, scheduledTasks, todos, webhookTriggers } from '@shared/lib/db/schema'
 import {
   agentDefaultRuntimeOptions,
+  fromStoredRuntimeOptions,
   parseRuntimeOptions,
   pickRuntimeOptions,
   RUNTIME_OPTION_KEYS,
@@ -19,16 +20,9 @@ describe('the tables that keep runtime options', () => {
     ['webhook_triggers', webhookTriggers],
     ['chat_integrations', chatIntegrations],
     ['todos', todos],
-  ])('%s has every knob', (_name, table) => {
+  ])('%s has every knob, and drops a pick of a deleted connection', (_name, table) => {
     const columns = getTableConfig(table).columns.map((c) => c.name)
     for (const key of RUNTIME_OPTION_KEYS) expect(columns).toContain(COLUMN_OF[key])
-  })
-
-  it.each([
-    ['scheduled_tasks', scheduledTasks],
-    ['webhook_triggers', webhookTriggers],
-    ['chat_integrations', chatIntegrations],
-  ])('%s drops a pick of a deleted connection', (_name, table) => {
     const connection = getTableConfig(table).foreignKeys.find((fk) => fk.reference().columns[0].name === 'llm_provider_id')
     expect(getTableConfig(connection!.reference().foreignTable).name).toBe('llm_connections')
     expect(connection!.onDelete).toBe('set null')
@@ -88,6 +82,20 @@ describe('storedRuntimeOptionsUpdate', () => {
     expect(await storedRuntimeOptionsUpdate({ model: 'sonnet', llmProviderId: 'conn-2' }, { llmProviderId: 'conn-1' }, ask)).toEqual({ model: 'sonnet', llmProviderId: 'conn-2' })
     expect(await storedRuntimeOptionsUpdate({ model: 'sonnet', llmProviderId: null }, { llmProviderId: 'conn-1' }, ask)).toEqual({ model: 'sonnet', llmProviderId: null })
     expect(ask).not.toHaveBeenCalled()
+  })
+})
+
+describe('fromStoredRuntimeOptions', () => {
+  it('turns a stored row into runtime options, dropping levels this build does not know', () => {
+    expect(fromStoredRuntimeOptions({ llmProviderId: 'conn-1', model: 'opus', effort: 'high', speed: 'warp' }))
+      .toEqual({ llmProviderId: 'conn-1', model: 'opus', effort: 'high' })
+    expect(fromStoredRuntimeOptions({ llmProviderId: null, model: null, effort: null, speed: 'fast' })).toEqual({ speed: 'fast' })
+    expect(fromStoredRuntimeOptions({})).toEqual({})
+  })
+
+  it('keeps a model on no connection as such, and drops a connection with no model', () => {
+    expect(fromStoredRuntimeOptions({ llmProviderId: null, model: 'opus', effort: null, speed: null })).toEqual({ llmProviderId: null, model: 'opus' })
+    expect(fromStoredRuntimeOptions({ llmProviderId: 'conn-1', model: null, effort: null, speed: null })).toEqual({})
   })
 })
 

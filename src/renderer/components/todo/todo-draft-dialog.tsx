@@ -21,7 +21,7 @@ import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
-import { agentDefaultRuntimeOptions } from '@shared/lib/container/runtime-options'
+import { agentDefaultRuntimeOptions, fromStoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import {
   useCreateTodo,
   useDeleteTodo,
@@ -199,8 +199,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     newAgent: initial?.newAgent ?? false,
     model: initial?.model ?? null,
     llmProviderId: initial?.llmProviderId ?? null,
-    effort: initial?.effort ?? null,
-    speed: initial?.speed ?? null,
+    // A stored level this build does not know reads as not picked.
+    effort: fromStoredRuntimeOptions(initial ?? {}).effort ?? null,
+    speed: fromStoredRuntimeOptions(initial ?? {}).speed ?? null,
   }))
   const fieldsRef = useRef(fields)
   fieldsRef.current = fields
@@ -443,8 +444,8 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       model: initial?.model ?? undefined,
       // A stored model with no connection leaves the connection to the picker; it is not a pick of none.
       llmProviderId: initial?.model ? initial.llmProviderId ?? undefined : undefined,
-      effort: initial?.effort ?? undefined,
-      speed: initial?.speed ?? undefined,
+      effort: fromStoredRuntimeOptions(initial ?? {}).effort,
+      speed: fromStoredRuntimeOptions(initial ?? {}).speed,
     },
     agentDefault: agentDefaultRuntimeOptions(agentPrefs),
     agentKey: fields.newAgent ? NEW_AGENT_KEY : fields.agentSlug ?? '',
