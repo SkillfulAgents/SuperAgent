@@ -37,6 +37,7 @@ import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-ag
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent, ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
 import type { CreateAgentSurface } from '@renderer/router/search-schemas'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 
 /**
  * Ceiling, not a delay: the offer resolves the instant the discoverable list
@@ -95,6 +96,8 @@ export interface CreateAgentFormProps {
   existingAgent?: Pick<ApiAgent, 'slug' | 'displaySlug'>
   initialPrompt?: string
   onPromptChange?: (prompt: string) => void
+  initialRuntimeOptions?: RuntimeOptions
+  onRuntimeOptionsChange?: (options: RuntimeOptions) => void
   /**
    * Makes the form a step rather than the end: once a prompt is typed,
    * Cmd+Enter (or the host's own Continue, through `continueRef`) calls this
@@ -117,7 +120,7 @@ export interface CreateAgentFormProps {
   exiting?: boolean
 }
 
-export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, namedFlow, existingAgent, initialPrompt, onPromptChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, namedFlow, existingAgent, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -193,9 +196,11 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
     () => (handoffModel ? findCatalogModel(handoffModel, catalog)?.id : undefined),
     [handoffModel, catalog],
   )
-  // No agent exists yet to supply a per-agent override. The hook falls back
-  // to the app-wide selection, then the active provider's catalog default.
-  const composerOptions = useComposerOptions({ initial: { model: handoffSeedModel } })
+  const composerOptions = useComposerOptions({ initial: { model: handoffSeedModel, ...initialRuntimeOptions } })
+  const { model, effort, speed, llmProviderId } = composerOptions.toRuntimeOptions()
+  useEffect(() => {
+    onRuntimeOptionsChange?.({ model, effort, speed, llmProviderId })
+  }, [onRuntimeOptionsChange, model, effort, speed, llmProviderId])
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)

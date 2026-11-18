@@ -1,11 +1,14 @@
 import { z } from 'zod'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 
 const creationDraftSchema = z.object({
-  agent: z.object({ slug: z.string(), displaySlug: z.string() }),
+  agent: z.object({ slug: z.string(), displaySlug: z.string() }).optional(),
+  requestId: z.string().uuid().optional(),
   identity: z.object({ name: z.string(), avatar: agentAvatarSchema }),
   stage: z.enum(['name', 'describe', 'addons']),
   prompt: z.string(),
+  runtimeOptions: RuntimeOptionsSchema.optional(),
 })
 export type ChosenAgentIdentity = z.infer<typeof creationDraftSchema>['identity']
 export type CreationDraft = z.infer<typeof creationDraftSchema>
@@ -30,6 +33,6 @@ export function saveCreationDraft(key: string | null, draft: CreationDraft | nul
     if (draft) sessionStorage.setItem(key, JSON.stringify(creationDraftSchema.parse(draft)))
     else sessionStorage.removeItem(key)
   } catch {
-    // The agent itself is already saved on the server.
+    // Storage may be unavailable in this browser. Creation can still finish.
   }
 }

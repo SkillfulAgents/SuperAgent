@@ -1,10 +1,11 @@
+import { useEffect, useRef, useState } from 'react'
+import { v4 as uuid } from 'uuid'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { useCreateAgent, useStartAgent, useUpdateAgent, useUpdateAgentAvatar } from '@renderer/hooks/use-agents'
 import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { creationDraftKey, readCreationDraft, saveCreationDraft, type ChosenAgentIdentity, type CreationDraft } from '@renderer/components/agents/creation-draft'
-import { useEffect, useRef, useState } from 'react'
 import type { CreateAgentFormProps } from '@renderer/components/agents/create-agent-form'
 import { AGENT_AVATAR_SHAPES, DEFAULT_AGENT_AVATAR_COLORS, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
@@ -28,12 +29,15 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
   const [identity, setIdentity] = useState<ChosenAgentIdentity>(() => draft?.identity ?? { name: '', avatar: randomAgentAvatar() })
   const [agent, setAgent] = useState(draft?.agent)
   const [prompt, setPrompt] = useState(draft?.prompt ?? '')
+  const [runtimeOptions, setRuntimeOptions] = useState(draft?.runtimeOptions)
   const [importing, setImporting] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const requestId = useRef(draft?.requestId)
+  const resumeCreation = useRef(!!draft?.requestId && !draft.agent && draft.stage === 'describe')
+  const [saving, setSaving] = useState(resumeCreation.current)
   const [addonBusy, setAddonBusy] = useState(false)
   const busy = useRef(false)
   const finished = useRef(false)
-  const confirmed = useRef(draft?.identity)
+  const confirmed = useRef(draft?.agent ? draft.identity : undefined)
   const submitRef = useRef<(() => Promise<void>) | null>(null)
   const continueRef = useRef<(() => Promise<void>) | null>(null)
   const createAgent = useCreateAgent()
@@ -45,8 +49,17 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
   const { track } = useAnalyticsTracking()
 
   useEffect(() => {
-    if (!finished.current && agent && stage !== 'templates') saveCreationDraft(key, { agent, identity: confirmed.current ?? identity, stage, prompt })
-  }, [key, agent, identity, stage, prompt])
+    if (!finished.current && (agent || requestId.current) && stage !== 'templates') {
+      saveCreationDraft(key, { agent, requestId: agent ? undefined : requestId.current, identity: confirmed.current ?? identity, stage, prompt, runtimeOptions })
+    }
+  }, [key, agent, identity, saving, stage, prompt, runtimeOptions])
+
+  useEffect(() => {
+    if (resumeCreation.current) {
+      resumeCreation.current = false
+      void confirmIdentity()
+    }
+  })
 
   async function confirmIdentity() {
     if (busy.current || !identity.name.trim()) return
@@ -56,24 +69,28 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
     setIdentity(chosen)
     setStage('describe')
     try {
-      if (!agent) {
-        const created = await createAgent.mutateAsync(chosen)
-        confirmed.current = chosen
-        setAgent({ slug: created.slug, displaySlug: created.displaySlug })
+      let target = agent
+      if (!target) {
+        requestId.current ??= uuid()
+        // Store the request before dispatch. A refresh can replay this exact create.
+        saveCreationDraft(key, { requestId: requestId.current, identity: chosen, stage: 'describe', prompt, runtimeOptions })
+        const created = await createAgent.mutateAsync({ ...chosen, requestId: requestId.current })
+        target = { slug: created.slug, displaySlug: created.displaySlug }
+        confirmed.current = { name: created.name, avatar: created.avatar ?? chosen.avatar }
+        setAgent(target)
         track('agent_created', { source: 'new', ...(surface && { surface }), num_skills_added_at_creation: 0 })
         if (warmStartEnabled) startAgent.mutate({ slug: created.slug, source: 'warm-start' })
         await onIdentityCreated?.(created)
-      } else {
-        if (confirmed.current?.name !== chosen.name) {
-          const updated = await rename.mutateAsync({ slug: agent.slug, name: chosen.name })
-          setAgent({ slug: agent.slug, displaySlug: updated.displaySlug })
-          if (confirmed.current) confirmed.current = { ...confirmed.current, name: chosen.name }
-        }
-        if (confirmed.current?.avatar.color !== chosen.avatar.color || confirmed.current.avatar.shape !== chosen.avatar.shape) {
-          await updateAvatar.mutateAsync({ slug: agent.slug, avatar: chosen.avatar })
-        }
-        confirmed.current = chosen
       }
+      if (confirmed.current?.name !== chosen.name) {
+        const updated = await rename.mutateAsync({ slug: target.slug, name: chosen.name })
+        setAgent({ slug: target.slug, displaySlug: updated.displaySlug })
+        if (confirmed.current) confirmed.current = { ...confirmed.current, name: chosen.name }
+      }
+      if (confirmed.current?.avatar.color !== chosen.avatar.color || confirmed.current.avatar.shape !== chosen.avatar.shape) {
+        await updateAvatar.mutateAsync({ slug: target.slug, avatar: chosen.avatar })
+      }
+      confirmed.current = chosen
     } catch (error) {
       toast.error('Could not save your agent', { description: error instanceof Error ? error.message : undefined })
       setStage('name')
@@ -84,9 +101,9 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
   }
 
   const complete = async (result: { slug: string }) => {
+    await onAgentCreated?.(result)
     finished.current = true
     saveCreationDraft(key, null)
-    await onAgentCreated?.(result)
   }
 
   async function finish(destination: 'home' | 'session') {
@@ -120,6 +137,7 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
   }
   return {
     stage, identity, setIdentity, agent, prompt, setPrompt, named: !!agent || saving,
+    initialRuntimeOptions: draft?.runtimeOptions, setRuntimeOptions,
     saving, addonBusy, setAddonBusy, confirmIdentity, complete, finish, back, showChoices, importing,
     backToName: () => { if (!busy.current && !addonBusy) setStage('name') },
     continueToAddons: () => { if (!busy.current && agent) setStage('addons') },

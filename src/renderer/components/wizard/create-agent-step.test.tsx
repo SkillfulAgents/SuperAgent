@@ -6,7 +6,7 @@ import type { CreateAgentFormProps } from '@renderer/components/agents/create-ag
 import type { SignupHandoff } from '@renderer/context/nav-transient-context'
 
 const { handoff, formProps, formSubmit, create, rename, start, navigate } = vi.hoisted(() => ({
-  create: vi.fn(async () => ({ slug: 'scout', displaySlug: 'scout-id' })),
+  create: vi.fn(async ({ name }: { name: string }) => ({ name, slug: 'scout', displaySlug: 'scout-id' })),
   rename: vi.fn(async () => ({ slug: 'scout', displaySlug: 'scouty-id' })),
   start: vi.fn(),
   navigate: vi.fn(),
@@ -14,9 +14,6 @@ const { handoff, formProps, formSubmit, create, rename, start, navigate } = vi.h
   formProps: { current: null as CreateAgentFormProps | null },
   formSubmit: vi.fn(async () => {}),
 }))
-
-
-
 
 vi.mock('@renderer/hooks/use-agents', () => ({
   useCreateAgent: () => ({ mutateAsync: create }),
@@ -99,7 +96,7 @@ describe('CreateAgentStep', () => {
 
     expect(screen.getByRole('heading', { name: 'What job do you want to give me?' })).toBeInTheDocument()
     expect(screen.getByTestId('agent-identity-name-label')).toHaveTextContent('Scout')
-    expect(create).toHaveBeenCalledWith({ name: 'Scout', avatar: expect.objectContaining({ shape: 'hexagon' }) })
+    expect(create).toHaveBeenCalledWith({ name: 'Scout', avatar: expect.objectContaining({ shape: 'hexagon' }), requestId: expect.any(String) })
   })
 
   it('continues on Enter in the name field', async () => {

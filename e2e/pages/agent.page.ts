@@ -31,11 +31,8 @@ export class AgentPage {
   }
 
   /**
-   * Create an agent the way a user does: "New Agent" opens the create page,
-   * named here after the prompt; the prompt, then Create Agent on the add-ons
-   * step (left as they start), creates the agent and its first session. Then
-   * click the agent breadcrumb so the caller lands on agent-home (where
-   * agent-settings-button lives) rather than that session.
+   * Save a named agent, give it a job, and start its first session. Return
+   * to the agent's home so callers can open its settings or sidebar row.
    */
   async createAgent(prompt: string, options: CreateAgentOptions = {}) {
     const { waitForSidebarName = true } = options
@@ -48,9 +45,7 @@ export class AgentPage {
     await expect(this.page.locator('[data-testid="agent-addons-step"]')).toBeVisible()
     await this.page.locator('[data-testid="create-agent-finish"]').click()
 
-    // Submit creates the agent and a session, then navigates to the session.
-    // Wait for the message list so we know navigation landed, then go back to
-    // agent-home.
+    // Wait for the session before following its breadcrumb back home.
     await expect(this.page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
     await this.page.locator('[data-testid="agent-breadcrumb"]').click()
     await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()

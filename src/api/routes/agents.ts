@@ -29,6 +29,7 @@ import { createHash, randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+import { createAgentOnce } from './agent-creation-request'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
@@ -1503,16 +1504,22 @@ agents.post('/', async (c) => {
       return c.json({ error: 'Invalid avatar' }, 400)
     }
 
-    const agent = await createAgent({
-      name: name.trim(),
-      description: description?.trim(),
-      avatar: avatar.data,
+    const requestId = z.string().uuid().optional().safeParse(body.requestId)
+    if (!requestId.success) return c.json({ error: 'Invalid creation request ID' }, 400)
+    const userId = getCurrentUserId(c)
+    const result = await createAgentOnce(userId, requestId.data, async () => {
+      const agent = await createAgent({ name: name.trim(), description: description?.trim(), avatar: avatar.data })
+      await createOwnerAclOrRollback(c, agent.slug)
+      return agent
     })
-
-    await createOwnerAclOrRollback(c, agent.slug)
-
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'created', details: { name: name.trim() } })
-    return c.json(agent, 201)
+    if (result.created) {
+      await logAuditEvent({ userId, object: 'agent', objectId: result.created.slug, action: 'created', details: { name: name.trim() } })
+      return c.json(result.created, 201)
+    }
+    if (!result.existingSlug) return c.json({ status: 'creating' }, 202)
+    if (!(await canUseAgent(c, result.existingSlug))) return c.json({ error: 'Agent is unavailable' }, 403)
+    const existing = await getAgentWithStatus(result.existingSlug, { includeSummary: false })
+    return existing ? c.json(existing) : c.json({ error: 'Agent no longer exists' }, 404)
   } catch (error) {
     console.error('Failed to create agent:', error)
     return c.json({ error: 'Failed to create agent' }, 500)

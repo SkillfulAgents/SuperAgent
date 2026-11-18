@@ -83,9 +83,8 @@ export function CreateAgentStep({
   surface,
 }: CreateAgentStepProps) {
   const { stage, identity, named } = flow
-  // The form mounts on the first visit to the job step and then stays, hidden
-  // on the other steps: a typed prompt survives the trip back, and the
-  // add-ons step's Create runs the form's own create.
+  // Keep the composer mounted so its draft and model selection survive step
+  // changes. The add-ons footer submits this same composer.
   const [describeVisited, setDescribeVisited] = useState(stage === 'describe' || stage === 'addons')
   if (stage === 'describe' && !describeVisited) setDescribeVisited(true)
 
@@ -118,6 +117,8 @@ export function CreateAgentStep({
             existingAgent={flow.agent}
             initialPrompt={flow.prompt}
             onPromptChange={flow.setPrompt}
+            initialRuntimeOptions={flow.initialRuntimeOptions}
+            onRuntimeOptionsChange={flow.setRuntimeOptions}
             onContinue={named ? flow.continueToAddons : undefined}
             continueRef={flow.continueRef}
             submitRef={flow.submitRef}
@@ -143,7 +144,7 @@ export function CreateAgentStep({
  * The bottom row's forward button, opposite Back (both the create screen's
  * and the full wizard's): Continue on the name step, which submits its form
  * so it does what Enter does; Continue on the job step, which does what
- * Cmd+Enter in its composer does; Create Agent on the add-ons step.
+ * Cmd+Enter in its composer does; Start session on the add-ons step.
  */
 export function CreateAgentContinueButton({ flow }: { flow: CreateAgentFlow }) {
   if (flow.stage === 'name') {
