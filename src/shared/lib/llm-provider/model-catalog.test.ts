@@ -167,6 +167,7 @@ describe('getProviderCatalog', () => {
     ['gemini-4-carbon', ['low', 'medium', 'high']],
     ['gemini-4-argon', ['low', 'medium', 'high']],
     ['gemini-4-hydrogen', ['low', 'medium', 'high', 'xhigh']],
+    ['gemini-4-neon', ['low', 'medium', 'high', 'xhigh']],
     ['muse-wonder-1.0', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-ember-1.0', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],

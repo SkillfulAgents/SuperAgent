@@ -837,12 +837,15 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
     // Same route and limits as gemini-4-argon below; measured 2026-11-10:
     // efforts low/medium/high only (xhigh/max 400). Listed first so it is the
-    // Google tab default, as Google's strongest model.
+    // Google tab default, as Google's strongest model. The Google rows carry
+    // `strengthRank` in Google's own order (Carbon, Neon, then Argon and
+    // Hydrogen): Carbon's intro price is below Neon's, so price would misrank them.
     id: 'gemini-4-carbon',
     label: 'Gemini 4 Carbon',
     blurb: 'Google strongest model, served via Platform',
     family: 'gemini-carbon',
     isLatest: true,
+    strengthRank: 1,
     isDefault: true,
     icon: 'gemini',
     supportedEfforts: STANDARD_EFFORTS,
@@ -851,6 +854,23 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportsImageInput: true,
     // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
     pricing: pricingFor('gemini-4-carbon'),
+    contextWindow: 1_048_576,
+  },
+  {
+    // Same route as gemini-4-argon; measured 2026-11-18: efforts low through
+    // xhigh (max 400). Flat price across the 1M window.
+    id: 'gemini-4-neon',
+    label: 'Gemini 4 Neon',
+    blurb: 'Google balanced model, served via Platform',
+    family: 'gemini-neon',
+    isLatest: true,
+    strengthRank: 2,
+    icon: 'gemini',
+    supportedEfforts: XHIGH_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    pricing: pricingFor('gemini-4-neon'),
     contextWindow: 1_048_576,
   },
   {
@@ -864,6 +884,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Google flagship, served via Platform',
     family: 'gemini-argon',
     isLatest: true,
+    strengthRank: 3,
     icon: 'gemini',
     supportedEfforts: STANDARD_EFFORTS,
     supportsWebSearch: false,
@@ -882,6 +903,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Google fast model, served via Platform',
     family: 'gemini-hydrogen',
     isLatest: true,
+    strengthRank: 4,
     icon: 'gemini',
     supportedEfforts: XHIGH_EFFORTS,
     supportsWebSearch: false,

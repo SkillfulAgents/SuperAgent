@@ -10,6 +10,7 @@ const FAMILY_LABELS: Record<string, string> = {
   'gemini-carbon': 'Gemini Carbon',
   'gemini-argon': 'Gemini Argon',
   'gemini-hydrogen': 'Gemini Hydrogen',
+  'gemini-neon': 'Gemini Neon',
   'muse-wonder': 'Muse Wonder',
   muse: 'Muse Spark',
   'muse-contributor': 'Muse Spark Contributor',
