@@ -10,7 +10,7 @@
  * Bearer <token>. The route resolves the caller's agent slug from that token, and
  * the cross-agent routes apply xAgentPolicies + ACLs accordingly.
  */
-import type { XAgentFileTransfer, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentPick, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -233,7 +233,7 @@ async function checkAgentPolicy(
   // Only the first read: a card's re-evaluations below always read again.
   savedDecision?: Promise<XAgentDecision>,
   runtime?: XAgentRuntime,
-): Promise<{ allowed: boolean; reason?: string }> {
+): Promise<{ allowed: boolean; reason?: string; pick?: XAgentPick }> {
   // An agent acting on its own sessions crosses no agent boundary: no policy
   // applies and nobody is asked.
   if (targetSlug === callerSlug) return { allowed: true }
@@ -264,7 +264,7 @@ async function checkAgentPolicy(
     if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
       return { allowed: false, reason: 'Blocked by policy' }
     }
-    return { allowed: true }
+    return { allowed: true, pick: review.pick }
   } catch (error) {
     return {
       allowed: false,
@@ -783,7 +783,8 @@ async function invokeRuntime(
   return {
     pick,
     runtime: {
-      model: resolved.model,
+      // The catalog id the picker on the card matches against, not an alias.
+      model: catalogModel.id,
       llmProviderId: resolved.llmProviderId,
       ...(shownEffort ? { effort: shownEffort } : {}),
       ...(shownSpeed ? { speed: shownSpeed } : {}),
@@ -933,6 +934,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
+  // The person allowing the card picked another model for the new session.
+  if (policy.pick) pick = policy.pick
 
   return runWithOptionalUser(attributedUserId, async () => {
     // Stages for runtime 500s: ensure_running → create_session / send_message.

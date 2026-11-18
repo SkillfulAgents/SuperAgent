@@ -37,6 +37,14 @@ afterEach(() => {
 })
 
 describe('awaitReview', () => {
+  it('hands the waiting call the model picked with an allow', async () => {
+    const decision = manager.requestReview(details)
+    const [card] = pending()
+    const pick = { model: 'opus', llmProviderId: 'platform', effort: 'max' as const }
+    expect(manager.submitDecision('agent', card.id, 'allow', { pick })).toBe(true)
+    await expect(decision).resolves.toEqual({ decision: 'allow', pick })
+  })
+
   it('decides a swept review again on the host and settles it without the person', async () => {
     const reevaluate = vi.fn(async () => 'allow' as const)
     const decision = manager.requestReview(details, undefined, { reevaluate })
@@ -70,7 +78,7 @@ describe('awaitReview', () => {
 
     manager.resolveMatchingPending('agent', 'gmail.send', 'allow')
     await flush()
-    expect(manager.submitDecision('agent', card.id, 'deny', 'Not that inbox')).toBe(true)
+    expect(manager.submitDecision('agent', card.id, 'deny', { reason: 'Not that inbox' })).toBe(true)
     finishRecheck('allow')
 
     await expect(decision).resolves.toEqual({ decision: 'deny', reason: 'Not that inbox' })
@@ -87,12 +95,12 @@ describe('awaitReview', () => {
 
     manager.resolveMatchingPending('agent', 'gmail.send', 'allow')
     await flush()
-    manager.submitDecision('agent', card.id, 'deny', 'Not that inbox')
+    manager.submitDecision('agent', card.id, 'deny', { reason: 'Not that inbox' })
     controller.abort()
     finishRecheck('allow')
 
     await expect(decision).rejects.toThrow('Request aborted')
-    await expect(manager.takeDenyReason('agent', card.id)).resolves.toBeUndefined()
+    await expect(manager.takeDecisionDetail('agent', card.id)).resolves.toEqual({})
   })
 
   it('withdraws the card of an aborted request', async () => {

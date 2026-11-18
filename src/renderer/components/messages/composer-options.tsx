@@ -124,10 +124,12 @@ export interface UseComposerOptionsArgs {
    * where the two must visibly stay in sync.
    */
   followDefaults?: boolean
+  /** Offer only this connection: its models, and its own default when the pick cannot run. */
+  onlyLlmProviderId?: string
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
-  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false } = args
+  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false, onlyLlmProviderId } = args
   const {
     effort: initialEffort,
     speed: initialSpeed,
@@ -148,7 +150,10 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialLlmProviderId)
   const [llmProviderId, setLlmProviderId] = useState<string | undefined>(initialLlmProviderId ?? undefined)
   const connectionDirty = useRef(false)
-  const connections = useMemo(() => connectionData?.connections ?? [], [connectionData])
+  const connections = useMemo(
+    () => (connectionData?.connections ?? []).filter((c) => !onlyLlmProviderId || c.id === onlyLlmProviderId),
+    [connectionData, onlyLlmProviderId],
+  )
   const [model, setModelState] = useState<string | undefined>(initialModel)
   const legacyLlmProviderId = connectionData?.legacyLlmProviderId
   const currentSelection = resolveSelection(initialModel && initialLlmProviderId !== null ? { model: initialModel, llmProviderId: initialLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
@@ -456,6 +461,8 @@ interface ComposerOptionsProps {
   footer?: ReactNode
   /** The trigger's size: 34px tall ('default'), or 28px with 6px padding ('sm', the chat composers' action rows). */
   size?: 'default' | 'sm'
+  /** Called when the person picks a model, effort or speed; never for the picker's own snaps. */
+  onUserChange?: () => void
 }
 
 /**
@@ -463,7 +470,7 @@ interface ComposerOptionsProps {
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
-export function ComposerOptions({ state, disabled, includeEffort, footer, size }: ComposerOptionsProps) {
+export function ComposerOptions({ state, disabled, includeEffort, footer, size, onUserChange }: ComposerOptionsProps) {
   return (
     <ComposerOptionsPopover
       state={state}
@@ -471,6 +478,7 @@ export function ComposerOptions({ state, disabled, includeEffort, footer, size }
       includeEffort={includeEffort}
       footer={footer}
       size={size}
+      onUserChange={onUserChange}
     />
   )
 }

@@ -17,6 +17,12 @@ export const xAgentRuntimeSchema = z.object({
 })
 export type XAgentRuntime = z.infer<typeof xAgentRuntimeSchema>
 
+/** What the person approving the card may change: the model, effort and speed of the new session. */
+export const xAgentPickSchema = xAgentRuntimeSchema.pick({ model: true, effort: true, speed: true })
+export type XAgentPickInput = z.infer<typeof xAgentPickSchema>
+/** A pick checked against the target's connection. */
+export type XAgentPick = XAgentPickInput & { llmProviderId: string }
+
 export type XAgentReview = {
   targetAgentSlug: string
   targetAgentName: string

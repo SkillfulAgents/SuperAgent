@@ -267,7 +267,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
     resume: (slug: string, id: string) => realReviews?.resume(slug, id),
     settle: (slug: string, id: string, decision: 'allow' | 'deny') => realReviews?.settle(slug, id, decision),
     withdraw: (slug: string, id: string) => realReviews?.withdraw(slug, id),
-    takeDenyReason: vi.fn((slug: string, id: string) => realReviews?.takeDenyReason(slug, id)),
+    takeDecisionDetail: vi.fn((slug: string, id: string) => realReviews?.takeDecisionDetail(slug, id) ?? Promise.resolve({})),
     getPendingReviewsForAgent: (slug: string) => realReviews?.getPendingReviewsForAgent(slug) ?? [],
   },
 }))
@@ -504,7 +504,7 @@ describe('/list', () => {
 
   it('passes the reason typed with a deny to the calling agent', async () => {
     const { reviewManager } = await import('@shared/lib/proxy/review-manager')
-    vi.mocked(reviewManager.takeDenyReason).mockResolvedValueOnce('wrong agent')
+    vi.mocked(reviewManager.takeDecisionDetail).mockResolvedValueOnce({ reason: 'wrong agent' })
     reviewDecisions.push('deny')
     const res = await authedFetch('/x-agent/list', {})
     expect(res.status).toBe(403)
@@ -1876,6 +1876,17 @@ describe('/invoke model and effort resolution', () => {
     expect(xAgentReviewRequests[0].runtime).toBeUndefined()
   })
 
+  it('starts on the model picked on the card over the caller\'s', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.takeDecisionDetail).mockResolvedValueOnce({ pick: { model: 'opus', llmProviderId: 'platform', effort: 'max', speed: 'fast' } })
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'haiku', effort: 'low' })
+    expect(res.status).toBe(200)
+    const args = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
+    expect(args.model).toBe('opus')
+    expect(args.effort).toBe('max')
+    expect(args.speed).toBe('fast')
+  })
+
   it.each([
     { name: 'the target agent has no such model', bound: new Error('Unknown model "gpt-9". Models available to this agent: sonnet-5-5.'), resolved: undefined },
     { name: 'the plan passes over it to another model', bound: { model: 'opus', llmProviderId: 'platform' }, resolved: { model: 'sonnet', llmProviderId: 'platform' } },
@@ -2692,13 +2703,14 @@ describe('/invoke names the model on the review', () => {
     const reviews = realReviews!
     mockBindAgentModelChoice.mockResolvedValueOnce({ model: 'haiku', llmProviderId: 'platform' })
     mockResolveConnectionRuntimeInherit.mockResolvedValueOnce({
-      model: 'haiku', llmProviderId: 'platform', effort: 'low', wireModel: 'claude-haiku-5-5',
+      model: 'haiku', llmProviderId: 'platform', effort: 'low', speed: 'slow', wireModel: 'claude-haiku-5-5',
       connection: { provider: 'platform', modelOverrides: '[]' },
     })
     const res = authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'haiku', effort: 'low' })
     await vi.waitFor(() => expect(reviews.getPendingReviewsForAgent(CALLER_SLUG)).toHaveLength(1))
     const [card] = reviews.getPendingReviewsForAgent(CALLER_SLUG)
-    expect(card.xAgent?.runtime).toEqual({ model: 'haiku', llmProviderId: 'platform', effort: 'low', label: 'Haiku 5.5' })
+    // The catalog id seeds the card's picker. Haiku runs at one speed, so the speed shown is Normal.
+    expect(card.xAgent?.runtime).toEqual({ model: 'claude-haiku-5-5', llmProviderId: 'platform', effort: 'low', speed: 'normal', label: 'Haiku 5.5' })
     expect(card.displayText).toBe('Allow agent to send a message to "Target" on Haiku 5.5?')
     reviews.submitDecision(CALLER_SLUG, card.id, 'deny')
     expect((await res).status).toBe(403)
