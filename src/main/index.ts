@@ -12,6 +12,7 @@ const ShowInFolderPath = z.string().min(1)
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand } from './app-menu'
+import { agentStatusSource, isAgentStatusEvent, startAgentStatus } from './agent-status-source'
 import {
   handleSpotlightActivity,
   requestSpotlightSync,
@@ -29,7 +30,8 @@ import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, cl
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
 import { captureRegion } from './capture-region'
 import {
-  prewarmQuickDispatchWindow,
+  scheduleQuickDispatchPrewarm,
+  quickDispatchMainWindowPainted,
   toggleQuickDispatchWindow,
   hideQuickDispatchWindow,
   closeQuickDispatchWindow,
@@ -47,6 +49,7 @@ import { isCaptureRect } from '@shared/lib/quick-dispatch-capture'
 import { loadQuickDispatchGlass } from './quick-dispatch-glass'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
+import { addImageThumbnails } from './recent-file-thumbnails'
 import { parseAgentDeepLink } from './agent-deep-link'
 import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oauth-callback'
 import { classifyImportPackage } from './import-packages'
@@ -573,6 +576,7 @@ ipcMain.handle('begin-target-switch', async () => {
 // off the window that is still blank.
 ipcMain.on('renderer-painted', (event) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) return
+  quickDispatchMainWindowPainted()
   void finishTargetSwitchOverlay()
 })
 
@@ -866,6 +870,14 @@ ipcMain.handle('set-badge-count', (_event, count: number) => {
   }
 })
 
+// The main window's agent list, which the tray and the Agents menu are drawn
+// from while it is open instead of polling the API (agent-status-source.ts).
+// Only the main window's: a dashboard popout or the launcher has no say.
+ipcMain.handle('push-agent-status', (event, payload: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false
+  return agentStatusSource.acceptPush(event.sender, payload)
+})
+
 // IPC handler for detecting host browser availability
 ipcMain.handle('detect-host-browser', async () => {
   return { providers: await detectAllProviders() }
@@ -940,8 +952,6 @@ const MIME_TYPES: Record<string, string> = {
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 }
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
-
 // Track paths returned by get-recent-files so read-local-file can validate (#1 security)
 const allowedRecentPaths = new Set<string>()
 // Paths the user explicitly opened via the OS (dock drop / "Open With"). Kept
@@ -973,21 +983,7 @@ ipcMain.handle('get-recent-files', async (_event, rawLimit: unknown): Promise<{ 
     allowedRecentPaths.clear()
     for (const f of files) allowedRecentPaths.add(f.path)
 
-    // Generate small thumbnails for image files using Electron's nativeImage
-    return files.map((f) => {
-      const ext = path.extname(f.name).toLowerCase()
-      if (!IMAGE_EXTS.has(ext)) return f
-      try {
-        const img = nativeImage.createFromPath(f.path)
-        if (img.isEmpty()) return f
-        // Only constrain width — let height scale to preserve aspect ratio (#4)
-        const resized = img.resize({ width: 32, quality: 'good' })
-        const png = resized.toPNG()
-        return { ...f, thumbnail: `data:image/png;base64,${png.toString('base64')}` }
-      } catch {
-        return f
-      }
-    })
+    return await addImageThumbnails(files, nativeImage)
   } catch (err) {
     console.error('Failed to get recent files:', err)
     return []
@@ -1535,6 +1531,10 @@ function startNotificationListener(): void {
       // relies on Spotlight's own poll.
       if (data.type === 'os_notification') requestSpotlightSync()
 
+      // An agent's activity may have moved. With a window open this is a
+      // no-op: the renderer heard the same event and pushes its list.
+      if (isAgentStatusEvent(data.type)) agentStatusSource.requestRefresh()
+
       if (data.type === 'os_notification') {
         // Only show notification if window is closed/destroyed.
         // When the window is open the renderer drives this via IPC (with the
@@ -1750,15 +1750,17 @@ async function startApp() {
 
   createWindow()
 
-  // Create the application menu (macOS menu bar). The getter re-resolves the
-  // effective base URL on every poll, so the Agents menu and the tray follow a
-  // target switch (via the keyed cloud proxy) instead of always listing this
-  // machine's agents.
-  createAppMenu(mainWindow, async () => (await activeApiTarget()).baseUrl)
+  // The Agents menu and the tray share one agent list. The getter re-resolves
+  // the effective base URL on every fetch, so they follow a target switch (via
+  // the keyed cloud proxy) instead of always listing this machine's agents.
+  startAgentStatus({ activeTarget: activeApiTarget })
+
+  // Create the application menu (macOS menu bar)
+  createAppMenu(mainWindow)
 
   // Create system tray if enabled in settings
   if ((await getSettings()).app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, async () => (await activeApiTarget()).baseUrl)
+    createTray(mainWindow)
   }
 
   // Spotlight indexes both Superagents, not just the active one, so each is
@@ -1790,9 +1792,11 @@ async function startApp() {
     console.error('Failed to restore keep-awake state:', error)
   })
 
-  // Quick-dispatch launcher: pre-create the hidden panel and bind its global
-  // shortcut so the first invocation appears instantly.
-  await prewarmQuickDispatchWindow()
+  // Quick-dispatch launcher: bind its global shortcut, and pre-create the hidden
+  // panel once the main window has painted (see `renderer-painted`), so the
+  // panel's renderer does not load alongside the window's. A press before then
+  // builds it on demand.
+  await scheduleQuickDispatchPrewarm()
   const dispatchResult = registerGlobalDispatchShortcut((await getSettings()).app?.globalDispatchShortcut, toggleQuickDispatchWindow)
   if (!dispatchResult.success) {
     console.warn(`Quick-dispatch shortcut not registered: ${dispatchResult.error}`)
@@ -1802,8 +1806,8 @@ async function startApp() {
   for (const filePath of openedFilesFrom(process.argv)) {
     handleOpenedFile(filePath)
   }
-  // The launcher window now exists, so any files opened before startup finished
-  // (dock drop on macOS, argv above) can be delivered to it.
+  // The launcher window can now be built, so any files opened before startup
+  // finished (dock drop on macOS, argv above) can be delivered to it.
   flushPendingOpenedFiles()
 }
 

@@ -5,8 +5,7 @@ import { SESSION_CHALLENGE } from '@shared/lib/auth/session-challenge'
 import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
-import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { validateProxyToken, validateProxyTokenWithOwner } from '@shared/lib/proxy/token-store'
 // The catalog leaf, not the actor package index: the index loads the
 // container layer, which every route test would then have to mock.
 import { agentCatalog, resolveAgentRecordWithRole } from '@shared/lib/agent-actor/agent-catalog'
@@ -584,12 +583,15 @@ export function HasNotificationAccess(): MiddlewareHandler {
 export function IsAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     const token = c.req.header('Authorization')?.replace('Bearer ', '')
-    const agentSlug = token ? await validateProxyToken(token) : null
-    if (!token || !agentSlug) {
+    // Auth mode reads the token and the agent's owner in one statement; without it there is no owner to read.
+    const caller = !token ? null
+      : isAuthMode() ? await validateProxyTokenWithOwner(token)
+      : { agentSlug: await validateProxyToken(token), ownerUserId: null }
+    if (!caller?.agentSlug) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    c.set('agentSlug' as never, agentSlug as never)
-    return runWithOptionalUser(await getAgentOwnerUserId(agentSlug), () => next())
+    c.set('agentSlug' as never, caller.agentSlug as never)
+    return runWithOptionalUser(caller.ownerUserId, () => next())
   }
 }
 

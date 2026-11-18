@@ -198,7 +198,7 @@ import {
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
+import { eq, and, inArray, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
@@ -243,7 +243,7 @@ import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, 
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents } from '@shared/lib/services/session-unread-service'
 import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
-import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
+import { annotateMessageAuthors } from '@shared/lib/services/message-author-annotation-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
@@ -570,6 +570,7 @@ const sessionsListQuerySchema = z.object({
   sortBy: z.literal('last_activity_at').optional(),
   notable: strictBooleanQuerySchema.optional(),
   limit: positiveIntegerQuerySchema.optional(),
+  withTotal: strictBooleanQuerySchema.optional(),
 })
 
 const agentsListQuerySchema = z.object({
@@ -2066,6 +2067,10 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 // those targeted IDs with server-visible sessions before sort_by and limit,
 // avoiding a read of every session. Supported ordering is deterministic
 // newest-first activity via sort_by=last_activity_at.
+// ?with_total=true (visible-list path only) answers { sessions, total }: the
+// limited rows plus how many visible sessions there are, for a caller that
+// shows the first few and a count (the sidebar). Only the returned rows are
+// enriched, so the participants lookup is bounded by the limit.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
@@ -2073,10 +2078,12 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const sortByRaw = c.req.query('sort_by')
     const notableRaw = c.req.query('notable')
     const limitRaw = c.req.query('limit')
+    const withTotalRaw = c.req.query('with_total')
     const parsedQuery = sessionsListQuerySchema.safeParse({
       ...(sortByRaw === undefined ? {} : { sortBy: sortByRaw }),
       ...(notableRaw === undefined ? {} : { notable: notableRaw }),
       ...(limitRaw === undefined ? {} : { limit: limitRaw }),
+      ...(withTotalRaw === undefined ? {} : { withTotal: withTotalRaw }),
     })
     if (!parsedQuery.success) {
       return c.json({ error: 'Invalid sessions query' }, 400)
@@ -2088,6 +2095,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       ? undefined
       : Math.min(parsedQuery.data.limit, SESSIONS_LIST_MAX_LIMIT)
     const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
+    const withTotal = parsedQuery.data.withTotal === true && !isNotable
 
     if (isNotable) {
       // Both halves of the unread projection are table lookups — overlap them,
@@ -2126,17 +2134,20 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     // Independent lookups (session index, notifications table, unread
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
-    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
+    const [listedSessions, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
       actor.sessions.list({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
-        ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+        // The total is the length of the visible list, so that list is asked
+        // for whole and cut here. The index read is the same either way.
+        ...(resultLimit === undefined || withTotal ? {} : { limit: resultLimit }),
       }),
       getSessionIdsWithUnreadNotifications(slug, undefined, getCurrentUserId(c)),
       getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       listPendingWakesByAgent(slug),
       isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
+    const sessionList = withTotal && resultLimit !== undefined ? listedSessions.slice(0, resultLimit) : listedSessions
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const [live, participants] = await Promise.all([
       actor.live(),
@@ -2161,7 +2172,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       }
     })
 
-    return c.json(sessionsWithStatus)
+    return c.json(withTotal ? { sessions: sessionsWithStatus, total: listedSessions.length } : sessionsWithStatus)
   } catch (error) {
     console.error('Failed to fetch sessions:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)
@@ -2268,7 +2279,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, launch.agentPrefs.defaultLlmProviderId)
     const resolved = await launch.resolve(runtimeOptions)
-    const prewarm = await launch.resolve({})
+    // The prewarm is what the agent's next default session runs on. A request
+    // that picks nothing starts that default session, so its resolution is the
+    // prewarm's: it is not resolved a second time.
+    const prewarm = Object.keys(runtimeOptions).length === 0 ? resolved : await launch.resolve({})
 
     // Runtime choices are SESSION state once the first turn starts, including
     // inherited defaults. Persist the effective values, not merely explicit
@@ -2438,59 +2452,46 @@ async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: stri
   }
 }
 
-function userAuthors(rows: { messageId: string; userId: string | null }[]): { messageId: string; userId: string }[] {
-  return rows.flatMap(row => row.userId ? [{ messageId: row.messageId, userId: row.userId }] : [])
-}
-
-// Integration cards are decoration: a lookup failure leaves the messages as text.
-async function annotateIntegrationMessagesBestEffort(
+// One message_author read for cards and senders. Integration cards are
+// decoration: without auth a failed read leaves the messages as text. With
+// auth the same read names who wrote each message, and its failure fails the
+// response as the sender lookup always has.
+async function annotateMessageAuthorsFor(
   transformed: TransformedItem[],
   agentSlug: string,
   sessionId: string,
+  scope: 'items' | 'session',
 ): Promise<void> {
+  const senders = isAuthMode()
   try {
-    await annotateIntegrationMessages(agentSlug, sessionId, transformed)
+    await annotateMessageAuthors(agentSlug, sessionId, transformed, { senders, scope })
   } catch (error) {
+    if (senders) throw error
     captureException(error, { tags: { component: 'agents', operation: 'annotate-integration-messages' }, level: 'warning' })
   }
 }
 
+// `items` reads the author rows of the messages in hand: a delta window is a
+// handful of items, and loading the whole session's author history per refetch
+// would erase the bounded-memory benefit. `session` is for the whole transcript.
 async function annotateAndRecoverMessages(
   transformed: TransformedItem[],
   agentSlug: string,
   sessionId: string,
+  scope: 'items' | 'session' = 'items',
 ): Promise<void> {
-  await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
-  await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-  await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
-
-  await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
-
-  if (!isAuthMode()) return
-
-  const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
-  if (userMessageIds.length === 0) return
-
-  // Scope the lookup to the ids actually in this response — a delta window is
-  // a handful of items, and loading the whole session's author history per
-  // refetch would erase the bounded-memory benefit on auth deployments.
-  const authors = userAuthors(await db
-    .select({
-      messageId: messageAuthor.id,
-      userId: messageAuthor.userId,
-    })
-    .from(messageAuthor)
-    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds), isNotNull(messageAuthor.userId))))
-
-  const profiles = await getUserSummaries(authors.map(author => author.userId))
-  const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
-  for (const msg of transformed) {
-    if (msg.type !== 'user') continue
-    const author = authorMap.get(msg.id)
-    if (author) {
-      msg.sender = author
-    }
-  }
+  // The actor steps write assistant items (errorPresentation, a tool call's
+  // subagent and result) and the author read writes user items (integration,
+  // sender); neither reads what the other writes, so the database round trip
+  // overlaps the actor's.
+  await Promise.all([
+    (async () => {
+      await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
+      await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+      await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
+    })(),
+    annotateMessageAuthorsFor(transformed, agentSlug, sessionId, scope),
+  ])
 }
 
 // Buffers, not strings: Readable.toWeb hands chunks straight to the web
@@ -2506,7 +2507,6 @@ function* messagesPageJsonChunks(page: {
   yield Buffer.from(`],"nextCursor":${JSON.stringify(page.nextCursor)}}`)
 }
 
-// Unpaginated path stays inlined so the stream-pipe PR can still land on `return c.json(transformed)`.
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
@@ -2613,41 +2613,10 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
-    await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
-
-    // Discover subagent IDs for interrupted Task tool calls that have no result
-    await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-    await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
-
-    await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
-
-    // In auth mode, annotate user messages with sender info
-    if (isAuthMode()) {
-      const userMessageIds = transformed
-        .filter((m) => m.type === 'user')
-        .map((m) => m.id)
-
-      if (userMessageIds.length > 0) {
-        const authors = userAuthors(await db
-          .select({
-            messageId: messageAuthor.id,
-            userId: messageAuthor.userId,
-          })
-          .from(messageAuthor)
-          .where(and(eq(messageAuthor.sessionId, sessionId), isNotNull(messageAuthor.userId))))
-
-        const profiles = await getUserSummaries(authors.map(author => author.userId))
-        const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
-
-        for (const msg of transformed) {
-          if (msg.type !== 'user') continue
-          const author = authorMap.get(msg.id)
-          if (author) {
-            msg.sender = author
-          }
-        }
-      }
-    }
+    // Provider errors, interrupted subagents, open tool calls, then cards and
+    // senders: the whole transcript is here, so the author rows are read by
+    // session rather than by id.
+    await annotateAndRecoverMessages(transformed, agentSlug, sessionId, 'session')
 
     const source = Readable.from(transformed)
     const stringify = createJsonArrayStringifyTransform()
@@ -2891,6 +2860,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+    // Per message, not a runtime option: false appends without starting a turn.
+    let shouldQuery: boolean | undefined = typeof body.shouldQuery === 'boolean' ? body.shouldQuery : undefined
 
     // The delivery below is keyed by session id alone: an unowned id would
     // cancel another agent's pending input request, re-bind its session to
@@ -2906,7 +2877,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // only notifies them: it joins the transcript, and no turn runs.
     const mentions = await readSessionMentions(c, agentSlug, content.trim())
     if ('error' in mentions) return c.json({ error: mentions.error }, 400)
-    if (mentions.silent) runtimeOptions.shouldQuery = false
+    if (mentions.silent) shouldQuery = false
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2920,7 +2891,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // cannot bind outright is one it may only continue, and the delivery
     // refuses it unless the session still holds it. An append starts no turn
     // and keeps the session's runtime, so its connection is not looked at.
-    const requireStoredProvider = runtimeOptions.shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
+    const requireStoredProvider = shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
 
     const metadataUpdates: Partial<SessionMetadata> = {}
     if (isAuthMode()) {
@@ -2949,7 +2920,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         sessionId,
         content: await attributedForAgent(c, agentSlug, text),
         uuid: messageUuid,
-        options: runtimeOptions,
+        options: { ...runtimeOptions, ...(shouldQuery !== undefined ? { shouldQuery } : {}) },
         metadataUpdates,
         promote: true,
         requireStoredProvider,
@@ -2967,7 +2938,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       throw error
     }
     const queued = delivery.status !== 'sent' || delivery.queued
-    if (delivery.status === 'sent' && runtimeOptions.shouldQuery !== false) {
+    if (delivery.status === 'sent' && shouldQuery !== false) {
       await nameSessionFromFirstHumanMessage(actor, sessionId, text, agent.name)
     }
     if (mentions.teammates.length > 0) {
@@ -7289,6 +7260,9 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
+    // What an open preview compares to learn the file changed, from a HEAD.
+    // Weak, so no client sends it back as an If-Range this route does not read.
+    c.header('ETag', `W/"${stat.mtimeMs}-${stat.size}"`)
 
     if (heicPreview) {
       if (c.req.method === 'HEAD') return c.body(null)

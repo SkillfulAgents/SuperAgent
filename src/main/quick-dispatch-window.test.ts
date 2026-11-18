@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { FakeWindow, glassAvailable, applyGlass } = vi.hoisted(() => {
   class FakeWindow {
     static last: FakeWindow | null = null
+    static built = 0
     options: Record<string, unknown>
     webContents = { on: vi.fn(), once: vi.fn(), send: vi.fn() }
     setAlwaysOnTop = vi.fn()
@@ -17,6 +18,7 @@ const { FakeWindow, glassAvailable, applyGlass } = vi.hoisted(() => {
     constructor(options: Record<string, unknown>) {
       this.options = options
       FakeWindow.last = this
+      FakeWindow.built += 1
     }
   }
   return { FakeWindow, glassAvailable: vi.fn(), applyGlass: vi.fn() }
@@ -94,5 +96,93 @@ describe('quick-dispatch window material (macOS)', () => {
     const win = build()
 
     expect(win.loadURL).toHaveBeenCalledWith('http://localhost:5173/quick-dispatch.html?material=glass')
+  })
+})
+
+describe('quick-dispatch prewarm', () => {
+  // The prewarm's state is the module's, so each test takes a fresh copy.
+  let launcher: typeof import('./quick-dispatch-window')
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.resetModules()
+    FakeWindow.built = 0
+    glassAvailable.mockReturnValue(false)
+    launcher = await import('./quick-dispatch-window')
+  })
+
+  afterEach(() => {
+    launcher.closeQuickDispatchWindow()
+    vi.useRealTimers()
+  })
+
+  it('does not build the window during startup, before the main window has painted', async () => {
+    await launcher.scheduleQuickDispatchPrewarm()
+
+    expect(FakeWindow.built).toBe(0)
+    await vi.advanceTimersByTimeAsync(launcher.PREWARM_FALLBACK_MS - 1)
+    expect(FakeWindow.built).toBe(0)
+  })
+
+  it('builds it when the main window paints, and the fallback then builds nothing more', async () => {
+    await launcher.scheduleQuickDispatchPrewarm()
+    launcher.quickDispatchMainWindowPainted()
+
+    expect(FakeWindow.built).toBe(1)
+    await vi.advanceTimersByTimeAsync(launcher.PREWARM_FALLBACK_MS * 2)
+    expect(FakeWindow.built).toBe(1)
+  })
+
+  it('builds it after the fallback wait when no paint comes', async () => {
+    await launcher.scheduleQuickDispatchPrewarm()
+    await vi.advanceTimersByTimeAsync(launcher.PREWARM_FALLBACK_MS)
+
+    expect(FakeWindow.built).toBe(1)
+    // A paint that comes late finds the window already there.
+    launcher.quickDispatchMainWindowPainted()
+    expect(FakeWindow.built).toBe(1)
+  })
+
+  it('builds it at once when the main window painted before the prewarm was scheduled', async () => {
+    launcher.quickDispatchMainWindowPainted()
+    expect(FakeWindow.built).toBe(0)
+
+    await launcher.scheduleQuickDispatchPrewarm()
+    expect(FakeWindow.built).toBe(1)
+  })
+
+  it('lets a shortcut press build it first, and builds no second window afterwards', async () => {
+    await launcher.scheduleQuickDispatchPrewarm()
+    const onDemand = launcher.getQuickDispatchWindow()
+    expect(FakeWindow.built).toBe(1)
+
+    launcher.quickDispatchMainWindowPainted()
+    await vi.advanceTimersByTimeAsync(launcher.PREWARM_FALLBACK_MS * 2)
+
+    expect(FakeWindow.built).toBe(1)
+    expect(launcher.getQuickDispatchWindow()).toBe(onDemand)
+  })
+
+  it('builds nothing after the launcher is closed (shutdown, a target switch)', async () => {
+    await launcher.scheduleQuickDispatchPrewarm()
+    launcher.closeQuickDispatchWindow()
+
+    launcher.quickDispatchMainWindowPainted()
+    await vi.advanceTimersByTimeAsync(launcher.PREWARM_FALLBACK_MS * 2)
+    expect(FakeWindow.built).toBe(0)
+
+    // Still there on demand.
+    launcher.getQuickDispatchWindow()
+    expect(FakeWindow.built).toBe(1)
+  })
+
+  it('schedules one prewarm however often it is asked', async () => {
+    await launcher.scheduleQuickDispatchPrewarm()
+    await launcher.scheduleQuickDispatchPrewarm()
+    await vi.advanceTimersByTimeAsync(launcher.PREWARM_FALLBACK_MS)
+
+    expect(FakeWindow.built).toBe(1)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

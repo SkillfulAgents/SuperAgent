@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { ContainerNotFoundError } from '@shared/lib/container/types'
 
 const {
   readSessionMetadata,
@@ -241,14 +241,10 @@ describe('forkSession', () => {
     )
   })
 
-  it('throws 409 without reading or booting when the source is mid-turn', async () => {
+  it('forks a source that is mid-turn', async () => {
     isSessionActive.mockReturnValue(true)
-    await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'SessionForkFailedError',
-      status: 409,
-    })
-    expect(readSessionMetadata).not.toHaveBeenCalled()
-    expect(ensureRunning).not.toHaveBeenCalled()
+    await forkSession('test-agent', 'src-1')
+    expect(forkInContainer).toHaveBeenCalled()
   })
 
   it('throws 404 without booting when the source is unknown', async () => {
@@ -261,10 +257,7 @@ describe('forkSession', () => {
     expect(forkInContainer).not.toHaveBeenCalled()
   })
 
-  it('maps a container conflict and a gone session', async () => {
-    forkInContainer.mockRejectedValueOnce(new ContainerConflictError('busy'))
-    await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({ status: 409 })
-
+  it('maps a gone session to 404', async () => {
     forkInContainer.mockRejectedValueOnce(new ContainerNotFoundError('Session not found'))
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({ status: 404 })
   })

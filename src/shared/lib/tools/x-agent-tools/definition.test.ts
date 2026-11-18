@@ -17,6 +17,7 @@ describe('invokeAgentDef', () => {
     expect(invokeAgentDef.parseInput(null)).toEqual({})
     expect(invokeAgentDef.parseInput({ slug: 12, session_id: true, attachments: ['valid', 3] })).toEqual({})
     expect(invokeAgentDef.getSummary({ slug: 12, session_id: true })).toBe('Invoke agent')
+    expect(invokeAgentDef.getSummary({ prompt: 'Do part 1' })).toBe('this agent (new session): Do part 1')
   })
 })
 

@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 import { db } from '@shared/lib/db'
-import { proxyTokens } from '@shared/lib/db/schema'
-import { eq } from 'drizzle-orm'
+import { agentAcl, proxyTokens } from '@shared/lib/db/schema'
+import { and, asc, eq, sql } from 'drizzle-orm'
 
 export async function getOrCreateProxyToken(agentSlug: string): Promise<string> {
   const existing = await db
@@ -33,6 +33,27 @@ export async function validateProxyToken(token: string): Promise<string | null> 
     .limit(1)
 
   return result.length > 0 ? result[0].agentSlug : null
+}
+
+/**
+ * `validateProxyToken` and `getAgentOwnerUserId` (auth mode's `agent_acl`) in one statement: the
+ * token's agent, and that agent's first owner by `createdAt`, or null when it has none. Null for
+ * an unknown token. The owner is the acting member on billed proxy calls, so the order matters.
+ */
+export async function validateProxyTokenWithOwner(token: string): Promise<{ agentSlug: string; ownerUserId: string | null } | null> {
+  const firstOwner = db
+    .select({ userId: agentAcl.userId })
+    .from(agentAcl)
+    .where(and(eq(agentAcl.agentSlug, proxyTokens.agentSlug), eq(agentAcl.role, 'owner')))
+    .orderBy(asc(agentAcl.createdAt))
+    .limit(1)
+  const rows = await db
+    .select({ agentSlug: proxyTokens.agentSlug, ownerUserId: sql<string | null>`(${firstOwner})` })
+    .from(proxyTokens)
+    .where(eq(proxyTokens.token, token))
+    .limit(1)
+    .all()
+  return rows[0] ?? null
 }
 
 export async function revokeProxyToken(agentSlug: string): Promise<void> {

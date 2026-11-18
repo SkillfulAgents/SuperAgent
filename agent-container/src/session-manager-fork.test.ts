@@ -32,7 +32,7 @@ vi.mock('./session-persistence', () => ({
 vi.mock('./browser-state', () => ({ releaseBrowserLock: () => false }))
 vi.mock('./claude-code', () => ({ ClaudeCodeProcess: class {} }))
 
-import { SessionManager, SessionBusyError } from './session-manager'
+import { SessionManager } from './session-manager'
 
 const source = {
   sessionId: 'src-1',
@@ -139,7 +139,7 @@ describe('SessionManager.forkSession', () => {
     expect(persisted.has('fork-1')).toBe(false)
   })
 
-  it('refuses while the source has a live process mid-turn', async () => {
+  it('forks a source that has a live process mid-turn', async () => {
     const process = Object.assign(new EventEmitter(), {
       isRunning: () => true,
       dispose: vi.fn().mockResolvedValue(undefined),
@@ -151,8 +151,8 @@ describe('SessionManager.forkSession', () => {
       subscribers: new Set(),
       settlement: { isSettled: () => false },
     })
+    sdkFork.mockResolvedValue({ sessionId: 'fork-1' })
 
-    await expect(manager.forkSession('src-1')).rejects.toBeInstanceOf(SessionBusyError)
-    expect(sdkFork).not.toHaveBeenCalled()
+    expect(await manager.forkSession('src-1')).toBe('fork-1')
   })
 })

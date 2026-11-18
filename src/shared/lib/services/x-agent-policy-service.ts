@@ -14,7 +14,7 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
+import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
@@ -230,19 +230,35 @@ export async function deleteTargetPolicy(
  * Note: invoke_agent's sync=true response (which echoes the target's reply) is
  * part of the invoke contract and does not require 'read' — 'read' only gates
  * browsing existing sessions via get_agent_sessions / get_agent_session_transcript.
+ *
+ * One statement either way: both candidate rows are read together and the
+ * specific-target one sorts first, so the row that comes back is the one the
+ * precedence above picks.
  */
 export async function evaluate(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
 ): Promise<XAgentDecision> {
-  if (targetSlug !== null) {
-    const exact = await getPolicy(callerSlug, operation, targetSlug)
-    if (exact) return exact.decision
+  if (targetSlug === null) {
+    return (await getPolicy(callerSlug, operation, null))?.decision ?? 'review'
   }
-  const global = await getPolicy(callerSlug, operation, null)
-  if (global) return global.decision
-  return 'review'
+  const rows = await db
+    .select({ decision: xAgentPolicies.decision })
+    .from(xAgentPolicies)
+    .where(
+      and(
+        eq(xAgentPolicies.callerAgentSlug, callerSlug),
+        eq(xAgentPolicies.operation, operation),
+        or(eq(xAgentPolicies.targetAgentSlug, targetSlug), isNull(xAgentPolicies.targetAgentSlug)),
+      ),
+    )
+    // The specific-target row before the global one; among duplicates of
+    // either (see getPolicy), the latest write.
+    .orderBy(sql`${xAgentPolicies.targetAgentSlug} is null`, desc(xAgentPolicies.updatedAt))
+    .limit(1)
+    .all()
+  return rows[0]?.decision ?? 'review'
 }
 
 /**

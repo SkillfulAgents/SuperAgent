@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { HttpError } from '@renderer/lib/http-error'
@@ -6,7 +7,7 @@ import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
-import type { EffortLevel, InterruptScope, SpeedLevel } from '@shared/lib/container/types'
+import type { InterruptScope } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
@@ -319,16 +320,12 @@ export function useSendMessage(options: {
       sessionId: string
       agentSlug: string
       content: string
-      effort?: EffortLevel
-      speed?: SpeedLevel
-      llmProviderId?: string | null
-      model?: string
       /**
        * false appends the message to the transcript for the agent to read
        * with its next turn, without starting one (the voice-mode notices).
        */
       shouldQuery?: boolean
-    }) => {
+    } & RuntimeOptions) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

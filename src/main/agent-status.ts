@@ -1,9 +1,11 @@
 // Shared types and utilities for fetching agent status
 // Used by the system tray, the application menu and Spotlight
 
+import { z } from 'zod'
 import { type AgentActivityStatus, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
-import type { ContainerStatus } from '@shared/lib/container/types'
+import type { AgentStatusEntry } from '@shared/lib/types/agent-status-push'
 import { SKIP_BOOT_PREFETCH_HEADER } from '@shared/lib/services/cloud-boot-prefetch'
+import { applyAgentOrder } from '@shared/lib/utils/agent-order'
 
 // These polls are not made on the renderer's behalf: in cloud mode they travel
 // the same proxy paths as the boot prefetches, which are one-shot and reserved
@@ -13,48 +15,31 @@ export const POLL_HEADERS = { [SKIP_BOOT_PREFETCH_HEADER]: '1' }
 
 export type ActivityStatus = AgentActivityStatus
 
-export interface ApiAgent {
-  slug: string
-  name: string
-  status: ContainerStatus
-}
-
-export interface ApiSession {
-  id: string
-  isActive: boolean
-  isAwaitingInput?: boolean
-}
-
-export interface AgentInfo {
-  slug: string
-  name: string
-  activityStatus: ActivityStatus
-}
+export type AgentInfo = AgentStatusEntry
 
 /**
- * Apply saved agent ordering (matches renderer's applyAgentOrder logic).
- * Agents in savedOrder keep their saved position; unknown agents go first.
+ * A request that never answers must not hold the poll: the task manager skips
+ * a pass that comes due while the last one is still running.
  */
-function applyAgentOrder(agents: AgentInfo[], savedOrder: string[] | undefined): AgentInfo[] {
-  if (!savedOrder || savedOrder.length === 0) return agents
+const REQUEST_TIMEOUT_MS = 15_000
 
-  const positionMap = new Map(savedOrder.map((slug, i) => [slug, i]))
+/**
+ * The slice of an `/api/agents` row the tray and the Agents menu read. The
+ * list already says whether an agent has sessions working or waiting on the
+ * user, so nothing asks for its sessions. The cloud workspace can run another
+ * version than this app, so everything beyond identity is optional.
+ */
+const listedAgentSchema = z.object({
+  slug: z.string().min(1),
+  name: z.string(),
+  // An unknown status reads as running: only `stopped` is drawn differently.
+  status: z.enum(['stopped', 'running']).catch('running'),
+  createdAt: z.string().catch(''),
+  hasActiveSessions: z.boolean().optional().catch(undefined),
+  hasSessionsAwaitingInput: z.boolean().optional().catch(undefined),
+})
 
-  const ordered: AgentInfo[] = []
-  const newAgents: AgentInfo[] = []
-
-  for (const agent of agents) {
-    if (positionMap.has(agent.slug)) {
-      ordered.push(agent)
-    } else {
-      newAgents.push(agent)
-    }
-  }
-
-  ordered.sort((a, b) => positionMap.get(a.slug)! - positionMap.get(b.slug)!)
-
-  return [...newAgents, ...ordered]
-}
+const userSettingsSchema = z.object({ agentOrder: z.array(z.string()).optional().catch(undefined) })
 
 /**
  * Fetch agents with their activity status from the API,
@@ -63,54 +48,43 @@ function applyAgentOrder(agents: AgentInfo[], savedOrder: string[] | undefined):
  * `apiBaseUrl` is the *effective* base — in cloud mode it is the keyed proxy
  * prefix, so the tray and app menu list the same Superagent the renderers are
  * driving rather than always this machine's.
+ *
+ * Two requests, whatever the number of agents.
  */
-export async function fetchAgentsWithStatus(apiBaseUrl: string): Promise<AgentInfo[]> {
+export async function fetchAgentsWithStatus(
+  apiBaseUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AgentInfo[]> {
   try {
+    const get = (path: string) =>
+      fetchImpl(`${apiBaseUrl}${path}`, { headers: POLL_HEADERS, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
     // Fetch agents and user settings in parallel
     const [agentsRes, settingsRes] = await Promise.all([
-      fetch(`${apiBaseUrl}/api/agents`, { headers: POLL_HEADERS }),
-      fetch(`${apiBaseUrl}/api/user-settings`, { headers: POLL_HEADERS }).catch(() => null),
+      get('/api/agents'),
+      get('/api/user-settings').catch(() => null),
     ])
     if (!agentsRes.ok) return []
-    const agents: ApiAgent[] = await agentsRes.json()
+    // One malformed row is dropped rather than emptying both menus.
+    const agents = z.array(z.unknown()).parse(await agentsRes.json()).flatMap((row) => {
+      const parsed = listedAgentSchema.safeParse(row)
+      return parsed.success ? [parsed.data] : []
+    })
 
-    const agentOrder: string[] | undefined =
-      settingsRes?.ok ? (await settingsRes.json())?.agentOrder : undefined
+    let agentOrder: string[] | undefined
+    if (settingsRes?.ok) {
+      const settings = userSettingsSchema.safeParse(await settingsRes.json().catch(() => null))
+      agentOrder = settings.success ? settings.data.agentOrder : undefined
+    }
 
-    // For each running agent, check if it has active sessions
-    const agentsWithStatus: AgentInfo[] = await Promise.all(
-      agents.map(async (agent) => {
-        let hasActiveSessions = false
-
-        let hasSessionsAwaitingInput = false
-
-        if (agent.status === 'running') {
-          try {
-            const sessionsRes = await fetch(
-              `${apiBaseUrl}/api/agents/${agent.slug}/sessions`,
-              { headers: POLL_HEADERS }
-            )
-            if (sessionsRes.ok) {
-              const sessions: ApiSession[] = await sessionsRes.json()
-              hasActiveSessions = sessions.some(s => s.isActive)
-              hasSessionsAwaitingInput = sessions.some(s => s.isAwaitingInput)
-            }
-          } catch {
-            // Ignore session fetch errors
-          }
-        }
-
-        const activityStatus = getAgentActivityStatus(agent.status, hasActiveSessions, hasSessionsAwaitingInput)
-
-        return {
-          slug: agent.slug,
-          name: agent.name,
-          activityStatus,
-        }
-      })
-    )
-
-    return applyAgentOrder(agentsWithStatus, agentOrder)
+    return applyAgentOrder(agents, agentOrder).map((agent) => ({
+      slug: agent.slug,
+      name: agent.name,
+      activityStatus: getAgentActivityStatus(
+        agent.status,
+        agent.hasActiveSessions ?? false,
+        agent.hasSessionsAwaitingInput ?? false,
+      ),
+    }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return []

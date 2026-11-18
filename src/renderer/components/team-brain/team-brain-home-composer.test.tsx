@@ -5,7 +5,7 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 // A folder dropped or picked in the box: the shared composer waits on how to attach it.
-const { dialog, onChoice, composerArgs } = vi.hoisted(() => ({ dialog: { open: false }, onChoice: vi.fn(), composerArgs: [] as Array<{ draftKey?: string; initialAttachments?: unknown[]; initialOptions?: { initialModel?: string } }> }))
+const { dialog, onChoice, composerArgs } = vi.hoisted(() => ({ dialog: { open: false }, onChoice: vi.fn(), composerArgs: [] as Array<{ draftKey?: string; initialAttachments?: unknown[]; initialOptions?: { model?: string } }> }))
 vi.mock('@renderer/hooks/use-new-session-composer', () => ({
   useNewSessionComposer: (args: (typeof composerArgs)[number]) => (composerArgs.push(args), {
     composer: {
@@ -61,7 +61,7 @@ describe('TeamBrainHomeComposer', () => {
     carryover.value = { attachments: [{ id: 'notes.pdf' }], model: 'opus' }
     render(<TeamBrainHomeComposer agent={{ slug: 'team-brain' } as ApiAgent} />)
     expect(composerArgs.at(-1)?.initialAttachments).toEqual([{ id: 'notes.pdf' }])
-    expect(composerArgs.at(-1)?.initialOptions?.initialModel).toBe('opus')
+    expect(composerArgs.at(-1)?.initialOptions?.model).toBe('opus')
   })
 
   it('asks how to attach a folder, as Agent Home does, so the folder is not left waiting', async () => {

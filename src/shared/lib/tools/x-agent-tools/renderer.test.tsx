@@ -22,6 +22,27 @@ describe('invoke_agent renderer', () => {
     expect(screen.getByText('notes/context.txt')).toBeInTheDocument()
   })
 
+  it('targets the current agent when slug is omitted', () => {
+    const ExpandedView = invokeAgentRenderer.ExpandedView!
+    const { container } = render(
+      <ExpandedView input={{ prompt: 'Do part 1' }} result={'session_id: worker-1\nstatus: running'} agentSlug="caller" />,
+    )
+
+    expect(screen.getByText('This agent')).toBeInTheDocument()
+    const params = [...container.querySelectorAll('[data-params]')].map((el) => el.getAttribute('data-params'))
+    expect(params).toContain(JSON.stringify({ slug: 'caller', sessionId: 'worker-1' }))
+  })
+
+  it('keeps an explicit target over the current agent', () => {
+    const ExpandedView = invokeAgentRenderer.ExpandedView!
+    const { container } = render(
+      <ExpandedView input={{ slug: 'reviewer', prompt: 'Review' }} result={'session_id: s-2\nstatus: running'} agentSlug="caller" />,
+    )
+
+    const params = [...container.querySelectorAll('[data-params]')].map((el) => el.getAttribute('data-params'))
+    expect(params).toContain(JSON.stringify({ slug: 'reviewer', sessionId: 's-2' }))
+  })
+
   it('handles malformed input without crashing', () => {
     const ExpandedView = invokeAgentRenderer.ExpandedView!
     expect(() => render(<ExpandedView input={{ attachments: 'not-an-array' }} />)).not.toThrow()
