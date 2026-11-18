@@ -63,6 +63,25 @@ export const llmConnections = sqliteTable('llm_connections', {
 }))
 
 /**
+ * The columns of stored runtime options (`StoredRuntimeOptions` in
+ * `@shared/lib/container/runtime-options`): a pick that overrides the agent's
+ * defaults, each null where nothing was picked. A table that keeps one spreads
+ * this in, so a new knob reaches them all. Deleting a connection drops the
+ * pick of it back to the default.
+ *
+ * `todos` keeps the same four but declares them itself for now: its effort
+ * and speed columns are typed to the known levels.
+ */
+export function runtimeOptionsColumns() {
+  return {
+    llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+    model: text('model'),
+    effort: text('effort'),
+    speed: text('speed'),
+  }
+}
+
+/**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
  * this row; the refresh secret is stored only as a SHA-256 hash and deleting
  * the row revokes every session in the device family through the FK below.
@@ -349,10 +368,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   timezone: text('timezone'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -890,10 +906,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -919,10 +932,8 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'), // Claude model override; null = use default
-  effort: text('effort'), // Effort level override; null = use default
-  speed: text('speed'), // Speed level override; null = use default
+  // Runtime options (override the defaults when set; null = use default)
+  ...runtimeOptionsColumns(),
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })

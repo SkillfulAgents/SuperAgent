@@ -77,14 +77,14 @@ describe('useComposerOptions: a locked model counts as unset', () => {
 
   it('goes from a locked agent default to the global default', () => {
     state.connections = { connections: [PLATFORM], defaultSelection: { llmProviderId: 'platform-conn', model: 'claude-opus-5-5' } }
-    const { result } = render({ agentDefaultLlmProviderId: 'platform-conn', agentDefaultModel: 'fable' })
+    const { result } = render({ agentDefault: { llmProviderId: 'platform-conn', model: 'fable' } })
     expect(result.current.model).toBe('claude-opus-5-5')
     expect(result.current.toRuntimeOptions()).toEqual({})
   })
 
   it('follows the list onto another connection when that is where the next runnable default is', () => {
     state.connections = { connections: [PLATFORM, ANTHROPIC], defaultSelection: { llmProviderId: 'anthropic-conn', model: 'claude-fable-5-1' } }
-    const { result } = render({ agentDefaultLlmProviderId: 'platform-conn', agentDefaultModel: 'claude-fable-5-1' })
+    const { result } = render({ agentDefault: { llmProviderId: 'platform-conn', model: 'claude-fable-5-1' } })
     expect(result.current.llmProviderId).toBe('anthropic-conn')
     expect(result.current.model).toBe('claude-fable-5-1')
   })
@@ -99,7 +99,7 @@ describe('useComposerOptions: a locked model counts as unset', () => {
   })
 
   it('moves a chat whose own model got locked to the next runnable one, and sends it', () => {
-    const { result } = render({ sessionId: 's1', initialLlmProviderId: 'platform-conn', initialModel: 'claude-fable-5-1' })
+    const { result } = render({ sessionId: 's1', initial: { llmProviderId: 'platform-conn', model: 'claude-fable-5-1' } })
     expect(result.current.model).toBe('claude-opus-5-5')
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'platform-conn', model: 'claude-opus-5-5' })
   })
