@@ -45,4 +45,54 @@ test.describe('Session list requests', () => {
     await expect(rows).toHaveCount(7)
     expect(listReads.some((search) => !new URLSearchParams(search).has('limit'))).toBe(true)
   })
+
+  test('the agent home reads the full list for the row, and leaving it keeps the newest rows', async ({ page, request }, testInfo) => {
+    test.setTimeout(90_000)
+    const agent = await createAgent(request, uniqueName(testInfo, 'Live Full List'))
+    const first = await createSession(request, agent, `First ${uniqueName(testInfo, 'live')}`)
+    await waitForSessionIdle(request, agent, first)
+
+    const listPath = `/api/agents/${agent.slug}/sessions`
+    const isRecentRead = (href: string) => {
+      const [path, search = ''] = href.replace(/^https?:\/\/[^/]+/, '').split('?')
+      return path === listPath && new URLSearchParams(search).get('with_total') === 'true'
+    }
+    const recentReads: string[] = []
+    page.on('request', (req) => {
+      if (req.method() === 'GET' && isRecentRead(req.url())) recentReads.push(req.url())
+    })
+
+    // The home lists every session, so the row's slice follows the home's reads.
+    await page.goto(`/agents/${agent.slug}`)
+    const sidebarRow = (id: string) => page.locator(`[data-testid="session-item-${id}"]`)
+    await expect(sidebarRow(first.id)).toBeVisible()
+    const readsOnArrival = recentReads.length
+
+    // A session started elsewhere reaches the row through the home's read.
+    const fresh = await createSession(request, agent, `Fresh ${uniqueName(testInfo, 'live')}`)
+    await expect(sidebarRow(fresh.id)).toBeVisible()
+    await waitForSessionIdle(request, agent, fresh)
+    await expect(sidebarRow(fresh.id)).toBeVisible()
+    expect(recentReads.length).toBe(readsOnArrival)
+
+    // Leave the home with the slice's own read held: the row keeps the session
+    // the home's read brought in, before and after that read lands.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let heldReads = 0
+    await page.route((url) => isRecentRead(url.href), async (route) => {
+      heldReads += 1
+      await held
+      await route.continue()
+    })
+    await sidebarRow(first.id).click()
+    await expect(page.locator('[data-testid="message-list"]')).toBeVisible()
+    await expect(sidebarRow(fresh.id)).toBeVisible()
+    await expect(sidebarRow(first.id)).toBeVisible()
+    // The slice may still be fresh from the home's last read, and then reads nothing.
+    const landed = heldReads > 0 ? page.waitForResponse((res) => isRecentRead(res.url())) : Promise.resolve(null)
+    release()
+    await landed
+    await expect(sidebarRow(fresh.id)).toBeVisible()
+  })
 })

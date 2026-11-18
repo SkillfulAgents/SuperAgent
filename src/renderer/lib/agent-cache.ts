@@ -187,6 +187,22 @@ export function seedCreatedSessionInRecent(queryClient: QueryClient, agentSlug: 
 }
 
 /**
+ * Carry a read of the agent's full list into its cached recent slice and count.
+ * While a view that lists every session is open, the slice does not read for
+ * itself (`useRecentSessions`): the full list's reads keep it current, so when
+ * that view closes the row goes on from the newest rows the tab has, not from
+ * the slice's own older read. Only a slice that is already cached is written
+ * (the row that shows it makes it), and a count only where the server reports
+ * one: without it the row counts the full list instead.
+ */
+export function writeFullListToRecent(queryClient: QueryClient, agentSlug: string, sessions: ApiSession[]): void {
+  queryClient.setQueryData<ApiSession[]>(recentSessionsKey(agentSlug), (recent) => (
+    recent === undefined ? undefined : sessions.slice(0, RECENT_SESSIONS_LIMIT)
+  ))
+  queryClient.setQueryData<number>(sessionTotalKey(agentSlug), (total) => (total === undefined ? undefined : sessions.length))
+}
+
+/**
  * The cached lists that can vouch for clearing an agent rollup, as the rows
  * each holds: no session outside them can still carry the flag.
  *

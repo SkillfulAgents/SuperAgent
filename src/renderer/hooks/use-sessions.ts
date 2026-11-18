@@ -1,10 +1,10 @@
 import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
-import { useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient, skipToken, type QueryClient } from '@tanstack/react-query'
+import { useCallback, useSyncExternalStore } from 'react'
+import { useQuery, useMutation, useQueryClient, hashKey, skipToken, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import { z } from 'zod'
-import { RECENT_SESSIONS_LIMIT, recentSessionsKey, seedCreatedSessionInRecent, sessionTotalKey } from '@renderer/lib/agent-cache'
+import { RECENT_SESSIONS_LIMIT, recentSessionsKey, seedCreatedSessionInRecent, sessionTotalKey, writeFullListToRecent } from '@renderer/lib/agent-cache'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
@@ -37,15 +37,31 @@ function resolveAgentSlugFromCache(queryClient: QueryClient, agentSlug: string):
   return resolveRouteAgentId(agentSlug, agents) ?? agentSlug
 }
 
+/**
+ * Every session of an agent. Shared by every reader of ['sessions', slug], so
+ * each read also brings the sidebar's recent slice up to date
+ * (`writeFullListToRecent`). `slug` is the canonical agent id.
+ */
+export function allSessionsQueryOptions(queryClient: QueryClient, slug: string | null) {
+  return {
+    queryKey: ['sessions', slug],
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ApiSession[]> => {
+      const res = await apiFetch(`/api/agents/${slug}/sessions`, { signal })
+      if (!res.ok) throw new Error('Failed to fetch sessions')
+      const sessions = await res.json() as ApiSession[]
+      // A read an invalidation replaced must not write its older rows into the slice.
+      if (signal.aborted) throw signal.reason
+      if (slug) writeFullListToRecent(queryClient, slug, sessions)
+      return sessions
+    },
+  }
+}
+
 export function useSessions(agentSlug: string | null, options?: { staleTime?: number }) {
   const resolvedSlug = useResolvedAgentSlug(agentSlug)
+  const queryClient = useQueryClient()
   return useQuery<ApiSession[]>({
-    queryKey: ['sessions', resolvedSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${resolvedSlug}/sessions`)
-      if (!res.ok) throw new Error('Failed to fetch sessions')
-      return res.json()
-    },
+    ...allSessionsQueryOptions(queryClient, resolvedSlug),
     enabled: !!resolvedSlug,
     // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
     ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
@@ -112,13 +128,39 @@ const recentSessionsResponseSchema = z.union([
   z.object({ sessions: z.array(z.unknown()), total: z.number() }),
 ])
 
+/**
+ * The recent slice, read for itself only while no view keeps the agent's full
+ * list live (the agent's home, its sessions page, "Show all", search). While
+ * one does, that list's reads write the slice (`writeFullListToRecent`), so
+ * an event costs one request, not one per list, and leaving that view shows
+ * the newest rows at once. A slice with no rows yet reads once regardless.
+ */
 export function useRecentSessions(agentSlug: string | null) {
   const resolvedSlug = useResolvedAgentSlug(agentSlug)
   const queryClient = useQueryClient()
+  const fullListLive = useQueryIsLive(resolvedSlug ? ['sessions', resolvedSlug] : null)
   return useQuery<ApiSession[]>({
     ...recentSessionsQueryOptions(queryClient, resolvedSlug),
-    enabled: !!resolvedSlug,
+    enabled: (query) => !!resolvedSlug && (!fullListLive || query.state.data === undefined),
   })
+}
+
+/**
+ * Whether a mounted reader keeps the query at `queryKey` fetching (an enabled
+ * observer), so its invalidations refetch it. Re-renders only when that flips.
+ */
+function useQueryIsLive(queryKey: QueryKey | null): boolean {
+  const queryCache = useQueryClient().getQueryCache()
+  const queryHash = queryKey ? hashKey(queryKey) : null
+  const subscribe = useCallback((onChange: () => void) => (
+    queryHash === null
+      ? () => {}
+      : queryCache.subscribe((event) => {
+          if (event.query.queryHash === queryHash) onChange()
+        })
+  ), [queryCache, queryHash])
+  const isLive = () => (queryHash === null ? false : queryCache.get(queryHash)?.isActive() ?? false)
+  return useSyncExternalStore(subscribe, isLive, isLive)
 }
 
 /**
