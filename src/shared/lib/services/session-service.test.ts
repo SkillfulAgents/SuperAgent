@@ -38,9 +38,7 @@ import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-s
 import { backgroundSettled } from '@shared/lib/background'
 import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
 import { parsePageCursor } from './session-page-cursor'
-
-const cursorId = (cursor: string | null): string | null =>
-  cursor === null ? null : parsePageCursor(cursor).id
+import { cursorId } from './testing/page-cursor'
 
 const database = perTestDatabase()
 vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
@@ -1361,6 +1359,40 @@ describe('session-service', () => {
 
       expect(cursor).toBeNull()
       expect(collected).toEqual(['u-0', 'mr', 'cb', 'info1', 'info2'])
+    })
+
+    it('sends a bare-id cursor when the page head lies above the row it was paged from', async () => {
+      // Display reordering can head a page with a row from above the cursor
+      // row: `cb` displays before `info1` though it comes later in the file.
+      // An offset there would point back up the file, so that cursor goes out
+      // as a bare id, and every offset a cursor carries points further down.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 6, 0, 0, s)).toISOString()
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        { type: 'system', uuid: 'info1', subtype: 'informational', content: 'note one', isMeta: false, timestamp: ts(1) },
+        { type: 'system', uuid: 'mr', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(2), memory_paths: ['M.md'] },
+        { type: 'system', uuid: 'cb', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(3), compactMetadata: { trigger: 'manual', preTokens: 1 } },
+        { type: 'system', uuid: 'info2', subtype: 'informational', content: 'note two', isMeta: false, timestamp: ts(4) },
+      ])
+      const store = createLocalSessionStore('test-agent')
+
+      const steps: Array<{ asked: string; head: string; next: string | null }> = []
+      let cursor = (await getSessionMessagesPage(store, 'page-session', { limit: 1 })).nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage(store, 'page-session', { limit: 1, cursor })
+        steps.push({ asked: cursor, head: page.messages[0]!.id, next: page.nextCursor })
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      const fromInfo1 = steps.find((step) => cursorId(step.asked) === 'info1')!
+      expect(parsePageCursor(fromInfo1.asked).offset).toBeDefined()
+      expect(fromInfo1).toMatchObject({ head: 'cb', next: 'cb' })
+      for (const { asked, next } of steps) {
+        const askedOffset = parsePageCursor(asked).offset
+        const nextOffset = next === null ? undefined : parsePageCursor(next).offset
+        if (askedOffset !== undefined && nextOffset !== undefined) expect(nextOffset).toBeLessThan(askedOffset)
+      }
     })
 
     it('attaches an oversized tool result that starts inside the grace region', async () => {

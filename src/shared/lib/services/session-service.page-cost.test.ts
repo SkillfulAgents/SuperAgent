@@ -30,10 +30,7 @@ import * as os from 'os'
 
 import { getSessionMessagesPage } from './session-service'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
-import { parsePageCursor } from './session-page-cursor'
-
-const cursorId = (cursor: string | null): string | null =>
-  cursor === null ? null : parsePageCursor(cursor).id
+import { cursorId } from './testing/page-cursor'
 
 const KB = 1024
 const MB = 1024 * KB
@@ -64,14 +61,17 @@ interface ReadAccount {
   bytes: number
   /** Read round-trips — on a network filesystem each one is priced separately. */
   reads: number
+  /** Opens: also a round trip each on a network filesystem. */
+  opens: number
 }
 
 function trackReads(): ReadAccount {
-  const account: ReadAccount = { bytes: 0, reads: 0 }
+  const account: ReadAccount = { bytes: 0, reads: 0, opens: 0 }
   const realOpen = fs.promises.open.bind(fs.promises)
 
   vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
     const handle = await realOpen(...(args as Parameters<typeof realOpen>))
+    account.opens++
     const realRead = handle.read.bind(handle)
     handle.read = (async (...readArgs: unknown[]) => {
       const result = await realRead(...(readArgs as Parameters<typeof realRead>))
@@ -315,5 +315,7 @@ describe('messages page read cost — cursor pages', () => {
     expect(seeked.account.bytes).toBeLessThan(CURSOR_GRACE + 4 * 64 * KB + CHUNK_SLACK)
     expect(scanned.account.bytes).toBeGreaterThan(size)
     expect(seeked.account.reads).toBeLessThan(10)
+    // One open serves the seek's forward reads and its walk.
+    expect(seeked.account.opens).toBe(scanned.account.opens)
   })
 })

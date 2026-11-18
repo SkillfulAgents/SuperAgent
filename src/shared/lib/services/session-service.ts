@@ -22,6 +22,7 @@ import {
 import {
   isAbsentFile,
   iterateLinesBackward,
+  iterateLinesBackwardFrom,
   lineStartAtOrAfter,
   readChunkFor,
   readJsonl,
@@ -1075,16 +1076,23 @@ async function scanMessagesPageWindow(
   const hardCap = byteBudget * MESSAGES_PAGE_HARD_CAP_FACTOR
   const cursorNeedle = cursor !== undefined ? Buffer.from(JSON.stringify(cursor)) : null
   const stale: PageWindowNotFound = { found: false, reachedStart: false, stale: true }
-  // Seek: the walk ends at the cursor row's end, and the grace end is found
-  // forward, since the lines above the row are never walked.
-  let walkEnd: number | undefined
+  // A seek walks back from the cursor row's end, and finds the grace end
+  // forward, since the lines above the row are never walked. One open serves
+  // both forward reads and the walk: on network storage every open and every
+  // read is a round trip.
   let seekGraceEnd: number | undefined
-  if (seeking) {
-    walkEnd = await lineStartAtOrAfter(store.files, jsonlPath, cursorOffset + 1, signal)
-    if (walkEnd !== undefined) {
-      seekGraceEnd = await lineStartAtOrAfter(store.files, jsonlPath, walkEnd + CURSOR_WINDOW_GRACE_BYTES, signal)
+  async function* seekLines(rowStart: number): AsyncGenerator<{ line: Buffer; offset: number }> {
+    const file = await store.files.open(jsonlPath)
+    try {
+      const size = await file.size()
+      const rowEnd = (await lineStartAtOrAfter(file, size, rowStart + 1, signal)) ?? size
+      seekGraceEnd = await lineStartAtOrAfter(file, size, rowEnd + CURSOR_WINDOW_GRACE_BYTES, signal)
+      yield* iterateLinesBackwardFrom(file, rowEnd, signal)
+    } finally {
+      await file.close()
     }
   }
+  const lines = seeking ? seekLines(cursorOffset) : iterateLinesBackward(store.files, jsonlPath, signal)
   // Items needed below the cursor (or below EOF): the page plus the head
   // item that slicing sacrifices when the window start may cut it.
   const targetItems = limit + 1
@@ -1127,7 +1135,7 @@ async function scanMessagesPageWindow(
   // End of the newest line: the file's end as this scan saw it.
   let scanEnd: number | undefined
 
-  for await (const { line, offset } of iterateLinesBackward(store.files, jsonlPath, signal, { end: walkEnd })) {
+  for await (const { line, offset } of lines) {
     // A seek's first line must be the cursor row (checked below).
     if (seeking && !anchored && offset !== cursorOffset) return stale
     linesScanned++

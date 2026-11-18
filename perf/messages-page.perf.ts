@@ -24,6 +24,7 @@
  * BUDGET_LATENCY_MS (see harness.ts).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { parsePageCursor } from '@shared/lib/services/session-page-cursor'
 import { bootPerfApp, expectWithinBudget, measure, type Measurement, type PerfApp } from './harness'
 
 interface PageBody {
@@ -90,8 +91,9 @@ describe('chat transcript — long session', () => {
   function expectTrailingPage(body: PageBody): void {
     expect(body.messages.length).toBeGreaterThan(0)
     expect(body.messages.at(-1)!.id).toBe(newest)
-    // More history than any one page: the cursor names the page's first item.
-    expect(body.nextCursor).toBe(body.messages[0]!.id)
+    // More history than any one page: the cursor names the page's first item
+    // and carries its row's offset, so the older page seeks.
+    expect(parsePageCursor(body.nextCursor ?? '')).toEqual({ id: body.messages[0]!.id, offset: expect.any(Number) })
   }
 
   function expectOlderPage(body: PageBody, first: PageBody): void {
@@ -99,7 +101,7 @@ describe('chat transcript — long session', () => {
     // Ends right before the page it extends, without overlapping it.
     const shown = new Set(first.messages.map((m) => m.id))
     expect(body.messages.some((m) => shown.has(m.id))).toBe(false)
-    expect(body.nextCursor).toBe(body.messages[0]!.id)
+    expect(parsePageCursor(body.nextCursor ?? '').id).toBe(body.messages[0]!.id)
   }
 
   it('trailing page, no max_bytes (clients that predate it)', async () => {

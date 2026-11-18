@@ -17,7 +17,7 @@
  *    of its tool calls and their results: whole turn groups, never halves);
  *  - the walk terminates with a null cursor at the transcript start.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -26,10 +26,7 @@ import { getSessionMessagesPage, getSessionMessagesWithCompact } from './session
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import { prng } from '@shared/lib/agent-actor/testing/prng'
 import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
-import { parsePageCursor } from './session-page-cursor'
-
-const cursorId = (cursor: string | null): string | null =>
-  cursor === null ? null : parsePageCursor(cursor).id
+import { cursorId } from './testing/page-cursor'
 
 const KiB = 1024
 const MiB = 1024 * KiB
@@ -117,6 +114,19 @@ async function writeTranscript(sessionId: string, rows: object[]): Promise<numbe
   const jsonlPath = path.join(sessionsDir, `${sessionId}.jsonl`)
   await fs.promises.writeFile(jsonlPath, rows.map((e) => JSON.stringify(e)).join('\n') + '\n')
   return fs.statSync(jsonlPath).size
+}
+
+/** Line-start offset of a row's newest copy: the one a resume replay appended. */
+async function newestRowOffset(sessionId: string, uuid: string): Promise<number> {
+  const sessionsDir = path.join(testDir, 'agents', AGENT, 'workspace', '.claude', 'projects', '-workspace')
+  const text = await fs.promises.readFile(path.join(sessionsDir, `${sessionId}.jsonl`), 'utf-8')
+  let offset = 0
+  let newest = -1
+  for (const line of text.split('\n')) {
+    if (line && (JSON.parse(line) as { uuid?: string }).uuid === uuid) newest = offset
+    offset += Buffer.byteLength(line) + 1
+  }
+  return newest
 }
 
 /** The oracle: the whole transcript through the same transform, the way the
@@ -266,6 +276,28 @@ describe('resume-replayed rows in a budgeted walk', () => {
 
     const mid = await getSessionMessagesPage(store, REPLAY_SESSION, { limit: 200, cursor: 'a-5-1', byteBudget: 1 * MiB })
     expect(mid.messages).toEqual(replayFull.slice(0, replayFull.findIndex((m) => m.id === 'f-6') + 1))
+  })
+
+  it('serves the same pages for a phantom cursor whether it seeks or scans', async () => {
+    // A seek anchors on the copy the client saw, so it splits the window at
+    // that copy without the id scan's second pass and its warning.
+    const store = createLocalSessionStore(AGENT)
+    const cases = [
+      { uuid: 'a-21-1', byteBudget: 64 * KiB },
+      { uuid: 'a-21-1', byteBudget: undefined },
+      { uuid: 'a-5-1', byteBudget: 1 * MiB },
+    ]
+    for (const { uuid, byteBudget } of cases) {
+      const budget = byteBudget !== undefined ? { byteBudget } : {}
+      const scanned = await getSessionMessagesPage(store, REPLAY_SESSION, { limit: 200, cursor: uuid, ...budget })
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const cursor = `${uuid}:${await newestRowOffset(REPLAY_SESSION, uuid)}`
+      const seeked = await getSessionMessagesPage(store, REPLAY_SESSION, { limit: 200, cursor, ...budget })
+      expect(warn).not.toHaveBeenCalled()
+      warn.mockRestore()
+      expect(seeked.messages).toEqual(scanned.messages)
+      expect(cursorId(seeked.nextCursor)).toBe(cursorId(scanned.nextCursor))
+    }
   })
 
   it('a walk through a phantom cursor serves every item of the full transform once', async () => {

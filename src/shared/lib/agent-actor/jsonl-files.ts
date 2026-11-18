@@ -295,120 +295,120 @@ export async function readTailLines(
  * Reads start at READ_CHUNK_MIN and double up to READ_CHUNK_MAX, so a walk
  * that stops early costs what it did with fixed small reads, and a long one
  * takes far fewer.
- *
- * `end` starts the walk at that byte offset instead of the file's end; it must
- * be a line boundary, as {@link lineStartAtOrAfter} returns.
  */
 export async function* iterateLinesBackward(
   files: StoreFileOps,
   path: string,
   signal?: AbortSignal,
-  options?: { end?: number },
 ): AsyncGenerator<{ line: Buffer; offset: number }> {
   signal?.throwIfAborted()
   const file = await openOrNull(files, path)
   if (!file) return
 
   try {
-    const size = await file.size()
-    let pos = options?.end !== undefined ? Math.min(options.end, size) : size
-    let chunk = READ_CHUNK_MIN
-    // Fragments (in file order) of the line whose start lies in a chunk not
-    // yet read — the bytes below the lowest newline processed so far. Kept as
-    // an array and concatenated ONCE at the line boundary: re-concatenating
-    // per chunk would make a multi-chunk row cost O(rowBytes²) in copying.
-    let carryParts: Buffer[] = []
-    let carryBytes = 0
-    // The first candidate is the region between the last newline and the end
-    // — empty when the file ends with a newline. Skip only that empty
-    // pseudo-line; interior empty lines are yielded (parseJsonlLine treats
-    // them as blanks), matching readTailLines.
-    let first = true
-
-    while (pos > 0) {
-      signal?.throwIfAborted()
-      const chunkSize = Math.min(chunk, pos)
-      chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
-      pos -= chunkSize
-      const buf = asBuffer(await file.readAt(pos, chunkSize, signal))
-      signal?.throwIfAborted()
-      if (buf.length < chunkSize) {
-        // File shrank while we walked it (rewrite race): the bytes above were
-        // read from the old layout, so stop instead of splicing garbage.
-        return
-      }
-
-      // Unprocessed region of this chunk, scanned high-to-low.
-      let high = buf.length
-      let idx = high > 0 ? buf.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
-      while (idx !== -1) {
-        const segment = buf.subarray(idx + 1, high)
-        const line = carryParts.length > 0 ? Buffer.concat([segment, ...carryParts]) : segment
-        carryParts = []
-        carryBytes = 0
-        if (line.length > 0 || !first) {
-          yield { line, offset: pos + idx + 1 }
-        }
-        first = false
-        high = idx
-        idx = high > 0 ? buf.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
-      }
-      if (high > 0) {
-        carryParts.unshift(buf.subarray(0, high))
-        carryBytes += high
-      }
-    }
-
-    if (carryBytes > 0) {
-      // Release the source fragments BEFORE yielding: the yield suspends the
-      // generator, and holding both the fragments and their concatenation
-      // would double the resident memory of exactly the oversized rows this
-      // reader is sized for.
-      const firstLine = Buffer.concat(carryParts)
-      carryParts = []
-      carryBytes = 0
-      yield { line: firstLine, offset: 0 }
-    }
+    yield* iterateLinesBackwardFrom(file, await file.size(), signal)
   } finally {
     await file.close()
   }
 }
 
 /**
- * The smallest line-start offset at or after `offset`, read forward: `offset`
- * itself when it starts a line, else the byte after the next newline.
- * undefined when no line starts there before the end (or the file is absent).
+ * {@link iterateLinesBackward} over an open file, from `end` down. `end` must
+ * be a line boundary, as {@link lineStartAtOrAfter} returns. The caller owns
+ * the handle, so the same open can serve forward reads too.
+ */
+export async function* iterateLinesBackwardFrom(
+  file: OpenFile,
+  end: number,
+  signal?: AbortSignal,
+): AsyncGenerator<{ line: Buffer; offset: number }> {
+  let pos = end
+  let chunk = READ_CHUNK_MIN
+  // Fragments (in file order) of the line whose start lies in a chunk not
+  // yet read — the bytes below the lowest newline processed so far. Kept as
+  // an array and concatenated ONCE at the line boundary: re-concatenating
+  // per chunk would make a multi-chunk row cost O(rowBytes²) in copying.
+  let carryParts: Buffer[] = []
+  let carryBytes = 0
+  // The first candidate is the region between the last newline and the end
+  // — empty when the file ends with a newline. Skip only that empty
+  // pseudo-line; interior empty lines are yielded (parseJsonlLine treats
+  // them as blanks), matching readTailLines.
+  let first = true
+
+  while (pos > 0) {
+    signal?.throwIfAborted()
+    const chunkSize = Math.min(chunk, pos)
+    chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
+    pos -= chunkSize
+    const buf = asBuffer(await file.readAt(pos, chunkSize, signal))
+    signal?.throwIfAborted()
+    if (buf.length < chunkSize) {
+      // File shrank while we walked it (rewrite race): the bytes above were
+      // read from the old layout, so stop instead of splicing garbage.
+      return
+    }
+
+    // Unprocessed region of this chunk, scanned high-to-low.
+    let high = buf.length
+    let idx = high > 0 ? buf.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
+    while (idx !== -1) {
+      const segment = buf.subarray(idx + 1, high)
+      const line = carryParts.length > 0 ? Buffer.concat([segment, ...carryParts]) : segment
+      carryParts = []
+      carryBytes = 0
+      if (line.length > 0 || !first) {
+        yield { line, offset: pos + idx + 1 }
+      }
+      first = false
+      high = idx
+      idx = high > 0 ? buf.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
+    }
+    if (high > 0) {
+      carryParts.unshift(buf.subarray(0, high))
+      carryBytes += high
+    }
+  }
+
+  if (carryBytes > 0) {
+    // Release the source fragments BEFORE yielding: the yield suspends the
+    // generator, and holding both the fragments and their concatenation
+    // would double the resident memory of exactly the oversized rows this
+    // reader is sized for.
+    const firstLine = Buffer.concat(carryParts)
+    carryParts = []
+    carryBytes = 0
+    yield { line: firstLine, offset: 0 }
+  }
+}
+
+/**
+ * The smallest line-start offset at or after `offset` in an open file of
+ * `size` bytes, read forward: `offset` itself when it starts a line, else the
+ * byte after the next newline. undefined when no line starts before `size`.
  * Reads only up to that newline, in chunks that grow like the backward walk's.
  */
 export async function lineStartAtOrAfter(
-  files: StoreFileOps,
-  path: string,
+  file: OpenFile,
+  size: number,
   offset: number,
   signal?: AbortSignal,
 ): Promise<number | undefined> {
-  signal?.throwIfAborted()
-  if (offset <= 0) return 0
-  const file = await openOrNull(files, path)
-  if (!file) return undefined
-  try {
-    const size = await file.size()
-    // Start one byte early: a newline just before `offset` makes it a line start.
-    let pos = offset - 1
-    let chunk = READ_CHUNK_MIN
-    while (pos < size) {
-      signal?.throwIfAborted()
-      const buf = asBuffer(await file.readAt(pos, Math.min(chunk, size - pos), signal))
-      if (buf.length === 0) return undefined
-      const idx = buf.indexOf(NEWLINE_BYTE)
-      if (idx !== -1) {
-        const start = pos + idx + 1
-        return start < size ? start : undefined
-      }
-      pos += buf.length
-      chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
+  if (offset <= 0) return size > 0 ? 0 : undefined
+  // Start one byte early: a newline just before `offset` makes it a line start.
+  let pos = offset - 1
+  let chunk = READ_CHUNK_MIN
+  while (pos < size) {
+    signal?.throwIfAborted()
+    const buf = asBuffer(await file.readAt(pos, Math.min(chunk, size - pos), signal))
+    if (buf.length === 0) return undefined
+    const idx = buf.indexOf(NEWLINE_BYTE)
+    if (idx !== -1) {
+      const start = pos + idx + 1
+      return start < size ? start : undefined
     }
-    return undefined
-  } finally {
-    await file.close()
+    pos += buf.length
+    chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
   }
+  return undefined
 }
