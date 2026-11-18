@@ -665,21 +665,41 @@ describe('/invoke', () => {
     mockCreateSession.mockResolvedValue({ id: 'new-sess-id' })
   })
 
-  it('rejects when caller invokes itself', async () => {
-    reviewDecisions.push('allow')
-    const res = await authedFetch('/x-agent/invoke', { slug: CALLER_SLUG, prompt: 'hi' })
-    expect(res.status).toBe(400)
-    const body = await res.json()
-    expect(body.error).toMatch(/cannot invoke itself/)
+  it.each([{}, { slug: CALLER_SLUG }])('targets the caller itself without a policy or review (%o)', async (target) => {
+    // A cross-agent block does not reach the agent's own sessions.
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', null, 'block')
+    const res = await authedFetch('/x-agent/invoke', { ...target, prompt: 'hi' })
+    expect(res.status).toBe(200)
+    expect(mockRequestXAgentReview).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).toHaveBeenCalledWith(CALLER_SLUG)
+    expect(mockRegisterSession).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: CALLER_SLUG }),
+      'new-sess-id',
+      expect.any(String),
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
+    )
   })
 
-  it('rejects when calling session was itself invoked by another agent (one-hop rule)', async () => {
+  it('rejects a session sending a message to itself', async () => {
+    const res = await authedFetch('/x-agent/invoke', {
+      prompt: 'hi',
+      sessionId: 'caller-session',
+      sync: true,
+      _callerSessionId: 'caller-session',
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/cannot send a message to itself/)
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it.each(['some-other-agent', CALLER_SLUG])('rejects when calling session was itself invoked by %s (one-hop rule)', async (invokedByAgentSlug) => {
     reviewDecisions.push('allow')
     const callerSessionId = 'caller-session-invoked'
-    // Mark the calling session as having been invoked by some other agent
     mockGetSessionMetadata.mockImplementation(async (store: unknown, sessionId: unknown) => {
       if ((store as { slug: string }).slug === CALLER_SLUG && sessionId === callerSessionId) {
-        return { name: 'invoked', createdAt: new Date().toISOString(), invokedByAgentSlug: 'some-other-agent' }
+        return { name: 'invoked', createdAt: new Date().toISOString(), invokedByAgentSlug }
       }
       return null
     })
@@ -1849,6 +1869,13 @@ describe('/get-sessions', () => {
     expect(body.sessions[1]).toEqual(expect.objectContaining({ id: 'sess-2', isRunning: false }))
   })
 
+  it('lists the caller\'s own sessions without a review', async () => {
+    mockListSessions.mockResolvedValue([])
+    const res = await authedFetch('/x-agent/get-sessions', { slug: CALLER_SLUG })
+    expect(res.status).toBe(200)
+    expect(mockRequestXAgentReview).not.toHaveBeenCalled()
+  })
+
   it('does NOT auto-allow read just because invoke=allow (the two are independent)', async () => {
     const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
     await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
@@ -2881,6 +2908,12 @@ describe('cross-agent authorization decision table', () => {
       expect(await tablesRead('invoke', body)).toEqual({ status: 404, tables: ['agents', 'x_agent_policies'] })
     })
 
+    it('/invoke to itself in local mode: the agent, and no policy', async () => {
+      mockSessionIsKnown.mockResolvedValue(false)
+      const body = { prompt: 'hi', sessionId: 'unknown-session', _callerSessionId: 'caller-session' }
+      expect(await tablesRead('invoke', body)).toEqual({ status: 404, tables: ['agents'] })
+    })
+
     it('a refusal by the ACL costs no more than a pass', async () => {
       authModeEnabled = true
       const refused = await tablesRead('get-sessions', { slug: DISPLAY_SLUG })
@@ -2909,14 +2942,16 @@ describe('cross-agent authorization decision table', () => {
         .toEqual({ status: 404, body: { error: 'Target agent not found' } })
     })
 
-    it('invoke: invoking itself comes before the one-hop rule, the ACL and the policy', async () => {
+    it('invoke: invoking itself still meets the one-hop rule', async () => {
       authModeEnabled = true
-      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-      await testDb.delete(schema.agentAcl).where(eq(schema.agentAcl.agentSlug, CALLER_SLUG))
-      await setPolicy(CALLER_SLUG, 'invoke', CALLER_SLUG, 'block')
       callerSessionWasInvoked()
-      expect(await answer('invoke', { slug: CALLER_SLUG, prompt: 'hi', _callerSessionId: invokedSession }))
-        .toEqual({ status: 400, body: { error: 'Agent cannot invoke itself' } })
+      expect(await answer('invoke', { prompt: 'hi', _callerSessionId: invokedSession })).toEqual({
+        status: 403,
+        body: {
+          error: 'This session was invoked by agent "some-other-agent" and cannot invoke agents. Cross-agent invocation is one hop deep.',
+        },
+      })
+      expect(xAgentReviewRequests).toHaveLength(0)
     })
 
     it('invoke: the one-hop rule comes before the ACL and the policy', async () => {
@@ -2927,7 +2962,7 @@ describe('cross-agent authorization decision table', () => {
       expect(await answer('invoke', { slug: TARGET_SLUG, prompt: 'hi', _callerSessionId: invokedSession })).toEqual({
         status: 403,
         body: {
-          error: 'This session was invoked by agent "some-other-agent" and cannot invoke other agents. Cross-agent invocation is one hop deep.',
+          error: 'This session was invoked by agent "some-other-agent" and cannot invoke agents. Cross-agent invocation is one hop deep.',
         },
       })
       expect(xAgentReviewRequests).toHaveLength(0)

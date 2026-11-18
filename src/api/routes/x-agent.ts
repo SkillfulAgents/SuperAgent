@@ -230,6 +230,9 @@ async function checkAgentPolicy(
   // Only the first read: a card's re-evaluations below always read again.
   savedDecision?: Promise<XAgentDecision>,
 ): Promise<{ allowed: boolean; reason?: string }> {
+  // An agent acting on its own sessions crosses no agent boundary: no policy
+  // applies and nobody is asked.
+  if (targetSlug === callerSlug) return { allowed: true }
   if (operation !== 'create') {
     const decision = await (savedDecision ?? evaluatePolicy(callerSlug, operation, targetSlug))
     if (decision === 'allow') return { allowed: true }
@@ -742,14 +745,14 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
 // ----------------------------------------------------------------------------
 
 const invokeBodySchema = z.object({
-  slug: z.string(),
+  slug: z.string().optional(),
   prompt: z.string().min(1),
   sessionId: z.string().optional(),
   sync: z.boolean().optional(),
   attachments: xAgentAttachmentsSchema.optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
-  // can reject calls from sessions that were themselves invoked by another agent
-  // (one-hop rule — also blocks A→B→A and any deeper chain transitively).
+  // can reject calls from sessions that were themselves invoked by an agent
+  // (one-hop rule).
   _callerSessionId: z.string().optional(),
 })
 
@@ -772,13 +775,10 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   } = c.req.valid('json')
 
   // Resolve display slug → the agent, so ACL / policy / runtime all use its id.
-  const target = await agentCatalog.resolveRecord(rawTargetSlug)
+  // No slug means the caller's own agent.
+  const target = await agentCatalog.resolveRecord(rawTargetSlug ?? callerSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
   const targetSlug = target.slug
-
-  if (targetSlug === callerSlug) {
-    return c.json({ error: 'Agent cannot invoke itself' }, 400)
-  }
 
   // What the checks below read depends only on the caller and the resolved
   // target, so the reads start together; each is awaited at its own check.
@@ -789,19 +789,29 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     ? getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
     : Promise.resolve(undefined))
   const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))
-  const savedDecision = startRead(evaluatePolicy(callerSlug, 'invoke', targetSlug))
+  // No policy applies to the caller's own agent (checkAgentPolicy).
+  const savedDecision = targetSlug === callerSlug
+    ? undefined
+    : startRead(evaluatePolicy(callerSlug, 'invoke', targetSlug))
 
-  // One-hop rule: sessions started by another agent cannot invoke further.
+  // One-hop rule: sessions started by an agent invoke cannot invoke further.
   const callerMeta = await callerMetaRead
   if (callerMeta?.invokedByAgentSlug) {
     return c.json(
       {
         error:
-          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke other agents. ` +
+          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke agents. ` +
           'Cross-agent invocation is one hop deep.',
       },
       403,
     )
+  }
+
+  // A running session takes an invoke into its turn, so a session messaging
+  // itself would read its own prompt as a follow-up, and a sync wait would wait
+  // on the turn that is waiting for it.
+  if (targetSlug === callerSlug && existingSessionId && existingSessionId === _callerSessionId) {
+    return c.json({ error: 'A session cannot send a message to itself. Omit session_id to start a worker session.' }, 400)
   }
 
   // Capture the triggering message's author before a review prompt can pause
