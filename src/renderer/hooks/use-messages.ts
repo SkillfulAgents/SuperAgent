@@ -200,11 +200,16 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   // holding isFetchingOlder, which blocks every fresh fetchOlder call.
   const olderGenRef = useRef(0)
   const olderAbortRef = useRef<AbortController | null>(null)
+  // Cursors this generation of older history has paged from. Each page's
+  // cursor is older than the last, so one that comes back a second time means
+  // the server is handing out pages in a circle (see fetchOlder).
+  const pagedCursorsRef = useRef(new Set<string>())
 
   useEffect(() => {
     olderGenRef.current++
     olderAbortRef.current?.abort()
     olderAbortRef.current = null
+    pagedCursorsRef.current = new Set()
     setOlder([])
     setOlderCursor(undefined)
     prevLatestRef.current = EMPTY_MESSAGES
@@ -224,6 +229,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     olderGenRef.current++
     olderAbortRef.current?.abort()
     olderAbortRef.current = null
+    pagedCursorsRef.current = new Set()
     prevLatestRef.current = EMPTY_MESSAGES
     setOlder([])
     setOlderCursor(undefined)
@@ -277,6 +283,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
       let added: ApiMessageOrBoundary[] = []
       let nextCursor: string | null = cursor
       for (let hop = 0; hop < MAX_EMPTY_OLDER_PAGE_HOPS && nextCursor; hop++) {
+        pagedCursorsRef.current.add(nextCursor)
         const page = await fetchMessagesPage(agentSlug, sessionId, {
           limit: MESSAGES_PAGE_OLDER_LIMIT,
           cursor: nextCursor,
@@ -288,6 +295,16 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
         if (gen !== olderGenRef.current) return false
         added = page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id))
         nextCursor = page.nextCursor
+        if (nextCursor !== null && pagedCursorsRef.current.has(nextCursor)) {
+          // Already paged from: following it again would fetch the same
+          // pages for as long as the reader scrolls, or for as long as a
+          // jump to a message keeps asking for more. The walk ends here, with
+          // what it has, and the report says a transcript pages in a circle.
+          captureRendererException(new Error('Older-page cursor repeated'), {
+            tags: { area: 'messages', op: 'fetch-older' },
+          })
+          nextCursor = null
+        }
         // Kept per page: if a later page fails, the next call starts after
         // the repeated pages this one already walked.
         setOlderCursor(nextCursor)
