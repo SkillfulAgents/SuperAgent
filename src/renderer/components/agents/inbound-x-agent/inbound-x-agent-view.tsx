@@ -106,8 +106,10 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
     )
   }
 
-  const automaticCallers = data.callers.filter((caller) => effectiveDecision(caller) === 'allow')
-  const approvalCallers = data.callers.filter((caller) => effectiveDecision(caller) === 'review')
+  // An agent that can't message here has no calls to switch.
+  const messageCallers = data.callers.filter((caller) => caller.canMessage !== false)
+  const automaticCallers = messageCallers.filter((caller) => effectiveDecision(caller) === 'allow')
+  const approvalCallers = messageCallers.filter((caller) => effectiveDecision(caller) === 'review')
 
   const renderCallerRow = (caller: InboundXAgentCaller) => {
     const allowed = effectiveDecision(caller) === 'allow'
@@ -268,7 +270,7 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
                 </div>
               )}
             </div>
-            {data.callers.length === 0 ? (
+            {messageCallers.length === 0 ? (
               <p className="border-t px-4 py-4 text-xs text-muted-foreground">
                 No other agents can currently trigger this agent.
               </p>

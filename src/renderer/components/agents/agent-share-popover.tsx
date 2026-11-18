@@ -60,8 +60,8 @@ import {
 } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
 import { candidateKey, type InviteCandidate } from '@shared/lib/team-directory/candidate-schema'
-import { agentAccessRole, type AgentAccessRole, type InboundXAgentBlockedAgent, type InboundXAgentCaller, memberAgentsOf, agentAccessNote } from '@shared/lib/types/inbound-x-agent-schema'
-import { useInboundXAgentDetails, useSetAgentAccess, type AgentAccessChange } from '@renderer/hooks/use-inbound-x-agent'
+import { agentAccessRole, type AgentAccessChange, type AgentAccessRole, type InboundXAgentBlockedAgent, type InboundXAgentCaller, memberAgentsOf, agentAccessNote } from '@shared/lib/types/inbound-x-agent-schema'
+import { useInboundXAgentDetails, useSetAgentAccess } from '@renderer/hooks/use-inbound-x-agent'
 import { NotOnGamutBadge } from './not-on-gamut-badge'
 import { AgentFace } from './agent-face'
 
@@ -106,6 +106,11 @@ const AGENT_ROLE_OPTIONS: { value: AgentAccessRole; label: string; description: 
 
 /** Sentinel value for the "Remove" item in the per-row role dropdown. */
 const REMOVE_SENTINEL = '__remove__'
+/**
+ * A role short of what is saved holds no item's value, so picking the shown role still fires: a User with a
+ * note on its reading gets reading, a Viewer that can't message here gets messaging pinned to asking first.
+ */
+const PARTIAL_ROLE = '__partial_role__'
 
 /** What a picked item in an agent's role menu does. Remove block is a Remove: both end at asking first. */
 export function agentAccessChange(value: string): AgentAccessChange | null {
@@ -236,7 +241,10 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
 
   const { data: accessList, isLoading: membersLoading, isError: membersError, refetch: refetchMembers } = useAgentMembers(agentSlug, open)
   // The other agents that can reach this one, each with what it may do here.
-  const { data: inbound, isLoading: agentsLoading, isError: agentsError, refetch: refetchAgents } = useInboundXAgentDetails(agentSlug, open)
+  const { data: inboundDetails, isLoading: agentsLoading, isError: agentsError, refetch: refetchAgents } = useInboundXAgentDetails(agentSlug, open)
+  // An older cloud server can't change an agent's role and doesn't send the blocked list: Share lists people only there.
+  const peopleOnly = inboundDetails !== undefined && inboundDetails.blocked === undefined
+  const inbound = peopleOnly ? undefined : inboundDetails
   const setAgentAccess = useSetAgentAccess(agentSlug)
   const [showBlocked, setShowBlocked] = useState(false)
 
@@ -275,7 +283,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
       for (const u of users) {
         if (u.kind === 'agent') {
           try {
-            await setAgentAccess.mutateAsync({ agent: u.agent, change: role === 'viewer' ? 'viewer' : 'user' })
+            await setAgentAccess.mutateAsync({ callerSlug: u.agent.slug, change: role === 'viewer' ? 'viewer' : 'user' })
             succeeded.add(inviteeKey(u))
           } catch (err) {
             failures.push(`${u.name}: ${err instanceof Error ? err.message : 'Failed to invite agent'}`)
@@ -390,7 +398,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
     const change = agentAccessChange(value)
     if (!change) return
     setError(null)
-    setAgentAccess.mutate({ agent, change }, { onError: (err: Error) => setError(err.message) })
+    setAgentAccess.mutate({ callerSlug: agent.slug, change }, { onError: (err: Error) => setError(err.message) })
   }
 
   // An agent is never an Owner, so the batch role leaves it out once one is picked.
@@ -419,7 +427,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
     const testId = role === 'blocked' ? 'access-blocked' : 'access-agent'
     const label = role === 'blocked' ? 'Blocked' : ROLE_LABELS[role]
     // Permissions saved elsewhere can grant or block less than a role does. The line under the name says so.
-    const subtitle = agentAccessNote({ role, readDecision: agent.readDecision, blocks: 'blocks' in agent ? agent.blocks : undefined }) ?? 'Agent'
+    const note = agentAccessNote({ role, readDecision: agent.readDecision, blocks: 'blocks' in agent ? agent.blocks : undefined })
     return (
       <div
         key={`${testId}:${agent.slug}`}
@@ -429,10 +437,10 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
         <AgentFace agent={agent} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px]">{agent.name}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{subtitle}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{note ?? 'Agent'}</div>
         </div>
         {canChangeAgent(agent) ? (
-          <Select value={role === 'blocked' ? '' : role} onValueChange={(next) => changeAgentAccess(agent, next)} disabled={setAgentAccess.isPending}>
+          <Select value={role === 'blocked' ? '' : (role === 'user' && note) || (role === 'viewer' && agent.canMessage === false) ? PARTIAL_ROLE : role} onValueChange={(next) => changeAgentAccess(agent, next)} disabled={setAgentAccess.isPending}>
             <SelectTrigger
               className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
               data-testid={`${testId}-role-${agent.slug}`}
@@ -876,7 +884,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                 ))}
                 <input
                   ref={searchInputRef}
-                  placeholder={selectedInvitees.length ? '' : isAuthMode ? 'Invite people or agents...' : 'Invite agents...'}
+                  placeholder={selectedInvitees.length ? '' : isAuthMode ? (peopleOnly ? 'Invite people...' : 'Invite people or agents...') : 'Invite agents...'}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onKeyDown={(e) => {
@@ -994,7 +1002,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
               {agentsError && agentsErrorRow}
               {!agentsError && matchedAccess.length + matchedAgentMembers.length + suggested.length + suggestedAgents.length === 0 && (
                 <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
-                  {isAuthMode ? 'No people or agents found' : 'No agents found'}
+                  {isAuthMode ? (peopleOnly ? 'No people found' : 'No people or agents found') : 'No agents found'}
                 </div>
               )}
             </>

@@ -439,6 +439,7 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
   inArray: (col: string, vals: string[]) => ({ col, vals }),
   isNotNull: (col: string) => ({ col, notNull: true }),
+  isNull: (col: string) => ({ col, null: true }),
   desc: (col: string) => ({ col }),
   count: () => 'count_fn',
   like: (col: string, val: string) => ({ col, val }),

@@ -824,4 +824,79 @@ describe('getAgentMemberAgents', () => {
     expect(Object.fromEntries(Object.entries(byAgent).map(([slug, members]) => [slug, members.map((m) => [m.slug, m.role])])))
       .toEqual({ [TARGET_A]: [[CALLER, 'user']], [TARGET_B]: [[CALLER, 'user']] })
   })
+
+  it('lets a setting for one agent override the setting for every agent', async () => {
+    vi.mocked(listAgentsWithStatus).mockImplementation(async ({ slugs = [] } = {}) =>
+      slugs.map((slug) => ({ slug, displaySlug: slug, name: slug, createdAt: new Date(0), status: 'stopped' as const, containerPort: null })))
+    await setPolicy(CALLER, 'invoke', null, 'allow')
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'review')
+    await setPolicy(CALLER, 'read', TARGET_A, 'allow')
+
+    const byAgent = await getAgentMemberAgents([TARGET_A, TARGET_B], false)
+
+    expect(Object.fromEntries(Object.entries(byAgent).map(([slug, members]) => [slug, members.map((m) => [m.slug, m.role])])))
+      .toEqual({ [TARGET_A]: [[CALLER, 'viewer']], [TARGET_B]: [[CALLER, 'user']] })
+  })
+})
+
+describe('PUT /api/agents/:id/inbound-x-agent/:caller', () => {
+  const setRole = (change: string, target = TARGET_A, caller = CALLER) => app.request(`/api/agents/${target}/inbound-x-agent/${caller}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ change }),
+  })
+  const effective = async (caller = CALLER, target = TARGET_A) => [await evaluate(caller, 'invoke', target), await evaluate(caller, 'read', target)]
+
+  it('removes messaging another window allowed after this one loaded a Viewer', async () => {
+    await setPolicy(CALLER, 'read', TARGET_A, 'allow')
+    // Another window lets it message, after this one read it as a Viewer.
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+
+    expect((await setRole('remove')).status).toBe(200)
+    expect(await effective()).toEqual(['review', 'review'])
+  })
+
+  it('pins messaging on a new Viewer, so a later setting for every agent cannot make it a User', async () => {
+    await setRole('viewer')
+    await setPolicy(CALLER, 'invoke', null, 'allow')
+
+    expect(await effective()).toEqual(['review', 'allow'])
+  })
+
+  it('makes an agent a User, lifting this agent\'s blocks on it to Review', async () => {
+    await setPolicy(TARGET_A, 'invoke', CALLER, 'block')
+    await setPolicy(TARGET_A, 'read', CALLER, 'allow')
+
+    await setRole('user')
+
+    expect(await effective()).toEqual(['allow', 'allow'])
+    expect(await effective(TARGET_A, CALLER)).toEqual(['review', 'allow'])
+    expect(mockNotifyAgentMembersChanged.mock.calls.map(([slug]) => slug).sort()).toEqual([CALLER, TARGET_A])
+  })
+
+  it('blocks reading and messaging in both directions', async () => {
+    await setRole('block')
+    expect([...await effective(), ...await effective(TARGET_A, CALLER)]).toEqual(['block', 'block', 'block', 'block'])
+  })
+
+  it('tells no one when nothing changed', async () => {
+    await setRole('viewer')
+    mockNotifyAgentMembersChanged.mockClear()
+    await setRole('viewer')
+    expect(mockNotifyAgentMembersChanged).not.toHaveBeenCalled()
+  })
+
+  it('refuses someone who does not use the other agent, and writes nothing', async () => {
+    authModeEnabled = true
+    currentUserId = 'ana'
+    await testDb.insert(schema.user).values({ id: 'ana', name: 'Ana', email: 'ana@t', emailVerified: false })
+    await testDb.insert(schema.agentAcl).values([
+      { id: 'ana-a', userId: 'ana', agentSlug: TARGET_A, role: 'user', createdAt: new Date() },
+      { id: 'ana-c', userId: 'ana', agentSlug: CALLER, role: 'viewer', createdAt: new Date() },
+    ])
+
+    const res = await setRole('user')
+
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can change this connection.' })
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
 })

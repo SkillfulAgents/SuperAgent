@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -11,7 +11,7 @@ const state = vi.hoisted(() => ({
   authMode: true,
   agents: [] as Array<Record<string, unknown>>,
   agentRoles: [] as Array<{ slug: unknown; role: string | null }>,
-  blocked: [] as Array<{ slug: string; displaySlug: string; name: string; avatar: null; canAccess: boolean; blocks: Array<{ callerSlug: string; operation: 'read' | 'invoke' }> }>,
+  blocked: [] as Array<{ slug: string; displaySlug: string; name: string; avatar: null; canAccess: boolean; blocks: Array<{ callerSlug: string; operation: 'read' | 'invoke' }> }> | undefined,
   fullExport: { mutate: vi.fn(), isPending: false },
 }))
 
@@ -23,8 +23,8 @@ vi.mock('@renderer/context/user-context', () => ({
   }),
 }))
 vi.mock('@renderer/hooks/use-inbound-x-agent', () => {
-  const record = async ({ agent, change }: { agent: { slug: unknown }; change: string }) => {
-    state.agentRoles.push({ slug: agent.slug, role: change })
+  const record = async ({ callerSlug, change }: { callerSlug: string; change: string }) => {
+    state.agentRoles.push({ slug: callerSlug, role: change })
   }
   return {
     useInboundXAgentDetails: () => ({ data: { sessions: [], callers: state.agents, blocked: state.blocked }, isLoading: false }),
@@ -122,10 +122,34 @@ describe('sharing an agent with other agents', () => {
 
     expect(await screen.findByTestId('access-agent-triage')).toHaveTextContent('Inbox TriageReading asks firstUser')
     expect(screen.getByTestId('access-agent-notes')).toHaveTextContent('Release NotesAgentViewer')
+    // Its own setting blocks reading every agent, but messaging this one still works, so it stays listed to revoke.
+    expect(screen.getByTestId('access-agent-dam')).toHaveTextContent('Dam WalledReading blockedUser')
     // An agent that still asks first is not a member.
     expect(screen.queryByTestId('access-agent-danube')).toBeNull()
     const rows = screen.getAllByTestId(/^access-(entry|agent)-(?!role-)/).map((row) => row.getAttribute('data-testid'))
-    expect(rows).toEqual(['access-entry-ada', 'access-entry-lee', 'access-agent-triage', 'access-agent-notes'])
+    expect(rows).toEqual(['access-entry-ada', 'access-entry-lee', 'access-agent-triage', 'access-agent-notes', 'access-agent-dam'])
+  })
+
+  it.each([
+    ['its owner cannot message yet', 'allow'],
+    ['its messaging is blocked for every agent', 'review'],
+  ] as const)('saves Viewer when it is picked on a Viewer that can\'t message because %s', async (_case, decision) => {
+    state.agents = [...state.agents, { slug: 'waiting', displaySlug: 'waiting', name: 'Waiting', decision, readDecision: 'allow', canMessage: false, avatar: null, canAccess: true }]
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    fireEvent.click(await screen.findByTestId('access-agent-role-waiting'))
+    fireEvent.click(screen.getByRole('option', { name: /^Viewer/ }))
+
+    await waitFor(() => expect(state.agentRoles).toEqual([{ slug: 'waiting', role: 'viewer' }]))
+  })
+
+  it('grants reading when User is picked on a User whose reading asks first', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    fireEvent.click(await screen.findByTestId('access-agent-role-triage'))
+    fireEvent.click(screen.getByRole('option', { name: /^User/ }))
+
+    await waitFor(() => expect(state.agentRoles).toEqual([{ slug: 'triage', role: 'user' }]))
   })
 
   it('finds agents beside people and invites both in one batch', async () => {
@@ -165,6 +189,18 @@ describe('sharing an agent with other agents', () => {
 
     expect(await screen.findByTestId('access-agent-role-locked-not-mine')).toHaveTextContent('User')
     expect(screen.queryByTestId('access-agent-role-not-mine')).toBeNull()
+  })
+
+  it('lists people only on an older server, which cannot change an agent\'s role', async () => {
+    state.blocked = undefined
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    await userEvent.type(await screen.findByTestId('invite-search-input'), 'dan')
+
+    expect(await screen.findByTestId('invite-user-result-dan-id')).toBeInTheDocument()
+    expect(screen.getByTestId('invite-search-input')).toHaveAttribute('placeholder', 'Invite people...')
+    expect(screen.queryByTestId('invite-agent-result-danube')).toBeNull()
+    expect(screen.queryByTestId('access-agent-triage')).toBeNull()
   })
 
   it('reads a role menu pick as the change it makes', () => {

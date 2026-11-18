@@ -247,6 +247,7 @@ import { annotateIntegrationMessages } from '@shared/lib/services/agent-integrat
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { withSessionStatus } from '@shared/lib/session-status'
 import { getAgentMemberAgents, getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
+import { agentAccessChangeSchema } from '@shared/lib/types/inbound-x-agent-schema'
 import { getHomeAgentScope } from './home-agent-scope'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
@@ -260,6 +261,7 @@ import {
   listPoliciesForCaller,
   replacePoliciesForCaller,
   replacePoliciesForCallerInputSchema,
+  setAgentAccess,
   setPolicy,
   xAgentDecisionSchema,
   xAgentOperationSchema,
@@ -8453,6 +8455,32 @@ agents.get('/:id/inbound-x-agent', AgentRead(), async (c) => {
     console.error('Failed to fetch inbound x-agent activity:', error)
     return c.json({ error: 'Failed to fetch calls from other agents' }, 500)
   }
+})
+
+// PUT /api/agents/:id/inbound-x-agent/:caller - Give another agent a role on
+// this one (User, Viewer), take it away, or block it, as one write: the server
+// sets both of the caller's permissions from what is stored now.
+agents.put('/:id/inbound-x-agent/:caller', AgentUser(), async (c) => {
+  const targetSlug = getAgentId(c)
+  const callerSlug = c.req.param('caller')
+  if (callerSlug === targetSlug) {
+    return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
+  }
+  const parsed = z.object({ change: agentAccessChangeSchema }).safeParse(await c.req.json().catch(() => ({})))
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid access change', details: parsed.error.format() }, 400)
+  }
+  const [targetAgent, callerAgent] = await Promise.all([getAgentRecord(targetSlug), getAgentRecord(callerSlug)])
+  if (!targetAgent || !callerAgent || !(await getReadableAgentIds(c, [callerSlug])).has(callerSlug)) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+  if (!(await canUseAgent(c, callerSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
+  }
+  if (await setAgentAccess(callerSlug, targetSlug, parsed.data.change)) {
+    await notifyLinkChanged(callerSlug, targetSlug, { block: true })
+  }
+  return c.json({ ok: true })
 })
 
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller

@@ -9,6 +9,8 @@ export const inboundXAgentCallerSchema = z.object({
   decision: z.enum(['allow', 'review']),
   /** May it read this agent's sessions and files. Older deployments omit it. */
   readDecision: z.enum(['allow', 'review', 'block']).optional(),
+  /** Whether it can message here: one of its owners is a User here, and messaging isn't blocked. Older deployments omit it. */
+  canMessage: z.boolean().optional(),
   /** Older deployments omit it. */
   avatar: agentAvatarSchema.nullable().optional(),
   canAccess: z.boolean(),
@@ -25,22 +27,25 @@ export const inboundXAgentBlockedAgentSchema = inboundXAgentCallerSchema.extend(
 /**
  * An agent's access to another agent, in the words people's access uses:
  * a User messages it and reads its sessions, a Viewer only reads. `null`: it
- * asks a person first, or a block stands between them.
+ * asks a person first for both.
  */
 export type AgentAccessRole = 'user' | 'viewer'
-export function agentAccessRole(caller: Pick<InboundXAgentCaller, 'decision' | 'readDecision'>): AgentAccessRole | null {
-  if (caller.readDecision === 'block') return null
-  if (caller.decision === 'allow') return 'user'
+/** A pick in an agent's role menu: a role, Remove (asks first for both), or Block (both, both ways). */
+export const agentAccessChangeSchema = z.enum(['user', 'viewer', 'remove', 'block'])
+export type AgentAccessChange = z.infer<typeof agentAccessChangeSchema>
+export function agentAccessRole(caller: Pick<InboundXAgentCaller, 'decision' | 'readDecision' | 'canMessage'>): AgentAccessRole | null {
+  if (caller.decision === 'allow' && caller.canMessage !== false) return 'user'
   return caller.readDecision === 'allow' ? 'viewer' : null
 }
 
 /**
- * The line under an agent's name where its role alone would mislead: a User whose reading still asks first,
- * or a block that covers less than reading and messaging in both directions (four saved blocks).
+ * The line under an agent's name where its role alone would mislead: a User whose reading still asks first
+ * or is blocked, or a block that covers less than reading and messaging in both directions (four saved blocks).
  */
 export function agentAccessNote(agent: { role: AgentAccessRole | 'blocked'; readDecision?: InboundXAgentCaller['readDecision']; blocks?: InboundXAgentBlockedAgent['blocks'] }): string | null {
   if (agent.role === 'blocked') return (agent.blocks?.length ?? 0) < 4 ? 'Partly blocked' : 'Can’t read or message each other'
-  return agent.role === 'user' && agent.readDecision === 'review' ? 'Reading asks first' : null
+  if (agent.role !== 'user') return null
+  return agent.readDecision === 'review' ? 'Reading asks first' : agent.readDecision === 'block' ? 'Reading blocked' : null
 }
 
 /** The agents with a role here. A block in either direction keeps an agent out, as it does the share popover's lists. */
