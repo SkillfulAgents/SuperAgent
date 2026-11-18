@@ -12,7 +12,8 @@
   "main": "../../dist/cf-worker/src/cf/index.ts",
   "build": { "command": "node src/cf/build/build-worker.mjs" },
   "compatibility_date": "2026-07-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // A Durable Object stays alive while it waits on RPC, its container or waitUntil work (default from 2026-10-01).
+  "compatibility_flags": ["nodejs_compat", "durable_object_io_tasks_prevent_eviction"],
   "minify": true,
   // What Workers lacks, bundled in place of the package (build/shims/).
   "alias": {

@@ -119,6 +119,25 @@ export async function serveInTaskManager(request: Request, env: Pick<Env, 'TASK_
 }
 
 /**
+ * Tells the chat integrations that a session started a turn, so the chat it belongs to follows it
+ * and gets the reply. The connections live in the task manager object, and the session runs in its
+ * agent's object, whose own integration manager never starts: there the call did nothing, and a
+ * turn started from the app or a scheduled task never reached its chat. A failure is reported and
+ * does not fail the turn.
+ */
+export async function announceSessionStart(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>, agentSlug: string, sessionId: string): Promise<void> {
+  try {
+    const own = servingTaskManager()
+    if (own) return await own.sessionStarted(agentSlug, sessionId)
+    await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+    await env.TASK_MANAGER.getByName(OBJECT_NAME).sessionStarted(agentSlug, sessionId)
+  } catch (error) {
+    console.error(`[task-manager] announcing the start of session ${sessionId} of agent ${agentSlug} failed:`, error)
+    captureException(error, { tags: { component: 'task-manager', operation: 'announce-session-start' }, extra: { agentSlug, sessionId } })
+  }
+}
+
+/**
  * Resolves once the org's database is at this deploy's schema and data. The task manager object
  * migrates it once per deploy.
  */
@@ -254,6 +273,15 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
       throw error
     }
     if (version) sql.exec('INSERT OR IGNORE INTO deploy_step (step, version) VALUES (?, ?)', step, version)
+  }
+
+  /** A session started a turn (announceSessionStart): the integration manager here holds the chats. */
+  async sessionStarted(agentSlug: string, sessionId: string): Promise<void> {
+    await this.start()
+    await serving.run(this, async () => {
+      const { agentIntegrationManager } = await import('@shared/lib/agent-integrations/agent-integration-manager')
+      await agentIntegrationManager.sessionStarted(agentSlug, sessionId)
+    })
   }
 
   /** An API request that needs the services running here (serveInTaskManager). */

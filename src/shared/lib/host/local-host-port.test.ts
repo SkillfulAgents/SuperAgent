@@ -18,7 +18,7 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: {} }))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 
-import { localHostPort } from './local-host-port'
+import { localHostPort, setSessionStartAnnouncer } from './local-host-port'
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -89,5 +89,19 @@ describe('the local host port: computer use under the mock E2E runtime', () => {
       .toEqual({ output: '[mock] snapshot executed successfully', app: 'Safari' })
     expect(await localHostPort.call('computerUse', { method: 'click', params: { argv: ['--', '@s1:e1'] }, caller, app: 'Notes' }))
       .toEqual({ output: '[mock] click executed successfully', app: 'Notes' })
+  })
+})
+
+// Last in the file: the announcer is set once at boot and stays set.
+describe('the local host port: a deployment that announces a session start elsewhere', () => {
+  it('hands the start to the deployment, and not to the integration manager of this process', async () => {
+    const announce = vi.fn(async (_agentSlug: string, _sessionId: string) => {})
+    setSessionStartAnnouncer(announce)
+
+    localHostPort.send('global', { type: 'session_active', agentSlug: 'sales', sessionId: 'session-1', isActive: true })
+
+    await vi.waitFor(() => expect(announce).toHaveBeenCalledExactlyOnceWith('sales', 'session-1'))
+    await settle()
+    expect(mocks.sessionStarted).not.toHaveBeenCalled()
   })
 })

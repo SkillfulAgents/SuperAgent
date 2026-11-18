@@ -33,6 +33,8 @@ declare module 'cloudflare:workers' {
   export interface SqlStorageCursor<T> {
     toArray(): T[]
     one(): T
+    /** Rows the statement changed. */
+    readonly rowsWritten: number
   }
 
   export interface SqlStorage {

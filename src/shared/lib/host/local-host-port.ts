@@ -84,6 +84,20 @@ function feedEvent(event: GlobalFeedEvent): Promise<void> {
   return hostWorkFor(event)
 }
 
+type SessionStartAnnouncer = (agentSlug: string, sessionId: string) => Promise<void>
+
+// Set once at boot by a deployment whose chat connections live in another process than its agents.
+let sessionStartAnnouncer: SessionStartAnnouncer | undefined
+
+/**
+ * Where a session's start is announced, so the chat it belongs to follows it. Unset, as on desktop
+ * and the Node server, it is the integration manager of this process. A deployment that keeps the
+ * chat connections somewhere else sets what reaches the manager there.
+ */
+export function setSessionStartAnnouncer(announce: SessionStartAnnouncer): void {
+  sessionStartAnnouncer = announce
+}
+
 /** Loaded on first use, as the tools are: both services reach back to the agent registry. */
 async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
   // A session settled: the agent's stale and opted-in widgets re-run.
@@ -93,6 +107,7 @@ async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
   }
   // A session started a turn: the chat it belongs to, if any, follows it.
   if (event.type === 'session_active' && typeof event.agentSlug === 'string' && typeof event.sessionId === 'string') {
+    if (sessionStartAnnouncer) return sessionStartAnnouncer(event.agentSlug, event.sessionId)
     const { agentIntegrationManager } = await import('@shared/lib/agent-integrations/agent-integration-manager')
     await agentIntegrationManager.sessionStarted(event.agentSlug, event.sessionId)
   }

@@ -2,13 +2,17 @@ import Database from 'better-sqlite3'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cloudflare-agent'
 import { SavedWorkspace, linkTarget, workspaceBlobKey } from '../lib/saved-workspace'
+import { createObjectSessionIndexStorage } from '../lib/object-session-index-storage'
 import type { Env } from '../index'
 import { captureException } from '@shared/lib/error-reporting'
 import { describeFileOpsContract } from '@shared/lib/agent-actor/testing/file-ops-contract'
 import { createCloudflareFileOps } from '../cloudflare-file-ops'
-import { sleepingStore } from '../cloudflare-container-control'
+import { sleepingStoreOn } from '../cloudflare-container-control'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
+// The app must not boot to list a sleeping agent: its session index is in the object's own SQLite.
+const { boot, syncAgentStatus } = vi.hoisted(() => ({ boot: vi.fn(), syncAgentStatus: vi.fn(async () => {}) }))
+vi.mock('../boot', () => ({ boot, syncAgentStatus, runAgentActorOp: async () => ({ value: 'from the actor' }) }))
 
 // Workers' FixedLengthStream, which Node lacks: here a pass-through.
 beforeAll(() => {
@@ -112,6 +116,9 @@ function agent(saved: boolean) {
       calls.push('stop')
     },
     containerUp: async () => false,
+    cancelIdleCheck: async () => {
+      calls.push('cancelIdleCheck')
+    },
   })
   /** The object's private members, which a test sets or replaces. */
   const internals = object as unknown as Record<string, unknown>
@@ -119,12 +126,12 @@ function agent(saved: boolean) {
 }
 
 describe('AgentDurableObject stop', () => {
-  it('stops the container after the workspace is saved', async () => {
+  it('stops the container after the workspace is saved, then drops its idle check', async () => {
     const { object, calls } = agent(true)
 
     await object.stopAgent()
 
-    expect(calls).toEqual(['save', 'stop'])
+    expect(calls).toEqual(['save', 'stop', 'cancelIdleCheck'])
   })
 
   it('keeps the container running when the save fails, and says so', async () => {
@@ -146,7 +153,7 @@ describe('AgentDurableObject stop', () => {
     exit()
     await stopped
 
-    expect(calls).toEqual(['save', 'stop', 'stopped'])
+    expect(calls).toEqual(['save', 'stop', 'cancelIdleCheck', 'stopped'])
   })
 
   it('drops the container of an agent being deleted without saving its workspace', async () => {
@@ -158,7 +165,7 @@ describe('AgentDurableObject stop', () => {
 
     await object.stopAgent({ discard: true })
 
-    expect(calls).toEqual(['destroy'])
+    expect(calls).toEqual(['destroy', 'cancelIdleCheck'])
   })
 
   it('stops an agent whose container never started without signalling it', async () => {
@@ -251,9 +258,10 @@ function storage() {
       const statement = db.prepare(query)
       // The object's SQLite takes and gives bytes as an ArrayBuffer; this one as a Buffer.
       const bound = bindings.map((value) => (value instanceof ArrayBuffer ? Buffer.from(value) : value))
-      const rows = (statement.reader ? statement.all(...bound) : (statement.run(...bound), [])) as Array<Record<string, unknown>>
+      let rowsWritten = 0
+      const rows = (statement.reader ? statement.all(...bound) : ((rowsWritten = statement.run(...bound).changes), [])) as Array<Record<string, unknown>>
       for (const row of rows) for (const [key, value] of Object.entries(row)) if (Buffer.isBuffer(value)) row[key] = new Uint8Array(value).buffer
-      return { toArray: () => rows }
+      return { toArray: () => rows, rowsWritten }
     },
   }
   return { sql, transactionSync: <T>(run: () => T) => db.transaction(run)() }
@@ -682,6 +690,88 @@ describe('AgentDurableObject writing a file while its agent sleeps', () => {
   })
 })
 
+describe('AgentDurableObject listing its agent', () => {
+  /** A sleeping agent with one dashboard in its saved workspace and one session in the index. */
+  function sleepingAgent() {
+    const agent = runningAgent(false)
+    Object.assign(agent.ctx, { container: { running: false } })
+    const files = {
+      'artifacts/sales/package.json': JSON.stringify({ name: 'Sales', scripts: { start: 'bun run server.ts' } }),
+      'artifacts/sales/screenshot.png': 'png',
+    }
+    for (const [path, bytes] of Object.entries(files)) {
+      const hash = path.endsWith('package.json') ? H1 : H2
+      agent.ctx.storage.sql.exec("INSERT INTO workspace_file (path, hash, size, mode, mtime, kind) VALUES (?, ?, ?, 420, 1, 'file')", path, hash, bytes.length)
+      agent.r2.set(workspaceBlobKey(OBJECT, hash), bytes)
+    }
+    boot.mockReset()
+    return agent
+  }
+
+  it('answers for a sleeping agent from its saved files and its session index, without booting the app', async () => {
+    const { object, ctx } = sleepingAgent()
+    await createObjectSessionIndexStorage(() => ctx.storage.sql as never).fill([
+      { sessionId: 'weekly-report', meta: null, transcript: { mtimeMs: Date.parse('2026-11-12T09:30:00Z'), birthtimeMs: 1, size: 200 } },
+    ])
+
+    const outcome = await object.actorCall('listing', [])
+
+    expect(boot).not.toHaveBeenCalled()
+    expect(outcome).toMatchObject({
+      value: {
+        live: { container: { status: 'stopped' }, activeSessionIds: [], awaitingSessionIds: [], openRequests: [], pendingReviews: [] },
+        sessions: { sessionIds: ['weekly-report'], sessionCount: 1, lastActivityAt: new Date('2026-11-12T09:30:00Z') },
+        artifacts: { dashboards: [{ slug: 'sales', name: 'Sales', hasScreenshot: true }] },
+        refreshingWidgets: [],
+      },
+    })
+  })
+
+  it("asks the agent's actor once this object has run it, or while a container runs: it may hold live state", async () => {
+    const booted = sleepingAgent()
+    await booted.object.actorCall('live', [])
+    expect(await booted.object.actorCall('listing', [])).toEqual({ value: 'from the actor' })
+
+    const running = sleepingAgent()
+    Object.assign(running.ctx, { container: { running: true } })
+    expect(await running.object.actorCall('listing', [])).toEqual({ value: 'from the actor' })
+    expect(boot).toHaveBeenCalled()
+  })
+
+  it("reads the container's status again when the container exits by itself, once this object has run the actor", async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const exit = (object: unknown) => (object as { onContainerExit(outcome: string): void }).onContainerExit('code 137')
+
+    const asleep = sleepingAgent()
+    syncAgentStatus.mockClear()
+    exit(asleep.object)
+    await vi.waitFor(() => expect(log).toHaveBeenCalled())
+    expect(syncAgentStatus).not.toHaveBeenCalled()
+
+    const booted = sleepingAgent()
+    await booted.object.actorCall('live', [])
+    expect(syncAgentStatus).toHaveBeenCalledTimes(1)
+    exit(booted.object)
+    await vi.waitFor(() => expect(syncAgentStatus).toHaveBeenCalledTimes(2))
+    log.mockRestore()
+  })
+
+  it('asks the actor when the reading without it fails', async () => {
+    const { object, ctx } = sleepingAgent()
+    // The object's SQLite refuses the index's statements.
+    const exec = ctx.storage.sql.exec
+    ctx.storage.sql.exec = (query: string, ...bindings: unknown[]) => {
+      if (query.includes('agent_session')) throw new Error('disk I/O error')
+      return exec(query, ...bindings)
+    }
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    expect(await object.actorCall('listing', [])).toEqual({ value: 'from the actor' })
+    expect(logged).toHaveBeenCalled()
+    logged.mockRestore()
+  })
+})
+
 describe('SavedWorkspace reading a link while its agent sleeps', () => {
   const linked = async () => {
     const store = storage()
@@ -722,9 +812,8 @@ describe('SavedWorkspace reading a link while its agent sleeps', () => {
 // The shared contract over the real file ops, object and saved workspace of a sleeping agent.
 describeFileOpsContract('Cloudflare file ops while the agent sleeps', () => {
   const { object } = runningAgent(false)
-  const agents = { getByName: () => object } as unknown as Env['AGENT']
   return {
-    files: createCloudflareFileOps(async () => null, sleepingStore(agents, 'sales agent')),
+    files: createCloudflareFileOps(async () => null, sleepingStoreOn(async (run) => run(object))),
     dispose: () => clearTimeout((object as unknown as { settleTimer?: ReturnType<typeof setTimeout> }).settleTimer),
   }
 })

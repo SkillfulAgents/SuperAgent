@@ -86,6 +86,12 @@ export interface LocalActorDeps {
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
   /**
+   * Where the agent's files, config documents and transcripts are, when the
+   * deployment keeps them somewhere other than a directory on this machine.
+   * Omitted: the local workspace.
+   */
+  readonly createSessionStore?: (slug: AgentSlug, hooks: Pick<SessionStore, 'onActivity'>) => SessionStore
+  /**
    * What the agent's idle alarm waits with, for a deployment whose process
    * can end while the container runs. Absent: this process's timer.
    */
@@ -151,7 +157,7 @@ export class LocalAgentActor implements AgentActor {
       state ??
       createAgentState(slug, {
         sessions: {
-          store: createLocalSessionStore(slug, deps, {
+          store: (deps.createSessionStore ?? ((s, hooks) => createLocalSessionStore(s, deps, hooks)))(slug, {
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
           }),
           host: deps.host,

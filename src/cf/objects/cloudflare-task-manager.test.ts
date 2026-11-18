@@ -21,8 +21,10 @@ const app = vi.hoisted(() => {
 })
 vi.mock('../boot', () => app)
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
+const integrations = vi.hoisted(() => ({ sessionStarted: vi.fn(async (_agentSlug: string, _sessionId: string) => {}) }))
+vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: integrations }))
 
-import { CloudflareTaskManager, DeployStepNotReady, TaskManagerDurableObject, ensureMigrated, ensureOrgPrepared, needsLiveConnections, prepareDeploy, serveInTaskManager } from './cloudflare-task-manager'
+import { CloudflareTaskManager, DeployStepNotReady, TaskManagerDurableObject, announceSessionStart, ensureMigrated, ensureOrgPrepared, needsLiveConnections, prepareDeploy, serveInTaskManager } from './cloudflare-task-manager'
 import type { Env } from '../index'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -486,6 +488,31 @@ describe('TaskManagerDurableObject after a deploy', () => {
     await after(live, 0)
     expect(task.runs.map((run) => run.note)).toEqual(['Send the March invoice'])
     live.stopDispatch()
+  })
+})
+
+describe('a session that starts a turn', () => {
+  it("is announced to the integration manager in the task manager object, with its services started", async () => {
+    integrations.sessionStarted.mockClear()
+    app.startBackgroundServices.mockClear()
+    const { object } = testObject()
+    managerFor(object)
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await announceSessionStart({ TASK_MANAGER: objects }, 'sales', 'session-1')
+
+    expect(app.startBackgroundServices).toHaveBeenCalledTimes(1)
+    expect(integrations.sessionStarted).toHaveBeenCalledExactlyOnceWith('sales', 'session-1')
+    object.stopDispatch()
+  })
+
+  it('does not fail the turn when the task manager object cannot be reached', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const unreachable = { getByName: () => ({ sessionStarted: async () => { throw new Error('Network connection lost.') } }) } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await expect(announceSessionStart({ TASK_MANAGER: unreachable }, 'sales', 'session-1')).resolves.toBeUndefined()
+    expect(captureException).toHaveBeenCalled()
+    vi.restoreAllMocks()
   })
 })
 
