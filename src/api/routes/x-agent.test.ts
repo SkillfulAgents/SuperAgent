@@ -363,6 +363,8 @@ beforeEach(async () => {
   migrate(testDb, { migrationsFolder })
   // The catalog (which agents exist, and slug resolution) is the agents table.
   await seedAgentRows([CALLER_SLUG, TARGET_SLUG])
+  // The routes read the target's name from its catalog row.
+  await testDb.update(schema.agents).set({ name: 'Target' }).where(eq(schema.agents.slug, TARGET_SLUG))
 
   // Seed users + caller token (proxyTokens has unique constraint on agentSlug)
   await testDb.insert(schema.user).values([
@@ -2812,6 +2814,81 @@ describe('cross-agent authorization decision table', () => {
     })
   })
 
+  describe('statements per request', () => {
+    // Each statement is a round trip on Cloudflare D1. The token lookup is left
+    // out: this file's token store stands in for it. The calling session's
+    // metadata is one more read of the session index, which this file fakes.
+    // Sorted: the reads after the target's are started together.
+    async function tablesRead(routeName: RouteName, body: Record<string, unknown>) {
+      const prepare = vi.spyOn(testSqlite, 'prepare')
+      const res = await authedFetch(`/x-agent/${routeName}`, body)
+      await res.arrayBuffer()
+      const tables = prepare.mock.calls
+        .map(([statement]) => /^select .*? from "(\w+)"/.exec(String(statement))?.[1] ?? String(statement))
+        .filter((table) => table !== 'proxy_tokens')
+        .sort()
+      prepare.mockRestore()
+      return { status: res.status, tables }
+    }
+    const READS: RouteName[] = ['get-sessions', 'get-transcript']
+
+    it.each(READS)('/%s in auth mode: the target, the ACL and the policy', async (routeName) => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await grant(OWNER_USER_ID, MINTED_ID, 'viewer')
+      // Allowed for all agents: no row names the target, the longest policy read.
+      await setPolicy(CALLER_SLUG, 'read', null, 'allow')
+      expect(await tablesRead(routeName, ROUTES[routeName].body(DISPLAY_SLUG)))
+        .toEqual({ status: 200, tables: ['agent_acl', 'agents', 'x_agent_policies'] })
+    })
+
+    it.each(READS)('/%s in local mode: the target and the policy', async (routeName) => {
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await setPolicy(CALLER_SLUG, 'read', null, 'allow')
+      expect(await tablesRead(routeName, ROUTES[routeName].body(DISPLAY_SLUG)))
+        .toEqual({ status: 200, tables: ['agents', 'x_agent_policies'] })
+    })
+
+    it('/download-file in auth mode: the target, the ACL and the policy', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await grant(OWNER_USER_ID, MINTED_ID, 'viewer')
+      await setPolicy(CALLER_SLUG, 'read', null, 'allow')
+      expect(await tablesRead('download-file', ROUTES['download-file'].body(DISPLAY_SLUG)))
+        .toEqual({ status: 200, tables: ['agent_acl', 'agents', 'x_agent_policies'] })
+    })
+
+    it('/invoke in auth mode: the target, the triggering author, the ACL and the policy', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await grant(OWNER_USER_ID, MINTED_ID, 'user')
+      await setPolicy(CALLER_SLUG, 'invoke', null, 'allow')
+      // An unknown session ends the request right after it is authorized.
+      mockSessionIsKnown.mockResolvedValue(false)
+      const body = { slug: DISPLAY_SLUG, prompt: 'hi', sessionId: 'unknown-session', _callerSessionId: 'caller-session' }
+      await testDb.insert(schema.messageAuthor).values({
+        id: randomUUID(), sessionId: 'caller-session', agentSlug: CALLER_SLUG, userId: OWNER_USER_ID, createdAt: new Date(),
+      })
+      expect(await tablesRead('invoke', body))
+        .toEqual({ status: 404, tables: ['agent_acl', 'agents', 'message_author', 'x_agent_policies'] })
+    })
+
+    it('/invoke in local mode: the target and the policy', async () => {
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await setPolicy(CALLER_SLUG, 'invoke', null, 'allow')
+      mockSessionIsKnown.mockResolvedValue(false)
+      const body = { slug: DISPLAY_SLUG, prompt: 'hi', sessionId: 'unknown-session', _callerSessionId: 'caller-session' }
+      expect(await tablesRead('invoke', body)).toEqual({ status: 404, tables: ['agents', 'x_agent_policies'] })
+    })
+
+    it('a refusal by the ACL costs no more than a pass', async () => {
+      authModeEnabled = true
+      const refused = await tablesRead('get-sessions', { slug: DISPLAY_SLUG })
+      expect(refused.status).toBe(403)
+      expect(refused.tables).toEqual(['agent_acl', 'agents', 'x_agent_policies'])
+    })
+  })
+
   describe('the order refusals are reported in', () => {
     const invokedSession = 'caller-session-invoked'
     function callerSessionWasInvoked() {
@@ -2908,6 +2985,43 @@ describe('cross-agent authorization decision table', () => {
       expect(await answer('download-file', body)).toEqual({ status: 404, body: { error: 'Delivered file not found' } })
       expect(await answer('download-file', { ...body, deliveryId: 'delivery-1' }))
         .toEqual({ status: 403, body: { error: 'Blocked by policy' } })
+      expect(xAgentReviewRequests).toHaveLength(0)
+    })
+
+    // The policy is read alongside the checks before it. A read that fails
+    // must not answer for a request an earlier check already refused.
+    function policyReadsFail() {
+      const prepare = testSqlite.prepare.bind(testSqlite)
+      vi.spyOn(testSqlite, 'prepare').mockImplementation((statement: string) => {
+        if (statement.includes('from "x_agent_policies"')) throw new Error('policy read failed')
+        return prepare(statement)
+      })
+    }
+
+    it('invoke: the one-hop rule answers even when the policy cannot be read', async () => {
+      authModeEnabled = true
+      await grant(OWNER_USER_ID, TARGET_SLUG, 'user')
+      callerSessionWasInvoked()
+      policyReadsFail()
+      const refused = await answer('invoke', { slug: TARGET_SLUG, prompt: 'hi', _callerSessionId: invokedSession })
+      expect(refused.status).toBe(403)
+      expect(refused.body.error).toMatch(/one hop/)
+    })
+
+    it.each(['get-sessions', 'get-transcript', 'invoke'] as const)('%s: the ACL answers even when the policy cannot be read', async (routeName) => {
+      authModeEnabled = true
+      policyReadsFail()
+      expect(await answer(routeName, ROUTES[routeName].body(TARGET_SLUG)))
+        .toEqual({ status: 403, body: { error: ROUTES[routeName].noAccess } })
+    })
+
+    it.each(['get-sessions', 'get-transcript', 'invoke'] as const)('%s: a policy that cannot be read fails a request the ACL lets through', async (routeName) => {
+      authModeEnabled = true
+      await grant(OWNER_USER_ID, TARGET_SLUG, 'user')
+      policyReadsFail()
+      const res = await authedFetch(`/x-agent/${routeName}`, ROUTES[routeName].body(TARGET_SLUG))
+      expect(res.status).toBe(500)
+      expectTargetUntouched()
       expect(xAgentReviewRequests).toHaveLength(0)
     })
 
