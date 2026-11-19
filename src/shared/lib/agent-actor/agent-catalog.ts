@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { batch } from '@shared/lib/db/batch'
 import { agentCreationReceiptSchema } from '@shared/lib/app-records/record-schemas'
 import { serializeRecordValue } from '@shared/lib/app-records/records'
-import { and, desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, agents, appRecords, type AgentRow } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -97,6 +97,33 @@ export async function resolveAgentRecordWithRole(input: string, userId: string):
     .all()
   const row = firstNamed(slugs, rows, (candidate) => candidate.agent.slug)
   return row === undefined ? null : { agent: toRecord(row.agent), role: row.role }
+}
+
+/**
+ * Which of these slugs are agents. The slugs travel as one JSON array read
+ * with `json_each`, not as an `IN (?, ?, …)` list: Cloudflare D1 allows 100
+ * bound parameters per statement, and a display slug names two candidates.
+ * Exported for the test that pins the parameter count.
+ */
+export function existingAgentSlugsQuery(slugs: readonly string[]) {
+  return db
+    .select({ slug: agents.slug })
+    .from(agents)
+    .where(inArray(agents.slug, sql`(select value from json_each(${JSON.stringify(slugs)}))`))
+}
+
+/**
+ * `agentCatalog.resolve()` for many inputs, in one statement however many
+ * there are: each input, in the order first given, with the slug `resolve()`
+ * gives it or null. No statement when no input could name an agent.
+ */
+export async function resolveAgentSlugs(inputs: readonly string[]): Promise<Map<string, AgentSlug | null>> {
+  const named = new Map(inputs.map((input) => [input, slugsNamedBy(input)]))
+  const candidates = [...new Set([...named.values()].flat())]
+  const rows = candidates.length === 0 ? [] : await existingAgentSlugsQuery(candidates).all()
+  const existing = new Set(rows.map((row) => row.slug))
+  // The exact match wins over the final segment, as in resolve(): the candidates are in that order.
+  return new Map([...named].map(([input, slugs]) => [input, slugs.find((slug) => existing.has(slug)) ?? null]))
 }
 
 export function createAgentCatalog(): AgentCatalog {

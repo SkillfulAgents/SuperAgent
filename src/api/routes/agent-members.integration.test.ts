@@ -154,6 +154,43 @@ describe('authorized agent roster', () => {
     expect(await (await batch('admin', [emptyAgent])).json()).toEqual({ [emptyAgent]: { status: 200, members: [] } })
   })
 
+  it('resolves a whole batch with one agents read: the same statements for 1 slug and for the most a batch may hold', async () => {
+    // Every form a slug takes: bare, display, legacy compound, unknown, unsafe; then padding up to the limit.
+    const mixed = [agentSlug, `launch-${secondAgent}`, privateAgent, 'missing', emptyAgent, '../etc', `launch-${agentSlug}`]
+    const full = [...mixed, ...Array.from({ length: MAX_AGENT_MEMBERS_BATCH_SIZE - mixed.length }, (_, i) => `filler-${String(i).padStart(10, '0')}`)]
+    const prepare = vi.spyOn(Database.prototype, 'prepare')
+    const count = async (name: string, slugs: string[]) => {
+      prepare.mockClear()
+      const response = await batch(name, slugs)
+      expect(response.status).toBe(200)
+      const sql = prepare.mock.calls.map(([text]) => String(text))
+      return { result: await response.json() as Record<string, { status: number }>, total: sql.length, agentsReads: sql.filter(text => /from "agents"/.test(text)).length }
+    }
+    try {
+      for (const name of ['owner', 'admin', 'outsider']) {
+        const one = await count(name, [agentSlug])
+        const five = await count(name, mixed.slice(0, 5))
+        const most = await count(name, full)
+        expect([one.agentsReads, five.agentsReads, most.agentsReads]).toEqual([1, 1, 1])
+        // An outsider reads no roster for one agent, so compare like with like: 5 against 100.
+        expect(most.total).toBe(five.total)
+        if (name !== 'outsider') expect(five.total).toBe(one.total)
+        expect(Object.keys(most.result)).toEqual(full)
+        expect(Object.values(most.result).map(entry => entry.status)).toEqual(full.map((slug, index) => {
+          if (index >= mixed.length || slug === 'missing' || slug === '../etc') return 404
+          if (name === 'admin') return 200
+          if (name === 'outsider') return slug === privateAgent ? 200 : 403
+          return slug === privateAgent || slug === emptyAgent ? 403 : 200
+        }))
+        expect(most.result[`launch-${agentSlug}`]).toEqual(most.result[agentSlug])
+      }
+      // Nothing that could name an agent: no agents read at all.
+      expect((await count('owner', ['../etc', 'UPPER'])).agentsReads).toBe(0)
+    } finally {
+      prepare.mockRestore()
+    }
+  })
+
   it('loads multiple rosters in two data queries with distinct per-agent roles and stable order', async () => {
     const prepare = vi.spyOn(Database.prototype, 'prepare')
     try {

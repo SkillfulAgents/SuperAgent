@@ -11,7 +11,7 @@ let testDb: AppDatabase
 let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
-import { createAgentCatalog, resolveAgentRecordWithRole } from './agent-catalog'
+import { createAgentCatalog, existingAgentSlugsQuery, resolveAgentRecordWithRole, resolveAgentSlugs } from './agent-catalog'
 import { setWorkspaceRemoval } from './workspace-removal'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import * as avatarAssignment from './agent-avatar'
@@ -373,6 +373,60 @@ describe('reading rows', () => {
 
       expect(await resolveAgentRecordWithRole('legacy-a1b2c3d4e5', 'member')).toMatchObject({ agent: { slug: 'legacy-a1b2c3d4e5' }, role: 'viewer' })
       expect(await resolveAgentRecordWithRole('sales-a1b2c3d4e5', 'member')).toMatchObject({ agent: { slug: 'a1b2c3d4e5' }, role: 'owner' })
+    })
+  })
+
+  describe('many inputs at once', () => {
+    /** What the route did before: one resolve() per distinct input, in the order first given. */
+    async function oneByOne(inputs: readonly string[]) {
+      const entries: [string, string | null][] = []
+      for (const input of new Set(inputs)) entries.push([input, await catalog.resolve(input)])
+      return entries
+    }
+
+    it('gives every input what resolve() gives it, in the order first asked', async () => {
+      await insertRow('a1b2c3d4e5', 'Sales')
+      await insertRow('f6g7h8i9j0', 'Research')
+      await insertRow('legacy-a1b2c3d4e5', 'Legacy sales')
+      await insertRow('private-agent', 'Private')
+      const inputs = [
+        'sales-a1b2c3d4e5', 'missing', 'a1b2c3d4e5', 'legacy-a1b2c3d4e5', 'sales-a1b2c3d4e5', 'private-agent',
+        'research-f6g7h8i9j0', 'sales-zzzzzzzzzz', '../a1b2c3d4e5', 'Sales-a1b2c3d4e5', '', 'a1b2c3d4e5', 'f6g7h8i9j0-', 'x-missing-agent',
+      ]
+
+      const resolved = await resolveAgentSlugs(inputs)
+
+      expect([...resolved]).toEqual(await oneByOne(inputs))
+      expect(resolved.get('sales-a1b2c3d4e5')).toBe('a1b2c3d4e5')
+      expect(resolved.get('legacy-a1b2c3d4e5')).toBe('legacy-a1b2c3d4e5')
+      expect(resolved.get('missing')).toBeNull()
+      expect(resolved.get('../a1b2c3d4e5')).toBeNull()
+    })
+
+    it('is one statement for 1, 5, 50 and 300 inputs, and none when nothing could name an agent', async () => {
+      const slugs = Array.from({ length: 150 }, (_, i) => `a${String(i).padStart(AGENT_ID_LENGTH - 1, '0')}`)
+      for (const slug of slugs.filter((_, i) => i % 3 !== 0)) await insertRow(slug, slug)
+      // Bare slugs, display slugs (two candidates each), unknown and unsafe ones.
+      const inputs = slugs.flatMap((slug) => [slug, `name-${slug}`]).concat(['missing', '../x'])
+      const select = vi.spyOn(testDb, 'select')
+
+      for (const count of [1, 5, 50, inputs.length]) {
+        select.mockClear()
+        const resolved = await resolveAgentSlugs(inputs.slice(0, count))
+        expect(select).toHaveBeenCalledTimes(1)
+        expect(resolved.size).toBe(count)
+        expect([...resolved]).toEqual(await oneByOne(inputs.slice(0, count)))
+      }
+
+      select.mockClear()
+      expect([...await resolveAgentSlugs(['', '../x', 'UPPER'])]).toEqual([['', null], ['../x', null], ['UPPER', null]])
+      expect((await resolveAgentSlugs([])).size).toBe(0)
+      expect(select).not.toHaveBeenCalled()
+    })
+
+    it('binds one parameter however many slugs are asked about', () => {
+      const slugs = Array.from({ length: 200 }, (_, i) => `slug-${i}`)
+      expect(existingAgentSlugsQuery(slugs).toSQL().params).toEqual([JSON.stringify(slugs)])
     })
   })
 

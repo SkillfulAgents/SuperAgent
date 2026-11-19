@@ -3,7 +3,7 @@ import { AgentRead, AgentUser, canUseAgent, getAgentId, getReadableAgentIds } fr
 import { bodyLimit } from 'hono/body-limit'
 import { zValidator } from '@hono/zod-validator'
 import { agentMembersBatchRequestSchema, agentMembersBatchResponseSchema } from '@shared/lib/agent-members-schema'
-import { agentCatalog } from '@shared/lib/agent-actor'
+import { resolveAgentSlugs } from '@shared/lib/agent-actor/agent-catalog'
 import { z } from 'zod'
 import { getHomeAgentScope } from './home-agent-scope'
 import { getViewerUserId } from '@shared/lib/auth/ownership'
@@ -26,8 +26,8 @@ export const agentMembersBatch = new Hono().post('/',
   zValidator('json', agentMembersBatchRequestSchema),
   async (c) => {
     if (!isAuthMode()) return c.notFound()
-    const slugs = [...new Set(c.req.valid('json').agentSlugs)]
-    const resolved = await Promise.all(slugs.map(async slug => [slug, await agentCatalog.resolve(slug)] as const))
+    // One read for every slug asked about; the map keeps the order they were asked in.
+    const resolved = [...await resolveAgentSlugs(c.req.valid('json').agentSlugs)]
     const ids = [...new Set(resolved.flatMap(([, id]) => id ? [id] : []))]
     const readable = await getReadableAgentIds(c, ids)
     const members = await listAgentMembersByAgent([...readable])
