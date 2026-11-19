@@ -219,3 +219,20 @@ describe('ExploreView with no skillsets', () => {
     expect(screen.getByTestId('explore-empty')).toBeTruthy()
   })
 })
+
+it('stops applying a category filter when a library refresh removes the choice', async () => {
+  const user = userEvent.setup()
+  const writer = template('Marketing Writer')
+  discoverable = [writer, template('Support Triage', { category: 'Support' })]
+  const { rerender } = render(<ExploreView />)
+
+  await user.click(screen.getByRole('button', { name: 'Filter' }))
+  const filters = await screen.findByRole('dialog')
+  await user.click(within(filters).getByRole('button', { name: /Support/ }))
+  expect(screen.queryByRole('button', { name: 'Marketing Writer — details' })).toBeNull()
+
+  discoverable = [writer]
+  rerender(<ExploreView />)
+  expect(screen.queryByRole('button', { name: 'Filter' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Marketing Writer — details' })).toBeVisible()
+})
