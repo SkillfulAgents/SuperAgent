@@ -132,7 +132,7 @@ jobs:
           exit 1
 
       - name: Run E2E tests
-        run: qagent run --project-dir .qagent --filter happy_path/ --model haiku --parallel 3 --headless --record --verbose
+        run: qagent run --project-dir .qagent --filter happy_path/ --model claude-haiku-5-5 --parallel 3 --headless --record --verbose
 
       # ── Summary & artifacts ──────────────────────────────────────
       - name: Render results to job summary
