@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature successfully allows the agent to open a browser, navigate to a URL, extract page title, and report back with accurate information mentioning \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing home view with agent list",
+    "Clicked on QA-20261119-030135-yxpp agent in sidebar — Agent page opened with chat interface ready",
+    "Typed message in input field — Message \"Open a browser and go to https://example.com. Tell me the page title.\" entered successfully",
+    "Sent message using Cmd+Enter — Message sent and agent began processing with status showing \"working\"",
+    "Waited for agent response — Agent completed task in 7 seconds using 3 tool calls and 161,913 tokens",
+    "Verified response contains \"Example Domain\" — Response confirmed: \"The page title is 'Example Domain'. The page loaded fine and I've closed the browser.\"",
+    "Reviewed browser use feature — Agent successfully used browser tools to open browser, navigate to URL, extract page title, and close browser"
+  ],
+  "bugs": [],
+  "durationMs": 81412,
+  "sessionId": "ca1b5fb5-0027-45f7-ab32-af69287b8d2c",
+  "cost": {
+    "inputTokens": 434,
+    "outputTokens": 12921,
+    "cacheCreationTokens": 70655,
+    "cacheReadTokens": 1279765,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.281334
+  }
+}
