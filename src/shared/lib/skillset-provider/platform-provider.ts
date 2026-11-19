@@ -66,6 +66,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   readonly name = 'Platform'
   readonly publishMode = 'hosted_submit' as const
   readonly supportsRemoteSync = true
+  readonly holdsTeamSkills = true
 
   // git when available (incremental pull); HTTPS archive otherwise.
   override readonly usesGitCache: boolean = isGitAvailableSync()

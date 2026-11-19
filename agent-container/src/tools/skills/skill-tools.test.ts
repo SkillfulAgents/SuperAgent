@@ -4,7 +4,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   tool: (name: string, description: string, _schema: unknown, execute: (args: unknown) => Promise<unknown>) => ({ name, description, execute }),
 }))
 
-import { installSkillTool, searchSkillsTool } from './skill-tools'
+import { installTeamSkillTool, searchTeamSkillsTool } from './skill-tools'
 
 type ToolResult = { content: Array<{ text: string }>; isError?: boolean }
 const run = (toolDef: unknown, args: Record<string, unknown>) =>
@@ -32,10 +32,10 @@ beforeEach(() => {
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
-it('searches through the host with the agent token and prints what install_skill needs', async () => {
+it('searches through the host with the agent token and prints what install_team_skill needs', async () => {
   const fetch = stubHost(() => Response.json({ skills: [invoiceParser], total: 1 }))
 
-  const result = await run(searchSkillsTool, { query: 'invoice' })
+  const result = await run(searchTeamSkillsTool, { query: 'invoice' })
 
   expect(fetch).toHaveBeenCalledWith('https://host/api/x-agent/skills/search', expect.objectContaining({
     headers: expect.objectContaining({ Authorization: 'Bearer token' }),
@@ -49,28 +49,28 @@ it('searches through the host with the agent token and prints what install_skill
 it('says when the host returned only part of the matches', async () => {
   stubHost(() => Response.json({ skills: [invoiceParser], total: 40 }))
 
-  const result = await run(searchSkillsTool, {})
+  const result = await run(searchTeamSkillsTool, {})
 
   expect(result.content[0].text).toContain('Showing 1 of 40 skills')
 })
 
 it('tells an empty search apart from a failed one', async () => {
   stubHost(() => Response.json({ skills: [], total: 0 }))
-  const empty = await run(searchSkillsTool, { query: 'calendar' })
+  const empty = await run(searchTeamSkillsTool, { query: 'calendar' })
   expect(empty.isError).toBeUndefined()
-  expect(empty.content[0].text).toContain('No skill in the connected skillsets matches "calendar"')
+  expect(empty.content[0].text).toContain('No team skill matches "calendar"')
 
   stubHost(() => Response.json({ error: 'Unauthorized' }, { status: 401 }))
-  expect(await run(searchSkillsTool, { query: 'calendar' })).toMatchObject({
+  expect(await run(searchTeamSkillsTool, { query: 'calendar' })).toMatchObject({
     isError: true,
-    content: [{ text: 'Failed to search skills: Unauthorized' }],
+    content: [{ text: 'Failed to search team skills: Unauthorized' }],
   })
 })
 
 it('installs by skillset id and path and points the agent at the installed SKILL.md', async () => {
   const fetch = stubHost(() => Response.json({ name: 'invoice-parser', directory: 'invoice-parser' }))
 
-  const result = await run(installSkillTool, { skillset_id: invoiceParser.skillsetId, skill_path: invoiceParser.path })
+  const result = await run(installTeamSkillTool, { skillset_id: invoiceParser.skillsetId, skill_path: invoiceParser.path })
 
   expect(fetch.mock.calls[0][0]).toBe('https://host/api/x-agent/skills/install')
   expect(sentBody(fetch)).toEqual({ skillsetId: 'platform--team--skills', skillPath: 'skills/invoice-parser/SKILL.md' })
@@ -80,8 +80,8 @@ it('installs by skillset id and path and points the agent at the installed SKILL
 it('reports why the host refused an install', async () => {
   stubHost(() => Response.json({ error: 'No such skill to install' }, { status: 404 }))
 
-  expect(await run(installSkillTool, { skillset_id: 'gone', skill_path: 'skills/gone/SKILL.md' })).toMatchObject({
+  expect(await run(installTeamSkillTool, { skillset_id: 'gone', skill_path: 'skills/gone/SKILL.md' })).toMatchObject({
     isError: true,
-    content: [{ text: 'Failed to install skill: No such skill to install' }],
+    content: [{ text: 'Failed to install team skill: No such skill to install' }],
   })
 })
