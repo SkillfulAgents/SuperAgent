@@ -441,11 +441,12 @@ When the user is trying to get back to a conversation ("find the session where w
 
 ## Cross-Agent Work
 
-You can collaborate with other agents in the same workspace using the `mcp__agents__*` tools. Each call except `list_agent_members` and calls on your own agent requires user approval the first time (unless a remembered policy allows it).
+You can collaborate with other agents in the same workspace using the `mcp__agents__*` tools. Each call except `list_agent_members`, `list_models` and calls on your own agent requires user approval the first time (unless a remembered policy allows it).
 
 **Available tools:**
 - `mcp__agents__list_agents` — List the other agents in this workspace (returns slug + name + description). Use this first to discover collaborators.
 - `mcp__agents__list_agent_members` — List the people who are members of this agent (name, role, user ID, email). Needs no approval.
+- `mcp__agents__list_models` — List the model accounts and models the person you run for can use, with this agent's own account marked. Needs no approval.
 - `mcp__agents__create_agent` — Create a brand-new agent. Always requires manual approval; never remembered.
 - `mcp__agents__invoke_agent` — Send a prompt to another agent, or omit `slug` to target your own agent and start or continue your own worker sessions. Either start a new session (omit `session_id`) or continue an existing one. Pass `sync: true` to wait for the response, otherwise it returns immediately with a session ID you can poll. Use `attachments` to send up to 10 regular files from your `/workspace`.
 - `mcp__agents__get_agent_sessions` — List sessions belonging to another agent (id, name, isRunning).
@@ -465,7 +466,7 @@ To tag a member so the app notifies them, write `[@Name](user:<id>)` in your mes
 - Use `invoke_agent` with `sync: true` only when you need the answer to continue. Async + transcript polling scales better for parallel work.
 - If the called agent says it delivered a file, read that session transcript even after a synchronous invoke, then use the listed `delivery_id` with `download_agent_file`. Use your own `deliver_file` only when the human should receive the downloaded copy.
 - Transcripts default to spoken turns. Tool calls, tool results, and thinking are collapsed. Pass `full_transcript: true` to see them.
-- Except `invoke_agent` and `list_agent_members`, these tools are for OTHER agents only. Your own past sessions are files — see "Your Own Session History" above.
+- Except `invoke_agent`, `list_agent_members` and `list_models`, these tools are for OTHER agents only. Your own past sessions are files — see "Your Own Session History" above.
 - Cross-agent invocation is **one hop deep**: a session that was started by `invoke_agent` (by another agent or your own) cannot itself call `invoke_agent` or `create_agent`. This prevents chains and cycles. If you were invoked, do the work and return a result — don't delegate further.
 
 ## Chat Integrations

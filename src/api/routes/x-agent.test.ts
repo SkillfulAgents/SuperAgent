@@ -213,8 +213,9 @@ vi.mock('@shared/lib/config/settings', () => ({
   effectiveModelsFrom: () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
   getEffectiveAgentLimits: async () => ({}),
   getCustomEnvVars: async () => ({}),
-  getSettings: async () => ({ app: {} }),
+  getSettings: async () => mockSettings.current,
 }))
+const mockSettings = vi.hoisted(() => ({ current: { app: {} } as Record<string, unknown> }))
 vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn(async () => []),
 }))
@@ -672,6 +673,69 @@ describe('/create', () => {
 // ============================================================================
 // /invoke (cycle cap, self-invoke, ACL)
 // ============================================================================
+
+describe('/models', () => {
+  it('lists no accounts without a connections setup', async () => {
+    const res = await authedFetch('/x-agent/models', {})
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ accounts: [] })
+  })
+
+  it("marks the app's default account when the agent saved none", async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    const rows = vi.spyOn(connections, 'selectableConnectionRows').mockResolvedValue([{ id: 'platform', name: 'Platform', provider: 'platform' }] as never)
+    const catalog = vi.spyOn(connections, 'connectionCatalogFrom').mockReturnValue([] as never)
+    const provider = vi.spyOn(connections, 'providerForConnection').mockReturnValue({ getModelAvailability: async () => null } as never)
+    const global = vi.spyOn(connections, 'resolveGlobalSelection').mockResolvedValue({ llmProviderId: 'platform' } as never)
+    const prefs = vi.spyOn(preferences, 'readAgentPreferences').mockResolvedValue({} as never)
+    mockSettings.current = { app: {}, llmDefault: { llmProviderId: 'platform', model: 'sonnet' } }
+    try {
+      const res = await authedFetch('/x-agent/models', {})
+      expect(await res.json()).toEqual({ accounts: [{ id: 'platform', name: 'Platform', provider: 'platform', agentDefault: true, models: [] }] })
+    } finally {
+      mockSettings.current = { app: {} }
+      ;[rows, catalog, provider, global, prefs].forEach((spy) => spy.mockRestore())
+    }
+  })
+
+  it("lists the accounts of the person the session's call is attributed to, with plan marks", async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const rows = vi.spyOn(connections, 'selectableConnectionRows').mockResolvedValue([{ id: 'chatgpt', name: 'ChatGPT', provider: 'codex-subscription' }, { id: 'down', name: 'Down', provider: 'codex-subscription' }] as never)
+    const catalog = vi.spyOn(connections, 'connectionCatalogFrom').mockReturnValue([
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra', family: 'gpt-astra', isLatest: true },
+      { id: 'gpt-6-sol', label: 'GPT-6 Sol', family: 'gpt-sol' },
+    ] as never)
+    // The second account's plan cannot be read: it is still listed, without marks.
+    const provider = vi.spyOn(connections, 'providerForConnection').mockImplementation((row) => ({
+      getModelAvailability: async () => {
+        if ((row as { id: string }).id === 'down') throw new Error('plan unavailable')
+        return { unavailable: [{ modelId: 'gpt-6-sol' }] }
+      },
+    }) as never)
+    authModeEnabled = true
+    mockSettings.current = { app: {}, llmDefault: { llmProviderId: 'platform', model: 'sonnet' } }
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    const prefs = vi.spyOn(preferences, 'readAgentPreferences').mockResolvedValue({ defaultLlmProviderId: 'chatgpt' } as never)
+    await testDb.insert(schema.messageAuthor).values({ id: 'm1', sessionId: 'list-session', agentSlug: CALLER_SLUG, userId: OWNER_USER_ID, createdAt: new Date() })
+    try {
+      const res = await authedFetch('/x-agent/models', { _callerSessionId: 'list-session' })
+      expect(res.status).toBe(200)
+      expect(rows).toHaveBeenCalledWith(OWNER_USER_ID, 'chatgpt')
+      expect(await res.json()).toEqual({ accounts: [{ id: 'chatgpt', name: 'ChatGPT', provider: 'codex-subscription', agentDefault: true, models: [
+        { id: 'gpt-6-astra', label: 'GPT-6 Astra', alias: 'gpt-astra' },
+        { id: 'gpt-6-sol', label: 'GPT-6 Sol', unavailable: true },
+      ] }, { id: 'down', name: 'Down', provider: 'codex-subscription', models: [
+        { id: 'gpt-6-astra', label: 'GPT-6 Astra', alias: 'gpt-astra' },
+        { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
+      ] }] })
+    } finally {
+      authModeEnabled = false
+      mockSettings.current = { app: {} }
+      ;[rows, catalog, provider, prefs].forEach((spy) => spy.mockRestore())
+    }
+  })
+})
 
 describe('/invoke', () => {
   beforeEach(() => {

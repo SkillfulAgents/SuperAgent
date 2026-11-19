@@ -67,6 +67,7 @@ import {
   listConnectionsWithSelection,
   resolveGlobalSelection,
   connectionCatalog,
+  selectableConnectionRows,
 } from './connections'
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
 import { runDataMigrations } from '../db/data-migrations'
@@ -240,6 +241,16 @@ describe('LLM connections', () => {
     await expect(compareAndSetGlobalDefault(changed.after, changed.before)).resolves.toBe(true)
     expect(state.settings.llmDefault).toEqual({ llmProviderId: first, model: 'a' })
     expect(state.settings.llmSummarizer).toEqual(summarizer)
+  })
+
+  it('selects the rows a person may pick, plus the current one', async () => {
+    await state.db!.insert(user).values({ id: 'alice', name: 'Alice', email: 'alice@example.com' }).run()
+    const shared = await add()
+    const personal = await add('Personal', 'alice')
+    expect((await selectableConnectionRows('bob')).map((row) => row.id)).toEqual([shared])
+    expect((await selectableConnectionRows(undefined)).map((row) => row.id)).toEqual([shared])
+    expect((await selectableConnectionRows('alice')).map((row) => row.id).sort()).toEqual([shared, personal].sort())
+    expect((await selectableConnectionRows('bob', personal)).map((row) => row.id).sort()).toEqual([shared, personal].sort())
   })
 
   it('rejects personal defaults and only exposes another owner through the attached session', async () => {

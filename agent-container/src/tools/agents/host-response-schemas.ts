@@ -68,3 +68,18 @@ export const transcriptResultSchema = z.object({
 
 export type InvokeResult = z.infer<typeof invokeResultSchema>
 export type TranscriptResult = z.infer<typeof transcriptResultSchema>
+
+export const listModelsResultSchema = z.object({
+  accounts: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    provider: z.string(),
+    agentDefault: z.literal(true).optional(),
+    models: z.array(z.object({
+      id: z.string(),
+      label: z.string(),
+      alias: z.string().optional(),
+      unavailable: z.literal(true).optional(),
+    })),
+  })),
+})
