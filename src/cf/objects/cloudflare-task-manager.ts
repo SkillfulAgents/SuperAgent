@@ -515,8 +515,10 @@ function retryDelay(policy: RetryPolicy, attempt: number): number | undefined {
 
 export class CloudflareTaskManager extends TaskManager {
   private readonly handlers = new Map<string, Task<unknown>>()
-  // Calls take effect in the order they are made, as docs/background-work.md asks of every backend.
-  private queue: Promise<unknown> = Promise.resolve()
+  // Calls on one job take effect in the order they are made, as docs/background-work.md asks of every
+  // backend. Per job, not one chain for the isolate: a call whose request was cancelled midway never
+  // settles, and would hold every later call behind it.
+  private readonly queues = new Map<string, Promise<unknown>>()
   private stopped = false
 
   constructor(
@@ -538,18 +540,18 @@ export class CloudflareTaskManager extends TaskManager {
     const payloadJson = this.checkedPayloadJson(spec.taskType, spec.payload)
     if (!Number.isFinite(runAt)) throw new Error(`Task ${spec.taskType} (${id}) was scheduled at an invalid time`)
     if (this.stopped) return
-    await this.inOrder((schedule) => schedule.scheduleAt(id, spec.taskType, payloadJson, runAt))
+    await this.inOrder(id, (schedule) => schedule.scheduleAt(id, spec.taskType, payloadJson, runAt))
   }
 
   async ensureEvery<P>(id: string, spec: TaskSpec<P>, options: PeriodicOptions): Promise<void> {
     const payloadJson = this.checkedPayloadJson(spec.taskType, spec.payload)
     if (!(options.intervalMs > 0)) throw new Error(`Task ${spec.taskType} (${id}) was scheduled with an invalid interval`)
     if (this.stopped) return
-    await this.inOrder((schedule) => schedule.scheduleEvery(id, spec.taskType, payloadJson, { intervalMs: options.intervalMs, initialDelayMs: options.initialDelayMs, jitterRatio: options.jitterRatio }))
+    await this.inOrder(id, (schedule) => schedule.scheduleEvery(id, spec.taskType, payloadJson, { intervalMs: options.intervalMs, initialDelayMs: options.initialDelayMs, jitterRatio: options.jitterRatio }))
   }
 
   async cancel(id: string): Promise<void> {
-    await this.inOrder((schedule) => schedule.cancelJob(id))
+    await this.inOrder(id, (schedule) => schedule.cancelJob(id))
   }
 
   /** Dispatch is the object's alarm; an isolate has nothing to start. */
@@ -592,7 +594,7 @@ export class CloudflareTaskManager extends TaskManager {
     captureException(error, { tags: { component: 'task-manager', taskType }, extra: { jobId, attempt } })
   }
 
-  private inOrder(call: (schedule: Schedule) => Promise<unknown> | unknown): Promise<unknown> {
+  private inOrder(jobId: string, call: (schedule: Schedule) => Promise<unknown> | unknown): Promise<unknown> {
     // Inside the object itself (a task scheduling more work), the call goes to it directly: through its stub it would come back to it.
     const run = async () => {
       const own = servingTaskManager()
@@ -600,8 +602,12 @@ export class CloudflareTaskManager extends TaskManager {
       await reachCurrentCode(this.objects, OBJECT_NAME, this.version)
       return call(this.objects.getByName(OBJECT_NAME))
     }
-    const next = this.queue.then(run, run)
-    this.queue = next.catch(() => {})
+    const next = (this.queues.get(jobId) ?? Promise.resolve()).then(run, run)
+    const tail = next.catch(() => {})
+    this.queues.set(jobId, tail)
+    void tail.then(() => {
+      if (this.queues.get(jobId) === tail) this.queues.delete(jobId)
+    })
     return next
   }
 

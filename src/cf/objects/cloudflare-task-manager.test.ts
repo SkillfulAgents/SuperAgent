@@ -357,6 +357,17 @@ describe('TaskManagerDurableObject', () => {
     expect(task.runs.map((run) => run.note)).toEqual(['kept'])
   })
 
+  it('does not hold one job behind a call on another job that never settles', async () => {
+    const stuck = manager as unknown as { queues: Map<string, Promise<unknown>> }
+    // A call whose request was cancelled midway: its link never settles.
+    stuck.queues.set('reminder:stuck', new Promise(() => {}))
+
+    await manager.at(T0, 'reminder:invoice', spec('kept'))
+
+    await after(object, 0)
+    expect(task.runs.map((run) => run.note)).toEqual(['kept'])
+  })
+
   it('refuses a payload its schema rejects, before it reaches the object', async () => {
     await expect(manager.at(T0, 'reminder:invoice', { taskType: 'test.record', payload: { note: 7 } as unknown as Payload })).rejects.toThrow()
     await object.alarm()
