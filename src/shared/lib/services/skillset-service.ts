@@ -273,13 +273,24 @@ async function readSkillPackageFiles(skillDir: string): Promise<SkillPackageFile
   return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
 }
 
+interface WorkspaceSkillPackageLimits {
+  maxFiles: number
+  maxBytes: number
+  onTooManyFiles: () => never
+  onTooLarge: () => never
+}
+
 /**
  * The files of a skill package in an agent's workspace, read through the
  * actor. Same exclusions, same relative paths and same decoding as the host
  * variant, so the two hash alike.
  */
-async function readWorkspaceSkillPackageFiles(files: FileOps, skillDir: string): Promise<SkillPackageFile[]> {
-  return readWorkspaceSkillPackage(files, skillDir, (entryPath) => readWorkspaceText(files, entryPath))
+async function readWorkspaceSkillPackageFiles(
+  files: FileOps,
+  skillDir: string,
+  limits?: WorkspaceSkillPackageLimits,
+): Promise<SkillPackageFile[]> {
+  return readWorkspaceSkillPackage(files, skillDir, (entryPath) => readWorkspaceText(files, entryPath), limits)
 }
 
 /** Share traversal/exclusions while letting exports keep bytes and other callers decode text. */
@@ -287,8 +298,11 @@ async function readWorkspaceSkillPackage<T>(
   files: FileOps,
   skillDir: string,
   readContent: (entryPath: string) => Promise<T | null>,
+  limits?: WorkspaceSkillPackageLimits,
 ): Promise<Array<{ relativePath: string; content: T }>> {
   const packageFiles: Array<{ relativePath: string; content: T }> = []
+  let seenFiles = 0
+  let totalBytes = 0
   // Each read is a round trip through the actor (the path check, then the
   // bytes); reading a directory's files one after another made an install
   // wait on every file in turn. The result is sorted, so order is free.
@@ -296,7 +310,7 @@ async function readWorkspaceSkillPackage<T>(
 
   async function walk(dir: string, relativeBase: string): Promise<void> {
     const subdirs: Array<{ path: string; relativePath: string }> = []
-    const reads: Promise<void>[] = []
+    const fileEntries: Array<{ path: string; relativePath: string }> = []
     for (const entry of await files.list(dir)) {
       if (SKILL_PACKAGE_EXCLUDED.has(entry.name)) continue
 
@@ -307,12 +321,21 @@ async function readWorkspaceSkillPackage<T>(
         continue
       }
 
-      reads.push(limit(async () => {
-        const content = await readContent(entry.path)
-        if (content !== null) packageFiles.push({ relativePath, content })
-      }))
+      seenFiles += 1
+      if (limits && seenFiles > limits.maxFiles) limits.onTooManyFiles()
+      fileEntries.push({ path: entry.path, relativePath })
     }
-    await Promise.all(reads)
+    await Promise.all(fileEntries.map((entry) => limit(async () => {
+      if (limits) {
+        if (totalBytes > limits.maxBytes) return
+        const stat = await files.stat(entry.path)
+        if (!stat || stat.kind !== 'file') return
+        totalBytes += stat.size ?? 0
+        if (totalBytes > limits.maxBytes) limits.onTooLarge()
+      }
+      const content = await readContent(entry.path)
+      if (content !== null) packageFiles.push({ relativePath: entry.relativePath, content })
+    })))
     for (const subdir of subdirs) await walk(subdir.path, subdir.relativePath)
   }
 
@@ -2143,12 +2166,25 @@ export async function publishSkillToSkillset(
 
   await files.putDoc(joinWorkspacePath(skillDir, '.skillset-original.md'), skillContent)
 
+  // Clear the refresh window and pull after a merged publish so other agents' searches see the
+  // new skill right away instead of waiting for the background refresh window to expire.
+  if (result.status === 'merged') {
+    await forgetSkillsetRefreshed(repoDir)
+    try {
+      await refreshSkillset(skillsetRef)
+    } catch (error) {
+      console.warn(`Failed to refresh skillset ${skillsetConfig.id} after publish:`, error)
+    }
+  }
+
   return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
 // ============================================================================
 // Publish to a Team Skillset on an Agent's Request
 // ============================================================================
+
+const SKILL_MAX_PUBLISH_BYTES = 10 * 1024 * 1024 // 10 MiB
 
 /** Why a skill cannot be published, worded for the agent that asked. */
 export class SkillPublishRefusal extends Error {}
@@ -2178,12 +2214,31 @@ interface PreparedTeamSkillPublish {
 async function readSkillPackageToPublish(agentSlug: string, skillDirName: string): Promise<SkillPackageFile[]> {
   const files = agentFiles(agentSlug)
   const skillDir = skillWorkspacePath(skillDirName)
-  const packageFiles = await workspaceDirExists(files, skillDir) ? await readWorkspaceSkillPackageFiles(files, skillDir) : []
-  if (!packageFiles.some((file) => file.relativePath === 'SKILL.md')) {
+  // Refuse symlinks at the skill folder or its parents so the host never reads outside the workspace.
+  let resolved: string | null
+  try {
+    resolved = await files.resolve(skillDir)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError && error.code === 'outside-workspace') {
+      throw new SkillPublishRefusal(`"${skillDirName}" leads outside this agent's workspace.`)
+    }
+    throw error
+  }
+  if (resolved !== skillDir || !(await workspaceDirExists(files, skillDir))) {
     throw new SkillPublishRefusal(`No skill at /workspace/.claude/skills/${skillDirName}: SKILL.md not found.`)
   }
-  if (packageFiles.length > SKILL_MAX_FILE_COUNT) {
-    throw new SkillPublishRefusal(`This skill has ${packageFiles.length} files. A published skill can have ${SKILL_MAX_FILE_COUNT} at most.`)
+  const packageFiles = await readWorkspaceSkillPackageFiles(files, skillDir, {
+    maxFiles: SKILL_MAX_FILE_COUNT,
+    maxBytes: SKILL_MAX_PUBLISH_BYTES,
+    onTooManyFiles: () => {
+      throw new SkillPublishRefusal(`This skill has more than ${SKILL_MAX_FILE_COUNT} files. A published skill can have ${SKILL_MAX_FILE_COUNT} at most.`)
+    },
+    onTooLarge: () => {
+      throw new SkillPublishRefusal(`This skill is larger than ${Math.round(SKILL_MAX_PUBLISH_BYTES / (1024 * 1024))} MB. A published skill must be smaller.`)
+    },
+  })
+  if (!packageFiles.some((file) => file.relativePath === 'SKILL.md')) {
+    throw new SkillPublishRefusal(`No skill at /workspace/.claude/skills/${skillDirName}: SKILL.md not found.`)
   }
   return packageFiles
 }
@@ -2232,6 +2287,13 @@ async function prepareTeamSkillPublish(
     if (packageHash === meta.originalContentHash) throw new SkillPublishRefusal('This skill has no changes to publish.')
     // Where the update goes comes from the host's settings, not from the record.
     const ref = toSkillsetRefFromConfig(target)
+    const index = await getSkillsetIndex(ref)
+    if (index && !index.skills.some((skill) => skill.path === meta.skillPath)) {
+      throw new SkillPublishRefusal(
+        `"${target.name}" no longer lists "${skillDirName}". `
+        + 'To publish it as a new skill, delete .skillset-metadata.json and .skillset-original.md in it.',
+      )
+    }
     record = { ...meta, skillsetUrl: ref.skillsetUrl, skillsetName: ref.skillsetName, provider: ref.provider, providerData: ref.providerData }
   } else {
     if (teamSkillsets.length === 0) throw new SkillPublishRefusal('This workspace has no team skillset to publish to.')

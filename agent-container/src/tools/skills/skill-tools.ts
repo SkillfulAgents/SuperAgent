@@ -75,9 +75,9 @@ export const publishTeamSkillTool = tool(
   'publish_team_skill',
   `Ask to publish a skill from this agent's /workspace/.claude/skills to the team's skillset, so teammates' agents can install it. Use it for a skill you wrote, or for changes you made to a skill installed from the team. The user sees an approval card with the skill's description and files, and this call waits until they decide (up to 5 minutes). Nothing is published without their approval. Call it once per skill.`,
   {
-    skill: z.string().max(200).describe('The skill directory name under /workspace/.claude/skills'),
-    title: z.string().max(200).describe('A short title for this publish, 200 characters at most'),
-    note: z.string().max(2000).describe('What the skill does or what changed, and why teammates would want it, 2000 characters at most'),
+    skill: z.string().min(1).max(200).describe('The skill directory name under /workspace/.claude/skills'),
+    title: z.string().min(1).max(200).describe('A short title for this publish, 200 characters at most'),
+    note: z.string().min(1).max(2000).describe('What the skill does or what changed, and why teammates would want it, 2000 characters at most'),
     skillset_id: z.string().optional().describe('Only when the team has several skillsets; the error lists them'),
   },
   async ({ skill, title, note, skillset_id }, extra) => {

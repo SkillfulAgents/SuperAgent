@@ -105,7 +105,7 @@ export function SkillPublishRequestItem({
 
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Files ({publish.files.length})</p>
-          <div className="mt-1 flex flex-wrap gap-1" data-testid="skill-publish-files">
+          <div className="mt-1 flex max-h-32 flex-wrap gap-1 overflow-y-auto" data-testid="skill-publish-files">
             {publish.files.map((file) => (
               <span key={file} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">{file}</span>
             ))}
