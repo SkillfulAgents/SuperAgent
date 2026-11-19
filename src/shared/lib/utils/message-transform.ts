@@ -339,6 +339,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // with the same message.id but different UUIDs. We need to merge them into one message.
   const mergedEntries: JsonlMessageEntry[] = []
   const assistantMessageIds = new Map<string, number>() // message.id -> index in mergedEntries
+  // Later rows of a merged response, by uuid, to the uuid its item goes by.
+  const mergedIntoUuid = new Map<string, string>()
 
   // Extended-thinking blocks per merged entry. Extracted here — before the merge
   // collapses per-block entries — because the duration is derived from entry
@@ -388,6 +390,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         }
         // Keep the original entry's uuid and timestamp for correct ordering
         target = existing
+        mergedIntoUuid.set(entry.uuid, existing.uuid)
       } else {
         // First time seeing this message.id - clone to avoid mutating original
         const clonedEntry = {
@@ -540,11 +543,13 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // Where each run shows: before the message row that ends it. When that row
   // is a replayed copy, before the next message that is new instead. A copy is
   // not a place in the conversation: keyed on its uuid, the run would show
-  // before the copy's original, turns before it was written, or not at all
-  // when the original is a later row of a merged response (whose item goes by
-  // its first row's uuid). Runs that meet before one message stay apart, in
-  // file order, so each reads the same in a page window that holds the copy
-  // without its original, where the copy is a message like any other.
+  // before the copy's original, turns before it was written. A later row of a
+  // merged response has no item of its own: the run shows before the
+  // response's item, which goes by its first row's uuid (keyed on the later
+  // row's uuid it would not show at all). Runs that meet before one message
+  // stay apart, in file order, so each reads the same in a page window that
+  // holds the copy without its original, where the copy is a message like
+  // any other.
   const runsBeforeUuid = new Map<string, SystemRun[]>()
   // Runs no new message follows. Before a message only a run's newest
   // boundary shows; the run that nothing at all follows keeps every one.
@@ -553,7 +558,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     const run = runsByEnd.get(end)!
     let target = end
     while (target < entries.length && replayedIndices.has(target)) target = nextMessageIndex(target)
-    const uuid = target < entries.length ? (entries[target] as JsonlMessageEntry).uuid : null
+    const rowUuid = target < entries.length ? (entries[target] as JsonlMessageEntry).uuid : null
+    const uuid = rowUuid ? (mergedIntoUuid.get(rowUuid) ?? rowUuid) : null
     if (uuid) {
       const runs = runsBeforeUuid.get(uuid) ?? []
       runs.push(run)

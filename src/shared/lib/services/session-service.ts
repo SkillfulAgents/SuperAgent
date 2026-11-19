@@ -795,6 +795,21 @@ function isSystemItem(item: TransformedItem): boolean {
   return item.type === 'compact_boundary' || item.type === 'memory_recall' || item.type === 'informational'
 }
 
+/** Whether the system item at `idx` shows before a response whose first row
+ * lies below its own: a row written between two rows of one response. */
+function showsBeforeOlderRow(
+  transformed: TransformedItem[],
+  rowOffsets: Map<string, number>,
+  idx: number
+): boolean {
+  const item = transformed[idx]
+  if (!item || !isSystemItem(item)) return false
+  const next = transformed.slice(idx + 1).find((later) => !isSystemItem(later))
+  const own = rowOffsets.get(item.id)
+  const nextOffset = next ? rowOffsets.get(next.id) : undefined
+  return own !== undefined && nextOffset !== undefined && nextOffset < own
+}
+
 /** Number of leading items whose head row lies at or before the anchored row:
  * the items older than that row, when the row heads no item of its own (the
  * window deduped it to an older copy, or merged it into its response). */
@@ -1531,9 +1546,16 @@ export async function getSessionMessagesPage(
     }
     if (idx === -1 && rowOffsets.has(cursor)) {
       // The row is in the window and heads no item here, though it did in the
-      // window that made it a cursor: a system row whose next message row
-      // merged into a response this window holds whole. The page is what
-      // lies at or below the row.
+      // window that made it a cursor. The page is what lies at or below the
+      // row.
+      idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
+    } else if (transformed[idx]?.id === cursor && showsBeforeOlderRow(transformed, rowOffsets, idx)) {
+      // A system row written between two rows of a response shows before the
+      // response, whose first row lies below it. The window that made the row
+      // a cursor may have held only the response's later rows, as an item of
+      // their own, so the response is not yet served. The page is what lies
+      // at or below the row, at the price of repeating the response when that
+      // window held it whole.
       idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
     }
     if (idx === -1) {

@@ -1371,10 +1371,18 @@ describe('session-service', () => {
         }],
         // The note's next row is the response's second row. A window that
         // starts inside the replay shows the note before that row; one that
-        // holds the whole response does not show it.
+        // holds the whole response shows it before the response.
         ['a run after rows replayed inside a response', () => {
           const [t0, t1] = [turn(0), turn(1)]
           return [...rowsOf(t0), t1.question, t1.text, t0.result, t0.answer, note('n-1'), t1.call, t1.result, t1.answer]
+        }],
+        ['a run between two rows of a response', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), t1.question, t1.text, note('n-1'), recall('m-1'), t1.call, t1.result, t1.answer]
+        }],
+        ['a run before a replayed first row of a response', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), t1.question, t1.text, note('n-1'), t1.text, t1.call, t1.result, t1.answer]
         }],
         // The replayed recall shows above the replayed note's page, with the
         // new recall that follows both in the file.

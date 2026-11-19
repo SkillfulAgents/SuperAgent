@@ -2148,6 +2148,31 @@ describe('replayed duplicate entries (resume history replay)', () => {
       ).toEqual(['q1', 'a1-text', 'note', 'q2'])
     })
 
+    it('shows them before a response when the next new row is a later row of it', () => {
+      // `a1-tool` merges into the item that goes by `a1-text`, so a run keyed
+      // on `a1-tool` matched no item and was dropped.
+      const text = () => createAssistantMessage('a1-text', 'msg-1', [{ type: 'text', text: 'Working' }])
+      const tool = () => createAssistantMessage('a1-tool', 'msg-1', [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} }])
+      const shown = ['q1', 'note', 'a1-text', 'q2']
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(),
+          system('note', 'informational'),
+          text(), tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(shown)
+      // The same with no replayed row between the banner and `a1-tool`.
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(),
+          system('note', 'informational'),
+          tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(shown)
+    })
+
     it('keeps the runs on either side of a replayed row apart, in file order', () => {
       // One run would show its recalls first: `late` above `early`. A page
       // window that holds the replayed row without its original shows it as a
