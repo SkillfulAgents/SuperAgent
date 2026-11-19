@@ -92,10 +92,11 @@ routes.delete('/:id/access/:userId', async c => {
 
 routes.get('/', async c => c.json(await listVolumeDefinitions(volumeViewer(c))))
 routes.post('/', async c => {
-  const id = await createVolumeDefinition(await c.req.json(), volumeViewer(c))
+  const { id, reused } = await createVolumeDefinition(await c.req.json(), volumeViewer(c))
+  if (reused) return c.json({ id, reused }, 200)
   globalFeed.publish({ type: 'volume_attention_changed' })
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'created' })
-  return c.json({ id }, 201)
+  return c.json({ id, reused }, 201)
 })
 routes.patch('/:id', async c => {
   const id = c.req.param('id')

@@ -6,7 +6,7 @@ import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { appRecords, agentVolumes, volumeAcl, volumeDefinitions, user } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary, type VolumeOwner } from '@shared/lib/types/mount'
-import { instantiateVolume, prepareVolume, removeVolume } from '@shared/lib/volumes/volume-factory'
+import { instantiateVolume, prepareVolume, removeVolume, sourceKey } from '@shared/lib/volumes/volume-factory'
 import { localVolumeConfigSchema, volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { prepareLocalVolume } from '@shared/lib/volumes/local-mountable-volume'
 import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
@@ -75,10 +75,42 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
   }
 }
 
-export async function createVolumeDefinition(raw: unknown, viewer: VolumeViewer): Promise<string> {
+/**
+ * A working drive the viewer can see on `row`'s source, to use instead of making `row`; a broken one is passed over,
+ * so adding its source again still repairs it. Shared asked of a private drive is refused, not changed. A new pick
+ * of a local drive's folder gives it the pick's bookmark, which opens the folder after a restart where the saved one may not.
+ */
+export async function reusableVolume(row: VolumeRow, viewer: VolumeViewer): Promise<VolumeRow | null> {
+  const stored = storedDefinition(row)
+  const key = stored && sourceKey(stored)
+  if (!key) return null
+  const rows = await db.select().from(volumeDefinitions).where(and(eq(volumeDefinitions.type, row.type), selectableVolumes(viewer)))
+    .orderBy(asc(volumeDefinitions.createdAt), asc(volumeDefinitions.id)).all()
+  const usable = (await Promise.all(rows.map(async candidate => {
+    const stored = storedDefinition(candidate)
+    if (!stored || sourceKey(stored) !== key) return null
+    return volumeHealth(await volumeProblem(stored)) === 'missing' ? null : candidate
+  }))).filter(candidate => candidate !== null)
+  const match = usable.find(candidate => candidate.visibility === row.visibility) ?? usable[0]
+  if (!match) return null
+  if (row.visibility === 'public' && match.visibility === 'private') {
+    throw new VolumeError(`This folder is already your private drive ${match.name}. Share it from Settings → Drives, or add it from Saved drives.`, 409)
+  }
+  const pick = localVolumeConfigSchema.safeParse(stored.config)
+  if (row.type === 'local' && pick.success && pick.data.bookmark && pick.data.bookmark !== localVolumeConfigSchema.safeParse(storedDefinition(match)?.config).data?.bookmark) {
+    // Only helps the next launch, so a refusal (another's drive, a concurrent pick) never fails this add.
+    await reconnectLocalVolume(match.id, pick.data, viewer).catch(error => { if (!(error instanceof VolumeError)) throw error })
+  }
+  return match
+}
+
+/** A source that already has a drive the viewer can see gives that drive back, `reused`. */
+export async function createVolumeDefinition(raw: unknown, viewer: VolumeViewer): Promise<{ id: string; reused: boolean }> {
   const row = await prepareVolumeDefinition(raw, viewer)
+  const match = await reusableVolume(row, viewer)
+  if (match) return { id: match.id, reused: true }
   await db.insert(volumeDefinitions).values(row).run()
-  return row.id
+  return { id: row.id, reused: false }
 }
 
 // An uncorrelated scalar subquery reads the designation once per statement.

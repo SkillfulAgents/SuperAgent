@@ -34,7 +34,7 @@ const input = () => ({ type: 'local', config: { path: folder }, name: 'Notes' })
 
 describe('volume ownership', () => {
   it('defaults to the creator and never accepts an owner supplied by the client', async () => {
-    const id = await createVolumeDefinition(input(), alice)
+    const { id } = await createVolumeDefinition(input(), alice)
     expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, visibility: 'private', canManage: true, attachmentCount: 0 }])
     expect(await listVolumeDefinitions(bob)).toEqual([])
     expect(await listVolumeDefinitions(admin)).toEqual([])
@@ -46,18 +46,19 @@ describe('volume ownership', () => {
     }
   })
   it('allows everyone to attach public definitions, with management restricted to admins', async () => {
-    const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    const { id } = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     expect(await listVolumeDefinitions(bob)).toMatchObject([{ id, visibility: 'public', canManage: false }])
     expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, canManage: true }])
     expect((await attachMount('agent', id, bob)).volumeId).toBe(id)
     await expect(updateVolumeDefinition(id, { name: 'Renamed' }, bob)).rejects.toMatchObject({ status: 404 })
     await expect(deleteVolumeDefinition(id, bob)).rejects.toMatchObject({ status: 404 })
     await expect(createVolumeDefinition({ ...input(), visibility: 'public' }, bob)).rejects.toMatchObject({ status: 403 })
-    const privateId = await createVolumeDefinition(input(), bob)
+    const other = fs.mkdtempSync(path.join(folder, 'bob-'))
+    const { id: privateId } = await createVolumeDefinition({ ...input(), config: { path: other } }, bob)
     await expect(updateVolumeDefinition(privateId, { name: 'Notes', visibility: 'public' }, bob)).rejects.toMatchObject({ status: 403 })
   })
   it('transfers a workspace-owned public drive to the admin making it private', async () => {
-    const id = await createVolumeDefinition(input(), local)
+    const { id } = await createVolumeDefinition(input(), local)
     const mount = await attachMount('agent', id, bob)
     expect((await listVolumeDefinitions(bob))[0].owners).toEqual([{ userId: null, name: 'Workspace admins', role: 'owner' }])
     await updateVolumeDefinition(id, { visibility: 'private' }, admin)
@@ -66,9 +67,9 @@ describe('volume ownership', () => {
     expect(await getMountsWithHealth('agent', bob)).toEqual([{ id: mount.id, volumeName: 'Notes', restricted: true }])
   })
   it('makes only public drives global, and keeps a global drive public until global is off', async () => {
-    const privateId = await createVolumeDefinition(input(), alice)
+    const { id: privateId } = await createVolumeDefinition(input(), alice)
     await expect(updateVolumeDefinition(privateId, { global: 'read' }, alice)).rejects.toMatchObject({ status: 400 })
-    const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    const { id } = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     await expect(updateVolumeDefinition(id, { global: 'read' }, bob)).rejects.toMatchObject({ status: 404 })
     await expect(updateVolumeDefinition(id, { visibility: 'private', global: 'read' }, admin)).rejects.toMatchObject({ status: 400 })
     await updateVolumeDefinition(id, { global: 'write' }, admin)
@@ -81,25 +82,25 @@ describe('volume ownership', () => {
   })
   it('releases a drive from every agent but one and from global, whoever owns it', async () => {
     await handle.db.insert(agents).values([{ slug: 'brain', name: 'Brain', createdAt: new Date() }, { slug: 'reader', name: 'Reader', createdAt: new Date() }]).run()
-    const id = await createVolumeDefinition(input(), alice)
+    const { id } = await createVolumeDefinition(input(), alice)
     await attachMount('brain', id, alice)
     await attachMount('agent', id, alice)
     await attachMount('reader', id, alice)
     await releaseVolume(id, 'brain')
     expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, attachmentCount: 1, globalAccess: null }])
-    const shared = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    const { id: shared } = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     await updateVolumeDefinition(shared, { global: 'read' }, admin)
     await releaseVolume(shared, 'brain')
     expect((await listVolumeDefinitions(admin)).find((d) => d.id === shared)).toMatchObject({ globalAccess: null })
   })
   it('deletes a global drive that no agent has as its own', async () => {
-    const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    const { id } = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     await updateVolumeDefinition(id, { global: 'read' }, admin)
     await deleteVolumeDefinition(id, admin)
     expect(await listVolumeDefinitions(admin)).toEqual([])
   })
   it('changes visibility in both directions while preserving the agent’s mount and read-only access', async () => {
-    const id = await createVolumeDefinition(input(), admin)
+    const { id } = await createVolumeDefinition(input(), admin)
     const mount = await attachMount('agent', id, admin, { readOnly: true })
     fs.writeFileSync(path.join(folder, 'note.txt'), 'Agent note')
     await expect(deleteVolumeDefinition(id, admin)).rejects.toMatchObject({ status: 409 })
@@ -143,12 +144,23 @@ describe('volume ownership', () => {
     expect(await handle.db.select().from(volumeDefinitions).all()).toEqual([])
   })
   it('uses public definitions in single-user mode and rejects ownerless private definitions', async () => {
-    const id = await createVolumeDefinition(input(), local)
+    const { id } = await createVolumeDefinition(input(), local)
     expect(await listVolumeDefinitions(local)).toMatchObject([{ id, visibility: 'public', canManage: true }])
     await expect(createVolumeDefinition({ ...input(), visibility: 'private' }, local)).rejects.toMatchObject({ status: 400 })
   })
+  it('gives back the drive a source already has, but never another member’s private one', async () => {
+    const { id } = await createVolumeDefinition(input(), alice)
+    expect(await createVolumeDefinition(input(), alice)).toEqual({ id, reused: true })
+    expect(await createVolumeDefinition(input(), bob)).toMatchObject({ reused: false })
+    expect(await listVolumeDefinitions(alice)).toHaveLength(1)
+  })
+  it('refuses shared over the member’s private drive, naming it, instead of changing its access', async () => {
+    await createVolumeDefinition(input(), admin)
+    await expect(createVolumeDefinition({ ...input(), visibility: 'public' }, admin))
+      .rejects.toMatchObject({ status: 409, message: expect.stringContaining('private drive Notes') })
+  })
   it('makes the drive private even when a workspace member concurrently tries to attach it', async () => {
-    const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    const { id } = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     const [attachment, change] = await Promise.allSettled([
       attachMount('agent', id, bob), updateVolumeDefinition(id, { name: 'Notes', visibility: 'private' }, admin),
     ])
@@ -184,7 +196,7 @@ describe('choosing a local drive’s folder again', () => {
     })
 
     it('replaces a dead bookmark in place, keeping the drive’s id and every agent that has it', async () => {
-      const id = await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm1' } }, alice)
+      const { id } = await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm1' } }, alice)
       await attachMount('agent', id, alice)
       // The next launch: the bookmark no longer opens the folder.
       closeLocalFolders()
@@ -197,8 +209,14 @@ describe('choosing a local drive’s folder again', () => {
       expect(listed.pickFolderAgain).toBeUndefined()
       expect(await storedConfig(id)).toEqual({ path: folder, bookmark: 'bm2' })
     })
+    it('gives a drive the bookmark of a new pick of its folder, which opens it after the next launch', async () => {
+      const { id } = await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm1' } }, alice)
+      opening = new Set(['bm1', 'bm2'])
+      expect(await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm2' } }, alice)).toEqual({ id, reused: true })
+      expect(await storedConfig(id)).toEqual({ path: folder, bookmark: 'bm2' })
+    })
     it('refuses another folder, and a pick without its bookmark', async () => {
-      const id = await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm1' } }, alice)
+      const { id } = await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm1' } }, alice)
       const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-other-')))
       opening.add('bm2')
       try {
@@ -216,7 +234,7 @@ describe('choosing a local drive’s folder again', () => {
   })
 
   it('takes the same folder by another path to it, and stores its real path', async () => {
-    const id = await createVolumeDefinition(input(), alice)
+    const { id } = await createVolumeDefinition(input(), alice)
     const link = `${folder}-link`
     fs.symlinkSync(folder, link)
     try {
@@ -227,11 +245,11 @@ describe('choosing a local drive’s folder again', () => {
     expect(await storedConfig(id)).toEqual({ path: folder })
   })
   it('lets only someone who manages the drive choose its folder again', async () => {
-    const id = await createVolumeDefinition(input(), alice)
+    const { id } = await createVolumeDefinition(input(), alice)
     for (const viewer of [bob, admin]) {
       await expect(reconnectLocalVolume(id, { path: folder }, viewer)).rejects.toMatchObject({ status: 404 })
     }
-    const publicId = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    const { id: publicId } = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     await expect(reconnectLocalVolume(publicId, { path: folder }, bob)).rejects.toMatchObject({ status: 404 })
     await reconnectLocalVolume(publicId, { path: folder }, admin)
     await expect(reconnectLocalVolume('missing', { path: folder }, alice)).rejects.toMatchObject({ status: 404 })
@@ -241,7 +259,7 @@ describe('choosing a local drive’s folder again', () => {
     const now = new Date()
     await handle.db.insert(volumeDefinitions).values({ id: 'bucket', createdBy: 'alice', visibility: 'private', name: 'Bucket', type: 's3', config: '{}', globalAccess: null, createdAt: now, updatedAt: now }).run()
     await expect(reconnectLocalVolume('bucket', { path: folder }, alice)).rejects.toMatchObject({ status: 400 })
-    const id = await createVolumeDefinition(input(), alice)
+    const { id } = await createVolumeDefinition(input(), alice)
     await expect(reconnectLocalVolume(id, { path: folder, extra: true }, alice)).rejects.toThrow()
     await expect(reconnectLocalVolume(id, { path: 'relative' }, alice)).rejects.toMatchObject({ status: 400 })
     vi.restoreAllMocks()

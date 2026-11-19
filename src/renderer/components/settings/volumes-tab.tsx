@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
 import { StaleAgentsNotice } from './stale-agents-notice'
+import { toast } from 'sonner'
+import { z } from 'zod'
 import { VolumeDetailPage } from '@renderer/components/volumes/volume-detail-page'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { IntegrationList, IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
@@ -16,6 +18,9 @@ import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 export function agentBackPath(source: 'home' | 'list' | undefined, from: string | undefined): string | null {
   return source === 'home' && from ? from : null
 }
+
+/** A new drive's id, or the id of the drive its source already had. */
+const savedSchema = z.object({ id: z.string(), reused: z.boolean().optional() })
 
 export function VolumesTab() {
   const registry = useVolumeDefinitions()
@@ -97,7 +102,12 @@ export function VolumesTab() {
       )}
       </>}
       {creating && <VolumeSettingsDialog
-        onSave={input => save.mutateAsync(input)}
+        onSave={async input => {
+          const { id, reused } = savedSchema.parse(await save.mutateAsync(input))
+          if (!reused) return
+          const name = definitions.find(volume => volume.id === id)?.name
+          if (name) toast.info(`This folder is already the drive ${name}.`)
+        }}
         onClose={() => setCreating(false)}
       />}
       <AlertDialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null) }}>

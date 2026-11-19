@@ -9,7 +9,7 @@ import { parseMountPath } from '@shared/lib/utils/workspace-path'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
-import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
+import { prepareVolumeDefinition, reusableVolume, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
 
 export { volumeSummary } from '@shared/lib/volumes/volume-health'
 
@@ -90,12 +90,21 @@ function uniqueName(base: string, taken: Set<string>): string {
   return `${base}-${n}`
 }
 
-/** The folder picker creates a source and attaches it atomically. */
+/**
+ * The folder picker creates a source and attaches it atomically. A source that already has a drive the viewer can see
+ * attaches that drive, `unchanged` when the agent had it, or with `onlyNew` is refused.
+ */
 export async function addMount(
   slug: string, type: string, config: unknown, viewer: VolumeViewer,
-  options: { name?: string; visibility?: 'public' | 'private' } = {},
-): Promise<MountedVolume> {
+  { onlyNew, ...options }: { name?: string; visibility?: 'public' | 'private'; onlyNew?: boolean } = {},
+): Promise<MountedVolume & { unchanged?: true }> {
   const row = await prepareVolumeDefinition({ type, config, ...options }, viewer)
+  const match = await reusableVolume(row, viewer)
+  if (match && onlyNew) throw new VolumeError(`This folder is already the drive ${match.name}. Delete it in Settings → Drives, or pick another folder.`, 409)
+  if (match) {
+    const had = (await getMounts(slug)).some(mount => mount.volumeId === match.id && !mount.global)
+    return { ...await attachMount(slug, match.id, viewer), ...(had ? { unchanged: true as const } : {}) }
+  }
   const id = randomUUID()
   const name = await availableMountName(slug, row.name)
   await batch([

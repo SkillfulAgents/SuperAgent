@@ -37,6 +37,20 @@ async function storedMount(id: string, name: string, config: unknown, type = 'lo
   await handle.db.insert(agentVolumes).values({ id, name, agentSlug: 'test-agent', volumeId: id, createdAt: new Date() }).run()
 }
 
+describe('one drive per source', () => {
+  it('adds a folder that already has a drive as that drive, under its one name', async () => {
+    const first = await add(folder('brain'))
+    expect(await add(folder('brain'))).toEqual({ ...first, unchanged: true })
+    expect(await addMount('agent-b', 'local', { path: folder('brain') }, viewer)).toMatchObject({ volumeId: first.volumeId, name: 'brain' })
+    expect((await getMounts('test-agent')).map(mount => mount.name)).toEqual(['brain'])
+  })
+  it('refuses a source that already has a drive when only a new drive will do', async () => {
+    await add(folder('brain'))
+    await expect(addMount('agent-b', 'local', { path: folder('brain') }, viewer, { onlyNew: true }))
+      .rejects.toMatchObject({ status: 409, message: 'This folder is already the drive brain. Delete it in Settings → Drives, or pick another folder.' })
+  })
+})
+
 describe('SQLite mount attachments', () => {
   it('starts empty and persists definitions separately from attachments', async () => {
     expect(await getMounts('test-agent')).toEqual([])
@@ -156,7 +170,7 @@ describe('global drives', () => {
     fs.writeFileSync(path.join(incomingPath, 'notes.md'), 'New drive')
     const incoming = operation === 'create'
       ? await addMount('agent-b', 'local', { path: incomingPath }, viewer)
-      : await attachMount('agent-b', await createVolumeDefinition({ type: 'local', config: { path: incomingPath } }, viewer), viewer)
+      : await attachMount('agent-b', (await createVolumeDefinition({ type: 'local', config: { path: incomingPath } }, viewer)).id, viewer)
 
     const preview = await resolveMountPath('agent-b', '/mounts/team/notes.md', viewer)
     const file = await preview!.ops.read(preview!.path)
@@ -197,7 +211,7 @@ describe('global drives', () => {
     await updateVolumeDefinition(global.volumeId, { global: 'read' }, viewer)
     const before = await getMounts('agent-b')
     const sources = await Promise.all(['first', 'second'].map(name =>
-      createVolumeDefinition({ type: 'local', config: { path: folder(`${name}/team`) } }, viewer)))
+      createVolumeDefinition({ type: 'local', config: { path: folder(`${name}/team`) } }, viewer).then(created => created.id)))
 
     const attached = await Promise.all(sources.map(id => attachMount('agent-b', id, viewer)))
     expect(attached.map(mount => mount.name).sort()).toEqual(['team-2', 'team-3'])
