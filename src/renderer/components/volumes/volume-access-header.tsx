@@ -35,7 +35,7 @@ export function VolumeAccessHeader({ volume }: { volume: VolumeDefinitionSummary
   const reasonId = useId()
   const isPublic = volume.visibility === 'public'
   const people = volume.owners.flatMap(({ userId, ...profile }) => userId === null ? [] : [{ ...profile, id: userId }])
-  const blocked = volume.globalAccess ? 'Turn off global access before changing visibility.' : undefined
+  const blocked = volume.teamBrainDrive ? 'Team Brain requires a public drive.' : volume.globalAccess ? 'Turn off global access before changing visibility.' : undefined
   return <div className="flex shrink-0 flex-col items-end gap-1">
     <div className="flex items-center gap-1">
       {isAuthMode && volume.supportsOwnerSharing !== false && <MemberRosterPopover

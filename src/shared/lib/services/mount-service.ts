@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { and, asc, eq, exists, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
-import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+import { agentAcl, agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+import type { AgentRole } from '@shared/lib/types/agent'
 import type { AgentMountSummary, ContainerVolume, MountedVolume, NotMountedVolume } from '@shared/lib/types/mount'
 import { parseMountPath } from '@shared/lib/utils/workspace-path'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
@@ -129,21 +130,30 @@ export async function attachMount(slug: string, volumeId: string, viewer: Volume
   return mount
 }
 
-function visibleAttachment(slug: string, mountId: string, viewer: VolumeViewer) {
-  return and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId),
-    inArray(agentVolumes.volumeId, db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selectableVolumes(viewer))))
+function attachmentOnAgent(slug: string, mountId: string) {
+  return and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))
+}
+
+function selectableAttachment(viewer: VolumeViewer) {
+  return inArray(agentVolumes.volumeId, db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selectableVolumes(viewer)))
 }
 
 /** False when the agent has no such mount. Like attach and remove, the mount takes the change on the next start. */
 export async function setMountReadOnly(slug: string, mountId: string, readOnly: boolean, viewer: VolumeViewer): Promise<boolean> {
   const result = await db.update(agentVolumes).set({ readOnly })
-    .where(visibleAttachment(slug, mountId, viewer)).run()
+    .where(and(attachmentOnAgent(slug, mountId), selectableAttachment(viewer))).run()
   return changesOf(result) > 0
 }
 
 /** False when the agent has no such attachment, including a global drive. */
-export async function removeMount(slug: string, mountId: string, viewer: VolumeViewer): Promise<boolean> {
-  const result = await db.delete(agentVolumes).where(visibleAttachment(slug, mountId, viewer)).run()
+export async function removeMount(slug: string, mountId: string, viewer: VolumeViewer, agentRole?: AgentRole | null): Promise<boolean> {
+  // Middleware can authorize a workspace admin as 'owner'. Only an actual owner
+  // of this agent may detach a drive they cannot access. Check at the write.
+  const ownsAgent = agentRole === 'owner' && viewer.userId
+    ? exists(db.select({ id: agentAcl.id }).from(agentAcl).where(and(
+      eq(agentAcl.agentSlug, slug), eq(agentAcl.userId, viewer.userId), eq(agentAcl.role, 'owner'),
+    ))) : undefined
+  const result = await db.delete(agentVolumes).where(and(attachmentOnAgent(slug, mountId), or(ownsAgent, selectableAttachment(viewer)))).run()
   return changesOf(result) > 0
 }
 

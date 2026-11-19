@@ -834,5 +834,14 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1795041346189,
     "hash": "59e122deaf50c4bef30c9727bd3370fd00d05832d9a18020d41d8c46e69708ff"
+  },
+  {
+    "sql": [
+      "-- Drive visibility checks the current Team Brain designation in its UPDATE.\n-- Check the other direction at the settings write too: choosing a drive and\n-- making it private in another window cannot both succeed.\nCREATE TRIGGER team_brain_public_drive_insert BEFORE INSERT ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value) AND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n",
+      "\nCREATE TRIGGER team_brain_public_drive_update BEFORE UPDATE OF value ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value)\nAND json_extract(NEW.value, '$.teamBrain.volumeId') IS NOT\n  CASE WHEN json_valid(OLD.value) THEN json_extract(OLD.value, '$.teamBrain.volumeId') END\nAND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795048855087,
+    "hash": "d0708071a2b154fbf64540385e5586487a239d5460d7b7ba8737d4f6abf4c9c0"
   }
 ]

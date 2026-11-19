@@ -38,7 +38,7 @@ export function messageAuthorsQuery(sessionId: string, ids: readonly string[] | 
       agentSlug: messageAuthor.agentSlug,
       integrationId: messageAuthor.integrationId,
       display: messageAuthor.display,
-      profile: userProfileFields,
+      profile: userProfileFields(),
     })
     .from(messageAuthor)
     .leftJoin(user, eq(user.id, messageAuthor.userId))

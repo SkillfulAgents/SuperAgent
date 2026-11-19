@@ -4,12 +4,19 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { agents, user } from '@shared/lib/db/schema'
+import { mutateSettings } from '@shared/lib/config/settings'
+import { backgroundSettled } from '@shared/lib/background'
+import { registerDirectoryProvider } from '@shared/lib/team-directory/registry'
+import { createFakeDirectoryProvider } from '@shared/lib/team-directory/testing/fake-directory-provider'
+import { saveDirectoryConnection } from '@shared/lib/team-directory/store'
+import { agentAcl, agents, user } from '@shared/lib/db/schema'
 import { attachMount, getMountsWithHealth, removeMount, resolveMountPath, resolveVolume, setMountReadOnly } from '@shared/lib/services/mount-service'
 
 let handle: TestDatabase
 let folder: string
 vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
+vi.mock('@shared/lib/auth/secret', () => ({ getOrCreateAuthSecret: async () => 'test-drive-invite-secret' }))
+vi.mock('@shared/lib/agent-integrations/app-link', () => ({ resolvePublicAppBaseUrl: async () => 'https://gamut.test' }))
 vi.mock('../middleware/auth', () => ({
   getReadableAgentIds: vi.fn(async () => new Set(['agent'])),
   Authenticated: (): MiddlewareHandler => async (c, next) => {
@@ -56,6 +63,7 @@ beforeEach(async () => {
   await handle.db.insert(agents).values({ slug: 'agent', name: 'Agent', createdAt: new Date() }).run()
 })
 afterEach(async () => {
+  await backgroundSettled()
   await handle.close()
   vi.unstubAllEnvs()
   fs.rmSync(folder, { recursive: true, force: true })
@@ -93,6 +101,46 @@ describe('volume definition API', () => {
     expect(await (await request('', 'GET', undefined, 'bob')).json()).toEqual([])
     expect(await (await request('', 'GET', undefined, 'alice')).json()).toMatchObject([{ id, visibility: 'private', canManage: true, attachmentCount: 1 }])
   })
+  it('keeps the designated Team Brain drive public through setup and after launch', async () => {
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    const drive = { agentSlug: 'agent', volumeId: id }
+    await attachMount('agent', id, { userId: 'admin', admin: true })
+    for (const designation of [
+      { ...drive, status: 'setting-up' as const, setupId: 'setup', step: 'location' as const, location: 'local' as const,
+        schedule: 'daily' as const, everyAgent: false, agents: {} }, drive,
+    ]) {
+      await mutateSettings(settings => { settings.teamBrain = designation }, handle.db)
+      const response = await request(`/${id}`, 'PATCH', { visibility: 'private' }, 'admin')
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({ error: 'Team Brain requires a public drive' })
+      expect(await (await request()).json()).toMatchObject([{ id, teamBrainDrive: true, visibility: 'public' }])
+    }
+    await mutateSettings(settings => { delete settings.teamBrain }, handle.db)
+    expect((await request(`/${id}`, 'PATCH', { visibility: 'private' }, 'admin')).status).toBe(200)
+    // A setup that checked visibility earlier cannot claim the now-private drive.
+    await expect(mutateSettings(settings => { settings.teamBrain = drive }, handle.db)).rejects.toThrow()
+  })
+
+  it('notifies a directory person exactly once after granting drive ownership', async () => {
+    const fake = createFakeDirectoryProvider('fake', 'Demo Directory')
+    const unregister = registerDirectoryProvider(fake.provider)
+    try {
+      fake.setPeople('acme', [fake.person('acme', 'dana', 'Dana', 'dana@acme.test')])
+      const { id: directoryId } = await saveDirectoryConnection({ provider: 'fake', tenant: { tenantId: 'acme', tenantName: 'Acme' }, credentials: { token: 'test-token' }, createdByUserId: null })
+      const { id } = await (await request('', 'POST', input())).json()
+      const body = { directoryRef: { directoryId, remoteId: 'dana' } }
+      expect((await request(`/${id}/access`, 'POST', body, 'bob')).status).toBe(404)
+      const grant = await request(`/${id}/access`, 'POST', body)
+      expect(grant.status).toBe(201)
+      const { userId } = await grant.json()
+      expect((await request(`/${id}/access`, 'POST', { userId })).status).toBe(409)
+      await backgroundSettled()
+      expect(fake.sent).toMatchObject([{ user: { remoteId: 'dana' }, message: {
+        headline: 'alice shared the drive Notes with you on Gamut.', link: { url: 'https://gamut.test/?join=dana%40acme.test' },
+      } }])
+    } finally { unregister() }
+  })
+
   it('rejects deletion while attached and validates malformed requests', async () => {
     const { id } = await (await request('', 'POST', input())).json()
     await attachMount('agent', id, { userId: 'alice', admin: false })
@@ -214,7 +262,8 @@ describe('volume browsing', () => {
     expect(await (await request('', 'GET', undefined, 'bob')).json()).toEqual([])
     expect(await getMountsWithHealth('agent', bob)).toEqual([{ id: mount.id, volumeName: 'Forecasts', restricted: true }])
     expect(await resolveMountPath('agent', '/mounts/Notes/report', bob)).toBeNull()
-    expect(await removeMount('agent', mount.id, bob)).toBe(false)
+    expect(await removeMount('agent', mount.id, bob, 'user')).toBe(false)
+    expect(await removeMount('agent', mount.id, { userId: 'admin', admin: true }, 'owner')).toBe(false)
     expect(await setMountReadOnly('agent', mount.id, false, bob)).toBe(false)
     await expect(attachMount('agent', id, bob)).rejects.toMatchObject({ status: 404 })
     const runtime = await resolveVolume('agent', mount.id)
@@ -222,6 +271,9 @@ describe('volume browsing', () => {
     const file = await runtime!.ops.read('report')
     expect(await new Response(await file.stream()).text()).toBe('Quarterly forecast')
     expect((await request(`/${id}/access/alice`, 'DELETE')).status).toBe(409)
+    await handle.db.insert(agentAcl).values({ id: 'agent-owner', userId: 'bob', agentSlug: 'agent', role: 'owner', createdAt: new Date() }).run()
+    expect(await removeMount('agent', mount.id, bob, 'owner')).toBe(true)
+    expect(await (await request('', 'GET', undefined, 'bob')).json()).toEqual([])
   })
 
   it('keeps an owner under concurrent removals', async () => {

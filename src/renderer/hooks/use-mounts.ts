@@ -105,16 +105,17 @@ export function useSetMountReadOnly() {
 }
 
 export function useVolumesManager(agentSlug: string) {
-  const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
+  const { data: mountsData, isLoading, error: mountError, refetch } = useAgentMounts(agentSlug)
   const registry = useVolumeDefinitions()
   const definitions = registry.data ?? []
   // The registry and mount list refresh independently, and older servers send
   // full mount details for every attachment. Both lists must allow direct access.
   const accessible = new Set(definitions.map(drive => drive.id))
-  const mounts = Array.isArray(mountsData) ? mountsData.map(mount =>
+  const loadError = mountError || registry.error
+  const mounts = registry.data && !loadError && Array.isArray(mountsData) ? mountsData.map(mount =>
     mount.restricted || accessible.has(mount.volumeId) ? mount : { restricted: true as const, id: mount.id, volumeName: mount.volumeName },
   ) : []
-  const { canUseAgent } = useUser()
+  const { canUseAgent, canAdminAgent } = useUser()
   const canModifyMounts = canUseAgent(agentSlug)
   const canCreateMount = canModifyMounts
   const { data: agent } = useAgent(agentSlug)
@@ -191,7 +192,10 @@ export function useVolumesManager(agentSlug: string) {
     mounts,
     definitions,
     isLoading: isLoading || registry.isLoading,
-    operationError: operationError ?? (registry.error ? 'Could not load saved drives' : null),
+    loadError: !!loadError,
+    retryLoad: () => Promise.all([refetch(), registry.refetch()]),
+    operationError,
+    canDetachRestricted: canAdminAgent(agentSlug),
     canModifyMounts,
     canCreateMount,
     pendingRestart,

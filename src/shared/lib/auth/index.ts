@@ -26,12 +26,11 @@ export { isAuthMode } from './mode'
 
 // Better Auth removes sessions, accounts, then the user. Any of those can be the
 // first row for this user. These hooks run after it authorizes the removal.
-async function releaseDriveOwnership(userId: string, requestPath?: string) {
+async function releaseDriveOwnership(userId: string, requestPath: string | undefined, adminId: string | undefined) {
   if (requestPath !== '/admin/remove-user') return
   const { releaseUserVolumeGrants } = await import('@shared/lib/services/volume-access-service')
-  if (!await releaseUserVolumeGrants(userId)) {
-    throw new APIError('CONFLICT', { message: 'Transfer sole ownership of this user’s drives before removing them.' })
-  }
+  if (!adminId || adminId === userId) throw new APIError('FORBIDDEN')
+  await releaseUserVolumeGrants(userId, adminId)
 }
 
 /** Everything the Better Auth instance is built from that can change while the app runs. */
@@ -217,7 +216,7 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         delete: {
           // What a cascade cannot do: revoke provider connections first, then settings and audit.
           before: async (deletedUser, ctx) => {
-            await releaseDriveOwnership(deletedUser.id, ctx?.path)
+            await releaseDriveOwnership(deletedUser.id, ctx?.path, ctx?.context.session?.user.id)
             const { beforeUserRemoved } = await import('@shared/lib/services/user-removal-service')
             await beforeUserRemoved(deletedUser.id)
           },
@@ -292,7 +291,7 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
           // Remove-user deletes the account rows before the user row, so keep the
           // Platform member id now for the revoke in user.delete.before.
           before: async (account, ctx) => {
-            await releaseDriveOwnership(account.userId, ctx?.path)
+            await releaseDriveOwnership(account.userId, ctx?.path, ctx?.context.session?.user.id)
             if (ctx?.path !== '/admin/remove-user' || account.providerId !== 'platform') return
             const { rememberPlatformMember } = await import('@shared/lib/services/user-removal-service')
             rememberPlatformMember(account.userId, account.accountId)
@@ -324,7 +323,7 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
       },
       session: {
         delete: {
-          before: (session, ctx) => releaseDriveOwnership(session.userId, ctx?.path),
+          before: (session, ctx) => releaseDriveOwnership(session.userId, ctx?.path, ctx?.context.session?.user.id),
         },
         create: {
           before: async (session, context) => {

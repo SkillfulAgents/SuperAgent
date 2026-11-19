@@ -109,21 +109,28 @@ afterEach(async () => {
 })
 
 describe('removing a user', () => {
-  it('refuses removal before touching credentials until a sole drive owner has shared it', async () => {
+  it('transfers sole-owned drives to the removing admin and leaves co-owned drives with their other owners', async () => {
     const admin = await signUp('admin@example.org')
     const owner = await signUp('owner@example.org')
     const now = new Date()
     await testDb.insert(volumeDefinitions).values({ id: 'v', name: 'Notes', type: 'local', config: '{}', createdBy: owner.id, visibility: 'private', createdAt: now, updatedAt: now }).run()
-    const remove = () => request('admin/remove-user', { userId: owner.id }, { cookie: admin.cookie })
-    expect((await remove()).status).toBe(409)
+    const coOwner = await signUp('co-owner@example.org')
+    await testDb.insert(volumeDefinitions).values({ id: 'shared', name: 'Shared', type: 'local', config: '{}', createdBy: owner.id, visibility: 'private', createdAt: now, updatedAt: now }).run()
+    await testDb.insert(volumeAcl).values({ id: 'second-owner', volumeId: 'shared', userId: coOwner.id, role: 'owner', createdAt: now }).run()
+    const remove = (cookie: string) => request('admin/remove-user', { userId: owner.id }, { cookie })
+    expect((await remove(coOwner.cookie)).status).toBe(403)
     expect(await testDb.select().from(authAccount).where(eq(authAccount.userId, owner.id)).all()).toHaveLength(1)
-    await testDb.insert(volumeAcl).values({ id: 'second-owner', volumeId: 'v', userId: admin.id, role: 'owner', createdAt: now }).run()
-    expect((await remove()).status).toBe(200)
-    expect(await testDb.select().from(volumeDefinitions).all()).toMatchObject([{ id: 'v', createdBy: null, visibility: 'private' }])
-    expect(await testDb.select().from(volumeAcl).all()).toMatchObject([{ userId: admin.id, role: 'owner' }])
+    expect((await remove(admin.cookie)).status).toBe(200)
+    expect(await testDb.select().from(volumeDefinitions).where(eq(volumeDefinitions.id, 'v')).get()).toMatchObject({ createdBy: null, visibility: 'private' })
+    expect(await testDb.select().from(volumeAcl).orderBy(volumeAcl.volumeId).all()).toMatchObject([
+      { volumeId: 'shared', userId: coOwner.id }, { volumeId: 'v', userId: admin.id },
+    ])
+    expect(await testDb.select().from(auditLog).where(eq(auditLog.object, 'volume')).all()).toMatchObject([
+      { objectId: 'v', userId: admin.id, action: 'granted' },
+    ])
   })
 
-  it('keeps the surviving co-owner signed in when both removals arrive together', async () => {
+  it('transfers the drive once when both co-owners are removed concurrently', async () => {
     const admin = await signUp('admin@example.org')
     const emails = ['alice@example.org', 'bob@example.org']
     const owners = [await signUp(emails[0]), await signUp(emails[1])]
@@ -131,12 +138,9 @@ describe('removing a user', () => {
     await testDb.insert(volumeDefinitions).values({ id: 'v', name: 'Notes', type: 'local', config: '{}', createdBy: owners[0].id, visibility: 'private', createdAt: now, updatedAt: now }).run()
     await testDb.insert(volumeAcl).values({ id: 'co-owner', volumeId: 'v', userId: owners[1].id, role: 'owner', createdAt: now }).run()
     const results = await Promise.all(owners.map(owner => request('admin/remove-user', { userId: owner.id }, { cookie: admin.cookie })))
-    expect(results.map(r => r.status).sort()).toEqual([200, 409])
-    const remaining = results.findIndex(r => r.status === 409)
-    expect(await testDb.select().from(volumeAcl).all()).toMatchObject([{ userId: owners[remaining].id }])
-    const session = await (await getAuth()).handler(new Request(`${BASE}/api/auth/get-session`, { headers: { cookie: owners[remaining].cookie } }))
-    expect(await session.json()).toMatchObject({ user: { id: owners[remaining].id } })
-    expect((await request('sign-in/email', { email: emails[remaining], password: 'UserDeletion123!' })).status).toBe(200)
+    expect(results.map(r => r.status)).toEqual([200, 200])
+    expect(await testDb.select().from(volumeAcl).all()).toMatchObject([{ userId: admin.id }])
+    expect(await testDb.select().from(auditLog).where(eq(auditLog.object, 'volume')).all()).toHaveLength(1)
   })
 
   it('revokes their connections before the cascade, then removes, audits and refreshes only what was theirs', async () => {

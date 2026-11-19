@@ -550,8 +550,7 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
                 <>
                   Are you sure you want to permanently delete{' '}
                   <strong>{confirmAction.user.name}</strong> ({confirmAction.user.email})?
-                  This will remove their account and all associated sessions. This action cannot be
-                  undone.
+                  Their account and sessions will be deleted. You will become the owner of any drives they own alone.
                 </>
               ) : (
                 <>

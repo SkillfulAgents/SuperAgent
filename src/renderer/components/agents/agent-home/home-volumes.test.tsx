@@ -6,6 +6,7 @@ const volumes = vi.hoisted(() => ({
   mounts: [] as ({ restricted: true; id: string; volumeName: string } | { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true; sourceReadOnly?: boolean })[],
   definitions: [] as { id: string; name: string; hostPath: string; canManage?: boolean }[],
   canModifyMounts: true,
+  canDetachRestricted: false,
   operationError: null as string | null,
   handleAttach: vi.fn(),
   isLoading: false,
@@ -58,6 +59,7 @@ beforeEach(() => {
   volumes.canAddMount = true
   volumes.canCreateMount = true
   volumes.canModifyMounts = true
+  volumes.canDetachRestricted = false
   volumes.definitions = []
   volumes.operationError = null
   volumes.pendingRestart = false
@@ -75,7 +77,18 @@ describe('driving this computer', () => {
     volumes.mounts = [{ id: 'm1', volumeName: 'Forecasts', restricted: true }]
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByText('Forecasts').closest('[aria-disabled]')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.queryByRole('button', { name: /drive actions|open forecasts|detach/i })).not.toBeInTheDocument()
+  })
+
+  it('lets the agent owner detach a restricted drive after confirmation', async () => {
+    volumes.mounts = [{ id: 'm1', volumeName: 'Forecasts', restricted: true }]
+    volumes.canDetachRestricted = true
+    render(<HomeVolumes agentSlug="a1" />)
     expect(screen.queryByRole('button', { name: /drive actions|open forecasts/i })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Detach Forecasts from agent' }))
+    expect(volumes.handleRemove).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Remove from Agent' }))
+    expect(volumes.handleRemove).toHaveBeenCalledWith('m1')
   })
 
   it('offers to add a drive', () => {

@@ -96,6 +96,14 @@ describe('volume settings', () => {
     expect(screen.getByText('Every agent has this drive')).toBeInTheDocument()
     expect(screen.queryByText('Agents Without This Drive')).not.toBeInTheDocument()
   })
+  it('explains why the designated Team Brain drive stays public', () => {
+    state.selectedId = 'v1'
+    state.definitions[0] = { ...state.definitions[0], visibility: 'public', teamBrainDrive: true }
+    render(<VolumesTab />)
+    const visibility = screen.getByRole('combobox', { name: 'Drive visibility' })
+    expect(visibility).toBeDisabled()
+    expect(visibility).toHaveAccessibleDescription('Team Brain requires a public drive.')
+  })
   it('returns Back to the page that opened the drive from its home', () => {
     expect(agentBackPath('home', '/agents/a1')).toBe('/agents/a1')
     expect(agentBackPath('home', '/team-brain')).toBe('/team-brain')

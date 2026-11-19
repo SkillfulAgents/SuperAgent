@@ -7,14 +7,16 @@ import { serveVolumeFile, volumeErrorResponse } from '../lib/volume-file'
 import { afterVolumeChange } from '../lib/mount-change'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { background } from '@shared/lib/background'
+import { getUserSummaries } from '@shared/lib/services/user-profile-service'
 import { volumeGrantSchema } from '@shared/lib/services/mount-schema'
 import { grantVolumeOwner, requireVolumeManager, revokeVolumeOwner, volumeOwnerIds } from '@shared/lib/services/volume-access-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
-import { DirectoryInviteError, inviteDirectoryPerson } from '@shared/lib/team-directory/invited-users'
+import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
 import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, updateVolumeDefinition, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
 
-const routes = new Hono()
+const routes = new Hono<{ Variables: { driveName: string } }>()
 routes.use('*', Authenticated())
 routes.onError((error, c) => {
   const known = volumeErrorResponse(c, error)
@@ -52,7 +54,8 @@ routes.get('/:id/file', async c => {
 })
 
 routes.use('/:id/access/*', async (c, next) => {
-  await requireVolumeManager(c.req.param('id'), volumeViewer(c))
+  const drive = await requireVolumeManager(c.req.param('id'), volumeViewer(c))
+  c.set('driveName', drive.name)
   return next()
 })
 
@@ -64,13 +67,20 @@ routes.get('/:id/access/search-users', async c => {
 routes.post('/:id/access', async c => {
   const id = c.req.param('id')
   const viewer = volumeViewer(c)
+  const sharerId = getCurrentUserId(c)
   const input = volumeGrantSchema.parse(await c.req.json())
-  const userId = 'userId' in input ? input.userId : (await inviteDirectoryPerson(input.directoryRef, getCurrentUserId(c))).userId
+  const userId = 'userId' in input ? input.userId : (await inviteDirectoryPerson(input.directoryRef, sharerId)).userId
   await grantVolumeOwner(id, userId, viewer)
   globalFeed.publish({ type: 'volume_access_changed' })
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'granted', details: { targetUserId: userId, role: 'owner' } })
+  background(notifyDriveInvite(userId, c.get('driveName'), sharerId), { name: 'drives.notify-invited-owner' })
   return c.json({ userId, role: 'owner' }, 201)
 })
+
+async function notifyDriveInvite(userId: string, driveName: string, sharerId: string) {
+  const sharer = (await getUserSummaries([sharerId])).get(sharerId)
+  await notifyInvitedUser(userId, { kind: 'drive-shared', driveName, byName: sharer?.name ?? 'A teammate' })
+}
 
 routes.delete('/:id/access/:userId', async c => {
   const { id, userId } = c.req.param()

@@ -31,7 +31,7 @@ test('drive sharing updates Settings, the picker and an attached drive in anothe
     expect((await page.request.post(`${endpoint}/access`, { data: { userId: bob.id, role: 'user' } })).status()).toBe(201)
     const attached = await page.request.post(`${endpoint}/mounts`, { data: { name, type: 'local', config: { path: privateFolder } } })
     expect(attached.status()).toBe(201)
-    const { volumeId } = await attached.json()
+    const { id: mountId, volumeId } = await attached.json()
     const own = await teammate.request.post('/api/volume-definitions', { data: { name: 'My notes', type: 'local', config: { path: notesFolder } } })
     expect(own.status()).toBe(201)
     const file = `${endpoint}/mount-files/${encodeURIComponent(name)}/forecast.txt`
@@ -73,6 +73,19 @@ test('drive sharing updates Settings, the picker and an attached drive in anothe
     await expect(drivesHeader).toBeVisible()
     if ((await drivesHeader.getAttribute('aria-expanded')) !== 'true') await drivesHeader.click()
     await expect(other.getByText('Restricted drive')).toBeVisible()
+    const detach = other.getByRole('button', { name: `Detach ${name} from agent` })
+    await expect(detach).toHaveCount(0)
+    const mount = `${endpoint}/mounts/${mountId}`
+    expect((await teammate.request.delete(mount)).status()).toBe(404)
+    expect((await page.request.patch(`${endpoint}/access/${bob.id}`, { data: { role: 'owner' } })).ok()).toBe(true)
+    await expect(detach).toBeVisible()
+    expect((await teammate.request.patch(mount, { data: { readOnly: false } })).status()).toBe(404)
+    expect((await teammate.request.get(file)).status()).toBe(404)
+    await detach.click()
+    await other.getByRole('button', { name: 'Remove from Agent', exact: true }).click()
+    await expect(other.getByText(name, { exact: true })).toHaveCount(0)
+    expect(await (await page.request.get(`${endpoint}/mounts`)).json()).toEqual([])
+    expect((await page.request.get(`/api/volume-definitions/${volumeId}/file?path=forecast.txt`)).status()).toBe(200)
   } finally {
     await teammate.close()
     rmSync(folder, { recursive: true, force: true })

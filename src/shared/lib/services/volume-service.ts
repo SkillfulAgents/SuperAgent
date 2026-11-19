@@ -3,7 +3,8 @@ import { and, asc, eq, exists, isNull, ne, notExists, or, sql } from 'drizzle-or
 import { z } from 'zod'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
-import { agentVolumes, volumeAcl, volumeDefinitions, user } from '@shared/lib/db/schema'
+import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
+import { appRecords, agentVolumes, volumeAcl, volumeDefinitions, user } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary, type VolumeOwner } from '@shared/lib/types/mount'
 import { instantiateVolume, prepareVolume, removeVolume } from '@shared/lib/volumes/volume-factory'
 import { localVolumeConfigSchema, volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
@@ -74,11 +75,17 @@ export async function createVolumeDefinition(raw: unknown, viewer: VolumeViewer)
   return row.id
 }
 
+// An uncorrelated scalar subquery reads the designation once per statement.
+function teamBrainDriveId() {
+  return sql<string | null>`(select json_extract(${appRecords.value}, '$.teamBrain.volumeId')
+    from ${appRecords} where ${appRecords.key} = ${SETTINGS_RECORD_KEY} and json_valid(${appRecords.value}))`
+}
+
 export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<VolumeDefinitionSummary[]> {
   const rows = await db.select({
-    volume: volumeDefinitions,
+    volume: volumeDefinitions, teamBrainDriveId: teamBrainDriveId(),
     attachmentCount: db.$count(agentVolumes, eq(agentVolumes.volumeId, volumeDefinitions.id)),
-    owner: userProfileFields, role: volumeAcl.role,
+    owner: userProfileFields(), role: volumeAcl.role,
   }).from(volumeDefinitions)
     .innerJoin(volumeAcl, eq(volumeAcl.volumeId, volumeDefinitions.id))
     .leftJoin(user, eq(user.id, volumeAcl.userId))
@@ -95,6 +102,7 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
     }
     volumes.set(volume.id, entry)
   }
+  const brainDrive = rows[0]?.teamBrainDriveId
   const summaries = await Promise.all([...volumes.values()].map(async ({ volume, attachmentCount, owners }) => {
     const stored = storedDefinition(volume)
     if (!stored) return null
@@ -110,6 +118,7 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
       canManage: (volume.visibility === 'public' && viewer.admin) || owners.some(owner => owner.userId !== null && owner.userId === viewer.userId),
       attachmentCount,
       globalAccess: volume.globalAccess,
+      ...(volume.id === brainDrive ? { teamBrainDrive: true as const } : {}),
     }
   }))
   return summaries.filter(row => row !== null)
@@ -124,7 +133,7 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
     input.visibility && !viewer.admin ? eq(volumeDefinitions.visibility, input.visibility) : undefined,
     input.global !== undefined && !viewer.admin ? sql`0` : undefined,
     input.global && input.visibility !== 'public' ? eq(volumeDefinitions.visibility, 'public') : undefined,
-    input.visibility === 'private' ? isNull(volumeDefinitions.globalAccess) : undefined)
+    input.visibility === 'private' ? and(isNull(volumeDefinitions.globalAccess), sql`${volumeDefinitions.id} is not ${teamBrainDriveId()}`) : undefined)
   const update = db.update(volumeDefinitions).set({ name: input.name, visibility: input.visibility, globalAccess: input.global, updatedAt: new Date() }).where(allowed)
   // The admin making a public drive private becomes an owner in the same batch, including
   // legacy drives whose only owner is the workspace. A rejected change grants nothing.
@@ -137,11 +146,12 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
     ]))[1]
     : await update.run()
   if (changesOf(result) > 0) return
-  const existing = await db.select({ visibility: volumeDefinitions.visibility, globalAccess: volumeDefinitions.globalAccess }).from(volumeDefinitions).where(ownership).get()
+  const existing = await db.select({ visibility: volumeDefinitions.visibility, globalAccess: volumeDefinitions.globalAccess, teamBrainDriveId: teamBrainDriveId() }).from(volumeDefinitions).where(ownership).get()
   if (existing) {
     if (input.visibility && !viewer.admin && input.visibility !== existing.visibility) throw new VolumeError('Only admins can change drive visibility', 403)
     if (input.global && existing.visibility !== 'public') throw new VolumeError('Only public drives can be global', 400)
     if (input.global !== undefined && !viewer.admin) throw new VolumeError('Only admins can change global access', 403)
+    if (input.visibility === 'private' && id === existing.teamBrainDriveId) throw new VolumeError('Team Brain requires a public drive', 409)
     if (input.visibility === 'private' && existing.globalAccess) throw new VolumeError('Turn off global before changing access', 409)
     throw new VolumeError('Drive access changed. Try again.', 409)
   }

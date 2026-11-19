@@ -46,6 +46,7 @@ export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
   owners: VolumeOwner[]
   /** Set by the renderer when connected to a workspace that predates owner sharing. */
   supportsOwnerSharing?: false
+  teamBrainDrive?: true
   canManage: boolean
   attachmentCount: number
   globalAccess: GlobalAccess | null
