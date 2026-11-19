@@ -167,11 +167,21 @@ export const SkillsetConfigSchema = z.object({
   providerData: SkillsetProviderDataSchema.optional(),
 })
 
+/**
+ * A path inside a skillset repository. The host joins it onto its own cache folder, and an
+ * install record is a file in the agent's workspace that the agent can write, so a path that
+ * is absolute or climbs out with `..` is refused where the record is read.
+ */
+const RepoRelativePathSchema = z.string().refine(
+  (value) => !value.startsWith('/') && !value.includes('\\') && !/^[a-zA-Z]:/.test(value) && !value.split('/').includes('..'),
+  { message: 'must be a relative path inside the skillset repository' },
+)
+
 export const InstalledSkillMetadataSchema = z.object({
   skillsetId: z.string(),
   skillsetUrl: z.string(),
   skillName: z.string(),
-  skillPath: z.string(),
+  skillPath: RepoRelativePathSchema,
   installedVersion: z.string(),
   installedAt: z.string(),
   originalContentHash: z.string(),
