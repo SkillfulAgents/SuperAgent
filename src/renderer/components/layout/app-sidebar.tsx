@@ -9,7 +9,8 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { ContextMenuMoreButton } from '@renderer/components/ui/context-menu'
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { targetIsRemote } from '@renderer/lib/api-target'
@@ -563,6 +564,41 @@ function AgentAvatarBadge({
   )
 }
 
+/** Whether an open session list runs past `bottom` with its Show less row still below it. */
+export function showLessCrossesBottom(listTop: number, rowBottom: number, bottom: number) {
+  return listTop < bottom && rowBottom > bottom
+}
+
+/** The slot under the sidebar scroller while `active` and the open list runs past the scroller's foot, else null. */
+function useShowLessPin(listRef: React.RefObject<HTMLUListElement | null>, toggleRowRef: React.RefObject<HTMLLIElement | null>, active: boolean) {
+  const [slot, setSlot] = useState<Element | null>(null)
+  useLayoutEffect(() => {
+    const list = listRef.current
+    const scroller = list?.closest('[data-sidebar="content"]')
+    const target = scroller?.parentElement?.querySelector(':scope > [data-show-less-slot]')
+    if (!active || !list || !scroller || !target) return
+    // Measured against the slot's foot, which stays put while the slot fills and the scroller gives up the room.
+    const update = () => {
+      const row = toggleRowRef.current
+      const crosses = !!row &&
+        showLessCrossesBottom(list.getBoundingClientRect().top, row.getBoundingClientRect().bottom, target.getBoundingClientRect().bottom)
+      setSlot(crosses ? target : null)
+    }
+    update()
+    scroller.addEventListener('scroll', update, { passive: true })
+    // Every content block, so a list moved by a row opening above it is measured again.
+    const resize = new ResizeObserver(update)
+    resize.observe(scroller)
+    for (const block of scroller.children) resize.observe(block)
+    return () => {
+      scroller.removeEventListener('scroll', update)
+      resize.disconnect()
+      setSlot(null)
+    }
+  }, [listRef, toggleRowRef, active])
+  return slot
+}
+
 // Agent menu item with expandable sessions
 const AgentMenuItemInner = React.forwardRef<
   HTMLLIElement,
@@ -599,10 +635,13 @@ const AgentMenuItemInner = React.forwardRef<
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLUListElement>(null)
+  const toggleRowRef = useRef<HTMLLIElement>(null)
   const toggleShowAll = () => {
     if (showAll) requestAnimationFrame(() => rowRef.current?.scrollIntoView({ block: 'nearest' }))
     setShowAll(!showAll)
   }
+  const pinSlot = useShowLessPin(listRef, toggleRowRef, showAll && isOpen && !isDragActive)
   const [showSkeleton, setShowSkeleton] = useState(false)
   const memberCount = agentMemberCount(agent.slug)
 
@@ -621,6 +660,26 @@ const AgentMenuItemInner = React.forwardRef<
   const visibleSessions = showAll && allSessions ? allSessions : sessions?.slice(0, 5)
   const sessionTotal = allSessions?.length ?? (recentIsCut ? reportedTotal : undefined) ?? recentSessions?.length ?? 0
   const hasMore = sessionTotal > 5
+  const toggleButton = (pinned: boolean) => (
+    <SidebarMenuSubButton
+      asChild
+      className="text-muted-foreground"
+    >
+      <button
+        onClick={toggleShowAll}
+        aria-expanded={showAll}
+        tabIndex={pinned ? -1 : undefined}
+        // The pinned copy is hidden from assistive tech and unmounts on collapse, so it never takes focus.
+        onMouseDown={pinned ? (e) => e.preventDefault() : undefined}
+        className="w-full focus-visible:ring-inset"
+      >
+        <span>
+          {showAll ? 'Show less' : `Show all (${sessionTotal})`}
+        </span>
+        <ChevronDown className={cn('ml-auto !size-3.5 transition-transform', showAll && 'rotate-180')} aria-hidden="true" />
+      </button>
+    </SidebarMenuSubButton>
+  )
   const dashboards = Array.isArray(artifacts) ? artifacts : []
   const avatarState = agentAvatarState(agent, sessions)
   const badgeKind = agentBadgeKind(agent, sessions, isOpen)
@@ -861,7 +920,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-12')}>
+              <SidebarMenuSub ref={listRef} className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, pinSlot && '[&_a]:scroll-mb-4')}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -885,31 +944,21 @@ const AgentMenuItemInner = React.forwardRef<
                       />
                     ))}
                     {hasMore && (
-                      // `!` beats the tree connectors' `[&>li]` rules; pinned, the row covers their gutter and its ::before becomes a blurred fade.
-                      <SidebarMenuSubItem
-                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 mt-4 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
-                      >
-                        <SidebarMenuSubButton
-                          asChild
-                          className="text-muted-foreground"
-                        >
-                          <button
-                            onClick={toggleShowAll}
-                            aria-expanded={showAll}
-                            className="w-full focus-visible:ring-inset"
-                          >
-                            <span>
-                              {showAll ? 'Show less' : `Show all (${sessionTotal})`}
-                            </span>
-                            <ChevronDown className={cn('ml-auto !size-3.5 transition-transform', showAll && 'rotate-180')} aria-hidden="true" />
-                          </button>
-                        </SidebarMenuSubButton>
+                      <SidebarMenuSubItem ref={toggleRowRef} className={cn(pinSlot && 'opacity-0')}>
+                        {toggleButton(false)}
                       </SidebarMenuSubItem>
                     )}
                   </>
                 )}
               </SidebarMenuSub>
             </CollapsibleContent>
+            {pinSlot && createPortal(
+              // Its own one-row tree, so the list's rail runs on into it past the scroller's edge.
+              <SidebarMenuSub aria-hidden className={cn('pb-1 pl-[29px]', SIDEBAR_TREE_CONNECTORS)}>
+                <SidebarMenuSubItem>{toggleButton(true)}</SidebarMenuSubItem>
+              </SidebarMenuSub>,
+              pinSlot
+            )}
           </>
         ) : null}
       </SidebarMenuItem>
@@ -1853,7 +1902,7 @@ export function AppSidebar() {
             the nav rows travel with the agent list rather than pinning above
             it, so a short window gives the list the full height. */}
         <SidebarContent
-          className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
+          className={cn('gap-0 overflow-y-auto overflow-x-hidden [&:has(+[data-show-less-slot]:not(:empty))]:[mask-image:linear-gradient(to_bottom,black_calc(100%-16px),transparent)]', THIN_SCROLLBAR)}
           data-testid="agent-list-scroll"
         >
           <SidebarGroup className="shrink-0 p-0">
@@ -2053,6 +2102,7 @@ export function AppSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
+        <div data-show-less-slot className="shrink-0" />
       </ErrorBoundary>
 
       {/* Full width like the agent rows, so its ends can line up with
