@@ -79,17 +79,18 @@ test.describe('Agent Rename', () => {
     await expect(getAgentItem(page, renamedAgent)).toBeVisible()
   })
 
-  test('can rename agent inline from agent home by clicking save button', async ({ page, request }, testInfo) => {
-    const agent = await createAndOpenAgent(request, page, testInfo, 'Inline Save')
-    const newName = uniqueName(testInfo, 'Inline Save Renamed')
+  test('can rename agent from agent home by clicking outside the editor', async ({ page, request }, testInfo) => {
+    const agent = await createAndOpenAgent(request, page, testInfo, 'Inline Outside')
+    const newName = uniqueName(testInfo, 'Inline Outside Renamed')
 
     await page.locator('[data-testid="agent-name"]').click()
 
     const nameInput = page.locator('[data-testid="agent-name-input"]')
     await expect(nameInput).toBeVisible()
+    await expect(page.locator('[data-testid="agent-identity-preview"]')).toBeVisible()
     await nameInput.fill(newName)
 
-    await page.locator('[data-testid="agent-name-save"]').click()
+    await page.mouse.click(5, 5)
 
     await expect(nameInput).not.toBeVisible()
     await expect(page.locator('[data-testid="agent-name"]')).toHaveText(newName)
@@ -98,29 +99,27 @@ test.describe('Agent Rename', () => {
     await expect(getAgentItem(page, renamedAgent)).toBeVisible()
   })
 
-  test('pressing Escape cancels inline rename without saving', async ({ page, request }, testInfo) => {
-    const agent = await createAndOpenAgent(request, page, testInfo, 'Inline Escape')
-    const unsavedName = uniqueName(testInfo, 'Should Not Save')
+  test('clearing the name and closing the editor keeps the old name', async ({ page, request }, testInfo) => {
+    const agent = await createAndOpenAgent(request, page, testInfo, 'Inline Blank')
 
     await page.locator('[data-testid="agent-name"]').click()
 
     const nameInput = page.locator('[data-testid="agent-name-input"]')
     await expect(nameInput).toBeVisible()
-    await nameInput.fill(unsavedName)
+    await nameInput.fill('   ')
     await nameInput.press('Escape')
 
     await expect(nameInput).not.toBeVisible()
     await expect(page.locator('[data-testid="agent-name"]')).toHaveText(agent.name)
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name)
     await expectAgentNamed(request, agent, agent.name)
-    await expect(page.locator('[data-testid^="agent-item-"]', { hasText: unsavedName })).toHaveCount(0)
   })
 
-  test('control: can type spaces in rename input when opened via the agent menu without saving', async ({ page, request }, testInfo) => {
+  test('control: can type spaces in rename input when opened via the agent menu', async ({ page, request }, testInfo) => {
     const agent = await createAndOpenAgent(request, page, testInfo, 'Rename Button')
-    const unsavedName = uniqueName(testInfo, 'Button Name With Spaces')
+    const newName = uniqueName(testInfo, 'Button Name With Spaces')
 
-    // Header three-dot → "Rename Agent" puts the inline title into edit mode
+    // Header three-dot → "Rename Agent" opens the name and avatar editor
     await agentPage.openAgentMenu()
     await page.locator('[data-testid="rename-agent-item"]').click()
 
@@ -129,14 +128,14 @@ test.describe('Agent Rename', () => {
     await expect(nameInput).toBeFocused()
 
     await nameInput.clear()
-    await nameInput.pressSequentially(unsavedName)
-    await expect(nameInput).toHaveValue(unsavedName)
+    await nameInput.pressSequentially(newName)
+    await expect(nameInput).toHaveValue(newName)
 
-    // Escape cancels without saving
+    // Closing the editor keeps the name, spaces and all
     await nameInput.press('Escape')
     await expect(nameInput).not.toBeVisible()
 
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name)
-    await expectAgentNamed(request, agent, agent.name)
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(newName)
+    await expectAgentNamed(request, agent, newName)
   })
 })

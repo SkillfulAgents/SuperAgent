@@ -40,7 +40,7 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
       {...openableProps(() => openFile(file.path, file.agentSlug, description))}
       className={cn(
         // The row is the size container the Download label collapses on.
-        'group flex w-full items-center gap-3 rounded-lg border bg-background px-3 py-2 text-left cursor-pointer [container-type:inline-size]',
+        'group flex w-full items-center gap-3 rounded-card border bg-background px-3 py-2 text-left cursor-pointer [container-type:inline-size]',
         'hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors',
         className,
       )}

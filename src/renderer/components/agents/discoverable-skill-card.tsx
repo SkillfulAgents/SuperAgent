@@ -22,7 +22,7 @@ export function DiscoverableSkillCard({ skill, agentSlug }: DiscoverableSkillCar
   }
 
   return (
-    <div className="rounded-lg border bg-background p-3" data-testid="discoverable-skill-card" data-skill-name={skill.name}>
+    <div className="rounded-card border bg-background p-3" data-testid="discoverable-skill-card" data-skill-name={skill.name}>
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium truncate">{skill.name}</div>

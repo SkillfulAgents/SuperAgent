@@ -24,7 +24,7 @@
  * (`live()`, `sessions.live()`): reads consumed together are taken together,
  * and a read → decide → write is one op, so no state changes between them.
  */
-import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import type {
   ContainerInfo,
@@ -51,6 +51,9 @@ import type {
   SessionMetadataMap,
 } from '@shared/lib/types/agent'
 import type { MediaRef } from '@shared/lib/services/session-media'
+import type { ArtifactListing } from '@shared/lib/services/artifact-scan'
+import type { PortableSessionMetadataMap } from '@shared/lib/services/session-metadata-schema'
+import type { ResolvedDeliveredAgentFile, TranscriptView } from '@shared/lib/services/x-agent-transcript-view'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { ConfigDoc, ConfigDocId } from './config-schema'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
@@ -65,7 +68,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
+import type { ReviewDecisionDetail, ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
@@ -85,8 +88,8 @@ export interface AgentRegistry {
   /**
    * Drop the handle and forget its container runtime, releasing everything
    * the handle owns: parked reviews and re-auth waits are rejected, open
-   * input requests are settled as invalidated, in-memory grants and the
-   * summary cache are gone. Does not stop the container.
+   * input requests are settled as invalidated, in-memory grants and what
+   * the session index held in memory are gone. Does not stop the container.
    */
   evict(slug: AgentSlug): Promise<void>
   /** `evict` for every handle, at shutdown: parked callers are let go. Does not stop containers. */
@@ -116,6 +119,8 @@ export interface AgentActor {
   readonly slug: AgentSlug
   /** What the agent is doing as of now: its container, busy sessions, open asks. */
   live(): Promise<AgentLiveSummary>
+  /** What the agent list shows about the agent, read in one call. */
+  listing(): Promise<AgentListing>
   readonly container: ContainerOps
   readonly sessions: SessionOps
   readonly messages: MessageOps
@@ -258,6 +263,8 @@ export interface AgentCatalog {
   update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
   /** The agent slug for a display slug or a slug, or null when there is no such agent. */
   resolve(input: string): Promise<AgentSlug | null>
+  /** The agent for a display slug or a slug, or null when there is no such agent. */
+  resolveRecord(input: string): Promise<AgentRecord | null>
   /** Remove an agent and everything it owns. The caller stops its container first. */
   remove(slug: AgentSlug): Promise<void>
 }
@@ -327,16 +334,14 @@ export interface OpenWebSocketInit {
 export interface SessionOps {
   // Stored session data — session-service. Works without a running container.
 
-  /** `listSessions` */
+  /** `listSessions` — from the agent's session index; no transcript is read or statted again. */
   list(options?: ListSessionsOptions): Promise<SessionInfo[]>
-  /** `listSessionsFromSummary` */
-  listFromSummary(options?: ListSessionsOptions & { metadata?: SessionMetadataMap }): Promise<SessionInfo[]>
   /** `listSessionsByIds` */
   listByIds(sessionIds: string[], options?: { excludeAutomated?: boolean }): Promise<SessionInfo[]>
   /** `getSession` */
   get(sessionId: string, already?: { metadata: SessionMetadata | null }): Promise<SessionInfo | null>
   /** `getSessionSummary` */
-  summary(): Promise<{ sessionIds: string[]; sessionCount: number; lastActivityAt: Date | null }>
+  summary(): Promise<SessionSummary>
   /** `sessionExists` */
   exists(sessionId: string): Promise<boolean>
   /** `sessionIsKnown` */
@@ -347,17 +352,21 @@ export interface SessionOps {
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
   /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
-  /** `deleteSession` — the files are the authority. */
+  /** Stop the writer, delete its files, then forget its resume record. Unknown runtime state keeps the files. */
   delete(sessionId: string): Promise<boolean>
   /**
-   * `deleteSessionsBatch` over the sessions not running now: one that is
-   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   * Delete each idle session after its writer has stopped, holding its delivery queue through file removal.
+   * Active sessions and sessions whose release cannot be confirmed are kept. Returns the ids deleted.
    */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
   metadata(sessionId: string): Promise<SessionMetadata | null>
   /** `readSessionMetadata` — the whole metadata map for the agent. */
   readMetadata(): Promise<SessionMetadataMap>
+  /** `exportSessionMetadata` — the index in its portable form, as a full export carries it. */
+  exportMetadata(): Promise<PortableSessionMetadataMap>
+  /** `ingestSessionMetadataFile` — take a `session-metadata.json` an import wrote into the workspace into the index. */
+  ingestMetadataFile(): Promise<void>
   /** `updateSessionMetadata` */
   updateMetadata(sessionId: string, updates: Partial<SessionMetadata>): Promise<SessionMetadata | undefined>
   /** `sessionFileRealPathWithinAgent` — the transcript's real location is inside the workspace, links followed. */
@@ -370,7 +379,7 @@ export interface SessionOps {
   byWebhookTrigger(webhookTriggerId: string): Promise<SessionInfo[]>
   /** `getSessionForScheduledExecution` */
   forScheduledExecution(scheduledTaskId: string, scheduledExecutionAt: Date): Promise<SessionInfo | null>
-  /** `recordSessionActivity` (session-summary-cache) — a transcript write happened that no stream frame will report. */
+  /** `recordSessionActivity` — a transcript write happened that no stream frame will report. */
   recordActivity(sessionId: string, activityAt?: Date | number): Promise<void>
   /** The model runtime the session's turns now run on (the llm-runtime callback resolved it), for its errors' presentation. */
   recordRuntime(sessionId: string, runtime: SessionModelRuntime): Promise<void>
@@ -508,6 +517,24 @@ export interface AgentLiveSummary {
   pendingReviews: Array<{ id: string; displayText: string }>
 }
 
+/** The agent's sessions at a glance (`sessions.summary()`). */
+export interface SessionSummary {
+  sessionIds: string[]
+  sessionCount: number
+  lastActivityAt: Date | null
+  metadata: SessionMetadataMap
+}
+
+/** What the agent list shows about the agent (`actor.listing()`). */
+export interface AgentListing {
+  live: AgentLiveSummary
+  sessions: SessionSummary
+  /** The agent's dashboards and widgets, as its artifacts directory has them. */
+  artifacts: ArtifactListing
+  /** The widgets with a refresh in flight. */
+  refreshingWidgets: string[]
+}
+
 /** One session's live state as of one moment (`sessions.live()`). */
 export interface SessionLiveState {
   activity: SessionActivity
@@ -555,6 +582,10 @@ export interface MessageOps {
 
   /** `getSessionMessagesWithCompact` */
   withCompact(sessionId: string): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]>
+  /** `readTranscriptView`: the transcript other agents read, and its delivered files, in one streaming pass. */
+  transcriptView(sessionId: string, opts: { fullTranscript?: boolean; limit?: number }): Promise<TranscriptView>
+  /** `findDeliveredFile`: one delivered file of the transcript, found in one streaming pass. */
+  findDeliveredFile(sessionId: string, deliveryId: string): Promise<ResolvedDeliveredAgentFile | undefined>
   /** `getSessionMessagesPage` */
   page(
     sessionId: string,
@@ -625,7 +656,7 @@ export interface DeliverRequest {
    * and starts no turn: nothing is cancelled or marked, and the running
    * turn's runtime is kept.
    */
-  options?: RuntimeOptions & { isAutomated?: boolean }
+  options?: RuntimeOptions & { shouldQuery?: boolean; isAutomated?: boolean }
   /** Stored with the session when the message is sent, besides the runtime selection. */
   metadataUpdates?: Partial<SessionMetadata>
   /** A person sent it: a hidden automation becomes a regular session first. */
@@ -691,7 +722,10 @@ export interface StopSessionOptions {
    * instead: nothing would be left to stop it with.
    */
   escalateUntracked?: boolean
-  /** Deny the agent's pending API reviews too: the user stopped the agent. */
+  /**
+   * The user stopped the session: deny the API reviews it shows (its own and
+   * the agent-wide ones) and dismiss the calls parked on its own re-auth cards.
+   */
   denyReviews?: boolean
   /**
    * Mark the session stopped only once the container confirms the interrupt:
@@ -774,7 +808,7 @@ export interface ReviewOps {
   /** One review waiting on the user, or null when this agent holds none by that id. */
   get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
-  submit(id: string, decision: 'allow' | 'deny', reason?: string): Promise<boolean>
+  submit(id: string, decision: 'allow' | 'deny', detail?: ReviewDecisionDetail): Promise<boolean>
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */
@@ -787,7 +821,7 @@ export interface ReviewOps {
    * (its request was aborted), or to resume or settle it after a `recheck`.
    * `awaitReview` (proxy/review-request) is the host's way to wait for one.
    */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
+  request(details: ReviewRequest, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     request: {
@@ -796,6 +830,9 @@ export interface ReviewOps {
       operation: 'list' | 'read' | 'invoke' | 'create'
       preview?: string
       fileTransfer?: XAgentFileTransfer
+      runtime?: XAgentRuntime
+      /** The session the call came from, when the request named one. */
+      callerSessionId?: string
     },
     options: { id: string },
   ): Promise<ReviewOutcome>
@@ -805,31 +842,33 @@ export interface ReviewOps {
   resume(id: string): Promise<ReviewOutcome>
   /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
   settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
-  /** `AgentReviews.takeDenyReason`: what the person typed with a deny, once. */
-  takeDenyReason(id: string): Promise<string | undefined>
+  /** `AgentReviews.takeDecisionDetail`: what came with the decision, once. */
+  takeDecisionDetail(id: string): Promise<ReviewDecisionDetail>
 }
 
-/** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
+/** Computer-use permission grants and the active app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
   /**
-   * The user let go of the app the agent had grabbed: forget the grab, revoke
-   * the agent's grant for that app and the session's any-app grant, and tell
-   * the session's viewers, in one turn.
+   * The user took back the app the agent is acting in: forget it, revoke the
+   * agent's grant for that app and the session's any-app grant, and tell the
+   * session's viewers, in one turn.
    */
-  releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
-  /** `AgentComputerUse.setGrabbed` */
-  setGrabbedApp(appName: string): Promise<void>
-  /** `AgentComputerUse.clearGrabbed` */
-  clearGrabbedApp(): Promise<void>
+  releaseApp(sessionId: string): Promise<{ appName: string | undefined }>
+  /** `AgentComputerUse.setActiveApp`: true when the session's app changed. */
+  setActiveApp(sessionId: string, appName: string): Promise<boolean>
+  /** `AgentComputerUse.clearActiveApp`, for one session. */
+  clearActiveApp(sessionId: string): Promise<void>
   /** `AgentComputerUse.grant` */
   grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): Promise<void>
   /** `AgentComputerUse.consumeOnce` */
   consumeOnce(level: ComputerUsePermissionLevel, appName?: string): Promise<void>
+  /** `AgentComputerUse.revokeAll`: the persisted "always" grants included. */
+  revokeAll(): Promise<void>
   /** `LiveSessions.clearComputerUseRequest` */
   clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): Promise<void>
   /**
    * Run an approved computer-use request: claim it, run the command on the
-   * host, record the grab, deliver the result and settle it. See `host-runs`.
+   * host, record the app it acted in, deliver the result and settle it. See `host-runs`.
    */
   run(run: ComputerUseRun): Promise<HostRunOutcome>
   /** Run an approved host-script request the same way. */

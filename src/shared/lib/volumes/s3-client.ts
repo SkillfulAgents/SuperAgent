@@ -59,13 +59,13 @@ export interface S3Access {
 }
 
 /** A user's own keys, sealed with the volume. Opening it proves they still unlock. */
-export function sealedS3Access(config: S3VolumeConfig): S3Access {
-  openS3Credentials(config)
+export async function sealedS3Access(config: S3VolumeConfig): Promise<S3Access> {
+  await openS3Credentials(config)
   return {
     location: config,
     cacheKey: createHash('sha256').update(JSON.stringify(config)).digest('hex'),
-    credentials: async () => openS3Credentials(config),
-    recheck: () => { openS3Credentials(config) },
+    credentials: () => openS3Credentials(config),
+    recheck: async () => { await openS3Credentials(config) },
   }
 }
 

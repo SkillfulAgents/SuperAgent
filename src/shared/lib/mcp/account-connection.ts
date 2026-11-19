@@ -77,6 +77,7 @@ class AccountMcpConnection implements McpConnection {
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
         scopeDescriptions: policy.scopeDescriptions,
         ...(reviewOutcomes.length > 0 ? { ruleOutcomes: reviewOutcomes } : {}),
+        callerSessionId: call.callerSessionId,
       }, raise), {
         signal: call.signal,
         // When an "always" decision on another card changes the policy, this
@@ -101,7 +102,7 @@ class AccountMcpConnection implements McpConnection {
     let accessToken = this.row.accessToken
     if (this.row.authType !== 'none') {
       if (this.row.tokenExpiresAt && this.row.tokenExpiresAt.getTime() < Date.now() && this.row.refreshToken) {
-        accessToken = await tryRefreshToken(this.row)
+        accessToken = await refreshTokenOnce(this.row)
         if (!accessToken) {
           await this.markAuthRequired('Token refresh failed')
           return { ok: false }
@@ -122,9 +123,9 @@ class AccountMcpConnection implements McpConnection {
     this.row = { ...this.row, status: 'auth_required' }
   }
 
-  async recoverAuthorization(signal: AbortSignal): Promise<McpRecoveryResult> {
+  async recoverAuthorization(signal: AbortSignal, callerSessionId?: string): Promise<McpRecoveryResult> {
     const wait = await awaitReauth(agentRegistry.get(this.agentSlug).inputs.mcpReauth, {
-      mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType,
+      mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType, callerSessionId,
     }, signal)
     if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementMcpId: wait.replacementId }
     if (wait.outcome === 'dismissed') return { ok: false, reason: 'dismissed', dismissReason: wait.reason }
@@ -139,6 +140,20 @@ class AccountMcpConnection implements McpConnection {
   }
 
   async reportHealth(_available: boolean): Promise<void> { /* Account MCPs have no availability monitor. */ }
+}
+
+// Same-process callers share one refresh: the server may rotate the refresh
+// token, so a second POST of the old one can fail and mark the server auth_required.
+const refreshing = new Map<string, Promise<string | null>>()
+
+function refreshTokenOnce(mcp: Parameters<typeof tryRefreshToken>[0]): Promise<string | null> {
+  const key = `${mcp.id}:${mcp.refreshToken}`
+  let request = refreshing.get(key)
+  if (!request) {
+    request = tryRefreshToken(mcp).finally(() => refreshing.delete(key))
+    refreshing.set(key, request)
+  }
+  return request
 }
 
 /**

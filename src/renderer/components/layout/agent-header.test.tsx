@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   sessionIsActive: true,
   forkedFromSessionId: undefined as string | undefined,
   forkedFromSessionName: undefined as string | undefined,
+  notableSessions: [] as { id: string; isActive?: boolean; isAwaitingInput?: boolean }[],
+  notableReads: [] as (string | null)[],
 }))
 
 const agent: ApiAgent = {
@@ -45,7 +47,11 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: () => ({ data: [] }),
+  // No `useSessions` here: the header must not read the agent's whole list.
+  useNotableSessions: (slug: string | null) => {
+    mocks.notableReads.push(slug)
+    return { data: mocks.notableSessions }
+  },
   useSession: () => ({
     data: {
       id: 'session-1',
@@ -113,7 +119,7 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
     sessionId: string
     sessionName: string
     agentSlug: string
-    activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+    activity: { isActive: boolean; isAwaitingInput: boolean }
     children: ReactNode
   }) => (
     <span
@@ -121,7 +127,7 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
       data-session-id={sessionId}
       data-session-name={sessionName}
       data-agent-slug={agentSlug}
-      data-is-active={String(activity.isActive || activity.isStreaming)}
+      data-is-active={String(activity.isActive)}
     >
       {children}
     </span>
@@ -157,11 +163,29 @@ describe('AgentHeader breadcrumbs', () => {
     mocks.sessionIsActive = true
     mocks.forkedFromSessionId = undefined
     mocks.forkedFromSessionName = undefined
+    mocks.notableSessions = []
+    mocks.notableReads = []
     vi.clearAllMocks()
   })
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('takes its activity state from the notable sessions slice, not the full list', () => {
+    mocks.notableSessions = [{ id: 'session-9', isAwaitingInput: true }]
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    expect(mocks.notableReads).toContain('test-agent')
+    expect(screen.getAllByTestId('agent-status')[0]).toHaveTextContent('needs input')
   })
 
   it('reuses the agent and session context menus on their breadcrumbs', () => {
@@ -220,21 +244,6 @@ describe('AgentHeader breadcrumbs', () => {
       />,
     )
     expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'false')
-  })
-
-  it('disables Fork when the session is streaming even if isActive is false', () => {
-    mocks.sessionIsActive = false
-    const mutation = { mutate: vi.fn(), isPending: false }
-    render(
-      <AgentHeader
-        slug="test-agent"
-        isViewOnly={false}
-        isStreaming
-        startAgent={mutation as never}
-        stopAgent={mutation as never}
-      />,
-    )
-    expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'true')
   })
 
   it('inserts Called from Other Agents as the parent crumb for x-agent sessions', () => {
@@ -396,9 +405,9 @@ describe('AgentHeader breadcrumbs', () => {
     expect(screen.getByTestId('dashboard-breadcrumb')).toHaveTextContent('Nutrition Dashboard')
     expect(screen.getByTestId('dashboard-header-actions')).toBeInTheDocument()
 
+    // One separator between the dashboard's actions and the status chip; the chip holds the power button itself.
     const separators = container.querySelectorAll('[data-orientation="vertical"]')
-    expect(separators).toHaveLength(2)
-    expect(separators[0].className).toBe(separators[1].className)
+    expect(separators).toHaveLength(1)
     expect(separators[0]).not.toHaveClass('ml-2')
   })
 

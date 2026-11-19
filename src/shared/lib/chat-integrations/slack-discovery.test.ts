@@ -24,9 +24,11 @@ describe('classifySlackChatId', () => {
     expect(classifySlackChatId('G0CCC333')).toBe('group')
   })
 
-  it('classifies composite thread ids as threads regardless of prefix', () => {
+  it('classifies composite channel thread ids as threads', () => {
     expect(classifySlackChatId('C0BBB222|1784571878.344849')).toBe('thread')
     expect(classifySlackChatId('G0CCC333|1784571878.344849')).toBe('thread')
+    expect(classifySlackChatId('C0BBB222|')).toBe('channel')
+    expect(classifySlackChatId('D0AAA111|1784571878.344849')).toBe('dm')
   })
 
   it('returns undefined for unrecognized shapes', () => {
@@ -179,7 +181,7 @@ describe('Slack threads fold into their channel', () => {
   const now = Date.now()
   const slack = (): AgentIntegrationRecord => ({
     id: 'int-1', agentSlug: 'a', provider: 'slack', name: null, status: 'active', config: '{}',
-    errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null, createdAt: new Date(now), updatedAt: new Date(now),
+    errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null, createdAt: new Date(now), version: 0, updatedAt: new Date(now),
   })
   const at = (externalChatId: string, displayName: string | null, hoursAgo = 0) => {
     const time = new Date(now - hoursAgo * 60 * 60 * 1000)

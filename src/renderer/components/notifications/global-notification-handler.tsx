@@ -1,5 +1,9 @@
-import { readNotifications, noteNotificationChange } from '@renderer/lib/notification-read-cache'
+import { readPlatformNotifications } from '@renderer/lib/platform-notification-read-cache'
+import { notificationChangeSchema } from '@shared/lib/notifications/notification-change-schema'
+import { readNotifications, noteNotificationChange, invalidateNotificationCaches, notificationClientId } from '@renderer/lib/notification-read-cache'
 import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
+import { LLM_CONNECTIONS_CHANGED_EVENT } from '@shared/lib/llm-provider/connection-events'
+import { invalidateModelCatalog } from '@renderer/lib/model-catalog-query'
 import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import type { ApiAgent } from '@shared/lib/types/api'
 /**
@@ -15,7 +19,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, type QueryKey } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
@@ -28,12 +32,15 @@ import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import { WEBHOOK_RELAY_QUERY_KEY } from '@renderer/hooks/use-webhook-relay'
 import {
+  agentDetailQueryKeys,
   applyDashboardRuntimeStatus,
   applySessionActivityStatus,
   invalidateAgentArtifacts,
   invalidateAgentWidgets,
+  invalidateAutomationSessionLists,
   markDashboardScreenshotReady,
   patchAgentWidget,
+  sessionListMembership,
   updateAgentRuntimeCache,
   type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
@@ -59,9 +66,11 @@ import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+import { takePreopenedNotificationStream } from './notification-stream'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
-// refetched wholesale after the stream comes back from a fatal close.
+// refetched wholesale each time the stream says `connected`.
 const EXPENSIVE_QUERY_KEYS = new Set<unknown>([
   'agent-template-publish-info',
   'agent-template-pr-info',
@@ -73,6 +82,17 @@ export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }
   return !EXPENSIVE_QUERY_KEYS.has(query.queryKey[0])
 }
 
+// A query whose first and only load landed after the stream was requested is
+// as fresh as a first load still in flight at `connected`, which TanStack
+// already merges into that refetch. Reading it again repeats the same read.
+export function needsRefetchOnConnect(
+  query: { queryKey: readonly unknown[]; state: { dataUpdateCount: number; dataUpdatedAt: number } },
+  streamRequestedAt: number,
+): boolean {
+  if (!isRefetchableAfterOutage(query)) return false
+  return !(query.state.dataUpdateCount === 1 && query.state.dataUpdatedAt > streamRequestedAt)
+}
+
 // Optimistic status echo per session lifecycle event. Deliberately exhaustive
 // with NO fallback: an event type added to the lifecycle case group without a
 // row here gets invalidations but no echo, forcing its semantics to be decided
@@ -82,9 +102,9 @@ export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }
 // would strand the orange dot until the refetch.
 const SESSION_LIFECYCLE_ECHO = {
   session_active: { isActive: true },
-  // Awaiting implies active server-side (the projection is
-  // `state.isActive && …`), so assert both.
-  session_awaiting_input: { isActive: true, isAwaitingInput: true },
+  // An idle session can be awaiting on a call parked on its own card, so this
+  // asserts awaiting only; session_active owns the active flag.
+  session_awaiting_input: { isAwaitingInput: true },
   session_input_provided: { isAwaitingInput: false },
   session_idle: { isActive: false, isAwaitingInput: false },
   session_error: { isActive: false, isAwaitingInput: false },
@@ -131,8 +151,6 @@ export function GlobalNotificationHandler() {
   const [reconnectKey, setReconnectKey] = useState(0)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
-  const wasDeadRef = useRef(false)
-  const hasConnectedRef = useRef(false)
   const streamRef = useRef<EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
@@ -172,16 +190,7 @@ export function GlobalNotificationHandler() {
     const platformCtx = NotificationActionContextSchema.safeParse(event.context)
     if (platformCtx.success && platformCtx.data.kind === 'platform_notification') {
       const platformNotificationId = platformCtx.data.platformNotificationId
-      apiFetch('/api/platform-notifications/read', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: [platformNotificationId] }),
-      })
-        .then((res) => {
-          if (res.ok) {
-            queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
-          }
-        })
+      readPlatformNotifications(queryClient, [platformNotificationId])
         .catch(() => {
           // Best-effort: the detail view marks read on open anyway.
         })
@@ -261,17 +270,46 @@ export function GlobalNotificationHandler() {
   }, [])
 
   useEffect(() => {
-    const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}/api/notifications/stream`
-    const es = new EventSource(url)
+    const preopened = takePreopenedNotificationStream()
+    const es = preopened?.es ?? new EventSource(`${getApiBaseUrl()}/api/notifications/stream`)
+    let streamRequestedAt = preopened?.requestedAt ?? Date.now()
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
+    // One agent's session changed: its detail under every route key and the
+    // list, once per burst. The list key is exact, since a prefix would also
+    // refetch the detail of every agent a tab shows. Without an agent, any
+    // agent may have changed.
+    const confirmAgentSummaries = (agentSlug: string | undefined) => {
+      if (!agentSlug) {
+        confirmations.invalidate(['agents'])
+        return
+      }
+      for (const key of agentDetailQueryKeys(queryClient, agentSlug)) confirmations.invalidate(key, { exact: true })
+      confirmations.invalidate(['agents'], { exact: true })
+    }
+    // A patch does not stop a read already in flight, and that read would land
+    // over it with the state from before the event. Refetching cancels it; a
+    // query at rest is left alone.
+    const refetchIfInFlight = (queryKey: QueryKey) => {
+      if (queryClient.isFetching({ queryKey, exact: true }) > 0) void queryClient.invalidateQueries({ queryKey, exact: true })
+    }
 
-    es.onmessage = (event) => {
+    const handleFrame = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
 
         switch (data.type) {
+          case 'connected':
+            noteNotificationChange(queryClient)
+            // The server sends this once the stream follows every channel it
+            // carries, so what changes from here on arrives as an event. What
+            // changed before it did not: the queries that loaded before the
+            // first connect, a gap after a drop, a stream the server ended
+            // because it fell behind. Read everything this feed keeps current
+            // again. Every server version sends it as its first frame.
+            queryClient.invalidateQueries({ predicate: (query) => needsRefetchOnConnect(query, streamRequestedAt) })
+            break
+
           case 'agent_members_changed':
           case 'agent_access_revoked': {
             const parsed = collaborationEventSchema.safeParse(data)
@@ -295,18 +333,25 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['agent-members', change.agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', change.agentSlug] })
             }
+            // The member stacks hold every agent's members in one entry, which the revocation sweep above can't reach.
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            // An agent this tab does not list yet (it was just shared) refreshes everything.
+            invalidateNotificationCaches(queryClient, change.agentSlug)
+            break
+          }
+
+          case 'notifications_changed': {
+            const parsed = notificationChangeSchema.safeParse(data)
+            if (!parsed.success || parsed.data.sourceClientId === notificationClientId(queryClient)) break
+            invalidateNotificationCaches(queryClient, parsed.data.agentSlug)
             break
           }
 
           case 'session_mention_withdrawn': {
-            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
-            // The message that tagged this viewer was taken back before it ran.
-            queryClient.invalidateQueries({ queryKey: ['notifications'] })
-            if (typeof data.agentSlug === 'string') queryClient.invalidateQueries({ queryKey: ['sessions', data.agentSlug] })
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            invalidateNotificationCaches(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
             break
           }
 
@@ -318,16 +363,18 @@ export function GlobalNotificationHandler() {
           }
 
           case 'os_notification': {
-            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
-            // Refresh notification list (for badge/dropdown)
-            queryClient.invalidateQueries({ queryKey: ['notifications'] })
             if (data.notificationType === 'platform_notification') {
               queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
+            } else {
+              noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
+              queryClient.invalidateQueries({ queryKey: ['notifications'] })
             }
-            // Refresh sessions so unread indicators update in sidebar
+            // Refresh sessions so unread indicators update in sidebar. In the
+            // batch: a completion lands just after its session_idle, which
+            // refreshes the same list.
             const notifAgentSlug = data.agentSlug as string | undefined
             if (notifAgentSlug) {
-              queryClient.invalidateQueries({ queryKey: ['sessions', notifAgentSlug] })
+              confirmations.invalidate(['sessions', notifAgentSlug])
             }
 
             // Automation-triggered sessions: refresh the trigger/task session lists
@@ -339,9 +386,12 @@ export function GlobalNotificationHandler() {
             } else if (notifType === 'session_scheduled' && data.taskId) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', data.taskId] })
               queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.taskId] })
-            } else if (notifType === 'session_mention') {
-              // No session lifecycle event follows a mention to refresh the agent row's dot.
-              queryClient.invalidateQueries({ queryKey: ['agents'] })
+            }
+            if (notifType && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notifType)) {
+              // Completion enrichment may finish after the lifecycle refetch.
+              confirmAgentSummaries(notifAgentSlug)
+              const notifSessionId = data.sessionId as string | undefined
+              queryClient.invalidateQueries({ queryKey: notifSessionId ? ['session', notifSessionId] : ['session'] })
             }
 
             // Skip if user doesn't have access to the notification's agent
@@ -390,8 +440,7 @@ export function GlobalNotificationHandler() {
               // suppressed branch below marks the record read instead, and
               // for disabled types the server-side gate creates no record.
               // The sessions refetch invalidated above confirms; the agent
-              // rollup is confirmed by the accompanying session lifecycle
-              // event's ['agents'] invalidation (or the 60s poll).
+              // rollup and preview are confirmed by this event's agents refetch.
               if (
                 notificationType
                 && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notificationType)
@@ -422,6 +471,7 @@ export function GlobalNotificationHandler() {
                 agentSlug: agentSlug ?? baseContext.agentSlug,
                 sessionId: notificationSessionId ?? baseContext.sessionId,
                 notificationId: data.notificationId ?? baseContext.notificationId,
+                messageUuid: data.messageUuid,
               }
               // Web Notifications have no context round-trip — wire the click
               // straight to the platform detail route (Electron routes the
@@ -474,26 +524,51 @@ export function GlobalNotificationHandler() {
             if (statusPatch && eventAgentSlug && eventSessionId) {
               applySessionActivityStatus(queryClient, eventAgentSlug, eventSessionId, statusPatch)
             }
-            if (eventAgentSlug) {
-              queryClient.invalidateQueries({ queryKey: ['sessions', eventAgentSlug] })
+            // A status flip of a session this tab already lists: the echo above
+            // is the whole update for its rows. A raise also proves the agent's
+            // rollup; a clear does not, since hidden automated sessions and
+            // agent-level reviews count toward it unseen.
+            const raise = data.type === 'session_active' || data.type === 'session_awaiting_input'
+            const lists = (raise || data.type === 'session_input_provided') && eventAgentSlug && eventSessionId
+              ? sessionListMembership(queryClient, eventAgentSlug, eventSessionId)
+              : []
+            // The full list, or the sidebar's recent slice where that is what the tab holds.
+            const listed = lists.some((list) => list.rows && list.holds)
+            const sessionsKey = eventAgentSlug ? ['sessions', eventAgentSlug] : ['sessions']
+            if (listed) {
+              // Only the server can add the session to a list that lacks it,
+              // or take it out of a slice of live sessions after a clear.
+              for (const list of lists) {
+                if (!list.holds || (!raise && !list.full)) queryClient.invalidateQueries({ queryKey: list.queryKey, exact: true })
+                else refetchIfInFlight(list.queryKey)
+              }
+            } else if (data.hidden === true && eventAgentSlug) {
+              // A hidden automated session (cron, webhook, chat): only the
+              // slices that hold automations can change.
+              invalidateAutomationSessionLists(queryClient, eventAgentSlug)
+            } else if (data.type === 'session_idle') {
+              // A finished turn's completion notification follows and refreshes
+              // the same list; in one batch the two fetch it once.
+              confirmations.invalidate(sessionsKey)
             } else {
-              queryClient.invalidateQueries({ queryKey: ['sessions'] })
+              queryClient.invalidateQueries({ queryKey: sessionsKey })
             }
             // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.).
-            // The event's own agent refetches now; the list (whose prefix also
-            // covers every cached agent detail) confirms with the batch.
-            if (eventAgentSlug) {
-              queryClient.invalidateQueries({ queryKey: ['agents', eventAgentSlug] })
+            if (listed && raise && eventAgentSlug) {
+              for (const key of [['agents'], ...agentDetailQueryKeys(queryClient, eventAgentSlug)]) refetchIfInFlight(key)
+            } else {
+              confirmAgentSummaries(eventAgentSlug)
             }
-            confirmations.invalidate(['agents'])
             // Todo board columns are live session state.
             confirmations.invalidate(TODOS_QUERY_KEY)
-            // Artifacts may have been created/modified during the session —
-            // that agent's, not every agent's.
-            if (eventAgentSlug) {
-              invalidateAgentArtifacts(queryClient, eventAgentSlug)
-            } else {
-              queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+            // Artifacts can only change while the agent works: read that
+            // agent's when it stops, not when it starts.
+            if (data.type === 'session_idle' || data.type === 'session_error' || data.type === 'session_awaiting_input') {
+              if (eventAgentSlug) {
+                invalidateAgentArtifacts(queryClient, eventAgentSlug)
+              } else {
+                queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+              }
             }
 
             // A finished run may have changed Team Brain's drive: its tree and sync summaries read again (none for other agents).
@@ -604,12 +679,19 @@ export function GlobalNotificationHandler() {
 
           case 'agent_updated':
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            // Member stacks draw other agents' names and faces from their own entry.
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             break
 
+          case 'volume_access_changed':
           case 'volume_attention_changed':
-            // A drive's sync state changed: a conflict, a stopped push, or the end of one. Its status pills follow.
+            if (data.type === 'volume_access_changed' || data.accessChanged === true) {
+              queryClient.invalidateQueries({ queryKey: ['volume-owner-candidates'] })
+              queryClient.invalidateQueries({ queryKey: ['volume-files'] })
+            }
             queryClient.invalidateQueries({ queryKey: ['mounts'] })
             queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+            queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
             break
 
           case 'agent_created':
@@ -617,6 +699,7 @@ export function GlobalNotificationHandler() {
             // so refresh both caches the direct-create path invalidates together.
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             break
 
           case 'scheduled_task_created':
@@ -695,44 +778,38 @@ export function GlobalNotificationHandler() {
           case 'webhook_relay_changed':
             queryClient.setQueryData(WEBHOOK_RELAY_QUERY_KEY, data.status)
             break
+
+          case LLM_CONNECTIONS_CHANGED_EVENT:
+            // The server changed a saved connection by itself (it needs a
+            // reconnect, or a local server's models changed): every list of
+            // connections, and the model catalog, which carries them too.
+            queryClient.invalidateQueries({ queryKey: ['settings', 'llm-connections'] })
+            queryClient.invalidateQueries({ queryKey: ['settings', 'models'] })
+            void invalidateModelCatalog(queryClient)
+            break
         }
       } catch {
         // Ignore parse errors for ping/connected messages
       }
     }
+    es.onmessage = handleFrame
+    preopened?.frames.forEach(handleFrame)
 
-    // Agents and roles cover the window before the first connect. Rosters are
-    // already loading on mount; only refresh them after a gap.
+    // Opening is not the time to refetch: the server may still be setting up
+    // what the stream follows. `connected` is (see above).
     es.onopen = () => {
-      const isReconnect = hasConnectedRef.current || wasDeadRef.current
-      hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
-      if (wasDeadRef.current) {
-        // The dead window can be arbitrarily long, and every family this
-        // stream feeds may have moved in it. Refetch what is mounted.
-        wasDeadRef.current = false
-        queryClient.invalidateQueries({ predicate: isRefetchableAfterOutage })
-        return
-      }
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
-      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-      if (isReconnect) {
-        queryClient.invalidateQueries({ queryKey: ['agent-members'] })
-        queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
-        // A drive announces only a change to its status pill, so one missed in the gap is never sent again.
-        queryClient.invalidateQueries({ queryKey: ['mounts'] })
-        queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
-      }
     }
 
     es.onerror = () => {
       // Network errors reconnect in the browser. Fatal close is the watcher.
+      // The browser asks again after this, so the next connect counts from here.
+      streamRequestedAt = Date.now()
     }
 
     const disposeLiveness = watchStreamLiveness(es, () => {
       if (streamRef.current !== es) return
       es.close()
-      wasDeadRef.current = true
       const delay = reconnectDelayMs(reconnectAttemptRef.current)
       reconnectAttemptRef.current += 1
       reconnectTimerRef.current = setTimeout(() => {

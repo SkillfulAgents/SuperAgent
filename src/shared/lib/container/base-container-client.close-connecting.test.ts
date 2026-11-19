@@ -11,7 +11,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: true }),
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }),
+  activeLlmProviderFrom: () => ({ getContainerEnvVars: () => ({}) }),
 }))
 
 class RunningPortClient extends BaseContainerClient {

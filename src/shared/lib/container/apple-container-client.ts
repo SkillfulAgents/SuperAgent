@@ -11,6 +11,7 @@ import type { ContainerConfig, ContainerInfo, ContainerStats, ImagePullProgress 
 import { isAdminPrivilegeCancelError, runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getAppPort } from '@shared/lib/proxy/host-url'
+import { appleStoppedInspectSchema } from './container-stop-schema'
 
 export type AppleContainerProvisionProgress = Pick<ImagePullProgress, 'status' | 'percent'>
 
@@ -270,6 +271,23 @@ export class AppleContainerClient extends BaseContainerClient {
       }
     } catch {
       return { status: 'stopped', port: null }
+    }
+  }
+
+  async isDefinitelyStopped(): Promise<boolean> {
+    const runner = this.getRunnerCommand()
+    const name = this.getContainerName()
+    try {
+      const { stdout } = await execWithPath(`${runner} inspect ${shellEscape(name)}`, { timeoutMs: 5000 })
+      const raw: unknown = JSON.parse(stdout)
+      return appleStoppedInspectSchema.safeParse(Array.isArray(raw) ? raw[0] : raw).success
+    } catch {
+      try {
+        const { stdout } = await execWithPath(`${runner} list --all --quiet`, { timeoutMs: 5000 })
+        return !stdout.split(/\r?\n/).some((line) => line.trim() === name)
+      } catch {
+        return false
+      }
     }
   }
 

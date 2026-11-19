@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
 import { usePlatformAuthStatus, type PlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -24,8 +24,13 @@ export function platformBillingQueryKey(auth: PlatformAuthStatus | null | undefi
  * Billing snapshot for the Account screen. Fetches on mount (which, since the
  * settings tab is lazily mounted, == refresh-on-view) and exposes `refetch`
  * for the manual Refresh button. `enabled` should track platform connectivity.
+ *
+ * The server keeps each snapshot's plan policy for model selection, replacing
+ * the one it had cached, so every read here also has the pickers read their
+ * availability again: opening Account shows a plan change everywhere at once.
  */
 export function useBillingInfo(enabled: boolean) {
+  const queryClient = useQueryClient()
   const { data: auth } = usePlatformAuthStatus()
   return useQuery<BillingInfoResponse>({
     // A billing response contains both org plan policy and member-specific credit.
@@ -40,7 +45,9 @@ export function useBillingInfo(enabled: boolean) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.error || 'Failed to load billing')
       }
-      return res.json()
+      const snapshot: BillingInfoResponse = await res.json()
+      void queryClient.invalidateQueries({ queryKey: ['provider-model-availability'] })
+      return snapshot
     },
     staleTime: 30_000,
   })

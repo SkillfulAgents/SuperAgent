@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { cn } from '@shared/lib/utils/cn'
+import { ambientAnimationAllowed, subscribeToAmbientAnimationAllowed, subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 /**
  * Drifting colour bloom behind the Home empty state.
@@ -119,41 +120,48 @@ export function HomeEmptyClouds({
 
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')
     let inView = true
-    let raf = 0
+    let stop: (() => void) | undefined
     let last = 0
     let t = 0
+    let shownFor = 0
 
-    const running = () => inView && !document.hidden && !reduced?.matches
+    // The fade-in is an entrance, and the drift is the decoration: in a window that is not in
+    // use the drift holds, and a bloom held part-way through its entrance would sit there
+    // invisible. There it is simply shown.
+    const fade = () => {
+      if (!ambientAnimationAllowed()) shownFor = FADE_IN_S
+      return easeOut(Math.min(shownFor / FADE_IN_S, 1))
+    }
+
+    const running = () => inView && !reduced?.matches
 
     const tick = (now: number) => {
-      raf = 0
-      t += Math.min((now - last) / 1000, 0.1) // clamp so a stalled tab does not jump
+      const dt = Math.min((now - last) / 1000, 0.1) // clamp so a stalled tab does not jump
       last = now
-      paint(t, easeOut(Math.min(t / FADE_IN_S, 1)))
-      if (running()) raf = requestAnimationFrame(tick)
+      t += dt
+      shownFor += dt
+      paint(t, fade())
     }
 
     const sync = () => {
-      if (reduced?.matches) {
-        if (raf) cancelAnimationFrame(raf)
-        raf = 0
-        paint(POSTER_T / DRIFT, 1)
-        return
-      }
-      if (running() && !raf) {
+      if (running() && !stop) {
         last = performance.now()
-        raf = requestAnimationFrame(tick)
-      } else if (!running() && raf) {
-        cancelAnimationFrame(raf)
-        raf = 0
+        // Decoration, a slow drift under a wide blur: 30 paints a second in the window in
+        // use, held still in one that is not (ambient-frames.ts).
+        stop = subscribeToAmbientFrames(tick, { kind: 'decoration', fps: 30 })
+      } else if (!running() && stop) {
+        stop()
+        stop = undefined
       }
+      if (reduced?.matches) paint(POSTER_T / DRIFT, 1)
     }
 
     const ro = new ResizeObserver((entries) => {
       scale = toScale(entries[0].contentRect.width)
       applyFilter()
       applyAnchor()
-      if (!raf) paint(reduced?.matches ? POSTER_T / DRIFT : t, reduced?.matches ? 1 : easeOut(Math.min(t / FADE_IN_S, 1)))
+      // Painted here and not left to the next frame: in a window that is not in use there is none.
+      paint(reduced?.matches ? POSTER_T / DRIFT : t, reduced?.matches ? 1 : fade())
     })
     ro.observe(wrap)
 
@@ -164,17 +172,19 @@ export function HomeEmptyClouds({
         ? null
         : new IntersectionObserver(([entry]) => { inView = entry.isIntersecting; sync() }, { threshold: 0.01 })
     io?.observe(wrap)
-    document.addEventListener('visibilitychange', sync)
     reduced?.addEventListener('change', sync)
-
+    // The window going into the background mid-entrance: finish it, as no frame will.
+    const unsubscribeAllowed = subscribeToAmbientAnimationAllowed(() => {
+      if (!ambientAnimationAllowed() && !reduced?.matches) paint(t, fade())
+    })
 
     sync()
     return () => {
       ro.disconnect()
       io?.disconnect()
-      document.removeEventListener('visibilitychange', sync)
       reduced?.removeEventListener('change', sync)
-      if (raf) cancelAnimationFrame(raf)
+      unsubscribeAllowed()
+      stop?.()
     }
   }, [fill, anchorTo])
 

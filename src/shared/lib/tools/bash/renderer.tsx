@@ -14,7 +14,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { command } = bashDef.parseInput(input)
 
   return (
-    <div className="rounded-md bg-black overflow-hidden" data-testid="bash-terminal">
+    <div className="rounded-item bg-black overflow-hidden" data-testid="bash-terminal">
       <div className="p-3 font-mono text-xs overflow-x-auto max-h-80 overflow-y-auto">
         {/* Command line */}
         {command && (
@@ -48,7 +48,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   }
 
   return (
-    <div className="rounded-md bg-black overflow-hidden" data-testid="bash-terminal">
+    <div className="rounded-item bg-black overflow-hidden" data-testid="bash-terminal">
       <div className="p-3 font-mono text-xs overflow-x-auto max-h-80 overflow-y-auto">
         {parsed.description && (
           <div className="text-gray-500 mb-1">{parsed.description}</div>

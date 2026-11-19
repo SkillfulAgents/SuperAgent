@@ -9,8 +9,8 @@ import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 
 const AGENT = { slug: 'a', name: 'Infra Agent', description: 'Keeps the servers up', avatar: { color: 'tonal-amber', shape: 'circle' } }
 const state = vi.hoisted(() => ({ relayAvailable: true, requests: [] as Array<{ url: string; method: string; body: any }>, agent: null as unknown }))
-vi.mock('@renderer/lib/api', () => ({
-  apiFetch: async (url: string, options?: { method?: string; body?: string }) => {
+vi.mock('@renderer/lib/api', () => {
+  const apiFetch = async (url: string, options?: { method?: string; body?: string }) => {
     const method = options?.method ?? 'GET'
     if (method !== 'GET') state.requests.push({ url, method, body: JSON.parse(options?.body ?? '{}') })
     if (url === '/api/webhook-relay') return Response.json({ available: state.relayAvailable })
@@ -20,8 +20,9 @@ vi.mock('@renderer/lib/api', () => ({
         slack: { botTokenSaved: false, appTokenSaved: false, signingSecretSaved: false, webhook: { url: 'https://relay.test/v1/hooks/whep_1', status: 'pending' } } }), { status: 201 })
     }
     return Response.json(makeChatIntegration({ provider: 'slack' }))
-  },
-}))
+  }
+  return { apiFetch, apiJson: async (url: string) => (await apiFetch(url)).json() }
+})
 vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 import { SlackConnectionSettings, SlackSetup } from './slack-setup'
 import { slackBackgroundColor } from './slack-app-identity'

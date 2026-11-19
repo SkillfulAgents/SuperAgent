@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { OFFERED_ORBS } from '@renderer/components/agents/agent-avatar/avatar-orbs'
-import { ORB_SHAPES } from '@renderer/components/agents/agent-avatar/orb-shapes'
+import { OFFERED_ORBS } from '@shared/lib/types/agent-avatar-orbs'
+import { ORB_SHAPES } from '@shared/lib/types/agent-avatar-shapes'
 import { orbSvg } from '@renderer/components/agents/agent-avatar/orb-image'
 import { slackAppIdentity, slackBackgroundColor } from './slack-app-identity'
 

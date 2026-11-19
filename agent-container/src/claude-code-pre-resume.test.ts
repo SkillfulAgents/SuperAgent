@@ -71,7 +71,7 @@ vi.mock('./mcp-server', () => ({
   createRulesMcpServer: () => ({}),
 }))
 vi.mock('./tools/browser', () => ({ createBrowserTools: () => [] }))
-vi.mock('./tools/computer-use', () => ({ computerUseTools: [] }))
+vi.mock('./tools/computer-use', () => ({ COMPUTER_USE_SERVER: 'agent-desktop', COMPUTER_USE_TOOL_PREFIX: 'mcp__agent-desktop__', computerUseTools: [] }))
 vi.mock('./file-hooks', () => ({ fileHooks: {}, resolveToolFilePath: () => '' }))
 vi.mock('./input-manager', () => ({ inputManager: {}, HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000 }))
 
@@ -238,6 +238,25 @@ describe('ClaudeCodeProcess.warm (pre-resume)', () => {
 
     await expect(proc.warm()).resolves.toBe(false)
     expect(calls).toHaveLength(1)
+    expect(proc.isRunning()).toBe(false)
+  })
+
+  it('waits for an in-flight warm restart before confirming disposal', async () => {
+    proc = await evictedProcess('dispose-warming')
+    process.env.REMOTE_MCPS = CALENDAR
+    const handshake = deferred()
+    let connected = false
+    void handshake.promise.then(() => { connected = true })
+    mcpServerStatusImpl = async () => [{ name: 'team_calendar', status: connected ? 'connected' : 'pending' }]
+    const warming = proc.warm()
+    await vi.waitFor(() => expect(calls).toHaveLength(2))
+    let disposed = false
+    const disposing = proc.dispose().then(() => { disposed = true })
+    await Promise.resolve()
+    expect(disposed).toBe(false)
+    handshake.resolve()
+    await disposing
+    expect(await warming).toBe(false)
     expect(proc.isRunning()).toBe(false)
   })
 

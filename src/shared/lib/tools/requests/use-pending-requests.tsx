@@ -2,7 +2,7 @@ import { getToolDefinition } from '../registry'
 import { parseRuleOutcomes, parseRuleProposal, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
-import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { xAgentFileTransferSchema, xAgentRuntimeSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -10,9 +10,11 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingUserRequests } from './use-pending-user-requests'
 import { isTurnStartingUserMessage, type PendingMessage } from '@renderer/components/messages/pending-message'
-import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
+import { getRequiredPermissionLevel } from '@shared/lib/computer-use/types'
+import { callTargets } from '@shared/lib/computer-use/commands'
+import { commandLineOf, computerUseMethodFromToolName, isComputerUseToolName } from '@shared/lib/computer-use/command-line'
 import { askUserQuestionDef } from '../ask-user-question/definition'
-import type { PendingUserInputRequest } from './request-schema'
+import { PARKED_CALL_KINDS, type PendingUserInputRequest } from './request-schema'
 import { loginVaultPayloadSchema, summarizeLoginFields, type LoginFieldSummary, type LoginVaultPayload } from '../request-login/login-request'
 
 interface UsePendingRequestsArgs {
@@ -184,14 +186,22 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         scriptType: input.scriptType,
       })
     }
-  } else if (toolCall.name.startsWith('mcp__computer-use__computer_')) {
-    const method = computerUseMethodFromToolName(toolCall.name)
+  } else if (isComputerUseToolName(toolCall.name)) {
+    const { method, params } = commandLineOf(computerUseMethodFromToolName(toolCall.name), input)
+    // Only an app the call names: a ref's app is known to the host, which
+    // sends it with the request it registers.
+    let appName: string | undefined
+    try {
+      appName = callTargets(method, params).app
+    } catch {
+      appName = undefined
+    }
     buckets.computerUseRequests.push({
       toolUseId: toolCall.id,
       method,
-      params: input,
-      permissionLevel: getRequiredPermissionLevel(method),
-      appName: resolveTargetApp(method, input),
+      params,
+      permissionLevel: getRequiredPermissionLevel(method, params),
+      appName,
     })
   }
 }
@@ -351,6 +361,7 @@ export function reviewFromEnvelope(
       operation: raw.operation,
       preview: typeof raw.preview === 'string' ? raw.preview : undefined,
       fileTransfer: xAgentFileTransferSchema.safeParse(raw.fileTransfer).data,
+      runtime: xAgentRuntimeSchema.safeParse(raw.runtime).data,
       attachments: Array.isArray(raw.attachments)
         ? raw.attachments.filter((item): item is string => typeof item === 'string')
         : undefined,
@@ -595,10 +606,13 @@ export function usePendingRequests({
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,
-    streamingToolUses,
+    readyStreamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
-  } = useMessageStream(sessionId, agentSlug, ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
+  } = useMessageStream(sessionId, agentSlug, ['isActive', 'readyStreamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
+  // `readyStreamingToolUses`, not `streamingToolUses`: the latter is a new
+  // array on every tool-input delta, and this hook runs in the parent of the
+  // whole session column (thread, composer), which would re-render per delta.
 
   // The snapshot is the only source for reviews and capability reviews, and
   // the primary one for every other kind. The streaming/message-history
@@ -613,9 +627,11 @@ export function usePendingRequests({
     // approval deliberately survives the idle boundary server-side for
     // reconnect replay. Rendering it on an idle session would gate the
     // composer behind a dead card. Agent-scoped reviews render regardless:
-    // they outlive any one turn.
+    // they outlive any one turn. So do review and re-auth cards scoped to this
+    // session: they hold a parked proxy call, which a background script can
+    // keep waiting after the turn ends.
     return projectUnifiedRequests(
-      isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
+      isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined || PARKED_CALL_KINDS.has(r.kind)),
     )
   }, [sessionId, unifiedRequestsData, isActive])
   // Requests the server holds open for this session, registered or recovered.
@@ -660,9 +676,7 @@ export function usePendingRequests({
   const streamingBasedPendingRequests = useMemo(() => {
     const buckets = createPendingRequestBuckets()
 
-    for (const toolUse of streamingToolUses) {
-      if (!toolUse.ready) continue
-
+    for (const toolUse of readyStreamingToolUses) {
       try {
         addPendingRequestFromToolCall(buckets, {
           id: toolUse.id,
@@ -676,7 +690,7 @@ export function usePendingRequests({
     }
 
     return buckets
-  }, [streamingToolUses])
+  }, [readyStreamingToolUses])
 
   // Track toolUseIds the user has already answered, so no source re-surfaces
   // them before the settlement lands. State (not a ref): the merge memos
@@ -725,10 +739,12 @@ export function usePendingRequests({
             ? suppressedComputerUseIds
             : undefined
       // A sign-in request has no card until the host decides it needs the
-      // user (it may sign in from the vault instead): its fallbacks only
-      // fill in requests the server holds, such as one recovered after a
-      // restart, which carries no payload.
-      const fallback = (requests: PendingRequestBuckets[typeof kind]) => (kind === 'loginRequests'
+      // user (it may sign in from the vault instead), and a computer-use call
+      // none until the host has placed and checked it (it may wait its turn
+      // behind the session's earlier calls, then run under a grant): their
+      // fallbacks only fill in requests the server holds, such as one
+      // recovered after a restart, which carries no payload.
+      const fallback = (requests: PendingRequestBuckets[typeof kind]) => (kind === 'loginRequests' || kind === 'computerUseRequests'
         ? (requests as Array<{ toolUseId: string }>).filter((request) => openRequestIds.has(request.toolUseId))
         : requests) as PendingRequestBuckets[typeof kind]
       mergeBucket(

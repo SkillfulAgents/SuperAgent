@@ -1,4 +1,3 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Trigger Manager
  *
@@ -11,9 +10,10 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
 
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { getSettings } from '@shared/lib/config/settings'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
 import {
@@ -112,12 +112,17 @@ function groupByEndpoint(events: readonly RelayEvent[]): Map<string, RelayEvent[
   return grouped
 }
 
-class TriggerManager {
+class TriggerManager implements Service {
+  readonly id = 'webhook-triggers'
+  readonly phase = 'background' as const
+  readonly startupIo = true
   private isRunning = false
   private readonly registrations = new Map<string, MemberRegistration>()
   private syncQueue: Promise<void> = Promise.resolve()
-  private resyncTimer: NodeJS.Timeout | null = null
   private failedSyncs = 0
+  // A failure schedules its own retry.
+  private readonly resyncTask = new PassTask('webhook-triggers.resync', () => this.syncRegistrations().catch(() => {}))
+  readonly tasks = [this.resyncTask]
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -138,8 +143,7 @@ class TriggerManager {
 
   stop(): void {
     this.isRunning = false
-    if (this.resyncTimer) clearTimeout(this.resyncTimer)
-    this.resyncTimer = null
+    background(taskManager().cancel(this.resyncTask.type), { name: 'trigger-manager.cancel-resync' })
     this.failedSyncs = 0
     for (const registration of this.registrations.values()) registration.handle.dispose()
     this.registrations.clear()
@@ -168,16 +172,10 @@ class TriggerManager {
     return run
   }
 
+  /** Each sync, however it was asked for, replaces the next one: the delay counts from the last. */
   private scheduleResync(delayMs: number): void {
-    if (this.resyncTimer) clearTimeout(this.resyncTimer)
-    this.resyncTimer = null
     if (!this.isRunning) return
-    this.resyncTimer = setTimeout(() => {
-      this.resyncTimer = null
-      // A failure schedules its own retry.
-      background(this.syncRegistrations().catch(() => {}), { name: 'trigger-manager.sync-registrations' })
-    }, delayMs)
-    this.resyncTimer.unref?.()
+    background(taskManager().at(Date.now() + delayMs, this.resyncTask.type, this.resyncTask.spec), { name: 'trigger-manager.schedule-resync' })
   }
 
   private async syncOnce(): Promise<void> {
@@ -189,7 +187,7 @@ class TriggerManager {
     let memberIds = endpointIds.length > 0 ? await getDistinctPlatformMemberIdsForActiveTriggers() : []
     // An opaque key is bound to one member by the platform, so it claims under
     // the local scope. An org token needs a real member, and has none here.
-    if (endpointIds.length > 0 && memberIds.length === 0 && !attribution.requiresActingMember()) {
+    if (endpointIds.length > 0 && memberIds.length === 0 && !(await attribution.requiresActingMember())) {
       memberIds = [LOCAL_RELAY_SCOPE]
     }
     if (!this.isRunning) return
@@ -318,15 +316,10 @@ class TriggerManager {
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
+    // One read of the settings for this firing.
     // Model/effort/speed preference order: trigger override > agent default > global default.
-    const models = getEffectiveModels()
-    const agentPrefs = await readAgentPreferences(trigger.agentSlug)
-    const resolved = await resolveConnectionRuntimeInherit(
-      { model: trigger.model,
-      llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed },
-      agentPrefs,
-      models,
-    )
+    const { models, resolve } = await resolveSessionDefaults(await getSettings(), trigger.agentSlug)
+    const resolved = await resolve({ model: trigger.model, llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed })
     const { id: sessionId } = await actor.sessions.start({
       create: {
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,

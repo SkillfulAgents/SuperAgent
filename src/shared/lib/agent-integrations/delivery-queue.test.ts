@@ -1,5 +1,6 @@
 import { DeliveryError } from '../agent-actor/delivery-errors'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
@@ -21,6 +22,7 @@ let reconcile: ReturnType<typeof vi.fn<(row: DeliveryRecord) => Promise<boolean>
 let notice: ReturnType<typeof vi.fn<(row: DeliveryRecord) => Promise<void>>>
 function queue() {
   const result = new IntegrationDeliveryQueue({ connectedIds: () => available ? ['integration'] : [], dispatch, reconcile, notice })
+  registerTasks(result)
   queues.push(result); return result
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }

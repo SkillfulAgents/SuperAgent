@@ -25,6 +25,9 @@ const mockFetchBilling = vi.fn()
 const mockRefreshCloudWorkspace = vi.fn(async () => undefined)
 
 import { platformService } from './platform-service'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(platformService))
 import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
 
 const SNAPSHOT = {
@@ -49,15 +52,15 @@ describe('PlatformService', () => {
     platformService.stop()
   })
 
-  it('maintains the cloud-workspace token on a recurring interval (not just once)', () => {
+  it('maintains the cloud-workspace token on a recurring interval (not just once)', async () => {
     vi.useFakeTimers()
     try {
       platformService.start()
-      vi.advanceTimersByTime(30 * 60_000)
+      await vi.advanceTimersByTimeAsync(30 * 60_000)
       const afterFirst = mockRefreshCloudWorkspace.mock.calls.length
       expect(afterFirst).toBeGreaterThanOrEqual(1)
       // A second interval must fire again — proves it's periodic, not one-shot.
-      vi.advanceTimersByTime(30 * 60_000)
+      await vi.advanceTimersByTimeAsync(30 * 60_000)
       expect(mockRefreshCloudWorkspace.mock.calls.length).toBeGreaterThan(afterFirst)
     } finally {
       platformService.stop()
@@ -111,20 +114,25 @@ describe('PlatformService', () => {
     expect(platformService.getCachedBilling()).toBeNull()
   })
 
-  it('keeps the plan policy a billing read carries for the acting account, and forgets it on an account change (SUP-1124)', async () => {
-    platformPlanCache.clear()
+  it('keeps the plan policy a billing read carries for the acting account (SUP-1124)', async () => {
     mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
     await platformService.refreshBilling()
     const load = vi.fn(async () => null)
     expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
     expect(load).not.toHaveBeenCalled()
-    platformService.onAuthChanged(false)
-    expect(await platformPlanCache.get('acting-account', load)).toBeNull()
-    expect(load).toHaveBeenCalled()
+  })
+
+  // Opening Account is the way to see a plan change before the cached policy runs out.
+  it('replaces a cached policy with the one a billing read carries, at once', async () => {
+    await platformPlanCache.remember('acting-account', { planName: 'Pro 200', deniedModels: [] })
+    mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
+    await platformService.refreshBilling()
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(load).not.toHaveBeenCalled()
   })
 
   it('does not record a policy from a proxy that predates plans', async () => {
-    platformPlanCache.clear()
     mockFetchBilling.mockResolvedValue(SNAPSHOT)
     await platformService.refreshBilling()
     const load = vi.fn(async () => ({ planName: 'Pro 200', deniedModels: [] }))

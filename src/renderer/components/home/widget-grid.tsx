@@ -323,12 +323,14 @@ export function WidgetBoard({
   return (
     <div
       ref={wrapRef}
+      // Keep the origin and every drop column fixed, including on sparse boards.
       className="relative w-full transition-[height] duration-200 ease-out"
       style={{ height: Math.max(boardH, unitY) }}
     >
       {drag && (
         <div
-          className="absolute rounded-lg bg-muted/40 transition-[left,top] duration-100"
+          data-testid="widget-drop-preview"
+          className="absolute rounded-card bg-muted/40 transition-[left,top] duration-100"
           style={{
             left: drag.target.x * unitX,
             top: drag.target.y * unitY,
@@ -493,7 +495,7 @@ export function WidgetSizePopover({
             // Keep the control in the focus order and available on coarse
             // pointers; reducing opacity preserves the quiet default treatment
             // without making it hover-only.
-            'flex h-5 w-5 items-center justify-center rounded border bg-background text-muted-foreground opacity-60 shadow-sm transition-[color,background-color,opacity] hover:bg-muted hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+            'flex h-5 w-5 items-center justify-center rounded-control border bg-background text-muted-foreground opacity-60 shadow-sm transition-[color,background-color,opacity] hover:bg-muted hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
             open && 'bg-muted text-foreground opacity-100'
           )}
         >

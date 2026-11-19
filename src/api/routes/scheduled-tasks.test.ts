@@ -103,11 +103,12 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 const mockGetEffectiveModels = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
+  getEffectiveModels: async (...args: unknown[]) => mockGetEffectiveModels(...args),
+  effectiveModelsFrom: (...args: unknown[]) => mockGetEffectiveModels(...args),
   // resolveActiveProviderModel (host-direct summarizer resolution) reads the
   // active provider via getSettings; default to anthropic for the catalog.
-  getSettings: () => ({ llmProvider: 'anthropic' }),
-  getModelCatalogSettings: () => ({}),
+  getSettings: async () => ({ llmProvider: 'anthropic' }),
+  getModelCatalogSettings: async () => ({}),
 }))
 
 const mockReadAgentPreferences = vi.fn()
@@ -132,6 +133,11 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
     messages: {
       create: (...args: unknown[]) => mockMessagesCreate(...args),
     },
+  }),
+  getConfiguredLlmClientAndModel: async () => ({
+    client: { messages: { create: (...args: unknown[]) => mockMessagesCreate(...args) } },
+    // The helper resolves the summarizer alias to the provider's wire id (covered in helpers.test.ts).
+    model: 'claude-haiku-4-5',
   }),
   extractTextFromLlmResponse: (...args: unknown[]) => mockExtractTextFromLlmResponse(...args),
   createSummarizerText: async (_client: unknown, request: unknown) =>
@@ -272,7 +278,7 @@ describe('scheduled-tasks route', () => {
       effort: 'low',
     })
     // Registered as a scheduled execution in one write, then attached with that metadata.
-    const registered = { isScheduledExecution: true, scheduledTaskId: 'task-1', scheduledTaskName: 'Daily report' }
+    const registered = { isScheduledExecution: true, scheduledTaskId: 'task-1', scheduledTaskName: 'Daily report', model: 'claude-agent', effort: 'low' }
     expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Daily report', registered)
     expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()
     expect(mockLiveSessions.subscribe).toHaveBeenCalledWith(
@@ -319,6 +325,8 @@ describe('scheduled-tasks route', () => {
       isScheduledExecution: true,
       scheduledTaskId: 'task-1',
       scheduledTaskName: undefined,
+      model: 'custom-model',
+      effort: 'high',
     })
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockRecordManualExecution).not.toHaveBeenCalled()
@@ -432,7 +440,8 @@ describe('scheduled-tasks route', () => {
     it('falls back to the agent default over the global default', async () => {
       mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
       const args = await runNow()
-      expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one')
+      // With the settings the start read once, not a read of its own.
+      expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one', expect.objectContaining({}))
       expect(args.model).toBe('opus')
       expect(args.effort).toBe('high')
       expect(args.speed).toBe('slow')

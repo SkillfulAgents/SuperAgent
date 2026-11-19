@@ -27,6 +27,8 @@ export interface ErrorReportingProvider {
   captureException(error: unknown, context?: ErrorContext): string | undefined
   captureMessage(message: string, context?: ErrorContext): string | undefined
   setUser(user: ErrorReportingUser | null): void
+  /** The deployment's tenant id: the user of events with no signed-in user. */
+  setTenantId(tenantId: string): void
   addBreadcrumb(breadcrumb: Breadcrumb): void
   setContext(name: string, context: Record<string, unknown>): void
   setTag(key: string, value: string): void

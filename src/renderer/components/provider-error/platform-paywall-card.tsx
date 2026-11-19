@@ -216,7 +216,7 @@ function SubscribeBody({ plan, hint, actions, expanded, selectedPlanId, onSelect
                   aria-checked={selected}
                   onClick={() => onSelectPlan(option.id)}
                   className={cn(
-                    'rounded-lg border px-2.5 py-2 text-left transition-colors',
+                    'rounded-item border px-2.5 py-2 text-left transition-colors',
                     selected ? 'border-brand bg-brand/5' : 'border-border/70 hover:bg-muted/50',
                   )}
                 >
@@ -467,7 +467,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           data-embedded={embedded}
           data-expanded={panelOpen}
           className={cn(
-            'relative flex flex-col gap-3 rounded-xl border',
+            'relative flex flex-col gap-3 rounded-card border',
             PAYWALL_GLASS_CLASS,
             subscribeLayout ? 'px-4 py-4 sm:px-6 sm:py-5' : 'px-5 py-4',
             // West's purchase dialog was max-w-md; keep the collapsed banner full-width.

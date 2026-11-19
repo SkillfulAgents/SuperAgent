@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { ExternalLink, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
@@ -63,16 +63,27 @@ export function SlackAppIconStep({ agent, withColor = false }: { agent: SlackApp
 export function SlackAppAppearanceCard({ integration }: { integration: PublicAgentIntegration }) {
   const slack = publicSlackDelivery(integration)
   const { data: agent } = useAgent(integration.agentSlug)
-  // Before the app is connected, its setup steps carry the icon.
-  if (!slack?.botTokenSaved || !agent?.avatar) return null
-  const { backgroundColor } = slackAppIdentity(agent)
-  return <DetailCard label="Icon & Color">
+  // Before the app is connected, its setup steps carry the icon; an app a team directory created has its own card.
+  if (!slack?.botTokenSaved || integration.provisionedApp) return null
+  const { backgroundColor } = agent ? slackAppIdentity(agent) : { backgroundColor: undefined }
+  // Slack has no API that lets a bot rename itself: an app made by hand is renamed in its settings.
+  const settings = slack.appId ? `https://api.slack.com/apps/${slack.appId}` : null
+  return <DetailCard label="Name, Icon & Color">
     <div className="space-y-3" data-testid="slack-app-appearance">
-      <p className="text-xs text-muted-foreground">To show this agent in Slack, open its app at <SlackAppsLink />, then in {where} upload the icon and set the background color.</p>
-      <div className="flex flex-wrap items-center gap-3">
-        <SlackAppIconButton agent={agent} />
-        {backgroundColor && <ColorSwatch color={backgroundColor} />}
-      </div>
+      {settings && (
+        <p className="text-xs text-muted-foreground">
+          To rename this app or change its @handle, open{' '}
+          <a className="inline-flex items-center gap-1 text-primary hover:underline" href={settings} target="_blank" rel="noreferrer" data-testid="slack-rename-in-slack">its settings in Slack<ExternalLink className="h-3 w-3" /></a>
+          {' '}and edit {where} and App Home.
+        </p>
+      )}
+      {agent?.avatar && <>
+        <p className="text-xs text-muted-foreground">To show this agent in Slack, open its app at <SlackAppsLink />, then in {where} upload the icon and set the background color.</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <SlackAppIconButton agent={agent} />
+          {backgroundColor && <ColorSwatch color={backgroundColor} />}
+        </div>
+      </>}
     </div>
   </DetailCard>
 }

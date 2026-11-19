@@ -5,7 +5,7 @@ vi.mock('@shared/lib/db', () => ({ db: { select: () => ({ from: () => ({ where: 
 vi.mock('@shared/lib/account-providers/provider-factory', () => ({ getAccountProviderByName: () => ({ makeApiCall: forward }) }))
 vi.mock('@shared/lib/platform-attribution', () => ({ attribution: { fromResourceCreator: owner }, runWithAttribution: (_owner: unknown, run: () => unknown) => run() }))
 vi.mock('@shared/lib/proxy/audit', () => ({ writeProxyAuditEntry: audit }))
-import { githubBlob, githubBranches, githubCommit, githubFolder, githubHead, githubRepo, githubRepos, githubRequest, githubTree, requireGithubAccount, type GithubTrees } from './github-client'
+import { githubBlob, githubBranches, githubCommit, githubCreateRepo, githubFolder, githubHead, githubRepo, githubRepos, githubRequest, githubTree, requireGithubAccount, type GithubTrees } from './github-client'
 import { GithubMountableVolume, prepareGithubVolume } from './github-mountable-volume'
 import { withRemoteAccount } from './remote-account'
 import { githubVolumeConfigSchema } from './github-schema'
@@ -98,6 +98,27 @@ describe('GitHub responses', () => {
     forward.mockResolvedValueOnce(Response.json({ message: 'Repository unavailable for this request' }, { status }))
     await expect(githubRepo(config)).rejects.toMatchObject({ code: 'not-accessible', message: 'Repository unavailable for this request' })
     expect(forward).toHaveBeenCalledOnce()
+  })
+
+  it("prefers GitHub's error detail, and keeps the message when the details are not GitHub's shape", async () => {
+    forward.mockResolvedValueOnce(Response.json({ message: 'Validation Failed', errors: [{ code: 'custom' }, { message: 'detail' }] }, { status: 422 }))
+    await expect(githubRepo(config)).rejects.toMatchObject({ code: 'not-accessible', message: 'detail' })
+    forward.mockResolvedValueOnce(Response.json({ message: 'Validation Failed', errors: ['detail'] }, { status: 422 }))
+    await expect(githubRepo(config)).rejects.toMatchObject({ code: 'not-accessible', message: 'Validation Failed' })
+  })
+
+  it('makes a private repository with its first commit for its owner only, and reads only a taken name as taken', async () => {
+    forward.mockResolvedValueOnce(Response.json({ id: 456, name: 'my-scratch', owner: { login: 'me' } }, { status: 201 }))
+    expect(await GithubMountableVolume.createFolder({ accountId: config.accountId, name: ' my scratch ' }, { userId: 'alice' })).toEqual({ folder: { id: '456', name: 'me/my-scratch' } })
+    const [call] = forward.mock.calls[0]
+    expect(call.targetUrl).toBe('https://api.github.com/user/repos')
+    expect(JSON.parse(new TextDecoder().decode(call.body))).toEqual({ name: 'my scratch', private: true, auto_init: true })
+    forward.mockResolvedValueOnce(Response.json({ message: 'Repository creation failed.', errors: [{ message: 'name already exists on this account' }] }, { status: 422 }))
+    await expect(githubCreateRepo(config.accountId, 'scratch')).rejects.toMatchObject({ code: 'already-exists', message: '“scratch” is already used here.' })
+    forward.mockResolvedValueOnce(Response.json({ message: 'Repository creation failed.', errors: [{ message: 'name is too long (maximum is 100 characters)' }] }, { status: 422 }))
+    await expect(GithubMountableVolume.createFolder({ accountId: config.accountId, name: 'x'.repeat(101) }, { userId: 'alice' })).rejects.toMatchObject({ code: 'not-accessible', message: 'name is too long (maximum is 100 characters)' })
+    await expect(GithubMountableVolume.createFolder({ accountId: config.accountId, name: 'scratch' }, { userId: 'bob' })).rejects.toMatchObject({ code: 'not-found' })
+    expect(forward).toHaveBeenCalledTimes(3)
   })
 
   it('rejects a revoked or foreign account before any network call', async () => {

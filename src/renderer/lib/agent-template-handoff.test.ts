@@ -26,7 +26,7 @@ describe('completeAgentTemplateHandoff', () => {
 
     expect(order).toEqual([
       'baseline:Start with this task',
-      'set:agent:new-agent:Start with this task',
+      'set:session:agent-home:new-agent:Start with this task',
       'open',
     ])
     expect(startOnboardingSession).not.toHaveBeenCalled()

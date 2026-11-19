@@ -1,9 +1,7 @@
-import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
-
-export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel' | 'tabtender'
 
 export interface BrowserConnectionInfo {
-  /** Full CDP WebSocket URL (for remote providers like Browserbase) */
+  /** Full CDP WebSocket URL (for remote providers like Browserbase and Steel) */
   cdpUrl?: string
   /** Local CDP port (for local providers like Chrome — container resolves to CDP URL) */
   port?: number
@@ -22,8 +20,6 @@ export interface HostBrowserProviderStatus {
   name: string
   available: boolean
   reason?: string
-  /** Chrome-specific: detected browser profiles */
-  profiles?: ChromeProfile[]
 }
 
 export interface HostBrowserProvider {
@@ -31,7 +27,7 @@ export interface HostBrowserProvider {
   readonly name: string
 
   /** Check if this provider is available (Chrome installed? API key configured?) */
-  detect(): HostBrowserProviderStatus
+  detect(): Promise<HostBrowserProviderStatus>
 
   /** Launch/connect a browser instance. Returns CDP connection info. */
   launch(instanceId: string, options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo>

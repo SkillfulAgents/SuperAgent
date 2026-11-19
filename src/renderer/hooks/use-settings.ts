@@ -1,5 +1,9 @@
 import { apiFetch } from '@renderer/lib/api'
+import { HttpError } from '@renderer/lib/http-error'
+import { useUser } from '@renderer/context/user-context'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMemo } from 'react'
+import { MODEL_CATALOG_QUERY_KEY, MODEL_CATALOG_STALE_TIME, invalidateModelCatalog, settingsPatchChangesModelCatalog } from '@renderer/lib/model-catalog-query'
 import type {
   GlobalSettingsResponse,
   ModelPickerSettingsResponse,
@@ -19,16 +23,43 @@ import type { ModelSearchResult } from '@shared/lib/llm-provider'
 
 export type { GlobalSettingsResponse, ModelPickerSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
+/** The server's refusal of a signed-in user who is not an admin. */
+function isForbidden(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 403
+}
+
+const SETTINGS_POLL_MS = 60_000
+
+/**
+ * The global settings. `GET /api/settings` is admin-only in auth mode, so the
+ * query is off for everyone else there (and until the session says who is
+ * asking): `data` stays undefined and `isLoading` stays false, with no request.
+ * A 403 that still arrives (a role revoked since the session was read) is not
+ * retried and stops the poll.
+ */
 export function useSettings(options?: { enabled?: boolean }) {
+  const { isAuthMode, isAdmin } = useUser()
+  const mayRead = !isAuthMode || isAdmin
   return useQuery<GlobalSettingsResponse>({
     queryKey: ['settings'],
     queryFn: async () => {
       const res = await apiFetch('/api/settings')
-      if (!res.ok) throw new Error('Failed to fetch settings')
+      if (!res.ok) throw new HttpError(res.status, 'Failed to fetch settings')
       return res.json()
     },
-    refetchInterval: 60000, // Poll less frequently - container status is cached server-side
-    enabled: options?.enabled,
+    // Poll less frequently - container status is cached server-side
+    refetchInterval: (query) => (isForbidden(query.state.error) ? false : SETTINGS_POLL_MS),
+    // Settings writes invalidate this and readiness arrives on the
+    // notifications stream, so a new observer reuses what is cached instead of
+    // refetching on every navigation and Settings tab (the 5 s default). The
+    // window is the poll's interval and no longer: nothing announces another
+    // admin's write or a change in the host-derived fields (runner
+    // availability, host browser status), so a mount after it reads again.
+    staleTime: SETTINGS_POLL_MS,
+    // Back online is read again as before, without waiting out the window.
+    refetchOnReconnect: 'always',
+    retry: (failureCount, error) => !isForbidden(error) && failureCount < 3,
+    enabled: mayRead && (options?.enabled ?? true),
   })
 }
 
@@ -76,35 +107,50 @@ export function useWarmStartOnTypeEnabled(): boolean {
  * Picker-safe model settings served to EVERY authenticated user. The composer
  * and default-model pickers must read this — not `useSettings()`, whose
  * endpoint is admin-gated in auth mode and leaves non-admins with an empty
- * catalog. The `['settings', …]` key keeps it refreshed by the same broad
- * invalidations the settings mutations already fire (e.g. a catalog edit).
+ * catalog.
+ *
+ * Two reads, cached apart. The catalog (`GET /api/settings/models`, over
+ * 100 KB) is the same for every agent, so every caller shares one entry, kept
+ * out of the `['settings']` prefix: see `model-catalog-query.ts` for what
+ * refreshes it. An agent's saved connections keep the `['settings', 'models',
+ * …]` key, so the broad settings invalidations still refresh them. With an
+ * agent, `data` is the catalog with that agent's connections in place of the
+ * viewer's, and is undefined until both are read.
  */
 export function useModelSettings(agentSlug?: string, llmProviderId?: string | null) {
-  return useQuery<ModelPickerSettingsResponse>({
-    queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, llmProviderId] : [])],
+  const catalog = useQuery<ModelPickerSettingsResponse>({
+    queryKey: MODEL_CATALOG_QUERY_KEY,
     queryFn: async () => {
-      // The two reads are independent, so both start now. They are still
-      // checked in order, so a failed settings read wins as it did when the
-      // reads ran back to back; the catch only keeps an abandoned connection
-      // read from surfacing as an unhandled rejection.
-      const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
-      const settingsRequest = apiFetch('/api/settings/models')
-      const connectionRequest = agentSlug
-        ? apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
-        : undefined
-      void connectionRequest?.catch(() => {})
-      const res = await settingsRequest
+      const res = await apiFetch('/api/settings/models')
       if (!res.ok) throw new Error('Failed to fetch model settings')
-      const data: ModelPickerSettingsResponse = await res.json()
-      if (connectionRequest) {
-        const response = await connectionRequest
-        if (!response.ok) throw new Error('Failed to fetch saved model connection')
-        data.connections = (await response.json()).connections
-      }
-      return data
+      return res.json()
     },
+    staleTime: MODEL_CATALOG_STALE_TIME,
+  })
+  const saved = useQuery<ModelPickerSettingsResponse['connections']>({
+    queryKey: ['settings', 'models', agentSlug, llmProviderId],
+    queryFn: async () => {
+      const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug ?? '')}/llm-connections${query}`)
+      if (!res.ok) throw new Error('Failed to fetch saved model connection')
+      return (await res.json()).connections
+    },
+    enabled: !!agentSlug,
     staleTime: 60000,
   })
+  const data = useMemo(() => {
+    if (!catalog.data || !agentSlug) return catalog.data
+    return saved.data ? { ...catalog.data, connections: saved.data } : undefined
+  }, [catalog.data, saved.data, agentSlug])
+  // A failed settings read wins over a failed connection read.
+  const error = catalog.error ?? (agentSlug ? saved.error : null)
+  return {
+    data,
+    error,
+    isError: error !== null,
+    isSuccess: error === null && data !== undefined,
+    isLoading: catalog.isLoading || (!!agentSlug && saved.isLoading),
+  }
 }
 
 export function useProviderModelSearch(
@@ -157,8 +203,9 @@ export function useUpdateSettings() {
 
       return res.json()
     },
-    onSuccess: () => {
+    onSuccess: (_result, patch) => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      if (settingsPatchChangesModelCatalog(patch)) void invalidateModelCatalog(queryClient)
       queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
       // Voice provider / key / default voice live in these settings, and the
       // speaker buttons and Voice tab gate on the derived status.

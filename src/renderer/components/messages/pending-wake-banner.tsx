@@ -73,7 +73,7 @@ export function PendingWakeBanner({
 
   return (
     <div
-      className="mx-4 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground"
+      className="mx-4 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-card border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="pending-wake-banner"
     >
       <div className="flex min-w-0 grow basis-40 items-start gap-2">

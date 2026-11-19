@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ChevronLeft, FolderOpen, Globe, Lock, X } from 'lucide-react'
+import { ChevronLeft, FolderOpen, X } from 'lucide-react'
 import type { GlobalAccess, VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { localVolumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { useHideSettingsHeader, useFullWidthSettingsContent } from '@renderer/components/settings/settings-page'
 import { AgentAssignmentList } from '@renderer/components/agents/agent-assignment-list'
 import { AppLink } from '@renderer/components/ui/app-link'
-import { agentHomeSearchFor } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { Button } from '@renderer/components/ui/button'
 import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-badge'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -18,8 +17,8 @@ import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-tit
 import { Switch } from '@renderer/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
-import { VolumeDetailsFields } from './volume-setup-layout'
-import { parseVolumeName, type VolumeDetails } from './volume-details-schema'
+import { parseVolumeName } from './volume-details-schema'
+import { VolumeAccessHeader } from './volume-access-header'
 import { VolumeIcon } from './volume-icon'
 import { VolumeFileBrowser } from './volume-file-browser'
 
@@ -28,7 +27,7 @@ const LEVEL_LABEL: Record<GlobalAccess, string> = { read: 'Read-only', write: 'C
 function GlobalSetting({ volume }: { volume: VolumeDefinitionSummary }) {
   const save = useSaveVolumeDefinition()
   const current = volume.globalAccess
-  const isPublic = volume.userId === null
+  const isPublic = volume.visibility === 'public'
   const [level, setLevel] = useState<GlobalAccess>(current ?? 'read')
   const [confirming, setConfirming] = useState(false)
   const shown = current ?? level
@@ -87,7 +86,7 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
       rowDescription={agent => {
         const item = agents.data?.find(candidate => candidate.slug === agent.slug)
         return item?.status === 'running' && item.stale
-        ? <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }} search={agentHomeSearchFor(item)} className="text-[11px] text-orange-600 dark:text-orange-400 hover:underline">Restart agent to apply changes</AppLink> : null
+        ? <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }} className="text-[11px] text-orange-600 dark:text-orange-400 hover:underline">Restart agent to apply changes</AppLink> : null
       }}
     />}
   </section>
@@ -120,34 +119,22 @@ function ChooseFolderAgain({ volume }: { volume: VolumeDefinitionSummary }) {
   </div>
 }
 
-function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSummary; onDelete: () => void }) {
+function VolumeSettings({ volume, onDelete }: { volume: VolumeDefinitionSummary; onDelete: () => void }) {
   const { isAuthMode, isAdmin } = useUser()
-  const save = useSaveVolumeDefinition()
-  const [visibility, setVisibility] = useState<VolumeDetails['visibility']>(volume.userId === null ? 'public' : 'private')
-  const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
-  const submit = async () => {
-    setError(null); setSaved(false)
-    try { await save.mutateAsync({ id: volume.id, visibility }); setSaved(true) }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not save drive') }
-  }
   return <section className="space-y-2">
     <h3 className="text-xs font-normal text-muted-foreground">Settings</h3>
-    <form className="rounded-xl border bg-background p-4 space-y-4" onSubmit={event => { event.preventDefault(); void submit() }}>
-      <VolumeDetailsFields showName={false} value={{ name: volume.name, visibility }} onChange={next => { setVisibility(next.visibility); setSaved(false); setError(null) }} disabled={save.isPending} inUse={volume.attachmentCount > 0}>
-        <div className="space-y-1"><p className="text-sm font-medium">Folder</p><p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p>{volume.pickFolderAgain && <ChooseFolderAgain volume={volume} />}</div>
-      </VolumeDetailsFields>
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-      <div className="flex items-center gap-2">
-        <Button type="button" variant="ghost" size="sm" className="-ml-2 text-destructive" onClick={onDelete}
-          disabled={save.isPending || volume.attachmentCount > 0} title={volume.attachmentCount > 0 ? 'Remove from all agents first' : undefined}>
-          <X className="h-3.5 w-3.5" />Remove drive
-        </Button>
-        <span className="flex-1 text-xs text-muted-foreground" role="status">{saved ? 'Saved' : ''}</span>
-        {isAuthMode && isAdmin && volume.attachmentCount === 0 && <Button type="submit" size="sm" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save changes'}</Button>}
+    <div className="rounded-card border bg-background p-4 space-y-4">
+      <div className="space-y-1">
+        <p className="text-sm font-medium">Folder</p>
+        <p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p>
+        {volume.pickFolderAgain && <ChooseFolderAgain volume={volume} />}
       </div>
-    </form>
-    <div className="rounded-xl border bg-background p-4"><GlobalSetting volume={volume} /></div>
+      <Button type="button" variant="ghost" size="sm" className="-ml-2 text-destructive" onClick={onDelete}
+        disabled={volume.attachmentCount > 0} title={volume.attachmentCount > 0 ? 'Remove from all agents first' : undefined}>
+        <X className="size-3.5" />Remove drive
+      </Button>
+    </div>
+    {(!isAuthMode || isAdmin) && <div className="rounded-xl border bg-background p-4"><GlobalSetting volume={volume} /></div>}
   </section>
 }
 
@@ -158,7 +145,7 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelet
   return <div className="space-y-4 w-full max-w-6xl mx-auto" data-testid="volume-detail-page">
     <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground"><ChevronLeft className="h-3.5 w-3.5 mr-1" />{backLabel}</Button>
     <div className="flex items-center gap-3">
-      <div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center shrink-0"><VolumeIcon type={volume.type} className="h-5 w-5" /></div>
+      <div className="h-10 w-10 rounded-control bg-muted flex items-center justify-center shrink-0"><VolumeIcon type={volume.type} className="h-5 w-5" /></div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <InlineEditableTitle
@@ -183,12 +170,12 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelet
         <p className="text-xs text-muted-foreground truncate">{volume.sourceLabel ?? volume.hostPath}</p>
         {volume.canManage && volume.attachmentCount > 0 && !volume.globalAccess && <p className="text-xs text-muted-foreground">Renaming this drive keeps existing agents’ folder paths.</p>}
       </div>
-      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">{volume.userId === null ? <Globe className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}{volume.userId === null ? 'Public' : 'Private'}</span>
+      <VolumeAccessHeader key={volume.id} volume={volume} />
     </div>
     <div className="grid gap-6 items-start grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] pt-4">
       <div className="min-w-0 space-y-6">
         <VolumeAgentsList volume={volume} />
-        {volume.canManage && <VolumeSettingsForm volume={volume} onDelete={onDelete} />}
+        {volume.canManage && <VolumeSettings volume={volume} onDelete={onDelete} />}
       </div>
       <VolumeFileBrowser key={volume.health} volumeId={volume.id} copying={volume.health === 'preparing'} />
     </div>

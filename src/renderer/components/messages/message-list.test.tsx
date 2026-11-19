@@ -351,135 +351,6 @@ describe('MessageList', () => {
     })
   })
 
-  describe('session time flags', () => {
-    it('renders a flag immediately before the first actual user message', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: '[SYSTEM] Hidden setup message' },
-          createdAt: new Date(2026, 7, 17, 8, 59, 0),
-        }),
-        createUserMessage({
-          content: { text: 'First actual prompt' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'First response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-      ]
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      expect(screen.queryByText('[SYSTEM] Hidden setup message')).not.toBeInTheDocument()
-      const flag = screen.getByTestId('session-time-flag')
-      const firstUserMessage = screen.getByText('First actual prompt')
-      expect(
-        flag.compareDocumentPosition(firstUserMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).not.toBe(0)
-    })
-
-    it('renders another flag when the user replies more than 15 minutes after the latest assistant response', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: 'Initial prompt' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Interim response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Latest response' },
-          createdAt: new Date(2026, 7, 17, 9, 10, 0),
-        }),
-        {
-          id: 'notice-between-response-and-reply',
-          type: 'informational',
-          content: 'Background notice',
-          createdAt: new Date(2026, 7, 17, 9, 11, 0),
-        },
-        createUserMessage({
-          content: { text: 'Delayed follow-up' },
-          createdAt: new Date(2026, 7, 17, 9, 25, 1),
-        }),
-      ]
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      const flags = screen.getAllByTestId('session-time-flag')
-      expect(flags).toHaveLength(2)
-      expect(
-        flags[1].compareDocumentPosition(screen.getByText('Delayed follow-up')) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-      ).not.toBe(0)
-    })
-
-    it('does not render another flag at exactly 15 minutes from the latest assistant response', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: 'Initial prompt' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Older response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Latest response' },
-          createdAt: new Date(2026, 7, 17, 9, 15, 0),
-        }),
-        createUserMessage({
-          content: { text: 'Exactly-on-the-boundary follow-up' },
-          createdAt: new Date(2026, 7, 17, 9, 30, 0),
-        }),
-      ]
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      expect(screen.getAllByTestId('session-time-flag')).toHaveLength(1)
-    })
-
-    it('does not treat the first loaded user message as the session start when older messages exist', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: 'First message in the loaded page' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Loaded response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-      ]
-      mockMessagesData.hasOlder = true
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      expect(screen.queryByTestId('session-time-flag')).not.toBeInTheDocument()
-    })
-
-    it('shows the first-user flag immediately for an optimistic message', () => {
-      mockMessagesData.data = []
-
-      renderWithProviders(
-        <MessageList
-          sessionId="s-1"
-          agentSlug="agent-1"
-          pendingUserMessages={[{
-            localId: 'pending-first-user',
-            text: 'Optimistic first prompt',
-            sentAt: new Date(2026, 7, 17, 9, 0, 0).getTime(),
-          }]}
-        />
-      )
-
-      const flag = screen.getByTestId('session-time-flag')
-      const pendingMessage = screen.getByText('Optimistic first prompt')
-      expect(
-        flag.compareDocumentPosition(pendingMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).not.toBe(0)
-    })
-  })
-
   it('reserves clearance for an overlaid session footer', () => {
     mockMessagesData.data = []
     renderWithProviders(
@@ -1093,6 +964,30 @@ describe('MessageList', () => {
     )
 
     expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+  })
+
+  // The owner drops the ghost only after the effect above reports it, a commit later:
+  // until then the persisted copy alone is drawn, not the message twice.
+  it.each([false, true])('draws a ghost whose uuid is already in the transcript only once (queued: %s)', (queued) => {
+    mockMessagesData.data = [
+      createUserMessage({
+        id: 'uuid-1',
+        content: { text: 'My message' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'local-1', uuid: 'uuid-1', text: 'My message', sentAt: new Date('2025-01-01T00:00:00Z').getTime(), queued }]}
+        onPendingMessageAppeared={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByText('My message')).toHaveLength(1)
+    expect(screen.queryByTestId(queued ? 'queued-user-message' : 'pending-user-message')).not.toBeInTheDocument()
   })
 
   // The second transcript is a shared agent's, where the agent received the sender prefix.
@@ -2777,6 +2672,112 @@ describe('MessageList', () => {
     })
   })
 
+  describe('landing on a message', () => {
+    const rows = (n: number, prefix = 'm'): ApiMessageOrBoundary[] =>
+      Array.from({ length: n }, (_, i) => createUserMessage({ id: `${prefix}${i}`, content: { text: `${prefix}${i}` } }))
+    const target = (id: string) => ({ id, onSettled: vi.fn() })
+    const row = (id: string) => document.querySelector(`[data-message-id="${id}"]`)
+
+    beforeEach(() => {
+      mockFetchOlder.mockResolvedValue(true)
+    })
+
+    it('lands on a loaded message, rings it, and lets go of the live edge', () => {
+      mockMessagesData.data = rows(50)
+      const t = target('m10')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+      expect(row('m10')?.querySelector('.ring-2')).toBeInTheDocument()
+      // Released follow: a reply arriving next does not carry the reader away.
+      expect(screen.getByRole('button', { name: /scroll to bottom/i })).toBeInTheDocument()
+    })
+
+    it('grows the rendered window to a loaded message above it', () => {
+      mockMessagesData.data = rows(305)
+      const t = target('m0')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(screen.getByText('m0')).toBeInTheDocument()
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+    })
+
+    it('pages back for a message not loaded yet, then lands on it', () => {
+      mockMessagesData.data = rows(50)
+      mockMessagesData.hasOlder = true
+      const t = target('old7')
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(mockFetchOlder).toHaveBeenCalled()
+      expect(t.onSettled).not.toHaveBeenCalled()
+      mockMessagesData.data = [...rows(10, 'old'), ...rows(50)]
+      mockMessagesData.hasOlder = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+    })
+
+    it('stops where the reader is when the message is not in the history', () => {
+      mockMessagesData.data = rows(50)
+      const t = target('gone')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('stopped')
+    })
+
+    it('stops when an older page it asked for adds nothing', async () => {
+      mockMessagesData.data = rows(50)
+      mockMessagesData.hasOlder = true
+      mockFetchOlder.mockResolvedValue(false)
+      const t = target('old7')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      await waitFor(() => expect(t.onSettled).toHaveBeenCalledWith('stopped'))
+    })
+
+    it('writes the scroll position that centers the message', () => {
+      mockMessagesData.data = rows(50)
+      const top = new WeakMap<Element, number>()
+      const proto = HTMLElement.prototype
+      const saved = { rect: proto.getBoundingClientRect, ch: Object.getOwnPropertyDescriptor(proto, 'clientHeight'), sh: Object.getOwnPropertyDescriptor(proto, 'scrollHeight'), st: Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop') }
+      const isList = (el: HTMLElement) => el.dataset?.testid === 'message-list'
+      proto.getBoundingClientRect = function (this: HTMLElement) {
+        const box = this.dataset?.messageId === 'm10' ? { top: -3000, height: 100 } : { top: 0, height: isList(this) ? 500 : 0 }
+        return { ...box, bottom: box.top + box.height, left: 0, right: 0, width: 0, x: 0, y: box.top, toJSON: () => box } as DOMRect
+      }
+      Object.defineProperty(proto, 'clientHeight', { configurable: true, get(this: HTMLElement) { return isList(this) ? 500 : 0 } })
+      Object.defineProperty(proto, 'scrollHeight', { configurable: true, get(this: HTMLElement) { return isList(this) ? 5000 : 0 } })
+      Object.defineProperty(Element.prototype, 'scrollTop', { configurable: true, get(this: Element) { return top.get(this) ?? 0 }, set(this: Element, v: number) { top.set(this, v) } })
+      try {
+        const t = target('m10')
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+        expect(t.onSettled).toHaveBeenCalledWith('landed')
+        // Pinned to the live edge first (4499), then the row 3000 above the view top is centered in 500.
+        expect(screen.getByTestId('message-list').scrollTop).toBe(4499 - 3000 - 200)
+      } finally {
+        proto.getBoundingClientRect = saved.rect
+        for (const [o, k, d] of [[proto, 'clientHeight', saved.ch], [proto, 'scrollHeight', saved.sh], [Element.prototype, 'scrollTop', saved.st]] as const) {
+          if (d) Object.defineProperty(o, k, d); else delete (o as unknown as Record<string, unknown>)[k]
+        }
+      }
+    })
+
+    it("opens a completed turn's folded work to land on a message in it, and keeps it open", () => {
+      mockMessagesData.data = [
+        createUserMessage({ id: 'ask', content: { text: 'Who decides?' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+        createAssistantMessage({ id: 'mid', content: { text: '@Mike please decide' }, createdAt: new Date('2025-01-01T00:00:10Z'), toolCalls: [createToolCall({ name: 'Bash' })] }),
+        createAssistantMessage({ id: 'answer', content: { text: 'Done.' }, createdAt: new Date('2025-01-01T00:00:30Z') }),
+      ]
+      const t = target('mid')
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+      // The request leaves the URL; the turn stays open.
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+      // Folded again by the reader, the same mention opens it again.
+      fireEvent.click(screen.getByTestId('turn-summary'))
+      expect(screen.queryByText('@Mike please decide')).not.toBeInTheDocument()
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={target('mid')} />)
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+    })
+  })
+
   describe('windowing (long threads)', () => {
     // BASE_WINDOW=300, LOAD_STEP=200 in use-message-list-scroll.ts. Each message renders a
     // bubble whose exact text is `m{i}`, so getByText/queryByText tells us precisely
@@ -2919,6 +2920,37 @@ describe('MessageList', () => {
       // the user was reading stays put: 50 + (5000 - 3000) = 2050.
       expect(screen.getByText('old0')).toBeInTheDocument()
       expect(el.scrollTop).toBe(2050)
+    })
+
+    it('compensates a prepend for a reader who let go of following near the bottom', () => {
+      const base = Array.from({ length: 300 }, (_, i) => createUserMessage({ id: `row${i}`, content: { text: `row${i}` } }))
+      mockMessagesData.data = base
+      mockMessagesData.hasOlder = true
+      let onBeforePrepend: (() => void) | undefined
+      mockFetchOlder.mockImplementation((cb?: () => void) => { onBeforePrepend = cb; return new Promise(() => {}) })
+      const t = { id: 'old5', onSettled: vi.fn() }
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      const el = screen.getByTestId('message-list')
+      let top = 2415 // 85px from the bottom: past the 70px re-attach, inside the 100px the distance rule skips
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => (el.textContent?.match(/(?:row|old)\d+/g)?.length ?? 0) * 10 })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v } })
+      expect(onBeforePrepend).toBeDefined()
+      fireEvent.scroll(el)
+
+      // The reader nudges up: following lets go.
+      fireEvent.wheel(el, { deltaY: -40 })
+      fireEvent.scroll(el)
+
+      const older = Array.from({ length: 200 }, (_, i) => createUserMessage({ id: `old${i}`, content: { text: `old${i}` } }))
+      act(() => {
+        onBeforePrepend!()
+        mockMessagesData.data = [...older, ...base]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      })
+      // 200 rows (2000px) mounted above; the reader's content stays put, and the landing ends where they are.
+      expect(el.scrollTop).toBe(2415 + 2000)
+      expect(t.onSettled).toHaveBeenCalledWith('stopped')
     })
 
     it('keeps the top of the window stable when a message arrives while scrolled up', async () => {

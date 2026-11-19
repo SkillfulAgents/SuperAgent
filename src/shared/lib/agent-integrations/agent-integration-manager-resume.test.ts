@@ -61,6 +61,9 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import {
   listStartupAgentIntegrations,
   getAgentIntegration,

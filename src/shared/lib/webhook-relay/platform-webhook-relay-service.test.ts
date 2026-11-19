@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
@@ -138,7 +139,7 @@ function deps(overrides: Partial<PlatformWebhookRelayDeps> = {}): PlatformWebhoo
     claim: platform.claim,
     acknowledge: platform.acknowledge,
     endpoints: endpoints as unknown as PlatformEndpointsApi,
-    getToken: () => token,
+    getToken: async () => token,
     requiresMemberScope: () => orgToken,
     createRealtime: () => {
       const socket = new FakeRealtime()
@@ -152,6 +153,7 @@ function deps(overrides: Partial<PlatformWebhookRelayDeps> = {}): PlatformWebhoo
 
 function createRelay(options: PlatformWebhookRelayOptions = {}, overrides: Partial<PlatformWebhookRelayDeps> = {}) {
   relay = new PlatformWebhookRelayService(deps(overrides), options)
+  registerTasks(relay)
   return relay
 }
 
@@ -993,6 +995,8 @@ describe('PlatformWebhookRelayService', () => {
   describe('endpoints', () => {
     it('provisions endpoints through the platform API in its own vocabulary', async () => {
       startRelay()
+      // The token is read asynchronously: the relay is online once that settles.
+      await settle()
 
       await relay.createEndpoint('sub_a', { name: 'Deploys', filterExp: 'body.ok' })
       await relay.updateEndpoint('sub_a', 'whep_new', { filterExp: null })
@@ -1050,6 +1054,7 @@ describe('PlatformWebhookRelayService', () => {
 
       token = null
       relay.onAuthChanged()
+      await settle()
       expect(relay.snapshot()).toMatchObject({ available: false, unavailableReason: 'platform_disconnected' })
       expect(sockets[0].disconnected).toBe(true)
       const claimsWhileOffline = platform.claims.length
@@ -1078,6 +1083,34 @@ describe('PlatformWebhookRelayService', () => {
       expect(first.disconnected).toBe(true)
       expect(sockets).toHaveLength(2)
       expect(sockets[1].active).toBe(true)
+    })
+
+    it('stays stopped when stopped while the token is being read', async () => {
+      startRelay()
+      relay.register(consumer(['whep_one']))
+      relay.stop()
+      await settle()
+
+      expect(relay.snapshot()).toMatchObject({ available: false, unavailableReason: 'stopped' })
+      expect(platform.claims).toHaveLength(0)
+      expect(sockets).toHaveLength(0)
+    })
+
+    it('applies auth changes one at a time, so the latest read wins', async () => {
+      const reads: Array<(value: string | null) => void> = []
+      startRelay({}, { getToken: () => new Promise<string | null>((resolve) => reads.push(resolve)) })
+      relay.onAuthChanged()
+      await settle()
+      // The second application waits for the first to finish reading.
+      expect(reads).toHaveLength(1)
+
+      reads[0]('plat_sa_token')
+      await settle()
+      expect(reads).toHaveLength(2)
+      reads[1](null)
+      await settle()
+
+      expect(relay.snapshot()).toMatchObject({ available: false, unavailableReason: 'platform_disconnected' })
     })
 
     it('only nudges a claim when the same token is saved again', async () => {

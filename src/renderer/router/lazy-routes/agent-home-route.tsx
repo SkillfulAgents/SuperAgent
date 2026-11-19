@@ -2,21 +2,24 @@ import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { usePendingMessages } from '@renderer/context/pending-messages-context'
+import { agentHomeId } from '@renderer/context/drafts-context'
+import { useUser } from '@renderer/context/user-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { useAgentSlug } from './use-agent-slug'
 
-// The agent index owns its agent-scoped dialogs and read-only file-preview tray.
+// The agent index owns its agent-scoped dialogs and file-preview tray, whose comments go to the home composer.
 // Keeping this in its own route chunk prevents every sibling agent view from
 // joining the common agent navigation path.
 export function AgentHomeRoute() {
   const slug = useAgentSlug()
   const { data: agent } = useAgent(slug)
   const { onSessionCreated } = usePendingMessages()
+  const { canUseAgent } = useUser()
   if (!slug || !agent) return null
-  const homePreviewId = `agent-home:${agent.slug}`
+  const homePreviewId = agentHomeId(agent.slug)
   return (
-    <FilePreviewProvider sessionId={homePreviewId} commentsEnabled={false}>
+    <FilePreviewProvider sessionId={homePreviewId} commentsEnabled={canUseAgent(agent.slug)}>
       <WorkflowProvider sessionId={homePreviewId}>
         <div
           className="file-preview-container relative flex flex-1 min-h-0 min-w-0"

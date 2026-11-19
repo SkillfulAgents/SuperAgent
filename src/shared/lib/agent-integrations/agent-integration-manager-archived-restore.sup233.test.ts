@@ -79,6 +79,9 @@ vi.mock('../chat-integrations/telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import {
   createAgentIntegrationSession,
@@ -88,7 +91,8 @@ import {
 } from '@shared/lib/services/agent-integration-session-service'
 import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
 
-describe('SUP-233 reconnect restore ignores archived sessions', () => {
+// Settings and host records are app records: a fresh in-memory store per test.
+describe('SUP-233 archived sessions are never followed', () => {
   beforeEach(async () => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sup233-'))
     process.env.SUPERAGENT_DATA_DIR = testDir
@@ -108,7 +112,7 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     vi.restoreAllMocks()
   })
 
-  it('does not restore SSE forwarding for archived chat sessions on reconnect', async () => {
+  it('does not forward SSE for an archived chat session when it starts a turn', async () => {
     // Public bot so the access gate is a no-op and this test isolates SUP-233's
     // concern (active sessions restore, archived don't). requireApproval is
     // owner-only post-create, so flip it directly on the row.
@@ -137,8 +141,10 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
       .spyOn(LiveSessions.prototype, 'listen')
       .mockReturnValue(() => {})
 
-    // Drives connectIntegration -> restore loop.
     await agentIntegrationManager.addIntegration(integrationId)
+    // Each session runs a turn: only the one whose row is active is followed.
+    await agentIntegrationManager.sessionStarted('test-agent', 'active-agent-session')
+    await agentIntegrationManager.sessionStarted('test-agent', 'archived-agent-session')
 
     const subscribedSessionIds = listen.mock.calls.map((c) => c[0])
     expect(subscribedSessionIds).toContain('active-agent-session')

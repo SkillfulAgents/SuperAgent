@@ -57,7 +57,7 @@ export function isLocalHostname(hostname: string): boolean {
  * hostname; or this machine and its private network on the app's port,
  * where a container reaches the host whatever it is called there.
  */
-export function isOwnOrigin(origin: string, requestUrls: Array<string | undefined>): boolean {
+export async function isOwnOrigin(origin: string, requestUrls: Array<string | undefined>): Promise<boolean> {
   let target: URL
   try {
     target = new URL(origin)
@@ -67,7 +67,7 @@ export function isOwnOrigin(origin: string, requestUrls: Array<string | undefine
   const hostname = normalizeHostname(target.hostname)
   const port = portOf(target)
   const configured = [
-    ...getTrustedOrigins(),
+    ...(await getTrustedOrigins()),
     process.env.HOST && `http://${process.env.HOST}:${getAppPort()}`,
     process.env.HOST_PUBLIC_URL,
   ]

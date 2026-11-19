@@ -4,6 +4,7 @@
  * React Query hooks for managing webhook triggers.
  */
 
+import { pickRuntimeOptions, type RuntimeOptionsPatch } from '@shared/lib/container/runtime-options'
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { PublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -18,8 +19,8 @@ export type WebhookTrigger = PublicWebhookTrigger
 
 const TYPE = 'webhook-triggers' as const
 
-export function useWebhookTriggers(agentSlug: string | null, status?: 'active' | 'cancelled') {
-  return useAutomationList<WebhookTrigger>(TYPE, agentSlug, status, { refetchInterval: 120_000 })
+export function useWebhookTriggers(agentSlug: string | null) {
+  return useAutomationList<WebhookTrigger>(TYPE, agentSlug, undefined, { refetchInterval: 120_000 })
 }
 
 export function useWebhookTrigger(triggerId: string | null) {
@@ -83,12 +84,8 @@ export function useUpdateWebhookTriggerRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ triggerId, llmProviderId, model, effort, speed }: { triggerId: string; agentSlug: string; llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
-      const body: Record<string, string | null> = {}
-      if (llmProviderId !== undefined) body.llmProviderId = llmProviderId
-      if (model !== undefined) body.model = model
-      if (effort !== undefined) body.effort = effort
-      if (speed !== undefined) body.speed = speed
+    mutationFn: async ({ triggerId, ...patch }: { triggerId: string; agentSlug: string } & RuntimeOptionsPatch) => {
+      const body = pickRuntimeOptions(patch)
       const res = await apiFetch(`/api/webhook-triggers/${triggerId}/runtime-options`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

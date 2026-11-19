@@ -86,7 +86,7 @@ export function buildAgentContactCard({ slug, name, description, appUrl }: Agent
  * the `superagent://` scheme, and this card lives on a phone where nothing has
  * registered that scheme, so the row would render tappable and then fail.
  */
-export function resolveAgentWebUrl(agentSlug: string): string | null {
-  const link = resolveAppLinkContext(agentSlug)
+export async function resolveAgentWebUrl(agentSlug: string): Promise<string | null> {
+  const link = await resolveAppLinkContext(agentSlug)
   return link.isDesktop ? null : link.url
 }

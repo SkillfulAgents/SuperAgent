@@ -1,5 +1,6 @@
 import pLimit from 'p-limit'
 import type { ApiTarget } from '@shared/lib/api-target'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import { POLL_HEADERS } from '../agent-status'
 import type { SpotlightIndex } from './spotlight-bridge'
 import {
@@ -36,6 +37,9 @@ export const SESSIONS_MAX_AGE_MS = 60 * 60_000
 /** The most recent sessions indexed per agent. */
 export const SESSIONS_PER_AGENT = 50
 
+const RECURRING_SYNC_JOB = 'spotlight.recurring-sync'
+const DEBOUNCED_SYNC_JOB = 'spotlight.debounced-sync'
+
 const SESSION_FETCH_CONCURRENCY = 4
 const REQUEST_TIMEOUT_MS = 15_000
 
@@ -45,9 +49,9 @@ export interface SpotlightSyncDeps {
    * Where each Superagent is reached right now, or null when there is none —
    * no cloud workspace, or no live token for one. Asked on every pass.
    */
-  baseUrl(target: ApiTarget): string | null
+  baseUrl(target: ApiTarget): Promise<string | null>
   /** Which Superagent the app is driving. The cloud side is polled only while it is this one. */
-  activeTarget(): ApiTarget
+  activeTarget(): Promise<ApiTarget>
   fetch?: typeof fetch
   now?: () => number
 }
@@ -90,7 +94,8 @@ class HttpError extends Error {
  * Never throws: Spotlight is a convenience, and every failure here is logged
  * and retried on the next pass.
  */
-export class SpotlightSync {
+export class SpotlightSync implements Service {
+  readonly id = 'spotlight-sync'
   private readonly indexed: Record<SpotlightDomain, Map<string, string> | null> = {
     local: null,
     cloud: null,
@@ -107,9 +112,13 @@ export class SpotlightSync {
   private running: Promise<void> | null = null
   private again = false
   private stopped = false
-  private firstPass: ReturnType<typeof setTimeout> | null = null
-  private interval: ReturnType<typeof setInterval> | null = null
-  private debounce: ReturnType<typeof setTimeout> | null = null
+  private scheduled = false
+  private firstPassRan = false
+  private readonly syncTask = new PassTask('spotlight.sync', () => {
+    this.firstPassRan = true
+    return this.sync()
+  })
+  readonly tasks = [this.syncTask]
   private readonly fetch: typeof fetch
   private readonly now: () => number
 
@@ -119,32 +128,22 @@ export class SpotlightSync {
   }
 
   start(): void {
-    if (this.firstPass || this.interval || this.stopped) return
-    this.firstPass = setTimeout(() => {
-      this.firstPass = null
-      void this.sync()
-      this.interval = setInterval(() => void this.sync(), SYNC_INTERVAL_MS)
-    }, FIRST_PASS_DELAY_MS)
+    if (this.scheduled || this.stopped) return
+    this.scheduled = true
+    void taskManager().ensureEvery(RECURRING_SYNC_JOB, this.syncTask.spec, { intervalMs: SYNC_INTERVAL_MS, initialDelayMs: FIRST_PASS_DELAY_MS })
   }
 
   stop(): void {
     this.stopped = true
-    if (this.firstPass) clearTimeout(this.firstPass)
-    if (this.interval) clearInterval(this.interval)
-    if (this.debounce) clearTimeout(this.debounce)
-    this.firstPass = null
-    this.interval = null
-    this.debounce = null
+    void taskManager().cancel(RECURRING_SYNC_JOB)
+    void taskManager().cancel(DEBOUNCED_SYNC_JOB)
   }
 
   /** Something probably changed: sync shortly, once per burst. A no-op before the first pass. */
   requestSync(): void {
-    if (!this.interval) return
-    if (this.debounce) clearTimeout(this.debounce)
-    this.debounce = setTimeout(() => {
-      this.debounce = null
-      void this.sync()
-    }, SYNC_DEBOUNCE_MS)
+    if (!this.firstPassRan || this.stopped) return
+    // Each request replaces the last, so a burst ends in one sync.
+    void taskManager().at(Date.now() + SYNC_DEBOUNCE_MS, DEBOUNCED_SYNC_JOB, this.syncTask.spec)
   }
 
   /** One full pass. A call during a pass is folded into a single follow-up pass. */
@@ -167,12 +166,21 @@ export class SpotlightSync {
   }
 
   private async syncOnce(): Promise<void> {
-    const active = this.deps.activeTarget()
+    let active: ApiTarget
+    let localUrl: string | null
+    let cloudUrl: string | null
+    try {
+      active = await this.deps.activeTarget()
+      localUrl = await this.deps.baseUrl('local')
+      cloudUrl = await this.deps.baseUrl('cloud')
+    } catch (error) {
+      // Nothing is known this pass, so nothing is changed; the next pass asks again.
+      console.warn('[Spotlight] Could not resolve the Superagents to index:', describe(error))
+      return
+    }
     if (active !== this.lastTarget) this.cloudRead = false
     this.lastTarget = active
 
-    const localUrl = this.deps.baseUrl('local')
-    const cloudUrl = this.deps.baseUrl('cloud')
     const readCloud = cloudUrl !== null && (active === 'cloud' || !this.cloudRead)
     const [local, cloud] = await Promise.all([
       localUrl ? this.collect('local', localUrl) : ('absent' as const),

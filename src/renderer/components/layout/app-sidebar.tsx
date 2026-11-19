@@ -1,5 +1,6 @@
 
-import { AtSign, Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, Loader2, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
+import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -8,7 +9,7 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { ContextMenuMoreButton } from '@renderer/components/ui/context-menu'
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { targetIsRemote } from '@renderer/lib/api-target'
@@ -51,8 +52,9 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useListedAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { useAgents, useListedAgents, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useSessions, useRecentSessions, useSessionTotal, recentSessionsQueryOptions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { RECENT_SESSIONS_LIMIT } from '@renderer/lib/agent-cache'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -74,7 +76,7 @@ import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-
 import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
-import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useRouteAgentRow } from '@renderer/router/use-route-agent'
 import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
 import { useCmdHintTarget, CmdHintBadge } from '@renderer/context/cmd-hint-context'
@@ -142,8 +144,7 @@ import {
   type TreeOperation,
 } from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useHasDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
@@ -168,8 +169,8 @@ function VersionBehindDot({
   )
 }
 
-// 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
-// agents-list group; pull out as a constant so the call site stays readable.
+// 4px-wide thin scrollbar with a muted-foreground/20 thumb, for the sidebar's
+// scrolling content; a constant so the call site stays readable.
 const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
@@ -199,17 +200,20 @@ type FolderDropCue = { folderId: string; edge: 'above' | 'below' }
 function SessionSubItem({
   session,
   agentSlug,
+  isAgentSelected,
 }: {
   session: ApiSession
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
   useRenderTracker('SessionSubItem')
   // Active state is route-derived (URL is authoritative, read from useParams) so
   // the highlight + the stream subscription are correct on a cold reload, with no
-  // in-memory selection state to wait on.
-  const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
+  // in-memory selection state to wait on. Selected down to the one boolean, so
+  // a navigation re-renders the rows it leaves and enters, not every open one.
+  const isRouteSession = useParams({ strict: false, select: (params) => params.sessionId === session.id })
+  const isSelected = isAgentSelected && isRouteSession
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
@@ -231,7 +235,7 @@ function SessionSubItem({
   return (
     <SidebarMenuSubItem
       {...dragHandlers}
-      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+      className={cn('rounded-item', SIDEBAR_FILE_DROP_CUE)}
     >
       <SessionContextMenu
         sessionId={session.id}
@@ -240,7 +244,6 @@ function SessionSubItem({
         activity={{
           isActive: !!session.isActive,
           isAwaitingInput: !!session.isAwaitingInput,
-          isStreaming,
         }}
       >
         {/* The row (menu target) wraps the link and the 3-dot button, which
@@ -317,13 +320,15 @@ function SessionSubItem({
 function DashboardSubItem({
   artifact,
   agentSlug,
+  isAgentSelected,
 }: {
   artifact: ArtifactInfo
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
-  const { dashSlug: routeDashSlug } = useParams({ strict: false }) as { dashSlug?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
+  const isRouteDashboard = useParams({ strict: false, select: (params) => params.dashSlug === artifact.slug })
+  const isSelected = isAgentSelected && isRouteDashboard
   const [isRenaming, setIsRenaming] = useState(false)
   const { ref: hintRef, hint } = useCmdHintTarget()
 
@@ -434,7 +439,7 @@ function InlineRenameInput({
       onBlur={submit}
       onClick={(e) => e.stopPropagation()}
       autoFocus
-      className="w-full bg-background border border-input rounded px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
+      className="w-full bg-background border border-input rounded-item px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
     />
   )
 }
@@ -543,14 +548,14 @@ const AgentMenuItemInner = React.forwardRef<
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { view } = useRouteLocation()
-  const { isAuthMode, agentMemberCount, canUseAgent } = useUser()
+  const { agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
-  // no slug). Drives the highlight AND the submenu auto-expand below.
-  const routeAgentId = useRouteAgentId()
-  const isSelected = agent.slug === routeAgentId
+  // no slug). Drives the highlight AND the submenu auto-expand below. Both
+  // answers are selected per row, so a navigation re-renders only the rows it
+  // changes them for: this subtree is the expensive part of the sidebar.
+  const { isSelected, isViewingSubItem } = useRouteAgentRow(agent)
   // Auto-expand on selection only if the agent has content to show. Brand-new
   // agents (no sessions / dashboards yet) start collapsed - the empty submenu
   // would just be visual noise.
@@ -568,28 +573,33 @@ const AgentMenuItemInner = React.forwardRef<
   // The mount-time `useState` can't catch this — sessionCount is 0 at mount on
   // a freshly-created agent, then jumps to 1 once the first message creates a
   // session. Reactively expand here.
-  const isViewingSubItem =
-    isSelected &&
-    (view.kind === 'session' ||
-      view.kind === 'task' ||
-      view.kind === 'webhook' ||
-      view.kind === 'chat' ||
-      view.kind === 'dashboard' ||
-      view.kind === 'completedTasks')
   useEffect(() => {
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const toggleShowAll = () => {
+    if (showAll) requestAnimationFrame(() => rowRef.current?.scrollIntoView({ block: 'nearest' }))
+    setShowAll(!showAll)
+  }
   const [showSkeleton, setShowSkeleton] = useState(false)
   const memberCount = agentMemberCount(agent.slug)
-  const isShared = isAuthMode && memberCount > 1
 
-  // Lazy-load detail data only when expanded
-  const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
+  // Lazy-load detail data only when expanded. The row shows five sessions, so
+  // it reads the bounded recent slice and its count; every session is read
+  // only once "Show all" asks for them (or to count them, where the server
+  // does not report the total).
+  const { data: recentSessions, isLoading: sessionsLoading } = useRecentSessions(isOpen ? agent.slug : null)
+  const reportedTotal = useSessionTotal(isOpen ? agent.slug : null)
+  const recentIsCut = (recentSessions?.length ?? 0) >= RECENT_SESSIONS_LIMIT
+  const needsAllSessions = isOpen && (showAll || (recentIsCut && reportedTotal === undefined))
+  const { data: allSessions } = useSessions(needsAllSessions ? agent.slug : null)
+  const sessions = allSessions ?? recentSessions
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
 
-  const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
-  const hasMore = (sessions?.length ?? 0) > 5
+  const visibleSessions = showAll && allSessions ? allSessions : sessions?.slice(0, 5)
+  const sessionTotal = allSessions?.length ?? (recentIsCut ? reportedTotal : undefined) ?? recentSessions?.length ?? 0
+  const hasMore = sessionTotal > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
   const avatarState = agentAvatarState(agent, sessions)
   const badgeKind = agentBadgeKind(agent, sessions, isOpen)
@@ -616,15 +626,8 @@ const AgentMenuItemInner = React.forwardRef<
   // Prefetch sessions on hover so expand is instant
   const handleMouseEnter = useCallback(() => {
     if (!isOpen) {
-      queryClient.prefetchQuery({
-        queryKey: ['sessions', agent.slug],
-        queryFn: async () => {
-          const res = await apiFetch(`/api/agents/${agent.slug}/sessions`)
-          if (!res.ok) throw new Error('Failed to fetch sessions')
-          return res.json()
-        },
-        staleTime: 30_000,
-      })
+      // The same bounded read, under the same key, the open row makes.
+      queryClient.prefetchQuery({ ...recentSessionsQueryOptions(queryClient, agent.slug), staleTime: 30_000 })
     }
   }, [isOpen, agent.slug, queryClient])
 
@@ -672,7 +675,7 @@ const AgentMenuItemInner = React.forwardRef<
             isActive={isSelected}
             className={cn('group/agent-row relative h-11 gap-1.5 overflow-visible pl-[50px]', SIDEBAR_FILE_DROP_CUE)}
           >
-            <div {...dragHandlers}>
+            <div {...dragHandlers} ref={rowRef}>
               {/* Stretch the native link across the row; the roster and
                   chevron sit above it as separate interactive controls. */}
               <AppLink
@@ -681,7 +684,7 @@ const AgentMenuItemInner = React.forwardRef<
                 params={{ slug: agent.displaySlug }}
                 data-testid={`agent-item-${agent.slug}`}
                 data-active={isSelected}
-                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-item focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                 {/* The orb is decorative; its state still needs a text equivalent. */}
@@ -703,17 +706,17 @@ const AgentMenuItemInner = React.forwardRef<
                   only (:focus-visible), like the pen: a click on the avatar's
                   chevron leaves focus in the row without showing the pen.
                   Viewers also need room for the options button. */}
-              {isShared && (
-                <SidebarMemberIndicator
-                  agentSlug={agent.slug}
-                  agentName={agent.name}
-                  memberCount={memberCount}
-                  className={cn(
-                    'transition-transform duration-200 ease-out group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
-                    hint === null && 'translate-x-[22px]',
-                  )}
-                />
-              )}
+              {/* Rendered for every row: the stack hides itself unless the agent
+                  has a second person or a member agent. */}
+              <SidebarMemberIndicator
+                agentSlug={agent.slug}
+                agentName={agent.name}
+                memberCount={memberCount}
+                className={cn(
+                  'transition-transform duration-200 ease-out group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
+                  hint === null && 'translate-x-[22px]',
+                )}
+              />
               {/* The 3-dot button and the status slot travel together, so the
                   slot holds the right edge whether or not the button shows
                   (touch never shows it). */}
@@ -786,7 +789,7 @@ const AgentMenuItemInner = React.forwardRef<
                   onClick={handleChevronClick}
                   aria-label={isOpen ? 'Collapse' : 'Expand'}
                   aria-expanded={isOpen}
-                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-control outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
                   <AvatarCutout cutout={avatarCutout}>
                     <AgentAvatar
@@ -827,7 +830,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-12')}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -838,6 +841,7 @@ const AgentMenuItemInner = React.forwardRef<
                         key={artifact.slug}
                         artifact={artifact}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {/* Regular sessions */}
@@ -846,21 +850,27 @@ const AgentMenuItemInner = React.forwardRef<
                         key={session.id}
                         session={session}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {hasMore && (
-                      <SidebarMenuSubItem>
+                      // `!` beats the tree connectors' `[&>li]` rules; pinned, the row covers their gutter and its ::before becomes a blurred fade.
+                      <SidebarMenuSubItem
+                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 mt-4 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
+                      >
                         <SidebarMenuSubButton
                           asChild
                           className="text-muted-foreground"
                         >
                           <button
-                            onClick={() => setShowAll((prev) => !prev)}
-                            className="w-full"
+                            onClick={toggleShowAll}
+                            aria-expanded={showAll}
+                            className="w-full focus-visible:ring-inset"
                           >
                             <span>
-                              {showAll ? 'Show less' : `Show all (${sessions?.length})`}
+                              {showAll ? 'Show less' : `Show all (${sessionTotal})`}
                             </span>
+                            <ChevronDown className={cn('ml-auto !size-3.5 transition-transform', showAll && 'rotate-180')} aria-hidden="true" />
                           </button>
                         </SidebarMenuSubButton>
                       </SidebarMenuSubItem>
@@ -932,7 +942,7 @@ function NotificationsMenuButton() {
   return (
     <SidebarMenuButton asChild data-testid="notifications-button" isActive={isActive}>
       <AppLink to="/notifications">
-        <Bell className="h-4 w-4" />
+        <AnimatedNavIcon name="bell" className="h-4 w-4" />
         <span>Notifications</span>
         {unreadMentions > 0 ? (
           <UnreadDot mention className="ml-auto" />
@@ -960,7 +970,7 @@ function TodoMenuButton() {
   return (
     <SidebarMenuButton asChild data-testid="todo-button" isActive={pathname === '/todo'}>
       <AppLink to="/todo">
-        <ListTodo className="h-4 w-4" />
+        <AnimatedNavIcon name="todo" className="h-4 w-4" />
         <span>Todo</span>
         {needsInput > 0 && (
           <span
@@ -993,7 +1003,7 @@ function TeamBrainMenuButton() {
 
   const label = (
     <>
-      <Brain className="h-4 w-4" />
+      <AnimatedNavIcon name="brain" className="h-4 w-4" />
       <span>Team Brain</span>
       {!seen && !visited && !brainAgent && (
         <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
@@ -1010,7 +1020,7 @@ function TeamBrainMenuButton() {
 }
 
 const userMenuItemClassName =
-  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
+  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-item hover:bg-accent transition-colors disabled:opacity-60'
 
 /**
  * The footer's primary button. With a signed-in user it is their avatar and
@@ -1032,7 +1042,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
         style={{ paddingLeft: AGENT_AVATAR_LEFT }}
         data-testid="settings-button"
       >
-        <Settings className="h-4 w-4" />
+        <AnimatedNavIcon name="settings" className="h-4 w-4" />
         <span>Settings</span>
       </SidebarMenuButton>
     )
@@ -1059,7 +1069,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
           className={userMenuItemClassName}
           data-testid="settings-button"
         >
-          <Settings className="h-4 w-4" />
+          <AnimatedNavIcon name="settings" className="h-4 w-4" />
           Settings
         </button>
         <div className="-mx-1 my-1 h-px bg-border" role="separator" />
@@ -1070,7 +1080,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="sign-out-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Sign out
           </button>
         ) : (
@@ -1085,7 +1095,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="switch-to-local-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Use this computer
           </button>
         )}
@@ -1131,7 +1141,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 function HistoryNavigationButtons() {
   const { canGoBack, canGoForward, back, forward } = useHistoryNavigation()
   const buttonClassName =
-    'h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors ' +
+    'h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground transition-colors ' +
     'hover:bg-foreground/10 hover:text-foreground disabled:cursor-default disabled:text-muted-foreground/30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/30'
 
   return (
@@ -1192,21 +1202,11 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
   const { data: agents, isLoading, error } = useListedAgents()
-  // Whether to offer Explore is two round trips deep — skillsets, and only then
-  // the discoverable agents they contain — so the item arrives after the rest of
-  // the nav and pushes it down on the way in. Remember the last answer for this
-  // Superagent and show that until the real one lands; `null` means "still
-  // asking", which is not the same as "no" and must not render as one.
-  const { data: skillsets } = useSkillsets()
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const marketplaceAnswer =
-    skillsets === undefined
-      ? null
-      : skillsets.length === 0
-        ? false // no skillsets, so the discoverable query never runs at all
-        : discoverableAgents === undefined
-          ? null
-          : discoverableAgents.length > 0
+  // Whether to offer Explore waits on the skillsets, so the item arrives after
+  // the rest of the nav and pushes it down on the way in. Remember the last
+  // answer for this Superagent and show that until the real one lands; `null`
+  // means "still asking", which is not the same as "no" and must not render as one.
+  const marketplaceAnswer = useHasDiscoverableAgents()
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const todoBoardEnabled = useExperiment('todo-board')
   const teamBrainEnabled = useExperiment('team-brain')
@@ -1776,7 +1776,7 @@ export function AppSidebar() {
 
           {isWindowsElectron && (
             <button
-              className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              className="app-no-drag shrink-0 p-0.5 rounded-icon hover:bg-foreground/10 transition-colors cursor-default"
               aria-label="Application menu"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect()
@@ -1801,10 +1801,10 @@ export function AppSidebar() {
                     type="button"
                     onClick={openSearch}
                     aria-label="Search"
-                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground hover:bg-foreground/10 transition-colors"
                     data-testid="search-button"
                   >
-                    <Search className="h-4 w-4 -translate-y-[1px]" />
+                    <AnimatedNavIcon name="search" className="h-4 w-4" style={{ translate: '0 -1px' }} />
                   </button>
                 </TooltipTrigger>
                 {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
@@ -1822,7 +1822,13 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="gap-0 overflow-visible">
+        {/* Everything between the title bar and the footer scrolls as one:
+            the nav rows travel with the agent list rather than pinning above
+            it, so a short window gives the list the full height. */}
+        <SidebarContent
+          className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
+          data-testid="agent-list-scroll"
+        >
           <SidebarGroup className="shrink-0 p-0">
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
@@ -1867,7 +1873,7 @@ export function AppSidebar() {
                     data-testid="home-button"
                   >
                     <AppLink to="/">
-                      <LayoutGrid className="h-4 w-4" />
+                      <AnimatedNavIcon name="home" className="h-4 w-4" />
                       <span>Home</span>
                     </AppLink>
                   </SidebarMenuButton>
@@ -1894,7 +1900,7 @@ export function AppSidebar() {
                       data-testid="marketplace-button"
                     >
                       <AppLink to="/explore">
-                        <Compass className="h-4 w-4" />
+                        <AnimatedNavIcon name="compass" className="h-4 w-4" />
                         <span>Discover New Agents</span>
                       </AppLink>
                     </SidebarMenuButton>
@@ -1906,17 +1912,16 @@ export function AppSidebar() {
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
-                    <Plus className="h-4 w-4" />
+                    {isCreatingAgent
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <AnimatedNavIcon name="plus" className="h-4 w-4" />}
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup
-            className={cn('group/agents-group flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}
-            data-testid="agent-list-scroll"
-          >
+          <SidebarGroup className="group/agents-group shrink-0 p-0">
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (
@@ -2014,7 +2019,7 @@ export function AppSidebar() {
                       data-testid="add-section-button"
                     >
                       <span className="flex shrink-0 items-center">
-                        <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                        <AnimatedNavIcon name="plus" className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
                       </span>
                       <span>Add section</span>
                     </SidebarMenuButton>

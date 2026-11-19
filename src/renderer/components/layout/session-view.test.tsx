@@ -18,10 +18,15 @@ const mocks = vi.hoisted(() => ({
   session: {} as Record<string, unknown>,
   canUseAgent: true,
   commentsEnabled: [] as Array<boolean | undefined>,
+  integrationId: null as string | null,
+  integration: undefined as Record<string, unknown> | undefined,
+  search: {} as Record<string, unknown>,
+  chatColumnProps: undefined as undefined | { messageTarget?: { id: string; onSettled: (outcome: string) => void } },
 }))
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mocks.navigate,
+  useSearch: () => mocks.search,
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -30,6 +35,11 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   // notification read-marking below.
   useSetSessionMarkedUnread: () => ({ mutate: mocks.setMarkedUnread }),
   useClearSessionUnread: () => mocks.clearUnread,
+}))
+
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useSessionAgentIntegrationId: (_slug: string, sessionId: string | null) => ({ data: sessionId ? mocks.integrationId : undefined }),
+  useAgentIntegration: (id: string | null) => ({ data: id ? mocks.integration : undefined }),
 }))
 
 vi.mock('@renderer/hooks/use-notifications', () => ({
@@ -55,7 +65,12 @@ vi.mock('@renderer/hooks/use-session-search', () => ({ useSessionSearch: () => (
 vi.mock('@renderer/components/messages/session-search-bar', () => ({
   SessionSearchBar: () => null,
 }))
-vi.mock('./session-chat-column', () => ({ SessionChatColumn: () => null }))
+vi.mock('./session-chat-column', () => ({
+  SessionChatColumn: (props: NonNullable<typeof mocks.chatColumnProps>) => {
+    mocks.chatColumnProps = props
+    return null
+  },
+}))
 vi.mock('@renderer/context/file-preview-context', () => ({
   FilePreviewProvider: ({ children, commentsEnabled }: { children: ReactNode; commentsEnabled?: boolean }) => {
     mocks.commentsEnabled.push(commentsEnabled)
@@ -151,6 +166,41 @@ describe('SessionView widget repair provenance', () => {
   })
 })
 
+describe('SessionView agent integration provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = { id: 'int-session', agentSlug: 'target-agent', name: 'Dana' }
+    mocks.integrationId = 'int-1'
+    mocks.integration = { id: 'int-1', provider: 'slack', name: 'Support bot' }
+  })
+
+  it('names the integration and returns to its open conversation', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="int-session" />)
+
+    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from Slack integration "Support bot"')
+    fireEvent.click(screen.getByTestId('integration-session-back-button'))
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/chat/$integrationId',
+      params: { slug: 'target-agent', integrationId: 'int-1' },
+      search: { session: 'int-session' },
+    })
+  })
+
+  it('still offers the way back before the integration loads', () => {
+    mocks.integration = undefined
+    render(<SessionView agentSlug="target-agent" sessionId="int-session" />)
+
+    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from agent integration')
+  })
+
+  it('draws no integration bar for an ordinary session', () => {
+    mocks.integrationId = null
+    render(<SessionView agentSlug="target-agent" sessionId="s1" />)
+
+    expect(screen.queryByTestId('integration-session-banner')).toBeNull()
+  })
+})
+
 describe('SessionView fork provenance', () => {
   it('draws no header bar for a fork; the thread marks the fork point instead', () => {
     mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' }
@@ -188,5 +238,30 @@ describe('SessionView file comments', () => {
     render(<SessionView agentSlug="target-agent" sessionId="s1" />)
 
     expect(mocks.commentsEnabled.at(-1)).toBe(true)
+  })
+})
+
+describe('SessionView mention landing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = xAgentSession
+    mocks.search = { message: 'msg-7' }
+  })
+
+  it('hands the message to the transcript, then drops it from the URL', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+    expect(mocks.chatColumnProps?.messageTarget?.id).toBe('msg-7')
+
+    mocks.chatColumnProps!.messageTarget!.onSettled('landed')
+    expect(mocks.navigate).toHaveBeenCalledWith(expect.objectContaining({ to: '.', replace: true }))
+    // Only the message leaves the URL.
+    const { search } = mocks.navigate.mock.calls.at(-1)![0] as { search: (prev: Record<string, unknown>) => Record<string, unknown> }
+    expect(search({ message: 'msg-7', other: 1 })).toEqual({ message: undefined, other: 1 })
+  })
+
+  it('asks the transcript for nothing without a message in the URL', () => {
+    mocks.search = {}
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+    expect(mocks.chatColumnProps?.messageTarget).toBeUndefined()
   })
 })

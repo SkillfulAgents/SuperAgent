@@ -1,14 +1,18 @@
 import { SessionChatColumn } from './session-chat-column'
+import { pickRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
-import { CalendarClock, GitFork, Wrench, Zap } from 'lucide-react'
+import { CalendarClock, GitFork, Plug, Wrench, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
-import { useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
 import { HttpError } from '@renderer/lib/api'
 import { SessionNotFound } from '@renderer/router/route-fallbacks'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import type { MessageTarget } from '@renderer/components/messages/locate-message'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
+import { useAgentIntegration, useSessionAgentIntegrationId } from '@renderer/hooks/use-agent-integrations'
+import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
 import { usePendingMessages, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -37,6 +41,8 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
   useRenderTracker('SessionView')
   const navigate = useNavigate()
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
+  const { data: integrationId } = useSessionAgentIntegrationId(agentSlug, sessionId)
+  const { data: integration } = useAgentIntegration(integrationId ?? null)
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const clearSessionUnread = useClearSessionUnread()
@@ -51,6 +57,17 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
   const { canUseAgent } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const search = useSessionSearch(!!sessionId, sessionId)
+
+  // A mention's click target: the transcript lands on that message once, then the URL drops it.
+  const routeSearch: { message?: unknown } = useSearch({ strict: false })
+  const targetMessageId = typeof routeSearch.message === 'string' ? routeSearch.message : undefined
+  const settleTarget = useCallback(() => {
+    void navigate({ to: '.', search: (prev: Record<string, unknown>) => ({ ...prev, message: undefined }), replace: true })
+  }, [navigate])
+  const messageTarget = useMemo<MessageTarget | undefined>(
+    () => (targetMessageId ? { id: targetMessageId, onSettled: settleTarget } : undefined),
+    [targetMessageId, settleTarget],
+  )
 
   // Context usage: prefer live stream data, fall back to persisted session metadata
   const contextUsage = sessionId ? streamContextUsage ?? session?.lastUsage ?? null : null
@@ -135,6 +152,24 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
           }}
         />
       )}
+      {sessionId && integrationId && (
+        <SessionProvenanceBanner
+          icon={Plug}
+          text={<>Session from {integration ? `${formatProviderName(integration.provider)} integration${integration.name ? ` "${integration.name}"` : ''}` : 'agent integration'}</>}
+          back={{
+            label: 'View integration',
+            onClick: () => {
+              void navigate({
+                to: '/agents/$slug/chat/$integrationId',
+                params: { slug: agentSlug, integrationId },
+                search: { session: sessionId },
+              })
+            },
+            testId: 'integration-session-back-button',
+          }}
+          testId="integration-session-banner"
+        />
+      )}
       {session?.isWidgetRepair && (
         <SessionProvenanceBanner
           icon={Wrench}
@@ -164,7 +199,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
         />
       )}
 
-      <FilePreviewProvider commentsEnabled={!isViewOnly}>
+      <FilePreviewProvider sessionAgentSlug={agentSlug} commentsEnabled={!isViewOnly}>
         <WorkflowProvider>
           <div className="flex-1 flex flex-col min-h-0">
             {sessionId && <SessionSearchBar search={search} />}
@@ -176,9 +211,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
               pendingUserMessages={getPendingMessages(sessionId)}
               isViewOnly={isViewOnly}
               contextPercent={contextPercent}
-              effort={session?.effort}
-              speed={session?.speed}
-              model={session?.model} llmProviderId={session?.llmProviderId}
+              runtimeOptions={session ? pickRuntimeOptions(session) : undefined}
               onPendingMessageAppeared={onPendingMessageAppeared}
               onMessageSent={onMessageSent}
               onMessageUuidAssigned={onMessageUuidAssigned}
@@ -188,6 +221,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
               pendingWakeAt={session?.pendingWakeAt}
               pendingWakeTaskId={session?.pendingWakeTaskId}
               pendingWakeNote={session?.pendingWakeNote}
+              messageTarget={messageTarget}
             />
           </div>
         </WorkflowProvider>

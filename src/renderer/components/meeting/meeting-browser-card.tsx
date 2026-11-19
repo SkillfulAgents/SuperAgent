@@ -29,10 +29,10 @@ export function MeetingBrowserCard({ agentSlug, sessionId, isActive, width }: Me
   const pageUrl = stream.pageUrl || viewingTab?.url || ''
   return (
     <div className="flex shrink-0 flex-col" style={{ width }} data-testid="meeting-browser">
-      <div className="rounded-t-lg bg-muted/60">
+      <div className="rounded-t-card bg-muted/60">
         <BrowserTabBar tabs={stream.tabs} viewingTargetId={stream.viewingTargetId} onTabClick={stream.handleTabClick} />
       </div>
-      <div className="flex flex-col rounded-b-lg border border-white/10 bg-background shadow-2xl">
+      <div className="flex flex-col rounded-b-card border border-white/10 bg-background shadow-2xl">
         <BrowserToolbar
           url={pageUrl}
           canGoBack={stream.canGoBack}

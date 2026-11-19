@@ -140,7 +140,7 @@ export function BedrockCredentialsInput({
       </div>
 
       {showNotConfiguredAlert && !apiKeyStatus?.isConfigured && (
-        <div className="flex gap-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+        <div className="flex gap-2 rounded-item bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
           <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <p>No Bedrock credentials configured. Enter a Bedrock API Key or AWS credentials below.</p>
         </div>

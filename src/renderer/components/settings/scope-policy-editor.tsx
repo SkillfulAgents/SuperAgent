@@ -36,6 +36,7 @@ import {
 } from '@renderer/components/ui/collapsible'
 import { cn } from '@shared/lib/utils/cn'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
+import { useUserSettings } from '@renderer/hooks/use-user-settings'
 
 type PolicyDecision = 'allow' | 'review' | 'block' | 'default'
 
@@ -73,6 +74,13 @@ const emptyLabelDefaults: Record<ScopeLabel, PolicyDecision> = {
  * the editor has unsaved changes. Defaults are dropped (they're never written)
  * and entries are sorted so order doesn't affect the comparison.
  */
+/** What applies below the risk groups: the account fallback when set, else the global API policy. */
+function fallbackFrom(accountDefault: PolicyDecision, globalPolicy: 'allow' | 'review' | 'block' | undefined) {
+  return accountDefault !== 'default'
+    ? { inheritedValue: accountDefault, inheritedLabel: 'from fallback' }
+    : { inheritedValue: globalPolicy, inheritedLabel: 'default' }
+}
+
 function serializePolicies(entries: Iterable<readonly [string, string]>): string {
   return JSON.stringify(
     [...entries].filter(([, decision]) => decision !== 'default').sort(([a], [b]) => a.localeCompare(b)),
@@ -194,7 +202,7 @@ export function ScopePolicyFilterControls({
                 setFilterMenuOpen(false)
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted',
+                'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted',
                 decisionFilter === value && 'bg-muted',
               )}
             >
@@ -371,10 +379,13 @@ export function ScopePolicyEditorBody({
   const setLabelDefault = (label: ScopeLabel, decision: PolicyDecision) =>
     setLabelDefaults((prev) => ({ ...prev, [label]: decision }))
 
-  /** What a scope in this group inherits, or undefined when the group is itself on 'default'. */
+  const { data: userSettings } = useUserSettings()
+  const fallback = fallbackFrom(accountDefault, userSettings?.defaultApiPolicy)
+
+  /** What a scope in this group inherits: the group, else the account fallback. */
   const inheritedFor = (label: ScopeLabel): 'allow' | 'review' | 'block' | undefined => {
     const d = labelDefaults[label]
-    return d === 'default' ? undefined : d
+    return d === 'default' ? fallback.inheritedValue : d
   }
 
   const setOpenGroup = (key: string, open: boolean) =>
@@ -480,7 +491,7 @@ export function ScopePolicyEditorBody({
   return (
     <div className="flex flex-col gap-3 min-h-0 flex-1">
       {fetchError && (
-        <div className="mx-3 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-md px-2 py-1.5">
+        <div className="mx-3 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-item px-2 py-1.5">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           {fetchError}
         </div>
@@ -540,6 +551,8 @@ export function ScopePolicyEditorBody({
                     </CollapsibleTrigger>
                     <PolicyDecisionDropdown
                       value={labelDefaults[g.key]}
+                      {...fallback}
+                      className="w-60"
                       onChange={(v) => setLabelDefault(g.key, v)}
                     />
                   </div>
@@ -573,10 +586,9 @@ export function ScopePolicyEditorBody({
                     </span>
                   </CollapsibleTrigger>
                 </div>
-                {/* Unlabeled scopes belong to no risk group, so there is no
-                    group decision for them to inherit — they show only their own. */}
+                {/* Unlabeled scopes belong to no risk group, so they inherit the fallback directly. */}
                 <CollapsibleContent className="divide-y divide-border/50">
-                  {groupedPolicies.other.map((p) => renderRow(p))}
+                  {groupedPolicies.other.map((p) => renderRow(p, fallback.inheritedValue))}
                 </CollapsibleContent>
               </Collapsible>
             )}
@@ -596,6 +608,7 @@ export function ScopePolicyEditorBody({
         <div className="shrink-0">
           <PolicyDecisionToggle
             value={accountDefault}
+            inheritedValue={userSettings?.defaultApiPolicy}
             onChange={(v) => setAccountDefault(v)}
           />
         </div>
@@ -665,7 +678,7 @@ export function ScopePolicySection({
         <h3 className="text-xs font-normal text-muted-foreground shrink-0">{title}</h3>
         {hasScopes && <ScopePolicyFilterControls filters={filters} className="flex-1" />}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-background py-2">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border bg-background py-2">
         <ScopePolicyEditorBody
           accountId={accountId}
           toolkit={toolkit}

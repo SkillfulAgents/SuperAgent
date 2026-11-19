@@ -127,7 +127,7 @@ function FolderDirectory({ folder, path, depth, useEntries, onToggle, onOpenFile
                 <button
                   type="button"
                   className={cn(
-                    'flex h-7 w-full items-center gap-1.5 rounded pr-2 text-left text-xs hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'flex h-7 w-full items-center gap-1.5 rounded-item pr-2 text-left text-xs hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     selected && 'bg-muted',
                   )}
                   style={{ paddingLeft: `${entryDepth * 16 + 10}px` }}
@@ -166,7 +166,7 @@ function FolderDirectory({ folder, path, depth, useEntries, onToggle, onOpenFile
             <button
               type="button"
               className={cn(
-                'flex h-7 w-full items-center gap-1.5 rounded pr-2 text-left text-xs hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                'flex h-7 w-full items-center gap-1.5 rounded-item pr-2 text-left text-xs hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 selected && 'bg-muted',
               )}
               style={{ paddingLeft: `${entryDepth * 16 + 30}px` }}
@@ -203,7 +203,7 @@ export function DirectoryBrowser({ folder, onQueryChange, ...props }: DirectoryB
           onChange={event => onQueryChange(event.target.value)}
           placeholder="Filter files..."
           aria-label="Filter files"
-          className="h-8 rounded-lg pl-8 text-xs"
+          className="h-8 rounded-control pl-8 text-xs"
         />
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-1 pb-2">

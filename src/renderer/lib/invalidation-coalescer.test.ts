@@ -41,6 +41,20 @@ describe('createInvalidationCoalescer', () => {
     ])
   })
 
+  it('passes an exact request through, once per batch', () => {
+    const { client, invalidateQueries } = fakeClient()
+    const batch = createInvalidationCoalescer(client, 500)
+
+    batch.invalidate(['agents'], { exact: true })
+    batch.invalidate(['agents'], { exact: true })
+    batch.invalidate(['agents', 'a'], { exact: true })
+    vi.advanceTimersByTime(500)
+    expect(invalidateQueries.mock.calls).toEqual([
+      [{ queryKey: ['agents'], exact: true }],
+      [{ queryKey: ['agents', 'a'], exact: true }],
+    ])
+  })
+
   it('starts a new window after a flush', () => {
     const { client, invalidateQueries } = fakeClient()
     const batch = createInvalidationCoalescer(client, 500)

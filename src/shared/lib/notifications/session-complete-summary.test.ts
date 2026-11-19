@@ -8,23 +8,16 @@ const mocks = vi.hoisted(() => ({
   findLastSessionEntry: vi.fn(),
   getConfiguredLlmClient: vi.fn(() => ({ messages: {} })),
   createSummarizerText: vi.fn(),
-  resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
-  getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
   captureException: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/session-service', () => ({
   findLastSessionEntry: mocks.findLastSessionEntry,
 }))
+// The client and the summarizer model come from one helper setup.
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  getConfiguredLlmClient: mocks.getConfiguredLlmClient,
+  getConfiguredLlmClientAndModel: async () => ({ client: mocks.getConfiguredLlmClient(), model: 'resolved-summarizer' }),
   createSummarizerText: mocks.createSummarizerText,
-}))
-vi.mock('@shared/lib/llm-provider', () => ({
-  resolveActiveProviderModel: mocks.resolveActiveProviderModel,
-}))
-vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: mocks.getEffectiveModels,
 }))
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: mocks.captureException,
@@ -165,12 +158,9 @@ describe('buildSessionCompleteBody', () => {
       }),
     ).resolves.toBe('Shipped: notifications now show the final answer.')
 
-    expect(mocks.resolveActiveProviderModel).toHaveBeenCalledWith(
-      'configured-summarizer',
-      'summarizer',
-    )
     expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
     const request = mocks.createSummarizerText.mock.calls[0][1]
+    expect(request.model).toBe('resolved-summarizer')
     const suppliedContext = JSON.parse(request.messages[0].content as string)
     expect(suppliedContext).toEqual({
       userRequest: 'Please ship the finished-notification change.',

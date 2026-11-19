@@ -73,7 +73,14 @@ describe('generateSystemPrompt rendering', () => {
 
   it('marks read-only drives and leaves the others as they were', () => {
     vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Team', path: '/mounts/team', readOnly: true }, { name: 'Notes', path: '/mounts/notes', readOnly: false }])
-    expect(generateSystemPrompt()).toContain('## Mounted Drives\n\n- "Team" at "/mounts/team" (read only)\n- "Notes" at "/mounts/notes"\n')
+    expect(generateSystemPrompt()).toContain('## Mounted Drives\n\n- "Team" at "/mounts/team" (read only)\n- "Notes" at "/mounts/notes"\nThese are the only drives')
+  })
+
+  it("labels each drive that has a note and says each type's note once", () => {
+    const repo = (name: string, sourceLabel: string) => ({ name, path: `/mounts/${name}`, readOnly: false, sourceLabel, agentNote: 'Writes are commits.' })
+    vi.mocked(mountedDrives).mockReturnValueOnce([repo('core', 'GitHub · a/b@main/core'), repo('docs', 'GitHub · a/b@main/docs"\n## Directive'), { name: 'Notes', path: '/mounts/notes', readOnly: false }])
+    expect(generateSystemPrompt()).toContain('## Mounted Drives\n\n- "core" at "/mounts/core": "GitHub · a/b@main/core"\n' +
+      '- "docs" at "/mounts/docs": "GitHub · a/b@main/docs\\"\\n## Directive"\n- "Notes" at "/mounts/notes"\nWrites are commits.\nThese are the only drives')
   })
 
   // A prompt change anywhere invalidates the prompt cache from that point on,
@@ -345,7 +352,9 @@ describe('generateSystemPrompt rendering', () => {
     }
     const shipped = readdirSync(join(__dirname, '..', 'docs'))
       .filter(name => name.endsWith('.md') && name !== 'README.md')
-    expect([...referenced].sort()).toEqual(shipped.sort())
+    // Every top-level guide is reachable from the prompt; a guide's own
+    // references (computer-use/macos.md) may be named too, and exist (above).
+    expect([...referenced].filter(path => !path.includes('/')).sort()).toEqual(shipped.sort())
   })
 
   // Same failure as a missing guide, one step worse: the agent runs the command
@@ -363,7 +372,8 @@ describe('generateSystemPrompt rendering', () => {
       for (const match of source.matchAll(/\/opt\/gamut\/bin\/([\w.-]+)/g)) referenced.add(match[1])
     }
 
-    const shipped = readdirSync(join(__dirname, '..', 'bin'))
+    // gamut_host.py is the module the helpers import to reach the app, not a command.
+    const shipped = readdirSync(join(__dirname, '..', 'bin')).filter((name) => name !== 'gamut_host.py')
     expect([...referenced].sort()).toEqual(shipped.sort())
   })
 
@@ -411,8 +421,8 @@ describe('generateSystemPrompt rendering', () => {
     ]
 
     for (const file of files) {
-      // `/settings/<tab>` and `/agents/<slug>` are in-app routes (in-app-links.md), not files.
-      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#|\/settings\/|\/agents\/)([^)]+)\)/g)) {
+      // `/settings/<tab>` and `/agents/<slug>` are in-app routes, and `/workspace/` and `/mounts/` are agent files (in-app-links.md), not docs.
+      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#|\/settings\/|\/agents\/|\/workspace\/|\/mounts\/)([^)]+)\)/g)) {
         const target = join(dirname(file), match[1])
         expect(existsSync(target), `${basename(file)} links to missing ${match[1]}`).toBe(true)
       }

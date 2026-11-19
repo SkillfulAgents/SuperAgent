@@ -73,7 +73,7 @@ export interface AgentDropdownProps {
 
 // Inline, the popover's parts become a plain bordered box around the same list.
 const InlineRoot = ({ children }: ComponentProps<typeof Popover>) => <>{children}</>
-const InlineContent = ({ children }: ComponentProps<typeof PopoverContent>) => <div className="overflow-hidden rounded-md border">{children}</div>
+const InlineContent = ({ children }: ComponentProps<typeof PopoverContent>) => <div className="overflow-hidden rounded-card border">{children}</div>
 
 /**
  * Pick an agent: a searchable list in the sidebar's order, with its folders
@@ -214,7 +214,7 @@ export function AgentDropdown({
                     onClick={() => pick(agent)}
                     onKeyDown={(e) => { if (e.key === 'Enter') pick(agent) }}
                     className={cn(
-                      'flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm',
+                      'flex cursor-pointer items-center gap-2 rounded-item px-2 py-1.5 text-sm',
                       i === active && 'bg-accent text-accent-foreground',
                     )}
                     data-testid={`${testId}-option-${agent.slug}`}
@@ -241,7 +241,7 @@ export function AgentDropdown({
               onClick={pickNew}
               onKeyDown={(e) => { if (e.key === 'Enter') pickNew() }}
               className={cn(
-                'flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm',
+                'flex cursor-pointer items-center gap-2 rounded-item px-2 py-1.5 text-sm',
                 active === newIndex && 'bg-accent text-accent-foreground',
               )}
               data-testid={`${testId}-new`}

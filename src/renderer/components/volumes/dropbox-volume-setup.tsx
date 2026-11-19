@@ -22,6 +22,7 @@ const dropboxFolders: VolumeFolderSource<string> = {
     return [{ name: 'Dropbox', cursor: '' }, ...names.map((name, index) => ({ name, cursor: `/${names.slice(0, index + 1).join('/')}` }))]
   },
   confirmLabel: path => path ? `Use “${path.split('/').at(-1)}”` : 'Use all of Dropbox',
+  canCreate: () => true,
 }
 
 function DropboxVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, error, clearError, attachToAgent }: VolumeSetupProps) {

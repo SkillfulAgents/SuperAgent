@@ -7,6 +7,8 @@
 #     user turned off the app's notifications.
 #   - Glass (native/macos/GlassBridge.swift) draws Liquid Glass behind the
 #     quick-dispatch launcher.
+#   - WebAuth (native/macos/WebAuthBridge.swift) signs in through
+#     ASWebAuthenticationSession, which the Mac App Store build uses.
 #
 # Usage: ./scripts/build-spotlight-bridge.sh
 # Needs: macOS with the Xcode command line tools. A no-op elsewhere.
@@ -15,6 +17,7 @@
 #   build/spotlight-bridge/libSpotlightBridge.dylib         (arm64 + x86_64)
 #   build/notification-bridge/libNotificationBridge.dylib   (arm64 + x86_64)
 #   build/glass-bridge/libGlassBridge.dylib                 (arm64 + x86_64)
+#   build/web-auth-bridge/libWebAuthBridge.dylib            (arm64 + x86_64)
 
 set -euo pipefail
 
@@ -34,6 +37,7 @@ BRIDGES="
 SpotlightBridge|CoreSpotlight|spotlight-bridge
 NotificationBridge|UserNotifications|notification-bridge
 GlassBridge|AppKit|glass-bridge
+WebAuthBridge|AuthenticationServices|web-auth-bridge
 "
 
 WORK_DIR="$(mktemp -d)"

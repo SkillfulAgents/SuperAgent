@@ -54,7 +54,7 @@ export function meetingAvailability(hasBotService: boolean): boolean {
 export async function meetingLiveSettingFor(externalId: string, settings: Pick<MeetingIntegrationSettings, 'instructions' | 'voice'>): Promise<LiveConversationSetting | undefined> {
   const meeting = await getMeeting(externalId)
   if (!meeting) return undefined
-  return meetingLiveSetting(meeting, meetingRoster.get(meeting.id).participants, settings)
+  return meetingLiveSetting(meeting, (await meetingRoster.get(meeting.id)).participants, settings)
 }
 
 /**
@@ -67,7 +67,7 @@ export async function leaveOpenMeetings(integrationId: string, host: MeetingBotH
     try {
       if (meeting.botId) await host.leaveCall(meeting.botId)
       await transitionMeeting(meeting.id, 'ended', reason)
-      meetingRoster.clear(meeting.id)
+      await meetingRoster.clear(meeting.id)
     } catch (error) {
       captureException(error, { tags: { component: 'meeting-integration', operation: 'leave-on-cleanup' }, extra: { meetingId: meeting.id } })
     }

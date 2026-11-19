@@ -1,13 +1,14 @@
 import { Menu, BrowserWindow, app, nativeImage } from 'electron'
 import path from 'path'
 import type { ApiTarget } from '@shared/lib/api-target'
-import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
+import type { ActivityStatus, AgentInfo } from './agent-status'
+import { agentStatusSource } from './agent-status-source'
+import { exportVaultKey } from './keys/vault-key-export'
 
 let mainWindowRef: BrowserWindow | null = null
-// A getter rather than a stored URL: in cloud mode the effective base is the
-// keyed proxy prefix, and which one is in force can change on a target switch.
-let getApiBaseUrlRef: (() => string) | null = null
-let updateInterval: NodeJS.Timeout | null = null
+// The Agents submenu draws the shared agent list (agent-status-source.ts) and
+// is told when it changes; the menu neither fetches nor polls.
+let unsubscribe: (() => void) | null = null
 
 /**
  * Menu commands that fired while the window was closed (app still in the
@@ -106,21 +107,9 @@ export function sendMenuCommand(command: PendingMenuCommand): void {
 }
 
 /**
- * Builds overlap: the 30s poll and the target-switch refresh both come through
- * buildAppMenu, and the base URL is sampled before the await. Without this a
- * slow response from the previous target could land after the switch refresh
- * painted the new one and overwrite it. Last started wins.
+ * Build and set the application menu for an agent list
  */
-let buildGeneration = 0
-
-/**
- * Build and set the application menu
- */
-async function buildAppMenu(): Promise<void> {
-  const generation = ++buildGeneration
-  const agents = getApiBaseUrlRef ? await fetchAgentsWithStatus(getApiBaseUrlRef()) : []
-  if (generation !== buildGeneration) return
-
+function buildAppMenu(agents: AgentInfo[]): void {
   // Group agents by status
   const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
   const working = agents.filter(a => a.activityStatus === 'working')
@@ -215,6 +204,16 @@ async function buildAppMenu(): Promise<void> {
           accelerator: 'CmdOrCtrl+N',
           click: () => sendMenuCommand({ channel: 'open-create-agent' }),
         },
+        { type: 'separator' as const },
+        {
+          // Main process end to end: the key never reaches a renderer.
+          label: 'Export Browser Vault Key…',
+          click: () => {
+            exportVaultKey(mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null).catch((error) => {
+              console.error('[keys] Exporting the vault key failed:', error instanceof Error ? error.message : error)
+            })
+          },
+        },
         ...(!isMac ? [
           { type: 'separator' as const },
           {
@@ -277,33 +276,13 @@ async function buildAppMenu(): Promise<void> {
 }
 
 /**
- * Create the application menu and start periodic updates
+ * Create the application menu. It is built when the first agent list arrives
+ * (an unreachable API lists no agents), and again whenever the list changes.
  */
-export function createAppMenu(
-  mainWindow: BrowserWindow | null,
-  getApiBaseUrl: () => string
-): void {
+export function createAppMenu(mainWindow: BrowserWindow | null): void {
   mainWindowRef = mainWindow
-  getApiBaseUrlRef = getApiBaseUrl
-
-  // Initial build
-  refreshAppMenu()
-
-  // Update periodically to refresh agent list (every 30s, same as tray)
-  updateInterval = setInterval(() => {
-    refreshAppMenu()
-  }, 30000)
-}
-
-/**
- * Rebuild the menu now instead of waiting out the poll. Called on a target
- * switch, where the 30s interval would leave the previous Superagent's agents
- * in the Agents menu.
- */
-export function refreshAppMenu(): void {
-  buildAppMenu().catch((error) => {
-    console.error('Failed to build app menu:', error)
-  })
+  unsubscribe?.()
+  unsubscribe = agentStatusSource.subscribe(buildAppMenu)
 }
 
 /**
@@ -314,11 +293,9 @@ export function updateAppMenuWindow(mainWindow: BrowserWindow | null): void {
 }
 
 /**
- * Clean up the app menu update interval
+ * Stop following the agent list
  */
 export function destroyAppMenu(): void {
-  if (updateInterval) {
-    clearInterval(updateInterval)
-    updateInterval = null
-  }
+  unsubscribe?.()
+  unsubscribe = null
 }

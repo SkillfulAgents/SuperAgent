@@ -68,6 +68,26 @@ describe('createAgentAccessGate', () => {
     expect(delivered).toEqual([about('mine', 1), general(3)])
   })
 
+  it('is ready once the first load has released what it held, and also after a failed one', async () => {
+    const { gate, loads, delivered } = setup()
+    let ready = false
+    const settled = gate.ready.then(() => {
+      ready = true
+    })
+    gate.push(about('mine', 1))
+    await flush()
+    expect(ready).toBe(false)
+
+    await loads.answer(['mine'])
+    await settled
+    expect(delivered).toEqual([about('mine', 1)])
+
+    const failing = setup()
+    await failing.loads.fail(new Error('database is locked'))
+    await expect(failing.gate.ready).resolves.toBeUndefined()
+    expect(failing.onLoadError).toHaveBeenCalledTimes(1)
+  })
+
   it('judges events synchronously once loaded', async () => {
     const { gate, loads, delivered } = setup()
     await loads.answer(['mine'])

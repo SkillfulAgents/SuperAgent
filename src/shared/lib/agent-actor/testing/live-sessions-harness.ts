@@ -112,7 +112,7 @@ export function attachLiveSessionsHarness(
   const containerFetch = vi.fn<ContainerClient['fetch']>(answerFetch)
   const runtime = {
     containerFetch,
-    client: () => ({ fetch: containerFetch }) as unknown as ContainerClient,
+    client: async () => ({ fetch: containerFetch }) as unknown as ContainerClient,
     fatalResult: vi.fn<SessionsRuntime['fatalResult']>(deferToClient),
     unexpectedDeath: vi.fn<SessionsRuntime['unexpectedDeath']>(),
     stopAfterFatalError: vi.fn<SessionsRuntime['stopAfterFatalError']>(),

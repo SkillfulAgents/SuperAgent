@@ -816,7 +816,21 @@ describe('ReviewManager', () => {
       expect(await promise).toEqual({ decision: 'deny' })
     })
 
-    it('message-policy allow sweeps leave attachment reviews pending', async () => {
+    it('an "all agents" allow sweep decides a rechecking agent review again, and leaves it open on review', async () => {
+      const reviews = agents.get('caller').reviews
+      const reevaluate = vi.fn(async () => 'review' as const)
+      const decision = awaitReview(reviews, (options) => reviews.requestXAgent({ targetAgentSlug: 'target', targetAgentName: 'Target', operation: 'read' }, options), { reevaluate })
+      await vi.waitFor(() => expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(1))
+
+      manager.resolveMatchingXAgentByOperation('caller', 'read', 'allow')
+
+      await vi.waitFor(() => expect(reevaluate).toHaveBeenCalledOnce())
+      expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(1)
+      manager.submitDecision('caller', manager.getPendingReviewsForAgent('caller')[0].id, 'deny')
+      await expect(decision).resolves.toEqual({ decision: 'deny' })
+    })
+
+    it('message-policy allow sweeps settle attachment reviews', async () => {
       const plain = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'plain message')
       const attachment = manager.requestXAgentReview(
         'caller',
@@ -830,11 +844,8 @@ describe('ReviewManager', () => {
       manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
 
       await expect(plain).resolves.toEqual({ decision: 'allow' })
-      const pending = manager.getPendingReviewsForAgent('caller')
-      expect(pending).toHaveLength(1)
-      expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
-      manager.submitDecision('caller', pending[0].id, 'allow')
       await expect(attachment).resolves.toEqual({ decision: 'allow' })
+      expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
     })
 
     it.each(['scope', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {
@@ -1052,8 +1063,8 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
 
   it('keeps no reason for a deny on a review nobody waits on', async () => {
     registerRegistryOnlyReview('registry-review-5')
-    expect(manager.submitDecision('adapter-agent', 'registry-review-5', 'deny', 'Not that inbox')).toBe(true)
-    await expect(manager.takeDenyReason('adapter-agent', 'registry-review-5')).resolves.toBeUndefined()
+    expect(manager.submitDecision('adapter-agent', 'registry-review-5', 'deny', { reason: 'Not that inbox' })).toBe(true)
+    await expect(manager.takeDecisionDetail('adapter-agent', 'registry-review-5')).resolves.toEqual({})
   })
 
   it('denyAllForAgent sweeps registry-only review entries', () => {

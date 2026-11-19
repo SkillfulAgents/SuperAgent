@@ -27,6 +27,8 @@ import { ArrowRight, Loader2, Plus, Search, SearchX } from 'lucide-react'
 import { IntegrationList, IntegrationRow } from './integration-row'
 import { mcpDraftSchema, type McpDraft, type McpAuthType } from './mcp-draft-schema'
 import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
+import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
 import {
   useAddRemoteMcp,
   useInitiateMcpOAuth,
@@ -98,7 +100,7 @@ function CrossDirectoryHint({ count, noun, query, onSeeAll }: {
       type="button"
       onClick={onSeeAll}
       data-testid="directory-see-all"
-      className="relative -mt-3 flex w-full items-center justify-between gap-2 rounded-b-lg bg-[#E5F2FF] px-3 pb-2 pt-5 text-left text-[11px] text-[#0A7CFF] transition-opacity hover:opacity-80"
+      className="relative -mt-3 flex w-full items-center justify-between gap-2 rounded-b-card bg-[#E5F2FF] px-3 pb-2 pt-5 text-left text-[11px] text-[#0A7CFF] transition-opacity hover:opacity-80"
     >
       <span className="truncate">{`${count} ${noun}${count === 1 ? ' matches' : 's match'} \u201C${query}\u201D.`}</span>
       <span className="flex items-center gap-1 font-medium shrink-0">
@@ -113,7 +115,7 @@ function CrossDirectoryHint({ count, noun, query, onSeeAll }: {
 // chips already carry the "nothing here, try this instead" message.
 function DirectoryFooterNote({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('rounded-lg bg-[#E5F2FF] px-3 py-2.5 text-[11px] text-[#0A7CFF]', className)}>
+    <div className={cn('rounded-card bg-[#E5F2FF] px-3 py-2.5 text-[11px] text-[#0A7CFF]', className)}>
       {children}
     </div>
   )
@@ -127,9 +129,9 @@ function DirectoryEmptyState({ noun, query, chin }: { noun: string; query: strin
     <div className="relative">
       {/* bg-background under the muted tint keeps this layer opaque, so the
           chin tucked behind it can't bleed through. */}
-      <div className="relative z-10 rounded-lg border bg-background shadow-sm">
-        <div className="flex items-center gap-3 rounded-lg bg-muted/50 p-3">
-          <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0">
+      <div className="relative z-10 rounded-card border bg-background shadow-sm">
+        <div className="flex items-center gap-3 rounded-card bg-muted/50 p-3">
+          <div className="h-7 w-7 rounded-control bg-muted flex items-center justify-center shrink-0">
             <SearchX className="h-4 w-4 text-muted-foreground/60" />
           </div>
           <div className="min-w-0 flex-1">
@@ -300,11 +302,13 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           description="The most reliable and robust connections — check here first."
         />
       )}
-      {error && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
-          {error}
+      {error && (resolveAgentRuntimeErrorPreview(error) ? (
+        <AgentRuntimeErrorView error={error} />
+      ) : (
+        <div className="rounded-item border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+          {error.message}
         </div>
-      )}
+      ))}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -578,7 +582,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           />
         )}
         {error && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+          <div className="rounded-item border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
             {error}
           </div>
         )}
@@ -613,9 +617,9 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   ) => {
     const isExpanded = draft?.sourceSlug === sourceSlug
     return (
-      <div key={sourceSlug} className="rounded-lg border bg-background p-3 space-y-3">
+      <div key={sourceSlug} className="rounded-card border bg-background p-3 space-y-3">
         <div className="flex items-center gap-3">
-          <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0">
+          <div className="h-7 w-7 rounded-control bg-muted flex items-center justify-center shrink-0">
             <ServiceIcon slug={iconSlug} fallback={iconFallback} className="h-4 w-4 text-muted-foreground/60" />
           </div>
           <div className="min-w-0 flex-1">
@@ -664,7 +668,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
         />
       )}
       {error && !draft && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+        <div className="rounded-item border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
         </div>
       )}

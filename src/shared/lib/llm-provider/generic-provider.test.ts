@@ -1,12 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The provider reads settings for its key/baseURL and the model catalog for its
-// (empty) built-in list; stub both so tests are deterministic.
+// The provider reads settings for its key/baseURL; stub them so tests are
+// deterministic. Its default model comes from the catalog settings it is given.
 const settingsMock = vi.fn()
-const catalogMock = vi.fn()
 vi.mock('../config/settings', () => ({
-  getSettings: () => settingsMock(),
-  getModelCatalogSettings: () => catalogMock(),
+  getSettings: async () => settingsMock(),
 }))
 
 // Capture SDK construction + intercept messages.create for validateKey.
@@ -34,7 +32,6 @@ beforeEach(() => {
     delete process.env[key]
   }
   settingsMock.mockReturnValue({ apiKeys: { genericApiKey: 'test-key', genericBaseUrl: 'https://proxy.example' } })
-  catalogMock.mockReturnValue({})
 })
 
 afterEach(() => {
@@ -48,11 +45,11 @@ afterEach(() => {
 describe('GenericLlmProvider — catalog and capabilities', () => {
   // The endpoint is whatever the user pointed us at: off unless it is
   // Anthropic's own API.
-  it('keeps ENABLE_TOOL_SEARCH off for an Anthropic-wire endpoint it cannot vouch for', () => {
-    expect(new GenericLlmProvider().toolSearchEnv()).toBe('false')
+  it('keeps ENABLE_TOOL_SEARCH off for an Anthropic-wire endpoint it cannot vouch for', async () => {
+    expect(await new GenericLlmProvider().toolSearchEnv()).toBe('false')
     const endpoint = (genericBaseUrl: string) => new GenericLlmProvider({ apiKeys: { genericApiKey: 'key', genericBaseUrl }, env: {} })
-    expect(endpoint('https://gateway.example/v1').toolSearchEnv()).toBe('false')
-    expect(endpoint('https://api.anthropic.com').toolSearchEnv()).toBe('true')
+    expect(await endpoint('https://gateway.example/v1').toolSearchEnv()).toBe('false')
+    expect(await endpoint('https://api.anthropic.com').toolSearchEnv()).toBe('true')
   })
 
   it('ships an empty built-in catalog and opts into model search', () => {
@@ -62,41 +59,39 @@ describe('GenericLlmProvider — catalog and capabilities', () => {
 })
 
 describe('GenericLlmProvider.getEffectiveBaseUrl', () => {
-  it('prefers the settings baseURL over the env var', () => {
+  it('prefers the settings baseURL over the env var', async () => {
     process.env.GENERIC_BASE_URL = 'https://env.example'
-    expect(provider.getEffectiveBaseUrl()).toBe('https://proxy.example')
+    expect(await provider.getEffectiveBaseUrl()).toBe('https://proxy.example')
   })
 
-  it('falls back to GENERIC_BASE_URL when settings has none', () => {
+  it('falls back to GENERIC_BASE_URL when settings has none', async () => {
     settingsMock.mockReturnValue({ apiKeys: {} })
     process.env.GENERIC_BASE_URL = 'https://env.example'
-    expect(provider.getEffectiveBaseUrl()).toBe('https://env.example')
+    expect(await provider.getEffectiveBaseUrl()).toBe('https://env.example')
   })
 
-  it('is undefined when neither is configured', () => {
+  it('is undefined when neither is configured', async () => {
     settingsMock.mockReturnValue({ apiKeys: {} })
-    expect(provider.getEffectiveBaseUrl()).toBeUndefined()
+    expect(await provider.getEffectiveBaseUrl()).toBeUndefined()
   })
 })
 
 describe('GenericLlmProvider.getDefaultModel', () => {
   it('returns the first non-disabled user-added model', () => {
-    catalogMock.mockReturnValue({
+    expect(provider.getDefaultModel('agent', {
       generic: { overrides: [{ id: 'llama3.1' }, { id: 'mistral' }] },
-    })
-    expect(provider.getDefaultModel('agent')).toBe('llama3.1')
+    })).toBe('llama3.1')
   })
 
   it('skips disabled user models', () => {
-    catalogMock.mockReturnValue({
+    expect(provider.getDefaultModel('agent', {
       generic: { overrides: [{ id: 'llama3.1', disabled: true }, { id: 'mistral' }] },
-    })
-    expect(provider.getDefaultModel('agent')).toBe('mistral')
+    })).toBe('mistral')
   })
 
   it('honors GENERIC_DEFAULT_MODEL when no user models are configured', () => {
     process.env.GENERIC_DEFAULT_MODEL = 'my-default'
-    expect(provider.getDefaultModel('agent')).toBe('my-default')
+    expect(provider.getDefaultModel('agent', {})).toBe('my-default')
   })
 
   it('falls back to the placeholder when nothing is configured', () => {
@@ -136,33 +131,33 @@ describe('GenericLlmProvider.getContainerEnvVars', () => {
 })
 
 describe('GenericLlmProvider.getApiKeyStatus', () => {
-  it('reports not-configured when a key is set without a base URL', () => {
+  it('reports not-configured when a key is set without a base URL', async () => {
     settingsMock.mockReturnValue({ apiKeys: { genericApiKey: 'k' } })
-    expect(provider.getApiKeyStatus()).toEqual({ isConfigured: false, source: 'none' })
+    expect(await provider.getApiKeyStatus()).toEqual({ isConfigured: false, source: 'none' })
   })
 
-  it('reports configured when both key and base URL are set', () => {
-    expect(provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+  it('reports configured when both key and base URL are set', async () => {
+    expect(await provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
   })
 })
 
 describe('GenericLlmProvider.createClient', () => {
-  it('builds an Anthropic client with the baseURL and Bearer auth token', () => {
-    provider.createClient()
+  it('builds an Anthropic client with the baseURL and Bearer auth token', async () => {
+    await provider.createClient()
     expect(anthropicCtor).toHaveBeenCalledWith({
       baseURL: 'https://proxy.example',
       authToken: 'test-key',
     })
   })
 
-  it('throws when the base URL is missing', () => {
+  it('throws when the base URL is missing', async () => {
     settingsMock.mockReturnValue({ apiKeys: { genericApiKey: 'k' } })
-    expect(() => provider.createClient()).toThrow('base URL not configured')
+    await expect(provider.createClient()).rejects.toThrow('base URL not configured')
   })
 
-  it('throws when the API key is missing', () => {
+  it('throws when the API key is missing', async () => {
     settingsMock.mockReturnValue({ apiKeys: { genericBaseUrl: 'https://proxy.example' } })
-    expect(() => provider.createClient()).toThrow('API key not configured')
+    await expect(provider.createClient()).rejects.toThrow('API key not configured')
   })
 })
 

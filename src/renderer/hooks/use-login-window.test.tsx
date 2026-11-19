@@ -144,4 +144,36 @@ describe('useLoginWindow', () => {
     unmount()
     expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
   })
+
+  it('with a sign-in sheet, ends the attempt when the person closes the sheet', async () => {
+    const { result } = renderHook(() => useLoginWindow({ authSession: true }))
+    await act(async () => { await result.current.open(async () => 'https://login.test') })
+    expect(fakeLoginWindow.navigate).toHaveBeenCalledWith('https://login.test')
+    expect(result.current.pending).toBe(true)
+
+    act(() => { fakeLoginWindow.cancelAuthSession?.() })
+
+    expect(result.current.pending).toBe(false)
+    expect(result.current.waiting).toBe(false)
+  })
+
+  it('ignores a sheet closed for an attempt that a newer one replaced', async () => {
+    const { result } = renderHook(() => useLoginWindow({ authSession: true }))
+    await act(async () => { await result.current.open(async () => 'https://login.test/1') })
+    const cancelFirst = fakeLoginWindow.cancelAuthSession
+    await act(async () => { await result.current.open(async () => 'https://login.test/2') })
+
+    act(() => { cancelFirst?.() })
+
+    expect(result.current.pending).toBe(true)
+  })
+
+  it('with a sign-in sheet, asks for the Apple prompt only when the attempt does', async () => {
+    const { result } = renderHook(() => useLoginWindow({ authSession: true }))
+    await act(async () => { await result.current.open(async () => 'https://login.test', { withApple: true }) })
+    expect(fakeLoginWindow.withApple).toBe(true)
+
+    await act(async () => { await result.current.open(async () => 'https://login.test') })
+    expect(fakeLoginWindow.withApple).toBe(false)
+  })
 })

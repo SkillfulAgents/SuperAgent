@@ -20,6 +20,19 @@ describe('fillTeamBrainSetupBlock', () => {
     ].join('\n'))
   })
 
+  it('writes a changed location and schedule over the last ones when Start chat runs again, leaving the rest', () => {
+    const fill = (instructions: string, brainPath: string, schedule: 'daily' | 'hourly') =>
+      fillTeamBrainSetupBlock(instructions, { agentSlug: 'team-brain', brainPath, schedule, setUpBy: { name: 'Ada', email: 'ada@acme.com' }, accounts: [] })
+    const first = fill(BLOCK, '/mounts/Team Brain', 'daily')
+    expect(fill(first, '/mounts/Brain $& Co', 'hourly')).toBe([
+      '- **Brain location:** `/mounts/Brain $& Co`',
+      '- **Your slug:** `team-brain`.',
+      '- **Set up by:** `Ada (ada@acme.com)`.',
+      '- **Already connected:** `none`.',
+      '- **Maintenance schedule:** hourly, on the hour (cron `0 * * * *`)',
+    ].join('\n'))
+  })
+
   it('puts a drive name, or the name of who set it up, with dollar signs in as written', () => {
     const filled = fillTeamBrainSetupBlock('`{{brain_path}}` `{{set_up_by}}`', {
       agentSlug: 'b', brainPath: "/mounts/Costs $& $' Q4", schedule: 'daily', setUpBy: { name: 'A $& B', email: 'a@b.co' }, accounts: undefined,

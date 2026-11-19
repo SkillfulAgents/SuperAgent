@@ -37,9 +37,10 @@ const webTestIgnore = [
   '**/safari-follow.spec.ts',
   // Canvas mouse gestures need a still layout: sibling specs' agent churn on
   // the shared server re-solves the graph under the cursor, which made this
-  // the suite's top flake. Runs under the web-graph project on its own server
-  // and data dir (see test:e2e:graph).
+  // the suite's top flake. Runs in playwright.graph.config.ts on its own
+  // server/data dir (test:e2e:graph); web-graph below remains a legacy entry.
   '**/home-graph.spec.ts',
+  '**/home-graph-interactions.spec.ts',
   // Section drags also need a stable list; sibling specs create/delete agents
   // mid-gesture. Run on a fresh server through test:e2e:sidebar.
   '**/agent-folders.spec.ts',
@@ -83,6 +84,19 @@ function buildWebServerCommand() {
   return `${inlineVars} node e2e/setup-e2e-data.js && ${inlineVars} npm run dev:web`
 }
 
+// CI's Mac VMs occasionally run about 4x slower than usual, from `npm ci` onward,
+// and the WebKit suites run with retries off. At the 30s default those Macs fail
+// tests that are only slow, so give these projects 3x that budget.
+const webkitTestTimeout = 90_000
+
+// A WebKit trace without screenshots: each one is a window capture whose surface
+// macOS's WindowServer holds until the screen redraws, and a macOS VM can hold
+// 8,192. On Blacksmith's Macs, which rarely redraw, a suite full of composited
+// layers filled that in about two minutes, crashed WindowServer and took the
+// runner down. Actions, DOM snapshots, network and console are still recorded.
+// https://github.com/microsoft/playwright/issues/43066
+const webkitTrace = { mode: 'retain-on-failure', screenshots: false } as const
+
 export default defineConfig({
   testDir: './e2e',
   // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
@@ -114,7 +128,17 @@ export default defineConfig({
     {
       name: 'web-webkit',
       testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts', '**/pdf-preview.spec.ts'],
-      use: { ...devices['Desktop Safari'] },
+      timeout: webkitTestTimeout,
+      use: { ...devices['Desktop Safari'], trace: webkitTrace },
+    },
+    // Deterministic navigation contracts run once on macOS per PR. Keep the
+    // compositor regressions above in their three independent serial runs.
+    {
+      name: 'web-webkit-navigation',
+      testMatch: ['**/navigation.spec.ts', '**/router-upgrade.spec.ts', '**/memory-history.spec.ts', '**/router-response-guard.spec.ts'],
+      fullyParallel: false,
+      timeout: webkitTestTimeout,
+      use: { ...devices['Desktop Safari'], trace: webkitTrace },
     },
     // Section drag-and-drop and persistence, on their own server/data dir.
     {
@@ -124,7 +148,8 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
     // Home connections graph — canvas mouse gestures (hover-fade, edge draw,
-    // node drag) against react-flow. Run with `npm run test:e2e:graph` and a
+    // node drag) against react-flow. Legacy desktop-only entry; the expanded
+    // `npm run test:e2e:graph` uses playwright.graph.config.ts. Use a
     // dedicated SUPERAGENT_DATA_DIR: the only agents on the board are the
     // spec's own, so the layout stays still and fitView never bottoms out at
     // minZoom. Not fullyParallel — the file's own tests would otherwise churn

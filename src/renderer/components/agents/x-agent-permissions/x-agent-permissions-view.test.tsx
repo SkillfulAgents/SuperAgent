@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   track: vi.fn(),
   apiFetch: vi.fn(),
-  canAdmin: true,
+  viewer: false,
+  usesOnly: null as string[] | null,
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -24,7 +25,8 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     isAuthMode: true,
     rolesReady: true,
-    canAdminAgent: () => mocks.canAdmin,
+    canAccessAgent: () => mocks.viewer,
+    canUseAgent: (slug: string) => mocks.usesOnly === null || mocks.usesOnly.includes(slug),
   }),
 }))
 
@@ -75,7 +77,7 @@ function lastPatchBody() {
 describe('XAgentPermissionsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.canAdmin = true
+    mocks.usesOnly = null
     policies = [policy('invoke', 'target', 'allow'), policy('read', 'target', 'allow')]
     mocks.apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === '/api/agents/caller/x-agent-policies' && (!init || !init.method)) {
@@ -223,6 +225,49 @@ describe('XAgentPermissionsView', () => {
     })
   })
 
+  it('shows what an unset dropdown resolves to and where it comes from', async () => {
+    policies = [policy('invoke', 'target', 'allow'), policy('read', null, 'allow')]
+    renderView()
+
+    const globalRead = within(await screen.findByTestId('x-agent-policy-global-read')).getByTestId('policy-dropdown-trigger')
+    expect(globalRead).toHaveAttribute('data-inherited', 'false')
+    const globalInvoke = within(screen.getByTestId('x-agent-policy-global-invoke')).getByTestId('policy-dropdown-trigger')
+    expect(globalInvoke).toHaveAttribute('data-inherited', 'true')
+    expect(globalInvoke).toHaveTextContent('Needs approval (default)')
+
+    fireEvent.click(screen.getByTestId('x-agent-permissions-trigger-target'))
+    const [read, invoke] = within(screen.getByTestId('x-agent-permissions-popover-target')).getAllByTestId('policy-dropdown-trigger')
+    expect(read).toHaveAttribute('data-inherited', 'true')
+    expect(read).toHaveTextContent('Always allow (from Global)')
+    expect(invoke).toHaveAttribute('data-inherited', 'false')
+    expect(invoke).toHaveTextContent('Always allow')
+  })
+
+  it('shows the default on a per-agent dropdown when Global is unset', async () => {
+    policies = []
+    renderView()
+
+    fireEvent.click(await screen.findByTestId('x-agent-permissions-trigger-target'))
+    const [read] = within(screen.getByTestId('x-agent-permissions-popover-target')).getAllByTestId('policy-dropdown-trigger')
+    expect(read).toHaveAttribute('data-inherited', 'true')
+    expect(read).toHaveTextContent('Needs approval (default)')
+  })
+
+  it('offers Reset to default only on a dropdown with something set', async () => {
+    policies = [policy('read', null, 'allow')]
+    renderView()
+
+    fireEvent.click(within(await screen.findByTestId('x-agent-policy-global-read')).getByTestId('policy-dropdown-trigger'))
+    fireEvent.click(await screen.findByText('Reset to default'))
+    await waitFor(() => {
+      expect(lastPatchBody()).toEqual({ operation: 'read', targetSlug: null, decision: 'default' })
+    })
+
+    fireEvent.click(within(screen.getByTestId('x-agent-policy-global-invoke')).getByTestId('policy-dropdown-trigger'))
+    await screen.findByTestId('policy-menu-allow')
+    expect(screen.queryByTestId('policy-menu-default')).not.toBeInTheDocument()
+  })
+
   it('badges an explicitly blocked agent in the list', async () => {
     policies = [policy('invoke', 'target', 'block')]
     renderView()
@@ -259,13 +304,39 @@ describe('XAgentPermissionsView', () => {
     })
   })
 
-  it('shows owner gate and does not fetch for a non-owner', () => {
-    mocks.canAdmin = false
+  it('shows the access gate without fetching for someone without a role', () => {
+    mocks.usesOnly = []
     renderView()
 
     expect(screen.getByTestId('x-agent-permissions-no-permission')).toBeInTheDocument()
-    expect(screen.getByText('Owner access required')).toBeInTheDocument()
+    expect(screen.getByText('Agent access required')).toBeInTheDocument()
     expect(mocks.apiFetch).not.toHaveBeenCalled()
+  })
+
+  it('lets a Viewer open the global permissions in read-only mode', async () => {
+    mocks.usesOnly = []
+    mocks.viewer = true
+    try {
+      renderView()
+      const global = await screen.findByTestId('x-agent-policy-global-read')
+      expect(within(global).getByRole('button')).toBeDisabled()
+      expect(screen.queryByTestId('x-agent-connect-switch-helper')).toBeNull()
+    } finally {
+      mocks.viewer = false
+    }
+  })
+
+  it('disables a row whose agent the person does not use, and says why', async () => {
+    mocks.usesOnly = ['caller', 'target']
+    renderView()
+
+    expect(await screen.findByTestId('x-agent-connect-switch-helper')).toBeDisabled()
+    expect(screen.getByText(/You need User access to Helper to change this/)).toBeInTheDocument()
+    expect(screen.getByTestId('x-agent-connect-switch-target')).not.toBeDisabled()
+    fireEvent.click(screen.getByTestId('x-agent-permissions-trigger-helper'))
+    for (const dropdown of within(screen.getByTestId('x-agent-permissions-popover-helper')).getAllByTestId('policy-dropdown-trigger')) {
+      expect(dropdown).toBeDisabled()
+    }
   })
 
   it('navigates back to the agent home', async () => {

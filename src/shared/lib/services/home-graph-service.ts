@@ -12,7 +12,7 @@
  * in-memory database.
  */
 
-import { count, eq, inArray, isNotNull, ne, and } from 'drizzle-orm'
+import { count, eq, inArray, isNotNull, and } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
@@ -164,7 +164,7 @@ export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphDa
             // ACL on. (The graph couldn't draw those edges anyway.)
             inArray(xAgentPolicies.targetAgentSlug, agentSlugs),
             eq(xAgentPolicies.operation, 'invoke'),
-            ne(xAgentPolicies.decision, 'block'),
+            eq(xAgentPolicies.decision, 'allow'),
             isNotNull(xAgentPolicies.targetAgentSlug),
           ),
         ),

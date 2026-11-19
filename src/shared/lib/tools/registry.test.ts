@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import { formatToolName } from './types'
 import { getToolDefinition, getRegisteredDefinitionNames } from './registry'
 import { getRegisteredRendererNames, getToolRenderer } from './renderers'
@@ -202,6 +204,22 @@ describe('tool definition getSummary', () => {
     })
   })
 
+  describe('browser_get_state', () => {
+    it('returns null for the default call', () => {
+      expect(summary('mcp__browser__browser_get_state', {})).toBeNull()
+    })
+
+    it('describes scope and a skipped screenshot', () => {
+      expect(summary('mcp__browser__browser_get_state', { scope: '#main', screenshot: false })).toBe('#main · no screenshot')
+    })
+  })
+
+  describe('browser_upload', () => {
+    it('returns the file name', () => {
+      expect(summary('mcp__browser__browser_upload', { filePath: '/workspace/uploads/cv.pdf' })).toBe('cv.pdf')
+    })
+  })
+
   describe('unknown tools', () => {
     it('returns null via registry', () => {
       expect(summary('UnknownTool', { foo: 'bar' })).toBeNull()
@@ -225,6 +243,14 @@ describe('registry completeness', () => {
       (name) => !rendererNames.has(name)
     )
     expect(missingRenderers).toEqual([])
+  })
+
+  it('every browser tool the container exposes has a definition and renderer', () => {
+    const source = readFileSync(resolve(__dirname, '../../../../agent-container/src/tools/browser.ts'), 'utf8')
+    const containerTools = [...source.matchAll(/tool\(\s*'(browser_[a-z_]+)'/g)].map((m) => `mcp__browser__${m[1]}`)
+    expect(containerTools.length).toBeGreaterThan(0)
+    expect(containerTools.filter((name) => !definitionNames.has(name))).toEqual([])
+    expect(containerTools.filter((name) => !rendererNames.has(name))).toEqual([])
   })
 
   it.each([

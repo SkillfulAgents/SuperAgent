@@ -46,7 +46,7 @@ vi.mock('../db', () => ({
 import {
   createNotification,
   listNotifications,
-  getUnreadCount,
+  getNotificationCounts,
   markSessionNotificationsRead,
   markAllAsRead,
 } from './notification-service'
@@ -152,8 +152,8 @@ describe('SUP-227: notifications are agent-scoped with shared read state', () =>
     })
 
     it('one member acknowledging clears the shared item for the other (the intended behavior)', async () => {
-      expect(await getUnreadCount(USER_A)).toBe(1)
-      expect(await getUnreadCount(USER_B)).toBe(1)
+      expect((await getNotificationCounts(USER_A)).count).toBe(1)
+      expect((await getNotificationCounts(USER_B)).count).toBe(1)
 
       // USER_B opens the session → marks the shared row read.
       const marked = await markSessionNotificationsRead(SESSION_SHARED, USER_B)
@@ -162,8 +162,8 @@ describe('SUP-227: notifications are agent-scoped with shared read state', () =>
       // The acknowledgment is shared: USER_A's unread count drops too. If this
       // ever reads 1 again, someone re-introduced per-user read state — see the
       // SUP-227 decision before "fixing" it.
-      expect(await getUnreadCount(USER_B)).toBe(0)
-      expect(await getUnreadCount(USER_A)).toBe(0)
+      expect((await getNotificationCounts(USER_B)).count).toBe(0)
+      expect((await getNotificationCounts(USER_A)).count).toBe(0)
     })
   })
 })

@@ -2,13 +2,14 @@ import { describeEmailMessage } from './message-display'
 import { emailSessionPolicy } from './definitions'
 export { emailDefinition } from './definitions'
 import { composeEmailReply } from './composition'
-import { emailAnswer, renderRequestEmail, requestQuestions } from './request-email'
+import { plainUserTags } from '../utils/mentions'
+import { renderRequestEmail } from './request-email'
 import { resolveAppLinkContext, withSessionUrl } from '../agent-integrations/app-link'
 import { emailDirectory, workspaceEmailContacts, type EmailHistoryPage } from './directory'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { AgentIntegration } from '../agent-integrations/agent-integration'
-import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationInputContext, IntegrationSessionContext, IntegrationOutput, IntegrationRoute, IntegrationTool } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationAccessCheck, IntegrationInputEvent, IntegrationInputContext, IntegrationSessionContext, IntegrationOutput, IntegrationRoute, IntegrationTool } from '../agent-integrations/types'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { agentRegistry } from '../agent-actor'
 import { sanitizeUploadFilename } from '../utils/path-safety'
@@ -20,7 +21,7 @@ import { EmailPolicyError, emailSessionAllowed, agentUserEmails, emailAddress, i
 /** Provider-independent thread routing, admission, input framing and final-only delivery. */
 export abstract class EmailAgentIntegration extends AgentIntegration {
   constructor(protected readonly record: AgentIntegrationRecord) { super() }
-  protected abstract isAvailable(): boolean
+  protected abstract isAvailable(): Promise<boolean>
   protected abstract getMessage(id: string): Promise<EmailMessage>
   protected abstract getThread(id: string): Promise<EmailMessage[]>
   protected abstract submit(input: EmailSend): Promise<EmailMessage>
@@ -34,7 +35,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   private async directory() {
     const [workspace, history] = await Promise.all([workspaceEmailContacts(), this.recentHistory()])
     const current = await getAgentIntegration(this.record.id)
-    if (!current || current.status !== 'active' || !this.isAvailable()) throw new EmailPolicyError('Email integration is not active')
+    if (!current || current.status !== 'active' || !(await this.isAvailable())) throw new EmailPolicyError('Email integration is not active')
     const config = parseEmailIntegrationConfig(current.config)
     const members = await agentUserEmails(current.agentSlug)
     return emailDirectory(config, members, workspace, history)
@@ -45,8 +46,8 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     return { action: 'run', externalId: event.externalId, displayName: message.subject || 'Email conversation', interactionId: message.id, replyTarget: { messageId: message.id } }
   }
   sessionPolicy = emailSessionPolicy
-  async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
-    if (!this.isAvailable()) return false
+  async isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean> {
+    if (!(await this.isAvailable())) return false
     let admission = this.admissions.get(context.externalId)
     if (!admission || (context.replyTarget?.messageId && context.replyTarget.messageId !== admission.message.id)) {
       const history = await this.getThread(context.externalId)
@@ -57,11 +58,11 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     }
     // Cache gateway facts for this live session, never authorization: every
     // check still reads current configuration, status and agent membership.
-    return emailSessionAllowed(context, admission)
+    return emailSessionAllowed(context, admission, check?.current ? context.integration : undefined)
   }
   async authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean> {
     const current = await getAgentIntegration(context.integration.id)
-    if (!current || current.status !== 'active' || !this.isAvailable()) return false
+    if (!current || current.status !== 'active' || !(await this.isAvailable())) return false
     const message = emailMessageSchema.parse(event.payload)
     const config = parseEmailIntegrationConfig(current.config)
     const contacted = wasContacted(message, await this.getThread(message.threadId))
@@ -80,14 +81,9 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     // about something else: it waits behind the request as an ordinary message.
     const sender = emailAddress(message.from)
     if (!sender || !(await agentUserEmails(context.integration.agentSlug)).has(sender)) return false
-    const question = live.openRequests.find(request => request.kind === 'question')
-    const questions = question && requestQuestions(question)
-    if (question && questions?.length === 1 && message.text) {
-      await this.emitEvent({ type: 'response', externalId: context.externalId, requestId: question.id, requestKind: 'input', value: { answers: { [questions[0].question]: emailAnswer(questions[0], message.text) } } })
-      return true
-    }
-    // Email can neither approve nor cancel an outstanding privileged request.
-    return true
+    // As in chat and the app, the reply ends the wait and reaches the agent as a new message. It cannot approve anything.
+    await context.actor.inputs.cancelAwaiting(context.sessionId)
+    return false
   }
   async prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext) {
     const message = emailMessageSchema.parse(event.payload)
@@ -116,7 +112,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   /** A send's To and Cc as the gateway would resolve them, after the current access policy. */
   private async addressed(request: EmailSend): Promise<{ to: string[]; cc: string[]; members: Set<string> }> {
     const current = await getAgentIntegration(this.record.id)
-    if (!current || current.status !== 'active' || !this.isAvailable()) throw new EmailPolicyError('Email integration is not active')
+    if (!current || current.status !== 'active' || !(await this.isAvailable())) throw new EmailPolicyError('Email integration is not active')
     const config = parseEmailIntegrationConfig(current.config)
     const members = await agentUserEmails(current.agentSlug)
     let to = request.to ?? []
@@ -154,7 +150,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
       if (output.request.autoApproved) return
       const parentId = await this.replyParent(context)
       if (!parentId) return
-      const link = resolveAppLinkContext(context.integration.agentSlug)
+      const link = await resolveAppLinkContext(context.integration.agentSlug)
       // The desktop's own scheme is no use in a mail client, which strips or cannot open it.
       const appUrl = link.isDesktop ? null : withSessionUrl(link, context.sessionId)?.url ?? null
       const { text, html } = renderRequestEmail(output.request, appUrl)
@@ -191,13 +187,13 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     }
     if (output.type !== 'turn-completed' && output.type !== 'message') return
     const turn = output.type === 'message' ? { parts: [output.text], attachments: [] } : this.turns.get(this.turnKey(context))
-    if (!turn || (!turn.parts.some(part => part.trim()) && !turn.attachments.length)) return
+    const parts = turn?.parts.map(part => plainUserTags(part)).filter(part => part.trim()) ?? []
+    if (!turn || (!parts.length && !turn.attachments.length)) return
     // Claim before any asynchronous work so duplicate completion events cannot
     // compose the same buffer twice. Failures use the normal manager error path.
     if (this.turns.get(this.turnKey(context)) === turn) this.turns.delete(this.turnKey(context))
     const parentId = await this.replyParent(context)
     if (!parentId) return
-    const parts = turn.parts.filter(part => part.trim())
     const hash = createHash('sha256').update(JSON.stringify([this.record.id, context.sessionId, parentId, parts, turn.attachments])).digest('hex')
     const parent = await this.getMessage(parentId)
     const draft = output.type === 'message' ? { action: 'send', text: output.text }

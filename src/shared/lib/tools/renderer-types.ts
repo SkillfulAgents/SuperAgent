@@ -1,4 +1,4 @@
-import type { ToolDefinition } from './types'
+import type { ToolDefinition, UnansweredReason } from './types'
 
 /** Bind React views to shared metadata without duplicating names or summaries. */
 export function defineToolRenderer(
@@ -21,6 +21,8 @@ export interface ToolRendererProps {
   result?: string | null
   isError?: boolean
   agentSlug?: string
+  /** AskUserQuestion only: questions that ended without an answer, by question text. */
+  unansweredQuestions?: Record<string, UnansweredReason>
 }
 
 /**

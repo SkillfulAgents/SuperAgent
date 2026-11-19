@@ -354,27 +354,6 @@ export class LocalFileOps implements StoreFileOps {
     await copyFileReplacing(hostPath, abs).catch(fromWriteError)
   }
 
-  /**
-   * Move a file from this machine into the workspace: one rename when the
-   * two are on the same filesystem, a copy and a delete otherwise. Not part
-   * of `StoreFileOps` for the same reason as `copyHostFile`. An assembled chunked
-   * upload arrives this way: the temp dir usually shares the data dir's
-   * filesystem, so a file that was already written in full is not written a
-   * second time.
-   */
-  async moveHostFile(hostPath: string, workspacePath: string): Promise<{ size: number }> {
-    const { abs } = this.forWrite(workspacePath)
-    try {
-      await this.writing(abs, () => fs.promises.rename(hostPath, abs))
-    } catch (error) {
-      if (errnoCode(error) !== 'EXDEV') fromWriteError(error)
-      await copyFileReplacing(hostPath, abs).catch(fromWriteError)
-      await fs.promises.unlink(hostPath)
-    }
-    const stat = await fs.promises.stat(abs).catch(fromFsError)
-    return { size: stat.size }
-  }
-
   async list(dir: string): Promise<FileEntry[]> {
     const { rel, abs } = this.absolute(dir)
     let dirents: fs.Dirent[]

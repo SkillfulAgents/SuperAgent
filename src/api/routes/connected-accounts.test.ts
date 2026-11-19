@@ -108,6 +108,7 @@ const mockComposioFetch = vi.fn()
 vi.mock('@shared/lib/composio/client', () => ({
   composioFetch: (...args: unknown[]) => mockComposioFetch(...args),
   getOrCreateAuthConfig: async () => ({ id: 'ac_shopify' }),
+  resolveComposioAuth: async () => ({ localApiKey: null, platformToken: 'plat', userId: null }),
 }))
 
 /** The Shopify grant Composio reports: `subdomain` is the store it authorized. */
@@ -177,6 +178,7 @@ vi.mock('@shared/lib/services/connection-sync-service', () => ({
 }))
 
 import connectedAccountsRouter from './connected-accounts'
+import { PlatformReconnectRequiredError } from '@shared/lib/agent-runtime-errors/platform-reconnect-required/platform-reconnect-required-error'
 
 function createApp() {
   const app = new Hono()
@@ -222,6 +224,21 @@ describe('connected-accounts reconnect flow', () => {
       // Verify the callback URL includes reconnectAccountId
       const callbackUrl = mockInitiateConnection.mock.calls[0][1] as string
       expect(callbackUrl).toContain('reconnectAccountId=existing-acc')
+    })
+
+    it('returns the platform reconnect error when the platform rejects the platform key', async () => {
+      mockInitiateConnection.mockRejectedValue(
+        new Error('Invalid or revoked access token', { cause: new PlatformReconnectRequiredError('Invalid or revoked access token') }),
+      )
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'github' }),
+      })
+
+      expect(res.status).toBe(424)
+      expect(await res.json()).toEqual({ code: 'platform_reconnect_required', error: 'Invalid or revoked access token' })
     })
 
     it('returns 404 if reconnectAccountId does not exist', async () => {

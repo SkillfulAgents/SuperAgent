@@ -1,67 +1,69 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
-import { listConnections } from '@shared/lib/llm-provider/connections'
+import { listConnectionsWithSelection } from '@shared/lib/llm-provider/connections'
 import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
 import os from 'os'
 import path from 'path'
+import { hostFiles } from '@shared/lib/blob-store/blob-store'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { getLlmProvider, getAllProviderInfo, GenericLlmProvider } from '@shared/lib/llm-provider'
+import { getLlmProvider, allProviderInfoFrom, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
-import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
-import { addAgentUsers } from '@shared/lib/services/agent-members-service'
-import { isPublicVolume } from '@shared/lib/services/volume-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { buildSettingsAuditDetails } from '@shared/lib/services/settings-audit'
 import {
   getSettings,
-  loadSettingsStrict,
   updateSettings,
   mutateSettings,
-  clearSettingsCache,
-  getBrowserbaseApiKeyStatus,
-  getComposioApiKeyStatus,
-  getNangoApiKeyStatus,
-  getComposioUserId,
-  getAccountProviderUserId,
-  getVoiceSettings,
-  getEffectiveModels,
-  getEffectiveAgentLimits,
-  getCustomEnvVars,
+  browserbaseApiKeyStatusFrom,
+  steelApiKeyStatusFrom,
+  tabtenderApiKeyStatusFrom,
+  effectiveTabtenderUrlFrom,
+  composioApiKeyStatusFrom,
+  nangoApiKeyStatusFrom,
+  composioUserIdFrom,
+  accountProviderUserIdFrom,
+  effectiveModelsFrom,
   getGlobalInstructions,
+  type AppPreferencesResponse,
   type AppSettings,
   type GlobalSettingsResponse,
   type ModelPickerSettingsResponse,
 } from '@shared/lib/config/settings'
+import { settingsWritten } from '@shared/lib/config/settings-request-memo'
 import { DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import {
   applySettingsPatch,
   formatSettingsPatchError,
   settingsPatchSchema,
   validateSettingsTransition,
+  type SettingsProblem,
 } from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
+import { deleteRecord } from '@shared/lib/app-records/records'
+import { PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY, SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { getVoiceProvider } from '@shared/lib/voice'
 import {
   findWebProvider,
   getWebProvider,
-  resolveEffectiveWebVendor,
+  resolveEffectiveWebVendorFrom,
 } from '@shared/lib/web-provider'
 import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { offersRuntime } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { detectAllProviders } from '../../main/host-browser'
+import { SteelApi, SteelApiError } from '../../main/host-browser/steel-api'
+import { TabtenderApi, TabtenderApiError, isLoopbackUrl, normalizeTabtenderUrl } from '../../main/host-browser/tabtender-api'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { resetApplicationTables } from '@shared/lib/db/reset'
 import fs from 'fs'
@@ -87,9 +89,7 @@ const MODEL_ICON_EXTENSION_MIME_TYPES: Record<string, string> = {
 }
 const UPLOADED_MODEL_ICON_FILENAME_RE = /^[a-f0-9-]+\.(?:svg|png|jpg|jpeg|webp)$/
 
-function getModelIconsDataDir(): string {
-  return path.join(getDataDir(), 'model-icons')
-}
+const modelIconFiles = hostFiles('model-icons')
 
 function isUploadedFile(value: unknown): value is File {
   return typeof value === 'object' &&
@@ -121,11 +121,9 @@ async function serveUploadedModelIcon(c: Context) {
       return c.json({ error: 'Invalid model icon filename' }, 400)
     }
 
-    // Defense-in-depth: the filename regex already forbids separators/traversal,
-    // but contain the join under the icons dir before reading, per house style.
-    const iconsDir = getModelIconsDataDir()
-    const filePath = assertPathWithinDir(iconsDir, path.join(iconsDir, fileName), 'Invalid model icon filename')
-    const bytes = await fs.promises.readFile(filePath)
+    // The filename regex already forbids separators and traversal; hostFiles refuses them too.
+    const bytes = await modelIconFiles.read(fileName)
+    if (!bytes) return c.json({ error: 'Model icon not found' }, 404)
     // Names are minted as randomUUID().ext, so a name really does address one
     // immutable body — but the route is authenticated, so keep the year-long
     // entry out of shared caches and in the requesting browser only.
@@ -133,11 +131,8 @@ async function serveUploadedModelIcon(c: Context) {
     c.header('Content-Security-Policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
     c.header('Content-Type', mimeType)
     c.header('X-Content-Type-Options', 'nosniff')
-    return c.body(bytes)
+    return c.body(new Uint8Array(bytes))
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return c.json({ error: 'Model icon not found' }, 404)
-    }
     console.error('Failed to read model icon:', error)
     return c.json({ error: 'Failed to read model icon' }, 500)
   }
@@ -151,23 +146,24 @@ settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
 // authenticated user may use — choosing a model is not an admin action, only
 // editing provider config/catalog is. Serve the picker-safe subset above the
 // admin gate; it carries no secrets (provider ids/names, an isConfigured
-// boolean, catalogs, and default selections).
+// boolean, catalogs, and default selections). One settings read answers it,
+// however many connections and providers there are.
 settings.get('/models', Authenticated(), async (c) => {
   try {
-    const appSettings = getSettings()
-    const connections = await listConnections({ userId: getCurrentUserId(c), admin: false })
-    const defaultSelection = await resolveGlobalSelection()
+    const appSettings = await getSettings()
+    const { connections, defaultSelection } = await listConnectionsWithSelection({ userId: getCurrentUserId(c), admin: false }, appSettings)
     const root = connections.find(connection => connection.id === defaultSelection?.llmProviderId)
     const response: ModelPickerSettingsResponse = {
       enableToolSearch: appSettings.enableToolSearch ?? true,
       modelPricing: appSettings.modelPricing ?? {},
       connections,
-      defaultSelection: defaultSelection ? { llmProviderId: defaultSelection.llmProviderId, model: defaultSelection.model } : undefined,
+      defaultSelection: defaultSelection ?? undefined,
       legacyLlmProviderId: appSettings.llmLegacyProviderId,
       llmProvider: root?.provider ?? appSettings.llmProvider ?? 'anthropic',
-      llmProviderStatus: getAllProviderInfo().map(p => root?.provider === p.id ? { ...p, catalog: root.catalog } : p),
-      models: { ...getEffectiveModels(), ...(defaultSelection ? { agentModel: defaultSelection.model } : {}) },
-      webProvider: resolveEffectiveWebVendor(),
+      // Each provider's effective catalog is built once; the default connection's replaces its provider's.
+      llmProviderStatus: allProviderInfoFrom(appSettings).map(p => root?.provider === p.id ? { ...p, catalog: root.catalog } : p),
+      models: { ...effectiveModelsFrom(appSettings), ...(defaultSelection ? { agentModel: defaultSelection.model } : {}) },
+      webProvider: resolveEffectiveWebVendorFrom(appSettings),
     }
     return c.json(response)
   } catch (error) {
@@ -178,8 +174,8 @@ settings.get('/models', Authenticated(), async (c) => {
 
 // Global guidance shapes every agent's behavior, so everyone may read what
 // their agents are told; only admins edit it (via PUT / below the gate).
-settings.get('/global-instructions', Authenticated(), (c) => {
-  return c.json({ globalInstructions: getGlobalInstructions() })
+settings.get('/global-instructions', Authenticated(), async (c) => {
+  return c.json({ globalInstructions: await getGlobalInstructions() })
 })
 
 settings.use('*', Authenticated(), IsAdmin())
@@ -202,7 +198,7 @@ const passwordManagerConfigurationSchema = z.object({
 // unlock/check flow stays with the browser_input request that needs it.
 settings.get('/password-managers', async (c) => {
   try {
-    const configured = new Set(getSettings().app?.configuredPasswordManagers ?? [])
+    const configured = new Set((await getSettings()).app?.configuredPasswordManagers ?? [])
     const providers = (await credentialBroker.connectionStatuses()).map((provider) => ({
       ...provider,
       configured: configured.has(provider.provider),
@@ -236,7 +232,7 @@ settings.put(
           }, 409)
         }
       }
-      mutateSettings((current) => {
+      await mutateSettings((current) => {
         const app = current.app ?? (current.app = {})
         const configured = new Set(app.configuredPasswordManagers ?? [])
         if (body.configured) configured.add(provider)
@@ -304,13 +300,7 @@ settings.post('/model-icons', async (c) => {
     }
 
     const fileName = `${randomUUID()}.${extension}`
-    const dataDir = getModelIconsDataDir()
-    await fs.promises.mkdir(dataDir, { recursive: true })
-    await fs.promises.writeFile(
-      path.join(dataDir, fileName),
-      Buffer.from(await maybeFile.arrayBuffer()),
-      { mode: 0o600 },
-    )
+    await modelIconFiles.write(fileName, Buffer.from(await maybeFile.arrayBuffer()))
 
     return c.json({ icon: `${MODEL_ICON_UPLOAD_PREFIX}${fileName}` })
   } catch (error) {
@@ -320,72 +310,84 @@ settings.post('/model-icons', async (c) => {
 })
 
 /** The generic provider's saved endpoint — displayed (not secret) in Settings. */
-function getGenericBaseUrl(): string | undefined {
+async function genericBaseUrlFrom(appSettings: AppSettings): Promise<string | undefined> {
   const provider = getLlmProvider('generic')
-  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl() : undefined
+  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl(appSettings) : undefined
 }
 
-/** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
-function buildSettingsResponse(
+// Settings are polled on every page, and a custom icon is up to 256 KB of data URL.
+function appPreferencesResponse(app: AppSettings['app']): AppPreferencesResponse {
+  const preferences = { ...(app ?? { showMenuBarIcon: true }) }
+  const hasCustomFavicon = Boolean(preferences.faviconDataUrl)
+  delete preferences.faviconDataUrl
+  return { ...preferences, hasCustomFavicon }
+}
+
+/**
+ * Build the GlobalSettingsResponse shared by GET and PUT handlers, entirely
+ * from `appSettings`: it reads no settings itself.
+ */
+async function buildSettingsResponse(
   appSettings: AppSettings,
   hasRunningAgents: boolean,
   runnerAvailability: Awaited<ReturnType<typeof checkAllRunnersAvailability>>,
-): GlobalSettingsResponse {
+): Promise<GlobalSettingsResponse> {
   return {
     dataDir: getDataDir(),
     hostTotalMemoryBytes: os.totalmem(),
     container: appSettings.container,
-    app: appSettings.app || { showMenuBarIcon: true },
+    app: appPreferencesResponse(appSettings.app),
     hasRunningAgents,
     runnerAvailability,
     llmProvider: appSettings.llmProvider ?? 'anthropic',
-    llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
     modelPricing: appSettings.modelPricing ?? {},
-    webProvider: resolveEffectiveWebVendor(),
+    webProvider: resolveEffectiveWebVendorFrom(appSettings),
     webProviderIsDefault: appSettings.webProvider == null,
     apiKeyStatus: {
-      anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
-      openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
-      bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
-      platform: getLlmProvider('platform').getApiKeyStatus(),
-      generic: getLlmProvider('generic').getApiKeyStatus(),
-      browserbase: getBrowserbaseApiKeyStatus(),
-      composio: getComposioApiKeyStatus(),
-      nango: getNangoApiKeyStatus(),
-      deepgram: getVoiceProvider('deepgram').getApiKeyStatus(),
-      openai: getVoiceProvider('openai').getApiKeyStatus(),
-      exa: getWebProvider('exa').getApiKeyStatus(),
+      anthropic: getLlmProvider('anthropic').apiKeyStatusFrom(appSettings),
+      openrouter: getLlmProvider('openrouter').apiKeyStatusFrom(appSettings),
+      bedrock: getLlmProvider('bedrock').apiKeyStatusFrom(appSettings),
+      platform: getLlmProvider('platform').apiKeyStatusFrom(appSettings),
+      generic: getLlmProvider('generic').apiKeyStatusFrom(appSettings),
+      browserbase: browserbaseApiKeyStatusFrom(appSettings),
+      steel: steelApiKeyStatusFrom(appSettings),
+      tabtender: tabtenderApiKeyStatusFrom(appSettings),
+      composio: composioApiKeyStatusFrom(appSettings),
+      nango: nangoApiKeyStatusFrom(appSettings),
+      deepgram: getVoiceProvider('deepgram').apiKeyStatusFrom(appSettings),
+      openai: getVoiceProvider('openai').apiKeyStatusFrom(appSettings),
+      exa: getWebProvider('exa').apiKeyStatusFrom(appSettings),
     },
-    models: getEffectiveModels(),
-    agentLimits: getEffectiveAgentLimits(),
-    customEnvVars: getCustomEnvVars(),
-    composioUserId: getComposioUserId(),
-    genericBaseUrl: getGenericBaseUrl(),
-    accountProviderUserId: getAccountProviderUserId(),
+    models: effectiveModelsFrom(appSettings),
+    agentLimits: appSettings.agentLimits ?? {},
+    customEnvVars: appSettings.customEnvVars ?? {},
+    composioUserId: composioUserIdFrom(appSettings),
+    genericBaseUrl: await genericBaseUrlFrom(appSettings),
+    tabtenderUrl: effectiveTabtenderUrlFrom(appSettings),
+    accountProviderUserId: accountProviderUserIdFrom(appSettings),
     setupCompleted: !!appSettings.app?.setupCompleted,
-    hostBrowserStatus: { providers: detectAllProviders() },
+    hostBrowserStatus: { providers: await detectAllProviders() },
     runtimeReadiness: containerHost.getReadiness(),
     auth: appSettings.auth,
-    voice: getVoiceSettings(),
-    tenantId: getTenantId(),
+    voice: appSettings.voice ?? {},
+    tenantId: await getTenantId(),
     computerUse: appSettings.computerUse,
     shareAnalytics: appSettings.shareAnalytics !== false,
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
     agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
-    teamBrain: appSettings.teamBrain,
   }
 }
 
 // GET /api/settings - Get global settings
 settings.get('/', async (c) => {
   try {
-    const currentSettings = getSettings()
+    const currentSettings = await getSettings()
     const hasRunningAgents = containerHost.hasRunningAgents()
     const runnerAvailability = await checkAllRunnersAvailability()
-    return c.json(buildSettingsResponse(currentSettings, hasRunningAgents, runnerAvailability))
+    return c.json(await buildSettingsResponse(currentSettings, hasRunningAgents, runnerAvailability))
   } catch (error) {
     console.error('Failed to fetch settings:', error)
     return c.json({ error: 'Failed to fetch settings' }, 500)
@@ -408,71 +410,90 @@ settings.put(
         return c.json({ error: 'Select this provider in Settings → Model Providers, where a separate API-capable summarizer can be chosen.' }, 400)
       }
 
-      // A default read-aloud voice must be one the (possibly just-picked)
-      // provider offers; the patch schema only knows it is a string.
-      const ttsVoice = body.voice?.ttsVoice
-      if (ttsVoice !== undefined) {
-        const providerId = body.voice?.sttProvider ?? getVoiceSettings().sttProvider
-        if (!providerId || !getVoiceProvider(providerId).hasTtsVoice(ttsVoice)) {
-          return c.json({ error: 'Unknown text-to-speech voice for the selected voice provider' }, 400)
-        }
-      }
-
-      // Every member is given the Team Brain, so every member must be able to read its drive.
-      if (body.teamBrain && !(await isPublicVolume(body.teamBrain.volumeId))) {
-        return c.json({ error: 'Team Brain needs a drive everyone in the workspace can add' }, 400)
-      }
-
-      // Read FRESH and fail-closed: never merge onto the possibly-
-      // corruption-defaulted cache (that is what overwrote real API keys/auth).
-      // Applying and validating the candidate below are synchronous, so a valid
-      // write still has no await between this strict read and updateSettings.
-      const currentSettings = loadSettingsStrict()
       const hasRunningAgents = containerHost.hasRunningAgents()
-      const newSettings = applySettingsPatch(currentSettings, body, {
-        now: new Date(),
-        getProviderDefaultModels: (provider) =>
-          getLlmProvider(provider).getDefaultModels(),
+      const now = new Date()
+
+      // One compare-and-set: the patch is applied to, and validated against,
+      // the settings the write replaces, read strictly (stored settings that
+      // cannot be read abort the write rather than being replaced by
+      // defaults). When another writer gets in first the callback runs again
+      // on the newer settings, so it stays synchronous and records a refusal
+      // in `problem` (reset on every attempt) instead of acting on it.
+      let problem: SettingsProblem | undefined
+      const { before: currentSettings, after: newSettings } = await updateSettings((draft, before) => {
+        problem = undefined
+
+        // A default read-aloud voice must be one the (possibly just-picked)
+        // provider offers; the patch schema only knows it is a string.
+        const ttsVoice = body.voice?.ttsVoice
+        if (ttsVoice !== undefined) {
+          const providerId = body.voice?.sttProvider ?? before.voice?.sttProvider
+          if (!providerId || !getVoiceProvider(providerId).hasTtsVoice(ttsVoice)) {
+            problem = { status: 400, message: 'Unknown text-to-speech voice for the selected voice provider' }
+            return false
+          }
+        }
+
+        const after = applySettingsPatch(draft, body, {
+          now,
+          getProviderDefaultModels: (provider) =>
+            getLlmProvider(provider).getDefaultModels(before.modelCatalog),
+        })
+
+        problem = validateSettingsTransition({
+          before,
+          after,
+          patch: body,
+          context: {
+            hasRunningAgents,
+            hostTotalMemoryBytes: os.totalmem(),
+            supportsCustomAgentImage: (runner: ContainerRunner) =>
+              getContainerClientClass(runner).supportsCustomAgentImage,
+            offersRuntime: (runner: ContainerRunner) => offersRuntime(getServerFacts(), runner),
+          },
+        })[0]
+        if (problem) return false
+
+        const root = before.llmDefault
+        if (root && body.modelCatalog && root.llmProviderId.startsWith('legacy-')) {
+          const provider = root.llmProviderId.slice('legacy-'.length) as LlmProviderId
+          if (Object.hasOwn(body.modelCatalog, provider)) {
+            const catalog = mergeCatalog(getLlmProvider(provider).getBuiltinCatalog(), after.modelCatalog?.[provider]?.overrides ?? [])
+            if (!resolveSelection(root, [{ id: root.llmProviderId, catalog }])) {
+              problem = { status: 400, message: 'Change the app default before removing its model' }
+              return false
+            }
+          }
+        }
+
+        // The draft becomes the patched settings exactly, keys the patch removed included.
+        for (const key of Object.keys(draft) as (keyof AppSettings)[]) {
+          if (!Object.hasOwn(after, key)) delete draft[key]
+        }
+        Object.assign(draft, after)
       })
 
-      const transitionProblem = validateSettingsTransition({
-        before: currentSettings,
-        after: newSettings,
-        patch: body,
-        context: {
-          hasRunningAgents,
-          hostTotalMemoryBytes: os.totalmem(),
-          supportsCustomAgentImage: (runner: ContainerRunner) =>
-            getContainerClientClass(runner).supportsCustomAgentImage,
-          offersRuntime: (runner: ContainerRunner) => offersRuntime(getServerFacts(), runner),
-        },
-      })[0]
-
-      if (transitionProblem) {
+      // `problem` is assigned inside the callback, which TypeScript's flow
+      // analysis does not follow.
+      const refusal = problem as SettingsProblem | undefined
+      if (refusal) {
         return c.json(
           {
-            error: transitionProblem.message,
-            ...(transitionProblem.includeRunningAgentIds
+            error: refusal.message,
+            ...(refusal.includeRunningAgentIds
               ? { runningAgents: await containerHost.getRunningAgentIds() }
               : {}),
           },
-          transitionProblem.status,
+          refusal.status,
         )
       }
 
-      const root = currentSettings.llmDefault
-      if (root && body.modelCatalog && root.llmProviderId.startsWith('legacy-')) {
-        const provider = root.llmProviderId.slice('legacy-'.length) as LlmProviderId
-        if (Object.hasOwn(body.modelCatalog, provider)) {
-          const catalog = mergeCatalog(getLlmProvider(provider).getBuiltinCatalog(), newSettings.modelCatalog?.[provider]?.overrides ?? [])
-          if (!resolveSelection(root, [{ id: root.llmProviderId, catalog }])) {
-            return c.json({ error: 'Change the app default before removing its model' }, 400)
-          }
-        }
-      }
-
-      updateSettings(newSettings)
-      if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined) {
+      // Side effects follow the committed write, comparing what it replaced with what it wrote.
+      // The provider sync can write the settings again (the app default); it
+      // returns the settings as they then stand.
+      let syncedSettings: AppSettings | undefined
+      const syncProviders = body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined
+      if (syncProviders) {
         const active = newSettings.llmProvider ?? 'anthropic'
         const touched = new Set<LlmProviderId>()
         if (body.apiKeys) {
@@ -482,7 +503,7 @@ settings.put(
         }
         if (body.llmProvider || body.models) touched.add(active)
         if (body.modelCatalog) for (const provider of Object.keys(body.modelCatalog)) touched.add(provider as LlmProviderId)
-        await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
+        syncedSettings = await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
           catalog: !!body.modelCatalog,
           models: (['agentModel', 'summarizerModel', 'browserModel', 'dashboardBuilderModel'] as const).filter(key => !!body.llmProvider || Object.hasOwn(body.models ?? {}, key)),
           selectDefault: !!body.llmProvider })
@@ -533,12 +554,10 @@ settings.put(
         action: 'updated',
         details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
-      // The Team Brain is the workspace's: every member is a user of the agent its record names, and members who join
-      // later get it when their account is made. Every write of the record gives it again, so writing the record again
-      // heals a grant that failed, and giving it twice adds no one twice. Last, so a failed grant still leaves the write
-      // audited and its other effects done.
-      if (body.teamBrain) await addAgentUsers(body.teamBrain.agentSlug)
-      return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
+      // Answer with the settings as committed: the sync's when it ran (it may
+      // have written the app default), else this write's. No read after it.
+      const responseSettings = syncedSettings ?? newSettings
+      return c.json(await buildSettingsResponse(responseSettings, hasRunningAgents, runnerAvailability))
     } catch (error) {
       console.error('Failed to update settings:', error)
       return c.json({ error: 'Failed to update settings' }, 500)
@@ -568,11 +587,12 @@ settings.post('/start-runner', async (c) => {
     )
 
     if (result.success) {
-      if (!containerHost.hasRunningAgents() && getSettings().container.containerRunner !== runner) {
-        mutateSettings((s) => {
+      if (!containerHost.hasRunningAgents()) {
+        const { written } = await updateSettings((s) => {
+          if (s.container.containerRunner === runner) return false
           s.container.containerRunner = runner
         })
-        containerHost.clearRuntimes()
+        if (written) containerHost.clearRuntimes()
       }
 
       // Wait a bit for the runtime to start, then refresh availability (clears cache first)
@@ -780,6 +800,63 @@ settings.post('/validate-browserbase', async (c) => {
   }
 })
 
+// POST /api/settings/validate-steel - Validate a Steel API key with one read
+// (listing sessions), which creates nothing billable
+settings.post('/validate-steel', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    await new SteelApi(apiKey).checkKey()
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    if (error instanceof SteelApiError && (error.status === 401 || error.status === 403)) {
+      return c.json({ valid: false, error: 'Invalid API key' })
+    }
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+const validateTabtenderSchema = z.object({ url: z.string().trim().min(1), apiKey: z.string().trim().min(1) })
+
+// POST /api/settings/validate-tabtender - Check a Tab Tender server URL and API
+// key with one authenticated read (health), which launches no browser. Answers
+// the URL as it should be saved.
+settings.post('/validate-tabtender', async (c) => {
+  const parsed = validateTabtenderSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ valid: false, error: 'Server URL and API key are required' }, 400)
+  }
+  const url = normalizeTabtenderUrl(parsed.data.url)
+  if (!url) {
+    return c.json({ valid: false, error: 'Enter the server URL as http:// or https://, e.g. https://browsers.example.com' })
+  }
+  if (isLoopbackUrl(url)) {
+    return c.json({
+      valid: false,
+      error: 'Agents run in containers that cannot reach this computer\'s localhost. Use the server\'s tunnel URL (Tab Tender → Settings → Tunnel) or an address on your network.',
+    })
+  }
+  try {
+    const health = await new TabtenderApi(url, parsed.data.apiKey.trim()).health()
+    if (health.browser && !health.browser.available) {
+      return c.json({ valid: false, error: `The server is up but cannot start a browser${health.browser.error ? `: ${health.browser.error}` : ''}` })
+    }
+    return c.json({ valid: true, url })
+  } catch (error: unknown) {
+    if (error instanceof TabtenderApiError && error.status === 401) {
+      return c.json({ valid: false, error: 'Invalid API key' })
+    }
+    if (error instanceof TabtenderApiError) {
+      return c.json({ valid: false, error: `The server answered ${error.status}. Is this a Tab Tender server?` })
+    }
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : error instanceof Error ? error.message : ''
+    return c.json({ valid: false, error: `Could not reach ${url}${cause ? ` (${cause})` : ''}` })
+  }
+})
+
 // POST /api/settings/validate-composio-key - Validate a Composio API key
 settings.post('/validate-composio-key', async (c) => {
   try {
@@ -908,14 +985,15 @@ settings.post('/factory-reset', async (c) => {
     // Better Auth tables (user/session/account/verification) are preserved.
     await resetApplicationTables()
 
-    // Delete settings file (includes platform auth token)
-    const settingsPath = path.join(getDataDir(), 'settings.json')
-    await fs.promises.rm(settingsPath, { force: true })
-    clearSettingsCache()
-
-    // Remove platform device identity so a fresh key is issued on next login
-    const platformDeviceDir = path.join(getDataDir(), '.platform-auth')
-    await fs.promises.rm(platformDeviceDir, { recursive: true, force: true })
+    // Settings (including the platform auth token), and the platform device
+    // identity so a fresh one is issued on next login. The tenant id and the
+    // auth secret stay: user accounts survive a reset.
+    await deleteRecord(SETTINGS_RECORD_KEY)
+    settingsWritten()
+    await deleteRecord(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY)
+    // The files they were once imported from (settings.json holds API keys).
+    await fs.promises.rm(path.join(getDataDir(), 'settings.json'), { force: true })
+    await fs.promises.rm(path.join(getDataDir(), '.platform-auth'), { recursive: true, force: true })
     return c.json({ success: true })
   } catch (error) {
     console.error('Factory reset failed:', error)

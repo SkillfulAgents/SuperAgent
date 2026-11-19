@@ -10,5 +10,5 @@ import { sessionOwnerOf } from './host-tool-result'
 export async function resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
   const ownerId = await sessionOwnerOf(agentSlug, sessionId)
   const resolved = await resolvePlatformMemberForCandidates([ownerId])
-  return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
+  return resolved?.memberId ?? (await getStoredPlatformMemberId()) ?? 'local'
 }

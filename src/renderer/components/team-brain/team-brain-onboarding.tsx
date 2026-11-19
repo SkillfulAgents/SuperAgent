@@ -2,28 +2,18 @@ import { useState, type ReactNode } from 'react'
 import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
-import { usePreparedDriveHealth } from '@renderer/hooks/use-team-brain-setup'
+import { usePreparedDriveHealth, type useTeamBrainSetup } from '@renderer/hooks/use-team-brain-setup'
 import { Button } from '@renderer/components/ui/button'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
 import { VolumeEveryoneOnlyContext, VolumeSetupFooterContext, type VolumeSetupFooterProps } from '@renderer/components/volumes/volume-setup-layout'
 import { volumeDetailsSchema, type VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
-import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import { cn } from '@shared/lib/utils/cn'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@renderer/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@renderer/components/ui/dialog'
-import { usesTeamBrain, useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
-import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
+import { usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
+import type { TeamBrainSourceId } from '@renderer/lib/team-brain/team-brain-schema'
+import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainStep } from '@shared/lib/config/team-brain-schema'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 import { LocationChoices, ScheduleChoices } from './team-brain-choices'
 import { teamBrainLocation } from './team-brain-locations'
@@ -56,40 +46,28 @@ const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
  * Set-up as one mid-size modal, laid out like Figma's Dev Mode welcome: a
  * dark rail with the brain glyph, the title and the numbered steps, the
  * current one in a filled pill; the step on the right under a short title and
- * grey subtitle; Back and "Next: …" in a ruled footer. Closing asks first.
+ * grey subtitle; Back and "Next: …" in a ruled footer. Closing keeps the
+ * set-up: the page offers Resume and Discard.
  *
  * It asks what a form asks best (where it lives, what each agent may do, how
- * often it syncs), then hands over to `onStartChat`: a chat with Team Brain
- * for the team's context. Saving the drive on step 01 calls `onPrepare`.
+ * often it syncs), then hands over to Start chat: a chat with Team Brain for
+ * the team's context. Saving the drive on step 01 claims the set-up.
  */
-export function TeamBrainOnboarding({
-  open,
-  onPrepare,
-  onAddPublicSkillset,
-  onStartChat,
-  onCancel,
-}: {
-  open: boolean
-  onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
-  onAddPublicSkillset: () => Promise<unknown>
-  onStartChat: () => Promise<void>
-  onCancel: () => void
-}) {
+export function TeamBrainOnboarding({ open, setup }: { open: boolean; setup: TeamBrainSetupActions }) {
   const tb = useTeamBrain()
-  const waiting = driveWait(usePreparedDriveHealth(tb.state.prepared))
+  const waiting = driveWait(usePreparedDriveHealth(setup.prepared))
   const steps = TEAM_BRAIN_STEPS
   const index = Math.max(steps.indexOf(tb.state.step), 0)
   const step = steps[index]
   const nav: StepNav = {
     back: index > 0 ? () => tb.goToStep(steps[index - 1]) : undefined,
     nextLabel: steps[index + 1] ? `Next: ${NEXT_LABELS[steps[index + 1]]}` : '',
-    next: () => steps[index + 1] && tb.goToStep(steps[index + 1]),
+    next: () => steps[index + 1] && setup.goForward(steps[index + 1]),
   }
-  const [confirmCancel, setConfirmCancel] = useState(false)
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(next) => { if (!next) setConfirmCancel(true) }}>
+      <Dialog open={open} onOpenChange={(next) => { if (!next) tb.close() }}>
         <DialogContent
           hideClose
           className="flex h-[min(600px,calc(100vh-2rem))] w-[min(900px,calc(100vw-2rem))] max-w-none gap-0 overflow-hidden border-0 p-0 shadow-2xl sm:rounded-2xl"
@@ -129,40 +107,28 @@ export function TeamBrainOnboarding({
             </DialogDescription>
             <button
               type="button"
-              onClick={() => setConfirmCancel(true)}
+              onClick={tb.close}
               className="absolute right-3 top-3 z-10 grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               aria-label="Close set-up"
               data-testid="team-brain-cancel"
             >
               <X className="size-4" aria-hidden="true" />
             </button>
-            {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} onAddPublicSkillset={onAddPublicSkillset} />}
-            {step === 'agents' && <AgentsStep tb={tb} nav={nav} />}
-            {step === 'schedule' && <SyncStep tb={tb} nav={nav} />}
-            {step === 'intake' && <IntakeStep nav={nav} waiting={waiting} onStart={onStartChat} />}
+            {step === 'location' && <LocationStep setup={setup} nav={nav} />}
+            {step === 'agents' && <AgentsStep setup={setup} nav={nav} />}
+            {step === 'schedule' && <SyncStep setup={setup} nav={nav} />}
+            {step === 'intake' && <IntakeStep nav={nav} waiting={waiting} onStart={setup.startChat} />}
           </section>
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={confirmCancel} onOpenChange={setConfirmCancel}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Stop setting up Team Brain?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {tb.state.prepared ? 'The Team Brain agent and drive made so far will be removed.' : 'Nothing has been created yet.'} Your choices will be forgotten; you can start again any time.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep going</AlertDialogCancel>
-            <AlertDialogAction onClick={onCancel} data-testid="team-brain-cancel-confirm">Stop set-up</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   )
 }
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
+
+type TeamBrainSetupActions = ReturnType<typeof useTeamBrainSetup>
 
 /** Where Back and Next go from the current step. */
 interface StepNav {
@@ -219,19 +185,9 @@ function StepPanel({
  * Choosing a home only selects it; Next opens that drive's own set-up in place of the cards, and saving it prepares
  * Team Brain there. Back on this step with the prepared home still chosen, Next goes straight on.
  */
-function LocationStep({
-  tb,
-  nav,
-  onPrepare,
-  onAddPublicSkillset,
-}: {
-  tb: TeamBrainStore
-  nav: StepNav
-  onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
-  onAddPublicSkillset: () => Promise<unknown>
-}) {
-  const [picked, setPicked] = useState<TeamBrainLocationId | null>(tb.state.location)
-  const [setup, setSetup] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
+function LocationStep({ setup, nav }: { setup: TeamBrainSetupActions; nav: StepNav }) {
+  const [picked, setPicked] = useState<TeamBrainLocationId | null>(setup.setup?.location ?? null)
+  const [drive, setDrive] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const { data: skillsets, isError: skillsetsUnread, refetch: rereadSkillsets } = useSkillsets()
@@ -243,7 +199,7 @@ function LocationStep({
     setAddError(null)
     setIsAdding(true)
     try {
-      await onAddPublicSkillset()
+      await setup.addPublicSkillset()
     } catch (err) {
       setAddError(err instanceof Error ? err.message : 'Could not add the Gamut Public Skillset')
     } finally { setIsAdding(false) }
@@ -255,31 +211,30 @@ function LocationStep({
     setError(null)
     try {
       const config = definition.begin ? await definition.begin() : undefined
-      if (config !== null) setSetup({ definition, config })
+      if (config !== null) setDrive({ definition, config })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not select this source')
     }
   }
 
   const save = async (config: unknown, values: VolumeDetails) => {
-    if (!setup || isSaving) return
+    if (!drive || isSaving) return
     setError(null)
     const details = volumeDetailsSchema.safeParse(values)
     if (!details.success) { setError(details.error.issues[0].message); return }
     setIsSaving(true)
     try {
-      // False when set-up was cancelled meanwhile: nothing to go on with.
-      if (!(await onPrepare(parseVolumeSource(setup.definition, config), details.data))) return
-      tb.setLocation(setup.definition.type)
-      setSetup(null)
+      // False when the window now shows another admin's set-up instead.
+      if (!(await setup.prepare(parseVolumeSource(drive.definition, config), details.data))) return
+      setDrive(null)
       nav.next()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not set up this drive')
     } finally { setIsSaving(false) }
   }
 
-  if (setup) {
-    const Setup = setup.definition.Setup
+  if (drive) {
+    const Setup = drive.definition.Setup
     return (
       // The set-up's form fills the panel, so its buttons can sit in the ruled bar at the foot (`DriveSetupFooter`);
       // its header sits as far above the form as the other steps' subtitles sit above theirs, and goes without its
@@ -289,11 +244,11 @@ function LocationStep({
           {/* Every member gets Team Brain, so every member must be able to read its drive. */}
           <VolumeEveryoneOnlyContext.Provider value>
           <Setup
-            initialConfig={setup.config}
+            initialConfig={drive.config}
             initialDetails={{ name: 'Team Brain', visibility: 'public' }}
             onSubmit={save}
-            onBack={() => { setSetup(null); setError(null) }}
-            onCancel={() => { setSetup(null); setError(null) }}
+            onBack={() => { setDrive(null); setError(null) }}
+            onCancel={() => { setDrive(null); setError(null) }}
             isSaving={isSaving}
             error={error}
             clearError={() => setError(null)}
@@ -305,7 +260,8 @@ function LocationStep({
     )
   }
 
-  const ready = !!tb.state.prepared && picked === tb.state.location
+  // Step 1 is done only while the set-up's agent holds its drive: one deleted since is set up again.
+  const ready = !!setup.prepared && picked === setup.prepared.location
   // A prepared drive already has its agent, so the skillset check is for a set-up still to install it.
   const unread = !ready && skillsetsUnread
   const missingPublic = !ready && !unread && !!skillsets && !skillsets.some((s) => s.id === DEFAULT_PUBLIC_SKILLSET.id)
@@ -385,9 +341,10 @@ function DriveProblem({ waiting }: { waiting: DriveWait }) {
 }
 
 /** Every agent (a global drive, as in Settings → Drives), or the agents switched on below. */
-function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
+function AgentsStep({ setup, nav }: { setup: TeamBrainSetupActions; nav: StepNav }) {
   const { data = [] } = useAgents()
-  const agents = data.filter((agent) => agent.slug !== tb.state.prepared?.agentSlug)
+  const { choices } = setup
+  const agents = data.filter((agent) => agent.slug !== setup.setup?.agentSlug)
   return (
     <StepPanel
       title="Give your agents access to Team Brain"
@@ -395,13 +352,13 @@ function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
       back={nav.back}
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
-      <EveryAgentRow checked={tb.state.everyAgent} canGoGlobal onCheckedChange={tb.setEveryAgent} className="pb-3" />
+      <EveryAgentRow checked={choices.everyAgent} canGoGlobal onCheckedChange={(everyAgent) => setup.choose({ everyAgent })} className="pb-3" />
       {agents.length > 0 ? (
         <AgentAccessList
           agents={agents}
-          everyAgent={tb.state.everyAgent}
-          isOn={(slug) => usesTeamBrain(tb.state, slug)}
-          onToggle={tb.setUsesTeamBrain}
+          everyAgent={choices.everyAgent}
+          isOn={(slug) => usesTeamBrain(choices, slug)}
+          onToggle={(slug, on) => setup.choose({ agents: { [slug]: on } })}
           className="border-y"
         />
       ) : (
@@ -413,7 +370,7 @@ function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
 
 // ── 03 Sync ─────────────────────────────────────────────────────────────────
 
-function SyncStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
+function SyncStep({ setup, nav }: { setup: TeamBrainSetupActions; nav: StepNav }) {
   return (
     <StepPanel
       title="Set how often it syncs"
@@ -421,7 +378,7 @@ function SyncStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
       back={nav.back}
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
-      <ScheduleChoices value={tb.state.schedule} onChoose={tb.setSchedule} />
+      <ScheduleChoices value={setup.choices.schedule} onChoose={(schedule) => setup.choose({ schedule })} />
       <p className="mt-4 text-[13px] text-muted-foreground">You can change this any time.</p>
     </StepPanel>
   )

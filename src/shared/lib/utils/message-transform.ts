@@ -8,9 +8,11 @@
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
+import type { ApiAgent } from '@shared/lib/types/api'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { parseMonitorNotification, type MonitorNotification } from '@shared/lib/utils/monitor-notifications'
+import { unansweredQuestionsFrom, type UnansweredReason } from '@shared/lib/tools/types'
 
 export interface TransformedThinkingBlock {
   /** Stable live↔persisted identity when the SDK message id is available. */
@@ -38,6 +40,10 @@ export interface TransformedMessage {
     }
     /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
     backgroundTaskId?: string
+    /** A TaskCreate call's description as the CLI saved it (CLI 2.1.317+). */
+    taskDescription?: string
+    /** An AskUserQuestion call's questions that ended without an answer, by question text. */
+    unansweredQuestions?: Record<string, UnansweredReason>
   }>
   createdAt: Date
   sender?: {
@@ -46,6 +52,8 @@ export interface TransformedMessage {
     name: string
     email: string
   }
+  /** The agent that sent the message, set instead of `sender`; attached at serve time. */
+  agentSender?: Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
   /** Host-recorded card data for a message an integration delivered; attached at serve time. */
   integration?: IntegrationMessageDisplay
   /** SDK error code when assistant message failed due to LLM provider error */
@@ -635,6 +643,12 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           const backgroundTaskId = block.name === 'Monitor'
             ? toolResult?.toolUseResult?.taskId
             : toolResult?.toolUseResult?.backgroundTaskId
+          const taskDescription = block.name === 'TaskCreate'
+            ? toolResult?.toolUseResult?.task?.description
+            : undefined
+          const unansweredQuestions = block.name === 'AskUserQuestion'
+            ? unansweredQuestionsFrom(toolResult?.toolUseResult?.annotations)
+            : undefined
           toolCalls.push({
             id: block.id,
             name: block.name,
@@ -643,6 +657,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
             isError: toolResult?.isError,
             subagent,
             ...(typeof backgroundTaskId === 'string' && backgroundTaskId ? { backgroundTaskId } : {}),
+            ...(typeof taskDescription === 'string' && taskDescription.trim() ? { taskDescription } : {}),
+            ...(unansweredQuestions ? { unansweredQuestions } : {}),
           })
         }
       }

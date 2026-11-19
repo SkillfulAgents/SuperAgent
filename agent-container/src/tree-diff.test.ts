@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect } from 'vitest'
 import {
   acknowledgeTreeValue,
   formatUnknownRef,
+  goneRefOf,
   lineWithoutRef,
   diffTrees,
   formatTreeDiff,
@@ -332,6 +333,25 @@ describe('a dialog that arrived', () => {
   it('does not pair what a dialog hid with its own look-alikes', () => {
     const d = diffTrees(parseTreeRefs('- textbox "Departure" [ref=e79]'), parseTreeRefs('- textbox "Departure" [ref=e120]'), { overlayOpened: true })
     expect(d.rerendered).toHaveLength(0)
+  })
+})
+
+describe('goneRefOf', () => {
+  it('reads the ref the CLI names', () => {
+    expect(goneRefOf('✗ Unknown ref: e42')).toBe('e42')
+    expect(goneRefOf('✗ Element ref e7 is stale', '@e9')).toBe('e7')
+  })
+
+  it('takes the action\'s ref when the CLI names the role and name it looked for (0.41.1 texts)', () => {
+    expect(goneRefOf('✗ Could not locate element with role=textbox name=Name', '@e71')).toBe('e71')
+    expect(goneRefOf('✗ Stale ref for role=button name=Edit cannot be recovered: the snapshot had several matching elements. Run snapshot again and use a fresh ref.', 'e12')).toBe('e12')
+    expect(goneRefOf('✗ Stale ref for role=button name=Edit cannot be recovered: several elements now match. Run snapshot again and use a fresh ref.', '@e12')).toBe('e12')
+  })
+
+  it('is null for other failures, or without a ref to name', () => {
+    expect(goneRefOf('✗ Element \'@e69\' is disabled, so the click would not reach it', '@e69')).toBeNull()
+    expect(goneRefOf('✗ Could not locate element with role=textbox name=Name')).toBeNull()
+    expect(goneRefOf('✗ Could not locate element with role=textbox name=Name', '#name-e12')).toBeNull()
   })
 })
 

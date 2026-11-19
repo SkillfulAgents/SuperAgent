@@ -1,7 +1,7 @@
 import { useRef, useLayoutEffect } from 'react'
 import { MessageSquarePlus } from 'lucide-react'
 import { CommentBox } from '@renderer/components/comments/comment-box'
-import { useFilePreview } from '@renderer/context/file-preview-context'
+import { useFilePreview, type FileCommentContent } from '@renderer/context/file-preview-context'
 import { describeAnchor } from './anchor'
 import type { CommentAnchor } from './kinds'
 
@@ -18,9 +18,11 @@ interface CommentOverlayProps {
   autoListen?: boolean
   /** The "Comment" chip was clicked. */
   onEdit?: () => void
+  /** Where an added comment goes, instead of the file's list of comments. */
+  onAdd?: (comment: FileCommentContent) => void
 }
 
-export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onEdit, autoEdit = false, autoListen = false }: CommentOverlayProps) {
+export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onEdit, onAdd, autoEdit = false, autoListen = false }: CommentOverlayProps) {
   const { addComment } = useFilePreview()
 
   // Slide the overlay left, before it paints, so it ends 8px inside the pane that clips it.
@@ -46,7 +48,7 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onE
       >
         <button
           onClick={onEdit}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded-item bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
         >
           <MessageSquarePlus className="h-3 w-3" />
           Comment
@@ -68,7 +70,8 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onE
         autoListen={autoListen}
         onCancel={onClose}
         onSubmit={(text) => {
-          addComment({ filePath, agentSlug, text, anchor })
+          if (onAdd) onAdd({ anchor, text })
+          else addComment({ filePath, agentSlug, text, anchor })
           onClose()
         }}
       />

@@ -342,7 +342,7 @@ jobs:
           script: |
             const prNum = context.payload.pull_request.number;
             const sha = context.sha.slice(0, 7);
-            const url = `https://skillfulagents.github.io/SuperAgent/pr/${prNum}/`;
+            const url = `https://${context.repo.owner.toLowerCase()}.github.io/${context.repo.repo}/pr/${prNum}/`;
             const marker = '<!-- qagent-report -->';
             const body = `${marker}\n**QAgent E2E Report** for \`${sha}\`: ${url}`;
 

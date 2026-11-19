@@ -2,11 +2,12 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import { Hono, type Context, type Next } from 'hono'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, auditLog, user } from '@shared/lib/db/schema'
-import { resetVaultKeyCache } from '@shared/lib/browser-vault/vault-crypto'
+import { installTestKeyManager, uninstallKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
 
 let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
@@ -24,6 +25,7 @@ vi.mock('../middleware/auth', () => ({
 
 const { default: browserAccounts, agentBrowserAccountRoutes } = await import('./browser-accounts')
 const { saveAccount, grantAccount, listOwnedAccounts } = await import('@shared/lib/browser-vault/vault-service')
+const { saveAccountSession, listAccountSessions } = await import('@shared/lib/browser-vault/session-service')
 
 let handle: TestDatabase
 let dataDir: string
@@ -32,15 +34,15 @@ const app = new Hono()
   .route('/api/browser-accounts', browserAccounts)
   .route('/api/agents', agentBrowserAccountRoutes)
 
-beforeAll(() => {
+beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-accounts-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
-  resetVaultKeyCache()
+  await installTestKeyManager()
 })
 
 afterAll(() => {
   vi.unstubAllEnvs()
-  resetVaultKeyCache()
+  uninstallKeyManager()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
@@ -101,6 +103,7 @@ describe('browser accounts API', () => {
 
     expect((await app.request(`/api/browser-accounts/${account.id}`, { method: 'DELETE' })).status).toBe(200)
     expect(await listOwnedAccounts(null)).toEqual([])
+    await backgroundSettled()
     const actions = (await testDb.select({ action: auditLog.action }).from(auditLog).all()).map((row) => row.action)
     expect(actions).toEqual(['assigned', 'unassigned', 'updated', 'deleted'])
   })
@@ -117,6 +120,29 @@ describe('browser accounts API', () => {
     expect((await app.request('/api/agents/agent-a/browser-accounts', json({ accountId: bobs.id }))).status).toBe(404)
     await grantAccount({ accountId: bobs.id, agentSlug: 'agent-a', grantedBy: 'bob' })
     expect((await app.request(`/api/browser-accounts/${bobs.id}/agents/agent-a`, { method: 'DELETE' })).status).toBe(404)
+  })
+
+  it('says where an account has a saved session, never the session, and forgets it for its owner only', async () => {
+    auth.mode = true
+    const { account } = await saveAccount({ owner: 'alice', site: 'github.com', origin: 'https://github.com', username: 'alice' })
+    await saveAccountSession({
+      agentSlug: 'agent-a',
+      account,
+      browserType: 'chrome',
+      bundle: { version: 1, site: 'github.com', capturedAt: '2026-10-26T00:00:00.000Z', cookies: [{ name: 'user_session', value: 'the-session', domain: 'github.com', path: '/', httpOnly: true, secure: true }], origins: [] },
+    })
+
+    const listed = await (await app.request('/api/browser-accounts')).json()
+    expect(listed.accounts[0].sessions).toEqual([{ browserType: 'chrome', capturedAt: expect.any(String) }])
+    expect(JSON.stringify(listed)).not.toContain('the-session')
+
+    auth.userId = 'bob'
+    expect((await app.request(`/api/browser-accounts/${account.id}/sessions`, { method: 'DELETE' })).status).toBe(404)
+    expect(await listAccountSessions([account.id])).toHaveLength(1)
+    auth.userId = 'alice'
+    expect((await app.request(`/api/browser-accounts/${account.id}/sessions`, { method: 'DELETE' })).status).toBe(200)
+    expect(await listAccountSessions([account.id])).toEqual([])
+    expect((await listOwnedAccounts('alice'))[0].id).toBe(account.id)
   })
 
   it('grants to an agent other members use only once the caller confirms', async () => {

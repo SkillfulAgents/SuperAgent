@@ -4,11 +4,12 @@ import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
 import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '@shared/lib/tools/requests/request-schema'
 import type { IntegrationMessagePresentation } from './message-display-schema'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 
 export type IntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
 
 /** Persisted installation. Existing chat rows already satisfy this contract. */
-export interface AgentIntegrationRecord {
+export interface AgentIntegrationRecord extends StoredRuntimeOptions {
   id: string
   agentSlug: string
   provider: string
@@ -17,12 +18,10 @@ export interface AgentIntegrationRecord {
   status: IntegrationStatus
   errorMessage: string | null
   createdByUserId: string | null
-  llmProviderId: string | null
-  model: string | null
-  effort: string | null
-  speed: string | null
   createdAt: Date
   updatedAt: Date
+  /** Raised by every write to the row: which write this copy was read after. */
+  version: number
   /** Optional family-specific settings. Legacy chat rows keep their existing columns. */
   settings?: unknown
 }
@@ -105,8 +104,20 @@ export interface IntegrationSessionContext {
   replyTarget?: Readonly<Record<string, string>>
 }
 
+/** How an access check was reached, for a policy that can do less with it. */
+export interface IntegrationAccessCheck {
+  /**
+   * The caller read `context.integration` from storage for this very check,
+   * so the policy decides from it instead of reading the row again. Without
+   * it a context's record may be as old as its session.
+   */
+  current?: boolean
+}
+
 export interface IntegrationInputContext extends IntegrationSessionContext {
   actor: AgentActor
+  /** The delivery handing this input to the agent; a turn names the deliveries it answered. */
+  deliveryId?: string
 }
 
 export interface PreparedIntegrationInput {

@@ -13,7 +13,7 @@ function GamutLogo({ className }: { className?: string }) {
 /** The picker lists the org's drives at one level. A drive is chosen whole, so none is opened; a new one is made at that level. */
 type DriveCursor = { id: string; name: string } | null
 const gamutDrives: VolumeFolderSource<DriveCursor> = {
-  type: 'platform', label: 'Gamut drive', noun: 'drive', fieldLabel: 'Drive',
+  type: 'platform', label: 'Gamut drive', noun: () => 'drive', fieldLabel: 'Drive',
   title: 'Choose a Gamut drive', description: 'Select a drive your org shares, or make a new one.',
   query: () => ({}),
   folders: data => data.folders.map(drive => ({ id: drive.id, name: drive.name, cursor: drive })),

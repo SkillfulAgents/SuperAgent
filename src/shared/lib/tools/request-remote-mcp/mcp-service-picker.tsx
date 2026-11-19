@@ -57,7 +57,7 @@ export function McpServicePicker({
                   onOpenChange(false)
                 }}
                 className={cn(
-                  'flex w-full items-center justify-between rounded-[10px] px-3 py-2 text-left transition-colors',
+                  'flex w-full items-center justify-between rounded-item px-3 py-2 text-left transition-colors',
                   isSelectedService
                     ? 'bg-muted text-foreground'
                     : 'text-foreground hover:bg-muted/60'

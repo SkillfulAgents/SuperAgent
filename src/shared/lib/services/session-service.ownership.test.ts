@@ -17,6 +17,10 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
 let tmpDir: string
 

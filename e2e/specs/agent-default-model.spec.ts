@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { mockRecorder } from '../helpers/mock-recorder'
+import { openHomeAdvancedSettings } from '../helpers/agent-home'
 
 interface MockRecord {
   type: 'sendMessage' | 'createSession'
@@ -44,6 +45,7 @@ test.describe('Per-agent default model', () => {
 
     // Unset default: already following the app-wide fallback, so the picker's
     // reset-to-global action is disabled.
+    await openHomeAdvancedSettings(page)
     const card = page.locator('[data-testid="home-default-model-card"]')
     await expect(card).toBeVisible()
     await card.locator('[data-testid="settings-model-trigger"]').click()
@@ -89,6 +91,8 @@ test.describe('Per-agent default model', () => {
     await page.goBack()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
+    // Back on Agent Home, Show more is closed again.
+    await openHomeAdvancedSettings(page)
     await card.locator('[data-testid="settings-model-trigger"]').click()
     await page.locator('[data-testid="settings-model-app-default"]').click()
     await expect(page.locator('[data-testid="settings-model-app-default"]')).toBeDisabled()

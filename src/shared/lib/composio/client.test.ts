@@ -4,13 +4,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const mockGetEffectiveComposioApiKey = vi.fn()
 const mockGetComposioUserId = vi.fn()
 
+/** Settings reads; each answers with the mocked key, user and token below. */
+const mockGetSettings = vi.fn(async () => ({}))
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveComposioApiKey: () => mockGetEffectiveComposioApiKey(),
-  getComposioUserId: () => mockGetComposioUserId(),
+  getSettings: () => mockGetSettings(),
+  effectiveComposioApiKeyFrom: () => mockGetEffectiveComposioApiKey(),
+  composioUserIdFrom: () => mockGetComposioUserId(),
 }))
 
+const mockGetPlatformAccessToken = vi.fn((): string | null => null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => null,
+  platformAccessTokenFrom: () => mockGetPlatformAccessToken(),
 }))
 
 const mockAddErrorBreadcrumb = vi.fn()
@@ -33,6 +37,8 @@ import {
   ComposioRedactedTokenError,
 } from './client'
 import { envelopeToResponse } from '../proxy/composio-envelope'
+import { findAgentRuntimeError } from '../agent-runtime-errors/agent-runtime-error'
+import { PlatformReconnectRequiredError } from '../agent-runtime-errors/platform-reconnect-required/platform-reconnect-required-error'
 
 function makeComposioResponse(
   state: { authScheme: string; val: Record<string, unknown> },
@@ -277,6 +283,16 @@ describe('getConnectionToken', () => {
 
     const result = await getConnectionToken('conn-1')
     expect(result.expiresAt).toBeUndefined()
+  })
+
+  it.each(['EXPIRED', 'INACTIVE', 'FAILED', 'INITIATED'])('gives no token for a connection that is %s, even when the response carries one', async (status) => {
+    mockFetchOk(makeComposioResponse(
+      { authScheme: 'OAUTH2', val: { status, access_token: 'last-token-before-it-expired' } },
+      { status },
+    ))
+
+    await expect(getConnectionToken('conn-1')).rejects.toThrow(`No access token: the connected account is ${status}`)
+    await expect(getConnectionToken('conn-1')).rejects.toBeInstanceOf(ComposioApiError)
   })
 
   it('throws ComposioApiError on non-ok API response', async () => {
@@ -743,6 +759,7 @@ describe('initiateConnection', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    mockGetPlatformAccessToken.mockReturnValue(null)
   })
 
   function mockLinkOk(body: unknown) {
@@ -838,6 +855,34 @@ describe('initiateConnection', () => {
     await expect(
       initiateConnection('ac_x', 'cb://done', 'user-1')
     ).rejects.toThrow()
+  })
+
+  function mockFetch401(body: unknown) {
+    mockFetch.mockResolvedValue({ ok: false, status: 401, json: async () => body })
+  }
+
+  it('marks a platform key the platform rejected as needing a platform reconnect', async () => {
+    mockGetEffectiveComposioApiKey.mockReturnValue(undefined)
+    mockGetPlatformAccessToken.mockReturnValue('platform-key')
+    mockFetch401({ type: 'error', error: { type: 'authentication_error', message: 'Invalid or revoked access token' } })
+
+    const error = await initiateConnection('ac_x', 'cb://done').catch((e: unknown) => e)
+
+    expect(error).toBeInstanceOf(ComposioApiError)
+    const runtimeError = findAgentRuntimeError(error)
+    expect(runtimeError).toBeInstanceOf(PlatformReconnectRequiredError)
+    const res = runtimeError!.toHttpResponse()
+    expect(res.status).toBe(424)
+    expect(await res.json()).toEqual({ code: 'platform_reconnect_required', error: 'Invalid or revoked access token' })
+  })
+
+  it('keeps a 401 from Composio itself as a plain Composio error', async () => {
+    mockFetch401({ error: { message: 'Invalid API key', slug: 'Auth_InvalidApiKey' } })
+
+    const error = await initiateConnection('ac_x', 'cb://done', 'user-1').catch((e: unknown) => e)
+
+    expect(error).toBeInstanceOf(ComposioApiError)
+    expect(findAgentRuntimeError(error)).toBeNull()
   })
 })
 

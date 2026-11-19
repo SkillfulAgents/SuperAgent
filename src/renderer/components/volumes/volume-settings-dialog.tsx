@@ -21,7 +21,7 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
   const { isAuthMode } = useUser()
   const [details, setDetails] = useState<VolumeDetails>({
     name: volume?.name ?? '',
-    visibility: volume ? volume.userId === null ? 'public' : 'private' : isAuthMode ? 'private' : 'public',
+    visibility: volume ? volume.visibility : isAuthMode ? 'private' : 'public',
   })
   const [selected, setSelected] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
   const [starting, setStarting] = useState<string | null>(null)
@@ -61,7 +61,7 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
       {volume ? <>
         <DialogHeader><DialogTitle>Drive settings</DialogTitle><DialogDescription>Manage this saved drive. Existing agents keep their current folder paths.</DialogDescription></DialogHeader>
         <form onSubmit={event => { event.preventDefault(); void save(details) }} className="space-y-4">
-          <VolumeDetailsFields value={details} onChange={value => { setDetails(value); setError(null) }} disabled={isSaving} inUse={volume.attachmentCount > 0}>
+          <VolumeDetailsFields value={details} onChange={value => { setDetails(value); setError(null) }} disabled={isSaving} isGlobal={!!volume.globalAccess}>
             <div className="space-y-2"><p className="text-sm font-medium">Folder</p><p className="break-all font-mono text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
           </VolumeDetailsFields>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
@@ -77,9 +77,9 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
           {Object.values(volumeSetupRegistry).map(definition => {
             const available = definition.isAvailable()
             return <button key={definition.type} type="button" aria-label={definition.label} data-testid={`volume-source-${definition.type}`}
-              className="flex w-full items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex w-full items-center gap-4 rounded-card border p-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!available || !!starting} onClick={() => { void selectSource(definition) }}>
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-muted"><definition.Logo className="h-7 w-7" /></div>
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-control bg-muted"><definition.Logo className="h-7 w-7" /></div>
               <div className="min-w-0 flex-1"><p className="text-sm font-medium">{definition.label}</p><p className="mt-1 text-sm text-muted-foreground">{available ? definition.description : definition.unavailableReason}</p></div>
               {starting === definition.type ? <Loader2 aria-hidden className="h-4 w-4 shrink-0 animate-spin" /> : <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />}
             </button>

@@ -17,8 +17,15 @@ vi.mock('@shared/lib/proxy/allowed-hosts', () => ({
 
 const mockMakeApiCall = vi.fn()
 const mockGetConnection = vi.fn()
+/** Each settings read hands back a distinct snapshot, so a test can tell which read a call used. */
+let settingsReads = 0
+const mockGetSettings = vi.fn(async () => ({ read: ++settingsReads }))
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => mockGetSettings(),
+}))
 const mockAccountProvider = {
   name: 'composio',
+  credentialsFrom: (settings: { read: number }) => ({ provider: 'composio', read: settings.read }),
   makeApiCall: (...args: unknown[]) => mockMakeApiCall(...args),
   getConnection: (...args: unknown[]) => mockGetConnection(...args),
 }
@@ -71,9 +78,15 @@ vi.mock('drizzle-orm', () => ({
 // No proxy rules exist in these tests; the rule paths have their own suite.
 vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
 
+/** The attribution each call ran under, and what the owner's attribution was built from. */
+const attributedCalls: unknown[] = []
+const mockFromResourceCreator = vi.fn((_owner: unknown, settings: { read: number }) => ({ owner: true, read: settings.read }))
 vi.mock('@shared/lib/platform-attribution', () => ({
-  attribution: { fromResourceCreator: () => null },
-  runWithAttribution: <T,>(_auth: unknown, fn: () => T): T => fn(),
+  attribution: { fromResourceCreator: (owner: unknown, settings: { read: number }) => mockFromResourceCreator(owner, settings) },
+  runWithAttribution: <T,>(auth: unknown, fn: () => T): T => {
+    attributedCalls.push(auth)
+    return fn()
+  },
 }))
 
 // Mock policy enforcement
@@ -100,7 +113,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
     withdraw: vi.fn(),
     resume: (...args: unknown[]) => mockResumeReview(...args),
     settle: (slug: string, id: string, decision: string) => mockSettleReview(slug, id, decision),
-    takeDenyReason: vi.fn(),
+    takeDecisionDetail: vi.fn(async () => ({})),
   },
 }))
 
@@ -135,6 +148,8 @@ describe('proxy route', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    settingsReads = 0
+    attributedCalls.length = 0
     app = createApp()
 
     // Default: DB insert for audit log succeeds
@@ -874,7 +889,10 @@ describe('proxy route', () => {
           status: failure === 'local' ? 'expired' : 'active',
         } }])
         mockIsHostAllowed.mockReturnValue(true)
-        if (failure === 'remote') mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
+        if (failure === 'remote') {
+          mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status: 401 }))
+          mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
+        }
         if (failure === 'token') mockMakeApiCall.mockRejectedValueOnce(new Error('Failed to fetch token'))
         mockRequestReauth.mockResolvedValueOnce({ outcome: 'replaced', replacementId: 'replacement' })
 
@@ -886,7 +904,7 @@ describe('proxy route', () => {
           error: 'account_replaced', replacementAccountId: 'replacement',
           message: expect.stringContaining('Retry the request using account ID replacement'),
         })
-        expect(mockMakeApiCall).toHaveBeenCalledTimes(failure === 'token' ? 1 : 0)
+        expect(mockMakeApiCall).toHaveBeenCalledTimes(failure === 'local' ? 0 : 1)
 
         // The new credential must not inherit the old account's allow decision.
         mockMakeApiCall.mockClear()
@@ -979,8 +997,41 @@ describe('proxy route', () => {
       expect((await request).status).toBe(200)
     })
 
-    it('holds and resumes when remote status check returns non-ACTIVE', async () => {
+    /** The upstream refuses the first forward; later forwards go through. */
+    function refuseFirstForward(status: 401 | 403 = 401) {
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status }))
+    }
+
+    it('does not ask the provider for the status when the call goes through', async () => {
       setupSuccessPath()
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockGetConnection).not.toHaveBeenCalled()
+    })
+
+    it.each([401, 403] as const)('returns a %s from the upstream as it is when the remote status is ACTIVE', async (status) => {
+      setupSuccessPath({ upstreamStatus: status, upstreamBody: '{"error":"missing_scope"}' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(status)
+      expect(await res.json()).toEqual({ error: 'missing_scope' })
+      expect(mockGetConnection).toHaveBeenCalledOnce()
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).toHaveBeenCalledOnce()
+    })
+
+    it('holds and resumes when the upstream refuses the call and the remote status is non-ACTIVE', async () => {
+      setupSuccessPath()
+      refuseFirstForward()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
       const res = await makeRequest(
@@ -992,11 +1043,36 @@ describe('proxy route', () => {
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'expired',
       }), { waitId: expect.any(String) })
-      expect(mockMakeApiCall).toHaveBeenCalledOnce()
+      // The refused forward, then the status check, then the wait, then the forward again.
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
+      const [firstForward, secondForward] = mockMakeApiCall.mock.invocationCallOrder
+      const [statusCheck] = mockGetConnection.mock.invocationCallOrder
+      const [reauthWait] = mockRequestReauth.mock.invocationCallOrder
+      expect(firstForward).toBeLessThan(statusCheck)
+      expect(statusCheck).toBeLessThan(reauthWait)
+      expect(reauthWait).toBeLessThan(secondForward)
+    })
+
+    it('holds and resumes when the forward fails and the remote status is non-ACTIVE', async () => {
+      setupSuccessPath()
+      mockMakeApiCall.mockRejectedValueOnce(new Error('Composio API error: 400'))
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'INACTIVE' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
+        accountStatus: 'revoked',
+      }), { waitId: expect.any(String) })
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
     })
 
     it('updates DB status when remote returns EXPIRED', async () => {
       setupSuccessPath()
+      refuseFirstForward()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
       await makeRequest(
@@ -1011,6 +1087,7 @@ describe('proxy route', () => {
 
     it('updates DB status to revoked when remote returns FAILED', async () => {
       setupSuccessPath()
+      refuseFirstForward(403)
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
 
       await makeRequest(
@@ -1024,6 +1101,7 @@ describe('proxy route', () => {
 
     it('holds and resumes with revoked when remote status is FAILED', async () => {
       setupSuccessPath()
+      refuseFirstForward(403)
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
 
       const res = await makeRequest(
@@ -1037,8 +1115,8 @@ describe('proxy route', () => {
       }), { waitId: expect.any(String) })
     })
 
-    it('proceeds with request when remote status check fails (network error)', async () => {
-      setupSuccessPath()
+    it('returns the refused answer when remote status check fails (network error)', async () => {
+      setupSuccessPath({ upstreamStatus: 401 })
       mockGetConnection.mockRejectedValueOnce(new Error('Network error'))
 
       const res = await makeRequest(
@@ -1046,8 +1124,9 @@ describe('proxy route', () => {
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
 
-      expect(res.status).toBe(200)
-      expect(mockMakeApiCall).toHaveBeenCalled()
+      expect(res.status).toBe(401)
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).toHaveBeenCalledOnce()
     })
 
     it('re-authenticates and retries once when token retrieval reports expiry', async () => {
@@ -1092,6 +1171,45 @@ describe('proxy route', () => {
       expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
         providerConnectionId: 'comp-new',
       }))
+    })
+  })
+
+  describe('settings reads', () => {
+    const request = () => makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } },
+    )
+
+    it('reads settings once for the forward and the status check after it, both under the owner built from that read', async () => {
+      setupSuccessPath({ upstreamStatus: 401 })
+
+      expect((await request()).status).toBe(401)
+
+      expect(mockGetSettings).toHaveBeenCalledTimes(1)
+      expect(mockFromResourceCreator).toHaveBeenCalledTimes(1)
+      expect(mockMakeApiCall.mock.calls[0][0].credentials).toEqual({ provider: 'composio', read: 1 })
+      expect(mockGetConnection.mock.calls[0][2]).toEqual({ provider: 'composio', read: 1 })
+      expect(attributedCalls).toEqual([{ owner: true, read: 1 }, { owner: true, read: 1 }])
+    })
+
+    it('reads again on the next request', async () => {
+      setupSuccessPath()
+      await request()
+      await request()
+      expect(mockGetSettings).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[1][0].credentials).toEqual({ provider: 'composio', read: 2 })
+    })
+
+    it('reads again after waiting for re-authentication, and forwards with that read', async () => {
+      setupSuccessPath()
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status: 401 }))
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
+
+      expect((await request()).status).toBe(200)
+
+      expect(mockGetSettings).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[1][0].credentials).toEqual({ provider: 'composio', read: 2 })
+      expect(attributedCalls.at(-1)).toEqual({ owner: true, read: 2 })
     })
   })
 })
@@ -2251,5 +2369,111 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
       const queryParams = (arg.parameters as Array<{ type: string }>).filter((p) => p.type === 'query')
       expect(queryParams).toEqual([])
     }
+  })
+})
+
+describe('proxy session URL', () => {
+  let app: ReturnType<typeof createApp>
+  const SESSION_URL = '/api/proxy/my-agent/s/session-a/acc-123/gmail.googleapis.com/gmail/v1/messages'
+  const auth = { headers: { Authorization: 'Bearer synth_valid' } }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockInsertValues.mockResolvedValue(undefined)
+    mockGetConnection.mockResolvedValue({ id: 'mock-conn', status: 'ACTIVE' })
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.modify'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
+    mockRequestReauth.mockResolvedValue({ outcome: 'resumed' })
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+  })
+
+  // One account row per lookup: the first is the mapping check, the next the
+  // re-read after re-authentication.
+  function mapAccount(...statuses: Array<'active' | 'expired'>) {
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockReset()
+    for (const status of statuses) {
+      mockLimit.mockResolvedValueOnce([{ account: {
+        id: 'acc-123',
+        toolkitSlug: 'gmail',
+        providerConnectionId: 'comp-123',
+        providerName: 'composio',
+        status,
+      } }])
+    }
+    mockIsHostAllowed.mockReturnValue(true)
+  }
+
+  async function makeRequest(path: string, options?: RequestInit): Promise<Response> {
+    return app.request(`http://localhost${path}`, options)
+  }
+
+  it('forwards to the target that follows the session segment', async () => {
+    mapAccount('active')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockMakeApiCall).toHaveBeenCalledWith(expect.objectContaining({
+      targetUrl: 'https://gmail.googleapis.com/gmail/v1/messages',
+    }))
+  })
+
+  it('names the calling session when the call waits for re-authentication', async () => {
+    mapAccount('expired', 'active')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReauth).toHaveBeenCalledWith(
+      expect.objectContaining({ agentSlug: 'my-agent', accountId: 'acc-123', callerSessionId: 'session-a' }),
+      expect.anything(),
+    )
+  })
+
+  it('names the calling session when the call needs review', async () => {
+    mapAccount('active')
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('allow')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewType: 'api', accountId: 'acc-123', callerSessionId: 'session-a' }),
+      expect.anything(),
+    )
+  })
+
+  it('names no session on the plain proxy URL', async () => {
+    mapAccount('expired', 'active')
+
+    const res = await makeRequest('/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages', auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReauth.mock.calls[0][0].callerSessionId).toBeUndefined()
+  })
+
+  it('still requires the agent token', async () => {
+    mockValidateProxyToken.mockResolvedValue('other-agent')
+
+    const res = await makeRequest(SESSION_URL, { headers: { Authorization: 'Bearer synth_other' } })
+
+    expect(res.status).toBe(403)
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
   })
 })

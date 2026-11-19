@@ -5,8 +5,27 @@
  * convention (including branded extensions like .agent/.skill) lives in one
  * place; `fallbackFilename` covers responses without the header.
  */
-export async function downloadBlob(res: Response, fallbackFilename: string): Promise<void> {
-  saveBlob(await res.blob(), filenameFromContentDisposition(res.headers.get('content-disposition')) ?? fallbackFilename)
+export async function downloadBlob(
+  res: Response,
+  fallbackFilename: string,
+  onProgress?: (bytesReceived: number) => void,
+): Promise<void> {
+  const blob = onProgress && res.body ? await readWithProgress(res, onProgress) : await res.blob()
+  saveBlob(blob, filenameFromContentDisposition(res.headers.get('content-disposition')) ?? fallbackFilename)
+}
+
+async function readWithProgress(res: Response, onProgress: (bytesReceived: number) => void): Promise<Blob> {
+  const reader = res.body!.getReader()
+  const chunks: Uint8Array[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    received += value.byteLength
+    onProgress(received)
+  }
+  return new Blob(chunks as BlobPart[], { type: res.headers.get('content-type') ?? '' })
 }
 
 /** Trigger a browser file download of a blob made in the page. */

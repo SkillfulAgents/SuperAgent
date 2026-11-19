@@ -3,9 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true; sourceReadOnly?: boolean }[],
+  mounts: [] as ({ restricted: true; id: string; volumeName: string } | { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true; sourceReadOnly?: boolean })[],
   definitions: [] as { id: string; name: string; hostPath: string; canManage?: boolean }[],
   canModifyMounts: true,
+  canDetachRestricted: false,
   operationError: null as string | null,
   handleAttach: vi.fn(),
   isLoading: false,
@@ -36,14 +37,21 @@ vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHos
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeVolumes } from './home-volumes'
-import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
+import { HomeCardLookContext } from './home-collapsible'
+
+// Keep Agent Home's Drives section open while exercising the real collapsible;
+// other surfaces still use their own context's default.
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { agentHomeSectionsOpen: { drives: true } } }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+}))
 
 /**
  * Local folder picking/revealing needs this computer. Saved volumes belong to
  * the selected API target and can also be attached from browsers/cloud windows.
  */
 
-const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', volumeName: 'code', type: 'local', hostPath: '/Users/joe/code' }
+const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', volumeName: 'code', type: 'local', hostPath: '/Users/joe/code', health: 'ok' }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -51,6 +59,7 @@ beforeEach(() => {
   volumes.canAddMount = true
   volumes.canCreateMount = true
   volumes.canModifyMounts = true
+  volumes.canDetachRestricted = false
   volumes.definitions = []
   volumes.operationError = null
   volumes.pendingRestart = false
@@ -64,6 +73,24 @@ afterEach(() => {
 })
 
 describe('driving this computer', () => {
+  it('shows a restricted attachment only as a disabled name, even to someone who can edit the agent', () => {
+    volumes.mounts = [{ id: 'm1', volumeName: 'Forecasts', restricted: true }]
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.getByText('Forecasts').closest('[aria-disabled]')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.queryByRole('button', { name: /drive actions|open forecasts|detach/i })).not.toBeInTheDocument()
+  })
+
+  it('lets the agent owner detach a restricted drive after confirmation', async () => {
+    volumes.mounts = [{ id: 'm1', volumeName: 'Forecasts', restricted: true }]
+    volumes.canDetachRestricted = true
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.queryByRole('button', { name: /drive actions|open forecasts/i })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Detach Forecasts from agent' }))
+    expect(volumes.handleRemove).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Remove from Agent' }))
+    expect(volumes.handleRemove).toHaveBeenCalledWith('m1')
+  })
+
   it('offers to add a drive', () => {
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByRole('button', { name: /add drive/i })).toBeInTheDocument()
@@ -80,15 +107,27 @@ describe('driving this computer', () => {
 })
 
 describe('a volume with no local folder', () => {
-  it('lists it by name, with no path, open or copy action', async () => {
-    volumes.mounts = [{ id: 'd1', name: 'drive', volumeName: 'drive', type: 'gdrive', hostPath: null }]
+  it('lists it with the agent\'s folder to copy, and nothing to open', async () => {
+    volumes.mounts = [{ id: 'd1', name: 'drive', volumeName: 'drive', type: 'gdrive', hostPath: null, health: 'ok' }]
     render(<HomeVolumes agentSlug="a1" />)
 
-    expect(screen.getByText('drive')).toBeInTheDocument()
+    expect(screen.getByText('/mounts/drive')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /copy path/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /copy folder path/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /remove from agent/i })).toBeInTheDocument()
+  })
+})
+
+describe('a drive the agent has not mounted', () => {
+  it('shows where it comes from, with no agent folder to copy', async () => {
+    volumes.mounts = [{ ...MOUNT, health: 'missing' }]
+    render(<HomeVolumes agentSlug="a1" />)
+
+    expect(screen.getByText('/Users/joe/code')).toBeInTheDocument()
+    expect(screen.queryByText('/mounts/code')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
+    expect(screen.queryByRole('button', { name: /copy folder path/i })).not.toBeInTheDocument()
   })
 })
 
@@ -119,17 +158,18 @@ describe('driving a cloud workspace', () => {
   it('still lists the mounts, which are real on whichever Superagent is driven', () => {
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByText('code')).toBeInTheDocument()
-    expect(screen.getByText('/Users/joe/code')).toBeInTheDocument()
-    expect(screen.queryByText('/mounts/code')).not.toBeInTheDocument()
+    expect(screen.getByText('/mounts/code')).toBeInTheDocument()
   })
 
   it('drops the open-in-file-manager action', async () => {
+    const user = userEvent.setup()
     render(<HomeVolumes agentSlug="a1" />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
+    await user.click(screen.getByRole('button', { name: 'Drive actions' }))
 
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /copy path/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /copy folder path/i }))
+    expect(await navigator.clipboard.readText()).toBe('/mounts/code')
   })
 
   it('opens the drive settings from the row, back to this agent', async () => {
@@ -141,11 +181,35 @@ describe('driving a cloud workspace', () => {
 
   it('opens the drive settings back to the page it was opened from, with what that page carries in its URL', async () => {
     volumes.definitions = [{ id: 'v1', name: 'code', hostPath: '/Users/joe/code' }]
-    here.current = `/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}`
+    here.current = '/agents/a1?tab=files'
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByText('code'))
-    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'v1', source: 'home', from: `/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}` } })
+    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'v1', source: 'home', from: '/agents/a1?tab=files' } })
     here.current = '/agents/a1'
+  })
+
+  it('leaves out the drive its page shows elsewhere', () => {
+    volumes.mounts = [MOUNT, { ...MOUNT, id: 'm2', volumeId: 'v2', name: 'brain', volumeName: 'brain' }]
+    render(<HomeVolumes agentSlug="a1" hiddenVolumeId="v2" />)
+    expect(screen.getByText('code')).toBeInTheDocument()
+    expect(screen.queryByText('brain')).toBeNull()
+    cleanup()
+    // The agent has a drive, so hiding it is not "no drives".
+    volumes.mounts = [MOUNT]
+    volumes.canAddMount = true
+    render(<HomeVolumes agentSlug="a1" hiddenVolumeId="v1" />)
+    expect(screen.queryByTestId('home-empty-state')).toBeNull()
+  })
+
+  it('starts folded where the page\'s look says so', async () => {
+    render(
+      <HomeCardLookContext.Provider value={{ card: '', section: '', media: '', label: '', defaultOpen: false }}>
+        <HomeVolumes agentSlug="a1" />
+      </HomeCardLookContext.Provider>,
+    )
+    expect(screen.queryByText('code')).toBeNull()
+    await userEvent.click(screen.getByText('Drives'))
+    expect(screen.getByText('code')).toBeInTheDocument()
   })
 
   it('leaves the row inert when this viewer cannot open the drive\'s settings', async () => {
@@ -268,10 +332,11 @@ describe('renaming', () => {
     expect(screen.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument()
   })
 
-  it('shows the drive name, and the agent\'s folder path once they differ', () => {
+  it('shows the drive name and the agent\'s folder path, which keeps its name across a rename', () => {
     volumes.mounts = [{ ...MOUNT, volumeName: 'Code base' }]
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByText('Code base')).toBeInTheDocument()
     expect(screen.getByText('/mounts/code')).toBeInTheDocument()
+    expect(screen.queryByText('/Users/joe/code')).not.toBeInTheDocument()
   })
 })

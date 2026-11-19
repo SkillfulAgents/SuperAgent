@@ -53,8 +53,8 @@ import { OrderedSends } from '../ordered-sends'
 
 /** The agent's container runtime, as its sessions need it. */
 export interface SessionsRuntime extends SessionRuntime {
-  /** The agent's current container client. */
-  client(): ContainerClient
+  /** The agent's current container client (for the runner configured now, read from the settings). */
+  client(): Promise<ContainerClient>
 }
 
 export interface LiveSessionsDeps {
@@ -104,8 +104,10 @@ export class LiveSessions {
   private readonly subscriptions = new Map<string, () => void>()
   /** Subscribes in flight: concurrent subscribes share one. */
   private readonly connecting = new Map<string, Promise<void>>()
-  /** What ends with the agent: the streams handed out over its sessions. */
-  private readonly disposers = new Set<() => void>()
+  /** What ends with the agent, or with the session it names: the streams handed out over its sessions. */
+  private readonly disposers = new Map<() => void, string | undefined>()
+  /** Stops on their way to the container, per session (see `stopping`). */
+  private readonly stopsInFlight = new Map<string, number>()
   /** Sends in flight. A send can outlive a turn's idle or a reattach, so it holds the stream on its own. */
   private readonly sendsInFlight = new Map<string, number>()
   /** Delivery attempts run one at a time: a failed one is rolled back before the next looks at the state. */
@@ -136,6 +138,11 @@ export class LiveSessions {
 
   isActive(sessionId: string): boolean {
     return this.states.get(sessionId)?.isActive ?? false
+  }
+
+  /** The host holds the session's live state, whether or not its turn runs. */
+  has(sessionId: string): boolean {
+    return this.states.has(sessionId)
   }
 
   isAwaitingInput(sessionId: string): boolean {
@@ -254,9 +261,12 @@ export class LiveSessions {
     return this.channels.listen(sessionId, listener)
   }
 
-  /** `close` runs once, when the agent is let go of (`dispose`); returns the unregister. */
-  onDispose(close: () => void): () => void {
-    this.disposers.add(close)
+  /**
+   * `close` runs once, when the agent is let go of (`dispose`) or, given a
+   * session, when that session is deleted (`endStreams`); returns the unregister.
+   */
+  onDispose(close: () => void, sessionId?: string): () => void {
+    this.disposers.set(close, sessionId)
     return () => this.disposers.delete(close)
   }
 
@@ -275,16 +285,16 @@ export class LiveSessions {
       { after, snapshot: (lastId) => [this.connectedFrame(sessionId, lastId, stored)] },
       onFrame,
     )
-    // The app the agent has grabbed is agent state, not one of this
+    // The app the agent is acting in is actor state, not one of this
     // session's events (it has no id): every viewer is told, once its icon is
-    // read, unless another grab or a release has gone out meanwhile. A follow
+    // read, unless another app or a release has gone out meanwhile. A follow
     // that fails leaves nothing attached.
     try {
-      const app = this.deps.computerUse.grabbed()
+      const app = this.deps.computerUse.activeApp(sessionId)
       if (app) {
         const icon = await this.appIcon(app)
-        if (this.deps.computerUse.grabbed() === app) {
-          onFrame(wireFrame({ type: 'computer_use_grab_changed', app, ...(icon && { appIcon: icon }) }))
+        if (this.deps.computerUse.activeApp(sessionId) === app) {
+          onFrame(wireFrame({ type: 'computer_use_app_changed', app, ...(icon && { appIcon: icon }) }))
         }
       }
     } catch (error) {
@@ -307,6 +317,17 @@ export class LiveSessions {
     const tagged = this.provisionalSessions.has(sessionId) ? { ...event, provisional: true } : event
     if (this.deps.capture) background(this.deps.capture.recordOutput(sessionId, tagged), { name: 'live-sessions.capture-output' })
     this.channels.emit(sessionId, tagged)
+    // The app a turn acted in is shown while that turn runs; the next turn
+    // starts with none until its own first command.
+    if (event.type === 'session_idle' && this.deps.computerUse.activeApp(sessionId)) {
+      this.deps.computerUse.clearActiveApp(sessionId)
+      this.emit(sessionId, { type: 'computer_use_app_changed', app: null })
+    }
+    // The agent's cursor stays on screen for as long as the turn that used
+    // the computer runs: the host lets go of it when the turn ends, either way.
+    if (event.type === 'session_idle' || event.type === 'session_error') {
+      this.deps.host.send('computerUseTurnEnded', { sessionId })
+    }
   }
 
   /** The session as a viewer starting from nothing needs it: it stands for every event up to `lastId`. */
@@ -394,6 +415,15 @@ export class LiveSessions {
     this.capabilityGrants.delete(sessionId)
   }
 
+  /** The session is deleted: the streams handed out over it end. */
+  endStreams(sessionId: string): void {
+    for (const [close, of] of [...this.disposers]) {
+      if (of !== sessionId) continue
+      this.disposers.delete(close)
+      close()
+    }
+  }
+
   /** Close the stream and keep the session's state (a reattach brings it back). */
   detach(sessionId: string): void {
     this.subscriptions.get(sessionId)?.()
@@ -426,7 +456,7 @@ export class LiveSessions {
     this.subscriptions.get(sessionId)?.()
     this.subscriptions.delete(sessionId)
     const prior = this.states.get(sessionId)
-    prior?.dispose()
+    prior?.dispose({ replaced: true })
     const state = this.create(sessionId, prior)
     this.resolveStreamPolicy(sessionId, state, metadata)
     this.clients.set(sessionId, client)
@@ -488,6 +518,7 @@ export class LiveSessions {
           state.applyStreamPolicy({
             releaseStreamWhenIdle: isHiddenAutomatedSession(meta),
             retainStateOnStreamRelease: isAgentIntegrationSession(meta),
+            hiddenFromLists: isHiddenAutomatedSession(meta),
           })
           this.releaseIfIdle(sessionId)
         })
@@ -577,12 +608,49 @@ export class LiveSessions {
   }
 
   /**
-   * The container stopped. Every session's stream goes; a session mid-turn
-   * ends (see `LiveSession.markInactive`); a recovering one is left to its
-   * recovery, or settled with it when the stop ends the recovery too.
+   * A stop of the session is on its way to the container; returns its end,
+   * to call once it is back, whatever it did. Until then the stop owns the
+   * session's end: a background task it kills does not settle the session
+   * first (the stop's own mark settles it, as cancelled).
+   */
+  stopping(sessionId: string): () => void {
+    this.stopsInFlight.set(sessionId, (this.stopsInFlight.get(sessionId) ?? 0) + 1)
+    let back = false
+    return () => {
+      if (back) return
+      back = true
+      const remaining = (this.stopsInFlight.get(sessionId) ?? 1) - 1
+      if (remaining > 0) {
+        this.stopsInFlight.set(sessionId, remaining)
+        return
+      }
+      this.stopsInFlight.delete(sessionId)
+      this.states.get(sessionId)?.stopReturned()
+    }
+  }
+
+  /**
+   * The container is being stopped on purpose (the agent's Stop, a restart,
+   * shutdown). Every session mid-turn ends now, as a Stop ends it, before the
+   * container goes and drops its socket: a turn the user stopped must not
+   * read as a crash. A recovering one is the stop's to settle with its
+   * recovery (`markAllInactive`).
+   */
+  markAllStopped(): void {
+    for (const state of this.states.values()) {
+      if (state.isActive && !state.isRecovering) state.markContainerStopped()
+    }
+  }
+
+  /**
+   * The container stopped. Every session's stream goes, and the host runs
+   * its calls were waiting on (see `LiveSession.abandonHostRuns`); a session
+   * mid-turn ends (see `LiveSession.markInactive`); a recovering one is left
+   * to its recovery, or settled with it when the stop ends the recovery too.
    */
   markAllInactive(options?: { settleRecovering?: boolean }): void {
     for (const [sessionId, state] of [...this.states]) {
+      state.abandonHostRuns()
       if (state.isRecovering) {
         if (options?.settleRecovering) this.settleRecovering([sessionId])
         else this.detach(sessionId)
@@ -740,15 +808,9 @@ export class LiveSessions {
       state.completeRequest(toolUseId, outcome)
       return
     }
-    // No live state (the stream was released): settle it and tell the tabs all the same.
-    if (this.deps.requests.resolveIfInStore(toolUseId, 'stream', outcome)) {
-      this.emit(target, {
-        type: 'tool_result',
-        toolUseId,
-        result: outcome === 'answered' ? 'User provided input' : 'User declined the request',
-        isError: outcome !== 'answered',
-      })
-    }
+    // No live state (the stream was released): settle it all the same, and
+    // the tabs refetch the transcript.
+    if (this.deps.requests.resolveIfInStore(toolUseId, 'stream', outcome)) this.emit(target, { type: 'messages_updated' })
   }
 
   completeCapabilityReview(sessionId: string, toolUseId: string, outcome: UserInputRequestOutcome = 'answered'): void {
@@ -779,7 +841,9 @@ export class LiveSessions {
    * best-effort cancel must never block the message.
    */
   async cancelAwaitingInput(sessionId: string): Promise<void> {
-    if (!this.isAwaitingInput(sessionId)) return
+    // An idle session waits only on a call parked on its own card, held by a
+    // background script: there is no turn to stop, and the message starts one.
+    if (!this.isActive(sessionId) || !this.isAwaitingInput(sessionId)) return
     // Taken before the stop: the stop's idle clears the stream store, and
     // computer-use approvals survive that boundary on purpose. Recovered
     // stubs are included: their container-side pending may well be live.
@@ -789,11 +853,16 @@ export class LiveSessions {
     // The container keeps its background tasks across this stop, and so do
     // we, unless it says it restarted.
     const turnGenerationBefore = this.turnGeneration(sessionId)
-    const { processKept } = await this.interruptContainer(sessionId).catch((error) => {
-      console.error(`[LiveSessions] cancelAwaitingInput interrupt failed for ${sessionId}:`, error)
-      return { processKept: false }
-    })
-    this.markInterrupted(sessionId, { processKept, turnGenerationBefore })
+    const back = this.stopping(sessionId)
+    try {
+      const { processKept } = await this.interruptContainer(sessionId).catch((error) => {
+        console.error(`[LiveSessions] cancelAwaitingInput interrupt failed for ${sessionId}:`, error)
+        return { processKept: false }
+      })
+      this.markInterrupted(sessionId, { processKept, turnGenerationBefore })
+    } finally {
+      back()
+    }
 
     // The idle only cleared the stream store: a leftover approval would come
     // back as a phantom card on reconnect.
@@ -811,8 +880,9 @@ export class LiveSessions {
    * untracked cannot be settled by a turn stop, so that one stops everything.
    */
   private async interruptContainer(sessionId: string): Promise<{ processKept: boolean }> {
+    const client = await this.deps.runtime.client()
     const scope = this.hasOnlyUntrackedBackgroundWork(sessionId) ? 'all' : 'turn'
-    const response = await this.deps.runtime.client().fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+    const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),
@@ -879,9 +949,10 @@ export class LiveSessions {
     if (!request.blocking || request.autoApproved) return
     const agentSlug = this.deps.slug
     if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
-      // Agent-scoped: attributed to the first active session, the awaiting
-      // projection's heuristic. With none (a dashboard-triggered review) the
-      // dashboard panel is the surface.
+      // A review scoped to the session whose call it holds notifies that
+      // session; an agent-scoped one is attributed to the first active
+      // session. With none (a dashboard-triggered review) the dashboard
+      // panel is the surface.
       const sessionId = request.scope.sessionId ?? this.activeIds()[0]
       if (!sessionId) return
       const payload = request.payload as { displayText?: unknown }
@@ -895,8 +966,9 @@ export class LiveSessions {
       })
       return
     }
-    // Agent-scoped reviews and re-auth requests have no session to notify
-    // for; their in-app cards are the prompt.
+    // Agent-scoped requests have no session to notify for, and re-auth cards
+    // are no notification category even when scoped to the calling session;
+    // their in-app cards are the prompt.
     const sessionId = request.scope.sessionId
     if (!sessionId) return
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
@@ -924,7 +996,7 @@ export class LiveSessions {
     this.workflows.clear()
     this.clients.clear()
     this.channels.dispose()
-    const disposers = [...this.disposers]
+    const disposers = [...this.disposers.keys()]
     this.disposers.clear()
     for (const close of disposers) close()
   }
@@ -964,6 +1036,7 @@ export class LiveSessions {
       capture: capture ?? null,
       emit: (event) => this.emit(sessionId, event),
       isCurrent: () => this.states.get(sessionId) === state,
+      stopInFlight: () => this.stopsInFlight.has(sessionId),
       modelRuntime: () => this.runtimes.get(sessionId),
       transport: () => this.clients.get(sessionId),
       releaseTransportIfIdle: () => this.releaseIfIdle(sessionId),

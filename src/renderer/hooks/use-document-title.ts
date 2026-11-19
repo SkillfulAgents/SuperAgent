@@ -73,6 +73,7 @@ const SETTINGS_TAB_TITLES = {
   experiments: 'Experiments',
   admin: 'Admin',
   users: 'Users',
+  'team-directory': 'Team Directory',
   auth: 'Auth',
 } satisfies Record<SettingsTab, string>
 

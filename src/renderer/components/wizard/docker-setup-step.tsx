@@ -140,7 +140,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
           return (
             <div
               key={runtime.runner}
-              className={`rounded-lg border text-left transition-colors ${
+              className={`rounded-card border text-left transition-colors ${
                 isSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
               }`}
             >

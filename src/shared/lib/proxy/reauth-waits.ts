@@ -9,10 +9,12 @@ import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request
  *
  * The agent's user-input store is the durable announcement channel:
  * registering a `*_reauth_required` envelope broadcasts the unified SSE
- * created event and keeps every session of the agent in the awaiting-input
- * state. This class owns only the in-memory promise settlers that let the
- * original HTTP requests resume once the connection is active again — one
- * card per subject (account or MCP), shared by every request parked on it.
+ * created event and keeps the session that made the call in the
+ * awaiting-input state — every session of the agent when that session is
+ * unknown or not running. This class owns only the in-memory promise
+ * settlers that let the original HTTP requests resume once the connection is
+ * active again — one card per subject (account or MCP) and session, shared by
+ * every request parked on it.
  *
  * Owned by the agent's actor: a wait can only ever be for this agent, and
  * dropping the actor ends whatever is still parked. A wait ends as data
@@ -25,7 +27,7 @@ export type ReauthWaitKind = Extract<PendingUserInputRequest['kind'], `${string}
 /** What distinguishes the account and MCP flavours of a re-auth wait. */
 export interface ReauthWaitSpec<Details> {
   kind: ReauthWaitKind
-  /** The connection the wait is for; one open card per subject. */
+  /** The connection the wait is for; one open card per subject and session. */
   subjectOf(details: Details): string
   /** The envelope payload that renders the card. */
   payloadOf(details: Details, entryId: string): Record<string, unknown>
@@ -64,15 +66,20 @@ interface ReauthWaiter {
 
 interface ReauthGroup {
   subject: string
+  /** The session the card is scoped to; absent when it blocks the whole agent. */
+  sessionId?: string
+  key: string
   entryId: string
   waiters: Set<ReauthWaiter>
 }
 
 type ReauthEntryOutcome = 'answered' | 'cancelled' | 'timeout'
 
-export class AgentReauthWaits<Details> {
+const cardKey = (subject: string, sessionId: string | undefined) => JSON.stringify([subject, sessionId ?? null])
+
+export class AgentReauthWaits<Details extends { callerSessionId?: string }> {
   private groups = new Map<string, ReauthGroup>()
-  private entryIdBySubject = new Map<string, string>()
+  private entryIdByCard = new Map<string, string>()
   /** Each parked call's waiter and the card it waits on, by the caller's wait id. */
   private waiters = new Map<string, { group: ReauthGroup; waiter: ReauthWaiter }>()
 
@@ -81,6 +88,8 @@ export class AgentReauthWaits<Details> {
     private readonly inputs: AgentInputRequests,
     /** Recompute the agent's sessions' awaiting state after a card opens or closes. */
     private readonly syncAwaiting: () => void,
+    /** The session a card is scoped to, or undefined to scope it to the agent. See `createAgentState`. */
+    private readonly cardSession: (callerSessionId: string | undefined) => string | undefined,
     private readonly spec: ReauthWaitSpec<Details>,
   ) {}
 
@@ -90,8 +99,8 @@ export class AgentReauthWaits<Details> {
 
   private forgetGroup(group: ReauthGroup): void {
     this.groups.delete(group.entryId)
-    if (this.entryIdBySubject.get(group.subject) === group.entryId) {
-      this.entryIdBySubject.delete(group.subject)
+    if (this.entryIdByCard.get(group.key) === group.entryId) {
+      this.entryIdByCard.delete(group.key)
     }
   }
 
@@ -133,31 +142,43 @@ export class AgentReauthWaits<Details> {
     this.syncAwaiting()
   }
 
+  /** The group holding a card key, if its card is still open; a group whose card was lost is cancelled. */
+  private openGroup(key: string): ReauthGroup | undefined {
+    const entryId = this.entryIdByCard.get(key)
+    const group = entryId ? this.groups.get(entryId) : undefined
+    if (!group) {
+      if (entryId) this.entryIdByCard.delete(key)
+      return undefined
+    }
+    const entry = this.inputs.getOpenRequest(group.entryId)
+    if (entry && this.isOwnEntry(entry)) return group
+    this.settleGroup(group, 'cancelled', { outcome: 'cancelled', message: this.spec.messages.lost })
+    return undefined
+  }
+
   /**
    * Park a request until the subject is re-authorized, under the caller's
-   * `waitId` (to withdraw it). Requests on the same subject share one card;
-   * completing the subject resumes all of them.
+   * `waitId` (to withdraw it). Requests on the same subject share the card
+   * their session shows; completing the subject resumes all of them, in
+   * every session.
    */
   request(details: Details, options: { waitId: string }): Promise<ReauthOutcome> {
     const subject = this.spec.subjectOf(details)
-    const existingId = this.entryIdBySubject.get(subject)
-    let group = existingId ? this.groups.get(existingId) : undefined
+    // Join a card the calling session already shows for this subject: its own
+    // (even after its turn ended) or the agent-wide one. Only then open a new
+    // card, scoped by whether the session is running now.
+    let group =
+      (details.callerSessionId ? this.openGroup(cardKey(subject, details.callerSessionId)) : undefined) ??
+      this.openGroup(cardKey(subject, undefined))
     let isNewGroup = false
 
-    if (group) {
-      const entry = this.inputs.getOpenRequest(group.entryId)
-      if (!entry || !this.isOwnEntry(entry)) {
-        this.settleGroup(group, 'cancelled', { outcome: 'cancelled', message: this.spec.messages.lost })
-        group = undefined
-      }
-    }
-
     if (!group) {
-      if (existingId) this.entryIdBySubject.delete(subject)
+      const sessionId = this.cardSession(details.callerSessionId)
+      const key = cardKey(subject, sessionId)
       const entryId = crypto.randomUUID()
-      group = { subject, entryId, waiters: new Set() }
+      group = { subject, sessionId, key, entryId, waiters: new Set() }
       this.groups.set(entryId, group)
-      this.entryIdBySubject.set(subject, entryId)
+      this.entryIdByCard.set(key, entryId)
       isNewGroup = true
     }
 
@@ -178,7 +199,9 @@ export class AgentReauthWaits<Details> {
       const registered = this.inputs.register({
         id: activeGroup.entryId,
         kind: this.spec.kind,
-        scope: { agentSlug: this.slug },
+        scope: activeGroup.sessionId
+          ? { agentSlug: this.slug, sessionId: activeGroup.sessionId }
+          : { agentSlug: this.slug },
         blocking: true,
         autoApproved: false,
         payload: this.spec.payloadOf(details, activeGroup.entryId),
@@ -215,12 +238,26 @@ export class AgentReauthWaits<Details> {
     return true
   }
 
-  /** Settle the wait with a different connection: the parked calls must not resume against the old one. */
+  /**
+   * Settle the wait with a different connection: the agent's parked calls on
+   * the old one, in every session, must not resume against it.
+   */
   replace(entryId: string, replacementId: string): boolean {
     const group = this.groups.get(entryId)
     if (!group) return false
-    this.settleGroup(group, 'answered', { outcome: 'replaced', replacementId })
+    for (const sibling of [...this.groups.values()]) {
+      if (sibling.subject !== group.subject) continue
+      this.settleGroup(sibling, 'answered', { outcome: 'replaced', replacementId })
+    }
     return true
+  }
+
+  /** The session was deleted or stopped: dismiss the calls parked on its own cards. */
+  dropSession(sessionId: string, reason = 'The session was deleted.'): void {
+    for (const group of [...this.groups.values()]) {
+      if (group.sessionId !== sessionId) continue
+      this.dismiss(group.entryId, reason)
+    }
   }
 
   /** Resume every parked request on the reconnected subject; returns how many. */
@@ -255,6 +292,8 @@ export interface AccountReauthDetails {
   accountId: string
   toolkit: string
   accountStatus: 'expired' | 'revoked'
+  /** The session the proxied call came from, when the request named one. */
+  callerSessionId?: string
 }
 
 /** What one agent's wait needs to know; the agent itself is the store's. */
@@ -284,8 +323,9 @@ export function createAccountReauthWaits(
   slug: AgentSlug,
   inputs: AgentInputRequests,
   syncAwaiting: () => void,
+  cardSession: (callerSessionId: string | undefined) => string | undefined,
 ): AccountReauthWaits {
-  return new AgentReauthWaits(slug, inputs, syncAwaiting, ACCOUNT_REAUTH_SPEC)
+  return new AgentReauthWaits(slug, inputs, syncAwaiting, cardSession, ACCOUNT_REAUTH_SPEC)
 }
 
 // ── Remote MCPs ─────────────────────────────────────────────────────────────
@@ -297,6 +337,8 @@ export interface McpReauthDetails {
   mcpId: string
   mcpName: string
   authType: 'none' | 'oauth' | 'bearer'
+  /** The session the MCP call came from, when the request named one. */
+  callerSessionId?: string
 }
 
 /** What one agent's wait needs to know; the agent itself is the store's. */
@@ -326,6 +368,7 @@ export function createMcpReauthWaits(
   slug: AgentSlug,
   inputs: AgentInputRequests,
   syncAwaiting: () => void,
+  cardSession: (callerSessionId: string | undefined) => string | undefined,
 ): McpReauthWaits {
-  return new AgentReauthWaits(slug, inputs, syncAwaiting, MCP_REAUTH_SPEC)
+  return new AgentReauthWaits(slug, inputs, syncAwaiting, cardSession, MCP_REAUTH_SPEC)
 }

@@ -31,7 +31,7 @@ export function TrayTabStrip({ trays, selectedTrayId, onSelect }: TrayTabStripPr
             onClick={() => onSelect(tray.id)}
             title={tray.label}
             className={cn(
-              'relative flex flex-col items-center gap-1 py-1.5 px-1 rounded-md transition-colors w-full',
+              'relative flex flex-col items-center gap-1 py-1.5 px-1 rounded-item transition-colors w-full',
               isActive
                 ? 'bg-primary/10 text-primary'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground'

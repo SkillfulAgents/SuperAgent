@@ -1,13 +1,17 @@
+import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { isRetryableRequestError } from '@renderer/lib/http-error'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
-import { usePreparedTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
+import { useInstallingTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
+import { agentQuery, agentsListQuery, AGENTS_LIST_POLL_MS } from './query-options'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from './use-agent-member-agents'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -91,12 +95,8 @@ export function useAgents<TData = ApiAgent[]>(options?: {
   poll?: false
 }) {
   return useQuery<ApiAgent[], Error, TData>({
-    queryKey: ['agents'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/agents')
-      if (!res.ok) throw new Error('Failed to fetch agents')
-      return res.json()
-    },
+    // Key, fetch and staleTime are shared with the list's other observers.
+    ...agentsListQuery,
     enabled: options?.enabled,
     // React Query structurally shares the `select` result, so a narrow projection
     // (e.g. just {slug, displaySlug} for UserProvider's slug→id resolver) keeps a
@@ -106,32 +106,42 @@ export function useAgents<TData = ApiAgent[]>(options?: {
     select: options?.select,
     notifyOnChangeProps: options?.notifyOnChangeProps,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
-    refetchInterval: options?.poll === false ? false : 60000,
+    refetchInterval: options?.poll === false ? false : AGENTS_LIST_POLL_MS,
   })
 }
 
-/** The agents the sidebar and Home list: all but the Team Brain agent, which is reached only through its own sidebar item. */
+/** The agents the sidebar and Home list: all but the Team Brain agent, reached only through its own sidebar item, and a set-up's. */
 export function useListedAgents() {
-  const preparedSlug = usePreparedTeamBrainSlug()
+  const installing = useInstallingTeamBrainSlug()
   const withoutTeamBrain = useCallback(
-    (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && agent.slug !== preparedSlug),
-    [preparedSlug],
+    (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && !agent.teamBrainSettingUp && agent.slug !== installing),
+    [installing],
   )
   return useAgents({ select: withoutTeamBrain })
 }
 
 export function useAgent(slug: string | null) {
-  return useQuery<ApiAgent>({
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${slug}`)
-      if (!res.ok) throw new Error('Failed to fetch agent')
-      return res.json()
-    },
-    queryKey: ['agents', slug],
+  return useQuery({
+    ...agentQuery(slug ?? ''),
     enabled: !!slug,
+    // A loader may join this request. Retry transport, timeout, rate-limit and
+    // server errors, but finish definitive client errors (including 401) now.
+    retry: (failureCount, error) => isRetryableRequestError(error) && failureCount < 3,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
     refetchInterval: 60000,
   })
+}
+
+/**
+ * Whoever creates an agent owns it. Their roles are fetched again after a create, and until that
+ * answer arrives the list they hold has no entry for the new agent, which reads as view-only: on
+ * a host whose calls take hundreds of milliseconds, the new agent's page opened view-only first.
+ * So the owner role goes into the held list at once. Nothing is held outside auth mode.
+ */
+export function seedOwnerRole(queryClient: QueryClient, agentSlug: string): void {
+  queryClient.setQueryData<Record<string, { role: string; memberCount: number }>>(['my-agent-roles'], (roles) =>
+    roles && !roles[agentSlug] ? { ...roles, [agentSlug]: { role: 'owner', memberCount: 1 } } : roles,
+  )
 }
 
 export function useCreateAgent() {
@@ -159,6 +169,7 @@ export function useCreateAgent() {
       if (agent.displaySlug !== agent.slug) {
         queryClient.setQueryData(['agents', agent.displaySlug], agent)
       }
+      seedOwnerRole(queryClient, agent.slug)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -190,8 +201,10 @@ export function useDeleteAgent() {
       // entry without a blocking refetch. Defense-in-depth: the server already
       // 404s the agent, so this only removes a brief stale name/description flash.
       queryClient.removeQueries({ queryKey: ['agents', slug] })
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      invalidateNotificationCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+      // Its links go with it, and with them its place in other agents' member stacks.
+      queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
       // Deleting the Team Brain agent takes its drive off every other agent and off global.

@@ -69,7 +69,7 @@ export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single', 
     <div
       {...openableProps(open)}
       className={cn(
-        'relative cursor-pointer rounded-md border bg-background text-xs text-left transition-colors',
+        'relative cursor-pointer rounded-card border bg-background text-xs text-left transition-colors',
         'hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         // Sent images show at their own aspect ratio, capped in height so a
         // tall screenshot doesn't take over the thread; width is bounded by the

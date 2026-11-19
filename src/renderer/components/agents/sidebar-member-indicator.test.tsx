@@ -6,6 +6,8 @@ import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import { AgentSharePopover } from './agent-share-popover'
 import { SidebarMemberIndicator } from './sidebar-member-indicator'
 
+vi.mock('@renderer/hooks/use-agent-member-agents', () => ({ useAgentMemberAgents: () => [], useAgentShareRoster: () => ({ data: undefined }) }))
+vi.mock('./agent-share-rows', () => ({ AgentShareRows: () => null }))
 vi.mock('@renderer/hooks/use-agent-members', () => ({ useAgentMembers: vi.fn() }))
 vi.mock('@renderer/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@renderer/lib/env', () => ({ getApiBaseUrl: () => '' }))
@@ -70,6 +72,17 @@ describe('SidebarMemberIndicator', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(count)
     expect(screen.getByText(`person-${count - 1}@example.test`)).toBeInTheDocument()
     expect(within(screen.getByRole('dialog')).queryByRole('button')).toBeNull()
+  })
+
+  it('gives Agent Home its own size, test ids and five circles', () => {
+    render(<SidebarMemberIndicator {...props} variant="page" maxFaces={5} />)
+    const trigger = screen.getByTestId('agent-members-shared-agent')
+    const faces = within(trigger).getAllByRole('img', { hidden: true })
+    expect(faces).toHaveLength(4)
+    expect(faces[0]).toHaveStyle({ width: '24px' })
+    expect(within(trigger).getByTestId('agent-members-count-shared-agent')).toHaveTextContent('6')
+    fireEvent.click(trigger)
+    expect(screen.getByTestId('agent-members-list-shared-agent')).toBeInTheDocument()
   })
 
   it('keeps the first roster open when pressing Invite blurs the avatar trigger', () => {

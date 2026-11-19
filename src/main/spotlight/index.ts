@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import path from 'path'
 import type { ApiTarget } from '@shared/lib/api-target'
+import { serviceHost } from '@shared/lib/background-work'
 import { loadSpotlightIndex } from './spotlight-bridge'
 import { SpotlightSync } from './spotlight-sync'
 import {
@@ -34,7 +35,7 @@ function spotlightBridgeDir(): string {
 
 /** Start indexing and handling clicks. macOS only; call once the window and the API are up. */
 export function startSpotlight(options: {
-  baseUrl(target: ApiTarget): string | null
+  baseUrl(target: ApiTarget): Promise<string | null>
   activation: SpotlightActivationDeps
 }): void {
   if (process.platform !== 'darwin' || activation) return
@@ -44,16 +45,22 @@ export function startSpotlight(options: {
     if (stopped) return
     if (index) {
       sync = new SpotlightSync({ index, baseUrl: options.baseUrl, activeTarget: options.activation.activeTarget })
-      sync.start()
+      // Registered here rather than with the other services: this is a desktop
+      // feature, it starts once the window and the API are up, and it runs
+      // whether or not the rest of the services came up.
+      serviceHost().register(sync)
+      return serviceHost().startService(sync.id)
     } else if (!app.isPackaged) {
       console.log('[Spotlight] Bridge not built; run `npm run build:spotlight-bridge` to index this app.')
     }
+  }).catch((error) => {
+    console.error('[Spotlight] Could not start indexing:', error)
   })
 
   if (pendingIdentifier) {
     const identifier = pendingIdentifier
     pendingIdentifier = null
-    activation.activate(identifier)
+    activate(activation, identifier)
   }
 }
 
@@ -62,7 +69,7 @@ export function handleSpotlightActivity(type: string, userInfo: unknown): boolea
   if (type !== SPOTLIGHT_ACTIVITY_TYPE) return false
   const identifier = spotlightIdentifier(userInfo)
   if (!identifier) return true
-  if (activation) activation.activate(identifier)
+  if (activation) activate(activation, identifier)
   else pendingIdentifier = identifier
   return true
 }
@@ -74,7 +81,15 @@ export function requestSpotlightSync(): void {
 
 /** A main-window renderer mounted: open a result that was waiting on a target switch. */
 export function resumeSpotlightAfterSwitch(): void {
-  activation?.resumeAfterSwitch()
+  activation?.resumeAfterSwitch().catch((error) => {
+    console.error('[Spotlight] Could not open the result waiting on a switch:', error)
+  })
+}
+
+function activate(target: SpotlightActivation, identifier: string): void {
+  target.activate(identifier).catch((error) => {
+    console.error('[Spotlight] Could not open a result:', error)
+  })
 }
 
 /** The main window did not make a switch main asked for; forget the result waiting on it. */

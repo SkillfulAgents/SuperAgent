@@ -286,7 +286,7 @@ export function ExploreView() {
                               next.size === 0 || next.size === skillsetList.length ? null : next,
                             )
                           }}
-                          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent ${
+                          className={`flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left hover:bg-accent ${
                             checked ? 'bg-accent' : ''
                           }`}
                         >
@@ -309,7 +309,7 @@ export function ExploreView() {
         {isLoading ? (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-40 rounded-2xl" />
+              <Skeleton key={i} className="h-40 rounded-card" />
             ))}
           </div>
         ) : !hasSkillsets || templates.length === 0 ? (
@@ -407,7 +407,7 @@ function FilterRow({
       type="button"
       onClick={onToggle}
       aria-pressed={checked}
-      className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent ${
+      className={`flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left hover:bg-accent ${
         checked ? 'bg-accent' : ''
       }`}
     >

@@ -52,6 +52,46 @@ afterEach(() => {
 // Automated session promotion
 // ============================================================================
 
+describe('global events of a hidden automated session', () => {
+  it('say the session is hidden until it is promoted', async () => {
+    // A dedicated pair, so promotes still in flight from other tests stay on the null path.
+    const HIDDEN_SESSION = 'hidden-scheduled-session'
+    const HIDDEN_AGENT = 'hidden-scheduled-agent'
+    const scheduled = { isScheduledExecution: true, scheduledTaskId: 'task-1' }
+    vi.mocked(getSessionMetadata).mockImplementation((store, id) =>
+      Promise.resolve(store.slug === HIDDEN_AGENT && id === HIDDEN_SESSION ? (scheduled as never) : null))
+    const client = createStreamClient()
+    try {
+      await sessions(HIDDEN_AGENT).subscribe(HIDDEN_SESSION, client, HIDDEN_SESSION, scheduled)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      const events = collectGlobalEvents()
+      const forSession = (type: string) => events().filter((e) => e.type === type && e.sessionId === HIDDEN_SESSION)
+
+      sessions(HIDDEN_AGENT).markActive(HIDDEN_SESSION)
+      expect(forSession('session_active')).toEqual([expect.objectContaining({ hidden: true })])
+
+      // Asking the user promotes it: the event before the promotion still
+      // says hidden, the one after it does not, so clients refetch the lists.
+      client.emit({ type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-1', name: 'AskUserQuestion' } } })
+      client.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: JSON.stringify({ questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }] }) } } })
+      client.emit({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      await vi.waitFor(() => expect(forSession('session_awaiting_input')).toHaveLength(2))
+      const [beforePromotion, afterPromotion] = forSession('session_awaiting_input')
+      expect(beforePromotion).toMatchObject({ hidden: true })
+      expect(afterPromotion).not.toHaveProperty('hidden')
+    } finally {
+      sessions(HIDDEN_AGENT).unsubscribe(HIDDEN_SESSION)
+      vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+    }
+  })
+
+  it('leave the flag off a regular session', async () => {
+    const events = collectGlobalEvents()
+    sessions().markActive(SESSION_ID)
+    expect(events().find((e) => e.type === 'session_active' && e.sessionId === SESSION_ID)).not.toHaveProperty('hidden')
+  })
+})
+
 describe('automated session promotion', () => {
   beforeEach(() => {
     // Promotion fires on the awaiting rising edge, which requires an active

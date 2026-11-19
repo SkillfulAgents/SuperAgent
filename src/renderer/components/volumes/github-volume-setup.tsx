@@ -16,7 +16,7 @@ function GithubLogo({ className }: { className?: string }) {
 type GithubCursor = { id: string; name: string }[]
 const githubFolders: VolumeFolderSource<GithubCursor> = {
   type: 'github', label: 'GitHub',
-  title: 'Choose a GitHub folder', description: 'Open a repository and a branch, then select the folder to use or open one to look inside it.',
+  title: 'Choose a GitHub folder', description: 'Open a repository and a branch, then select the folder to use or open one to look inside it, or make a new private repository.',
   query: (accountId, cursor): Record<string, string> => {
     const [repo, branch] = cursor
     if (!repo) return { accountId }
@@ -25,6 +25,8 @@ const githubFolders: VolumeFolderSource<GithubCursor> = {
   },
   folders: (data, cursor) => data.folders.map(folder => ({ id: folder.id, name: folder.name, cursor: [...cursor, folder] })),
   crumbs: cursor => [{ name: 'GitHub', cursor: [] }, ...cursor.map((folder, index) => ({ name: folder.name, cursor: cursor.slice(0, index + 1) }))],
+  noun: cursor => cursor.length ? 'folder' : 'repo',
+  canCreate: cursor => cursor.length === 0,
   confirmLabel: cursor => cursor.length < 2 ? null : cursor.length === 2 ? 'Use repository root' : `Use “${cursor.at(-1)?.name}”`,
 }
 

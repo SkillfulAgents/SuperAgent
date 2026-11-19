@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
-import { useComposerOptions, type UseComposerOptionsArgs } from '@renderer/components/messages/composer-options'
+import { useComposerOptions } from '@renderer/components/messages/composer-options'
+import { agentDefaultRuntimeOptions, type RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { Attachment, ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
 import { apiFetch } from '@renderer/lib/api'
 import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
@@ -16,7 +17,8 @@ interface NewSessionComposerOptions {
   draftKey: string
   initialAttachments?: Attachment[]
   references?: readonly ReferenceAttachment[]
-  initialOptions?: Pick<UseComposerOptionsArgs, 'initialModel' | 'initialLlmProviderId' | 'initialEffort' | 'initialSpeed'>
+  /** Runtime options to start the picker from, e.g. the ones carried over from a stale session. */
+  initialOptions?: RuntimeOptions
   followDefaults?: boolean
   /** Dispatch waits for each selected agent's preferences before locking its defaults. */
   waitForAgentDefaults?: boolean
@@ -57,11 +59,8 @@ export function useNewSessionComposer({
 }: NewSessionComposerOptions) {
   const { data: agentPrefs, isFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
-    ...initialOptions,
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
+    initial: initialOptions,
+    agentDefault: agentDefaultRuntimeOptions(agentPrefs),
     agentKey: agentSlug,
     agentDefaultsReady: waitForAgentDefaults ? isFetched : undefined,
     followDefaults,

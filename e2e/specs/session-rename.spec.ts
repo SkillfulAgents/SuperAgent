@@ -12,12 +12,11 @@ import {
 } from '../helpers/agents'
 
 /**
- * Session names are persisted to `session-metadata.json` via
- * the hardened (atomic + serialized + fail-closed) write path. The incident was
+ * Session names are kept in the agent's session index. The incident was
  * that custom session names silently vanished. This spec exercises the real
- * end-to-end rename flow against the real on-disk metadata store (E2E uses a real
- * SUPERAGENT_DATA_DIR), and — crucially — asserts the name survives a reload,
- * which is what regressed in production.
+ * end-to-end rename flow against the real index (E2E uses a real
+ * SUPERAGENT_DATA_DIR and database), and — crucially — asserts the name
+ * survives a reload, which is what regressed in production.
  */
 test.describe('Session Rename (names must persist)', () => {
   async function createSessionFixture(
@@ -64,7 +63,7 @@ test.describe('Session Rename (names must persist)', () => {
     await renameSessionInSidebar(page, session, newName)
     await expectSessionNamed(request, agent, session, newName)
 
-    // Reload: the name must be read back from session-metadata.json for the
+    // Reload: the name must be read back from the session index for the
     // exact session, not whichever session happens to render first.
     await page.reload()
     const appPage = new AppPage(page)
@@ -77,8 +76,8 @@ test.describe('Session Rename (names must persist)', () => {
   test('a second rename overwrites the first and also persists', async ({ page, request }, testInfo) => {
     const { agent, session } = await createSessionFixture(page, request, testInfo, 'Session Rename Twice')
 
-    // Two successive read-modify-write cycles on the same metadata file — the
-    // second must not be lost and must not clobber the file.
+    // Two successive updates of the same session's entry — the
+    // second must not be lost.
     await renameSessionInSidebar(page, session, uniqueName(testInfo, 'First Session Name'))
     const finalName = uniqueName(testInfo, 'Second Session Name')
     await renameSessionInSidebar(page, session, finalName)

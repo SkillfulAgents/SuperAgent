@@ -320,7 +320,7 @@ export function ChatIntegrationSetupForm({
                   </Button>
                 </div>
                 {manifestPreview && (
-                  <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
+                  <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-card p-2 overflow-x-auto max-h-40 select-all">
                     {generateSlackManifest(slackApp)}
                   </pre>
                 )}
@@ -371,7 +371,7 @@ export function ChatIntegrationSetupForm({
           </div>
         )}
         {info.note && (
-          <div className="rounded-md border border-amber-300/60 bg-amber-100/70 dark:border-amber-700/50 dark:bg-amber-950/40 p-3">
+          <div className="rounded-card border border-amber-300/60 bg-amber-100/70 dark:border-amber-700/50 dark:bg-amber-950/40 p-3">
             <p className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">{info.note}</p>
           </div>
         )}

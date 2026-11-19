@@ -54,7 +54,7 @@ test('sidebar rosters batch loads and pick up profile changes on reload', async 
 
     // Opening the header and member popover reuses the refreshed roster cache.
     await page.getByTestId(`agent-item-${slugs[0]}`).click()
-    await expect(page.getByTestId('agent-member-stack').locator('[role="img"][aria-label="Updated Roster Peer"]')).toBeVisible()
+    await expect(page.getByTestId(`agent-members-${slugs[0]}`).locator('[role="img"][aria-label="Updated Roster Peer"]')).toBeVisible()
     await page.getByTestId(`sidebar-members-${slugs[0]}`).hover()
     await expect(page.getByTestId(`sidebar-members-list-${slugs[0]}`)).toContainText('Updated Roster Peer')
     expect(batches).toHaveLength(2)

@@ -8,7 +8,7 @@ vi.mock('./slack-webhooks', async (importOriginal) => ({
   recordSlackWebhookStatus: vi.fn(async () => true),
 }))
 
-import { SlackConnector, decodeSlackAnswer, encodeSlackAnswer, forgetSlackInstallation, type SlackConfig } from './slack-connector'
+import { SlackConnector, decodeSlackAnswer, encodeSlackAnswer, forgetSlackInstallation, slackAnswerFromAction, type SlackConfig } from './slack-connector'
 import { recordSlackWebhookStatus } from './slack-webhooks'
 import { IntegrationRelays } from '../agent-integrations/relay-transport'
 import type { IntegrationRelayHost } from '../agent-integrations/transport'
@@ -165,7 +165,7 @@ describe('SlackConnector through the webhook', () => {
     expect((await deliver([body, SECRET, { form: true }])).get(`whe_${body.trigger_id}`)).toBe('accepted')
     await vi.waitFor(() => expect(responses).toHaveLength(1))
     expect(responses[0]).toMatchObject({ requestId: 'tool_1', externalId: 'D1|1.0', value: { 'Deploy?': 'Yes' } })
-    expect(slack.calls.find(call => call.method === 'chat.update')?.options).toMatchObject({ channel: 'D1', ts: '1.1', blocks: [{ type: 'section' }] })
+    expect(slack.calls.find(call => call.method === 'chat.update')?.options).toMatchObject({ channel: 'D1', ts: '1.1', blocks: [{ type: 'section' }, { type: 'section', text: { type: 'plain_text', text: '✅ Yes' } }] })
 
     // The same click redelivered acts once.
     expect((await deliver([body, SECRET, { form: true, id: 'whe_again' }])).get('whe_again')).toBe('duplicate')
@@ -295,5 +295,38 @@ describe('answer buttons', () => {
     expect(decodeSlackAnswer('cb_1')).toBeNull()
     expect(decodeSlackAnswer(JSON.stringify({ t: 'x' }))).toBeNull()
     expect(decodeSlackAnswer(undefined)).toBeNull()
+  })
+})
+
+describe('slackAnswerFromAction', () => {
+  const card = { t: 'tool_1', c: 'D1', q: 'Which deal?', a: 'Acme', n: 1 }
+  const buttons = [{ type: 'section' }, { type: 'actions', elements: [{ value: encodeSlackAnswer(card) }] }, { type: 'input' }]
+  const state = (typed: string | null, picked: string[]) => ({
+    b1: { answer_pick: { type: 'checkboxes', selected_options: picked.map((value) => ({ text: { type: 'plain_text' as const, text: value }, value })) } },
+    b2: { answer_other: { type: 'plain_text_input', value: typed } },
+  })
+  const submit = { action_id: 'answer_submit', value: encodeSlackAnswer({ ...card, a: '' }) }
+
+  it('answers Enter in Other with the typed text, on the card of the option buttons beside it', () => {
+    expect(slackAnswerFromAction({ action_id: 'answer_other', value: ' the Series A one ' }, buttons)).toEqual({ ...card, a: 'the Series A one' })
+    expect(slackAnswerFromAction({ action_id: 'answer_other', value: '  ' }, buttons)).toBeNull()
+  })
+
+  it('answers Submit with the typed text over the ticked boxes, else the boxes joined, else nothing', () => {
+    expect(slackAnswerFromAction(submit, [], state('typed wins', ['Team']))).toEqual({ ...card, a: 'typed wins' })
+    expect(slackAnswerFromAction(submit, [], state(null, ['Team', 'Risks']))).toEqual({ ...card, a: 'Team, Risks' })
+    expect(slackAnswerFromAction(submit, [], state(null, []))).toBeNull()
+  })
+
+  it('gives an approval card no typed or submitted answer', () => {
+    const approval = { ...card, t: 'review:r1:agent' }
+    const approvalButtons = [{ type: 'actions', elements: [{ value: encodeSlackAnswer(approval) }] }]
+    expect(slackAnswerFromAction({ action_id: 'answer_other', value: 'do not allow' }, approvalButtons)).toBeNull()
+    expect(slackAnswerFromAction({ ...submit, value: encodeSlackAnswer({ ...approval, a: '' }) }, [], state('allow', []))).toBeNull()
+    expect(slackAnswerFromAction({ action_id: 'answer_0', value: encodeSlackAnswer({ ...approval, a: '✅ Allow' }) }, [])).toMatchObject({ a: '✅ Allow' })
+  })
+
+  it('gives no answer for a ticked box', () => {
+    expect(slackAnswerFromAction({ action_id: 'answer_pick' }, buttons, state(null, ['Team']))).toBeNull()
   })
 })

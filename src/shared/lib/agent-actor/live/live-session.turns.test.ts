@@ -24,7 +24,7 @@ const mockRecordProvisionalSessionActivity = vi.fn((_store: unknown, _id: string
   previous: { mtimeMs: at - 60_000, size: 10 },
 }))
 const mockRevertSessionActivity = vi.fn()
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
   recordProvisionalSessionActivity: (...args: unknown[]) =>
     mockRecordProvisionalSessionActivity(...(args as [unknown, string, number])),
@@ -39,6 +39,19 @@ vi.mock('@shared/lib/config/settings', () => ({
   getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'review' }),
   getModelCatalogSettings: () => ({}),
 }))
+// A failed turn's error presentation reads the active provider: a test can
+// hold that read to land things in between.
+const presentation = vi.hoisted(() => ({ hold: null as Promise<void> | null }))
+vi.mock('@shared/lib/llm-provider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/llm-provider')>()
+  return {
+    ...actual,
+    getActiveLlmProvider: async () => {
+      if (presentation.hold) await presentation.hold
+      return actual.getActiveLlmProvider()
+    },
+  }
+})
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { SessionNotification } from '../host-port'
@@ -68,7 +81,7 @@ const completions = () =>
   live.host.sent('notification').filter((n): n is SessionComplete => n.kind === 'session_complete')
 /** This session's completion notification, with these fields. */
 const completion = (fields: Pick<SessionComplete, 'responseText' | 'responseTranscriptEndOffset'>): SessionComplete =>
-  ({ kind: 'session_complete', agentSlug: AGENT_SLUG, sessionId: SESSION_ID, ...fields })
+  ({ kind: 'session_complete', agentSlug: AGENT_SLUG, sessionId: SESSION_ID, taggedUserIds: [], ...fields })
 
 // A turn's completion notification goes out once the transcript's end is
 // known (an async stat); let that settle before asserting on it, either way.
@@ -97,6 +110,16 @@ describe('replayable turn outcomes', () => {
   const result = () => emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
   const idle = () => emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
   const text = (value: string) => emit({ type: 'assistant', message: { id: 'answer', role: 'assistant', content: [{ type: 'text', text: value }] } })
+
+  it('names the sends each turn answered, and nothing when the runtime does not say', () => {
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {}, user_message_uuids: ['send-a', 'send-b'] })
+    sessions().markActive(SESSION_ID)
+    result()
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'resume', num_turns: 1, usage: {}, user_message_uuids: ['send-c'] })
+    expect(sseEvents.filter(e => e.type === 'turn_output_complete').map(e => e.answered)).toEqual([['send-a', 'send-b'], undefined, undefined])
+  })
 
   it('retains streamed text when no complete assistant frame was delivered', () => {
     sessions().markActive(SESSION_ID)
@@ -1145,7 +1168,7 @@ describe('activity', () => {
 // ============================================================================
 
 describe('API error code tracking', () => {
-  it('captures error code from assistant message and includes it in session_error', () => {
+  it('captures error code from assistant message and includes it in session_error', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1168,13 +1191,15 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBe('authentication_failed')
     expect(errorEvents[0].error).toBe('Invalid API key')
   })
 
-  it('classifies a success-subtype result with is_error as an error turn (modern shape)', () => {
+  it('classifies a success-subtype result with is_error as an error turn (modern shape)', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1193,6 +1218,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].error).toBe('The selected model does not exist.')
@@ -1202,7 +1229,7 @@ describe('API error code tracking', () => {
     expect(sessions().isActive(SESSION_ID)).toBe(false)
   })
 
-  it('broadcasts session_error with null apiErrorCode when no assistant error preceded', () => {
+  it('broadcasts session_error with null apiErrorCode when no assistant error preceded', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1217,12 +1244,104 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBeNull()
   })
 
-  it('clears lastApiErrorCode on new user message', () => {
+  it('frames arriving while the error is presented still follow its session_error, in order', async () => {
+    sessions().markActive(SESSION_ID)
+    sseEvents.length = 0
+
+    mockClient.emit({
+      type: 'result',
+      subtype: 'error',
+      error: 'boom',
+      is_error: true,
+      duration_ms: 0,
+      num_turns: 0,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    })
+    // The next turn's output lands before the presentation read has resolved.
+    mockClient.emit({ type: 'stream_event', event: { type: 'message_start' } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'one' } } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'two' } } })
+    expect(sseEvents.filter(e => e.type === 'stream_delta')).toHaveLength(0)
+
+    await flushNotifications()
+    const types = sseEvents.map(e => e.type)
+    const errorAt = types.indexOf('session_error')
+    expect(errorAt).toBeGreaterThanOrEqual(0)
+    const deltas = sseEvents.flatMap((e, i) => (e.type === 'stream_delta' ? [i] : []))
+    expect(deltas).toHaveLength(2)
+    expect(deltas.every(i => i > errorAt)).toBe(true)
+  })
+
+  describe('while the error is presented', () => {
+    let release!: () => void
+    beforeEach(() => {
+      presentation.hold = new Promise<void>((resolve) => { release = resolve })
+    })
+    afterEach(() => {
+      release()
+      presentation.hold = null
+    })
+    const failTurn = (fields: Record<string, unknown> = {}) => mockClient.emit({
+      type: 'result', subtype: 'error', error: 'boom', is_error: true, duration_ms: 0, num_turns: 0, usage: {}, ...fields,
+    })
+    const streamText = (client: StreamClient, text: string) => {
+      client.emit({ type: 'stream_event', event: { type: 'message_start' } })
+      client.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+    }
+
+    it('keeps the error ahead of the frames a reattached stream delivers', async () => {
+      sessions().markActive(SESSION_ID)
+      sseEvents.length = 0
+      failTurn()
+
+      // The socket dropped and the session was attached again.
+      const next = createStreamClient()
+      await sessions().subscribe(SESSION_ID, next, SESSION_ID)
+      streamText(next, 'after')
+      release()
+      await flushNotifications()
+
+      const types = sseEvents.map((e) => e.type)
+      const errorAt = types.indexOf('session_error')
+      expect(errorAt).toBeGreaterThanOrEqual(0)
+      expect(types.lastIndexOf('stream_delta')).toBeGreaterThan(errorAt)
+      expect(types.indexOf('stream_delta')).toBeGreaterThan(errorAt)
+    })
+
+    it('does not end, in any client, the newer turn a message started on a new attachment', async () => {
+      sessions().markActive(SESSION_ID)
+      failTurn()
+
+      const next = createStreamClient()
+      await sessions().subscribe(SESSION_ID, next, SESSION_ID)
+      sessions().markActive(SESSION_ID)
+      sseEvents.length = 0
+      const globalStart = live.host.sends.length
+      streamText(next, 'the new turn')
+      release()
+      await flushNotifications()
+
+      expect(sseEvents.map((e) => e.type)).not.toContain('session_error')
+      const global = live.host.sends.slice(globalStart).filter(([name]) => name === 'global').map(([, event]) => event as { type: string })
+      expect(global.map((e) => e.type)).not.toContain('session_error')
+      expect(sessions().isActive(SESSION_ID)).toBe(true)
+    })
+
+    it('stops the container for a fatal error with the frame, not after the read', () => {
+      sessions().markActive(SESSION_ID)
+      failTurn({ fatal: true })
+      expect(live.runtime.stopAfterFatalError).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('clears lastApiErrorCode on new user message', async () => {
     sessions().markActive(SESSION_ID)
 
     // First turn: assistant with error
@@ -1242,6 +1361,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    await flushNotifications()
+
     // New user message clears the error code
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
@@ -1257,6 +1378,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBeNull()
@@ -1482,5 +1605,65 @@ describe('activity projection (pull)', () => {
 
     expect(sseEvents.filter(e => e.type === 'session_activity')).toHaveLength(0)
     expect(sessions().activity(SESSION_ID)).toBe('idle')
+  })
+})
+
+describe('agent tags', () => {
+  it('reports each message that tags a member once, and who the turn tagged', async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    const tagging = {
+      type: 'assistant',
+      uuid: 'tag-entry',
+      message: { id: 'msg-tag', content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] },
+    }
+    mockClient.emit(tagging)
+    // A resumed CLI can replay a frame it already sent: it reports once.
+    mockClient.emit(tagging)
+    // A later frame of the same message tags no one twice. A frame that tags nobody reports nothing.
+    mockClient.emit({ ...tagging, uuid: 'tag-entry-2', message: { id: 'msg-tag', content: [{ type: 'text', text: 'and [@Mike Smith](user:u_mike1) once more' }] } })
+    mockClient.emit({ type: 'assistant', uuid: 'plain-entry', message: { id: 'msg-plain', content: [{ type: 'text', text: 'No tags here.' }] } })
+    // A new message that tags them again tells them again.
+    mockClient.emit({ type: 'assistant', uuid: 'tag-entry-3', message: { id: 'msg-tag-2', content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) one more thing' }] } })
+    mockClient.emit({ type: 'result', subtype: 'success', is_error: false, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+    mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions')).toEqual([{
+      kind: 'message_mentions',
+      agentSlug: AGENT_SLUG,
+      sessionId: SESSION_ID,
+      messageUuid: 'tag-entry',
+      userIds: ['u_mike1'],
+      text: '@Mike Smith please decide',
+    }, {
+      kind: 'message_mentions',
+      agentSlug: AGENT_SLUG,
+      sessionId: SESSION_ID,
+      messageUuid: 'tag-entry-3',
+      userIds: ['u_mike1'],
+      text: '@Mike Smith one more thing',
+    }])
+    expect(completions().at(-1)?.taggedUserIds).toEqual(['u_mike1'])
+  })
+
+  it("points at the message's first frame when the tag is in a later one", async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    // The transcript shows a message of several frames under its first frame's uuid.
+    mockClient.emit({ type: 'assistant', uuid: 'think-entry', message: { id: 'msg-think', content: [{ type: 'thinking', thinking: 'Who decides?' }] } })
+    mockClient.emit({ type: 'assistant', uuid: 'text-entry', message: { id: 'msg-think', content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] } })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions').map((n) => n.messageUuid)).toEqual(['think-entry'])
+  })
+
+  it('points at the frame itself when the message carries no id', async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    mockClient.emit({ type: 'assistant', uuid: 'lone-entry', message: { content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] } })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions').map((n) => n.messageUuid)).toEqual(['lone-entry'])
   })
 })

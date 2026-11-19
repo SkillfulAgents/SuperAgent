@@ -45,5 +45,7 @@ export interface OpenedDatabase {
 export interface DatabaseDriver {
   /** The driver package's name, for logs and error reports. */
   readonly name: string
+  /** The most parameters one statement may bind, when lower than SQLite's own. */
+  readonly maxBoundParameters?: number
   open(): Promise<OpenedDatabase> | OpenedDatabase
 }

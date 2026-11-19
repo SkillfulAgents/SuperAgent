@@ -227,7 +227,7 @@ describe('ProxyReviewRequestItem request body', () => {
     expect(await screen.findByTestId('proxy-review-always-allow-all')).toBeInTheDocument()
     expect(screen.queryByTestId('proxy-review-allow-label-read')).toBeNull()
     await user.click(screen.getByTestId('proxy-review-deny-btn-chevron'))
-    expect(await screen.findByTestId('proxy-review-deny-reason-input')).toBeInTheDocument()
+    expect(await screen.findByTestId('proxy-review-deny-btn-reason-input')).toBeInTheDocument()
     unmount()
     renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
@@ -241,7 +241,7 @@ describe('ProxyReviewRequestItem request body', () => {
     await screen.findByTestId('proxy-review-allow-label-read')
     expect(screen.queryByRole('tooltip')).toBeNull()
     act(() => screen.getByTestId('proxy-review-allow-label-read').focus())
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Auto-allow every read-level scope for this account')
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Linear requests that only read run without asking.')
   })
 
   it('offers only Allow Once when a require rule held the request', () => {

@@ -1,6 +1,6 @@
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
-import { OFFERED_ORBS, type AvatarOrb } from './avatar-orbs'
-import { ORB_SHAPES, type OrbShape } from './orb-shapes'
+import { OFFERED_ORBS, type AvatarOrb } from '@shared/lib/types/agent-avatar-orbs'
+import { ORB_SHAPES, type OrbShape } from '@shared/lib/types/agent-avatar-shapes'
 
 export interface AvatarSource {
   orb: AvatarOrb

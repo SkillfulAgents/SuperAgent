@@ -197,12 +197,64 @@ function CarryoverSeeder({ value, children }: { value: NewSessionCarryover; chil
   return children
 }
 
+// The render-count tests need a message that is real state in whichever component calls the hook, as the real
+// hook's is; every other test gets the fixed mockComposer.
+let mockComposerStateful = false
+let typeIntoComposer: (value: string) => void = () => {}
+
 vi.mock('@renderer/hooks/use-message-composer', () => ({
   useMessageComposer: (opts: any) => {
     capturedComposerOptions = opts
-    return mockComposer
+    const [message, setMessage] = useState(mockComposer.message)
+    if (!mockComposerStateful) return mockComposer
+    typeIntoComposer = setMessage
+    return { ...mockComposer, message, setMessage }
   },
 }))
+
+// Renders per component, for the tests that pin what a keystroke re-renders: the page and its composer through the
+// app's own render tracker, the side panel and the sessions list through pass-through wrappers.
+const renderCounts = vi.hoisted(() => ({} as Record<string, number>))
+const sidePanelProps = vi.hoisted(() => ({ onRunSkill: undefined as ((skillPath: string) => void) | undefined }))
+const creationAidsProps = vi.hoisted(() => ({ onStartVoiceMode: undefined as (() => void) | undefined }))
+
+vi.mock('@renderer/lib/perf', () => ({
+  useRenderTracker: (name: string) => {
+    renderCounts[name] = (renderCounts[name] ?? 0) + 1
+  },
+}))
+vi.mock('./agent-settings-column', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./agent-settings-column')>()
+  return {
+    ...actual,
+    AgentSettingsColumn: (props: Parameters<typeof actual.AgentSettingsColumn>[0]) => {
+      renderCounts.AgentSettingsColumn = (renderCounts.AgentSettingsColumn ?? 0) + 1
+      sidePanelProps.onRunSkill = props.onRunSkill
+      return <actual.AgentSettingsColumn {...props} />
+    },
+  }
+})
+// The voice card is behind a capability the tests do not have; the page's handler for it is what matters here.
+vi.mock('@renderer/components/agents/agent-creation-aids', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/components/agents/agent-creation-aids')>()
+  return {
+    ...actual,
+    AgentCreationAids: (props: Parameters<typeof actual.AgentCreationAids>[0]) => {
+      creationAidsProps.onStartVoiceMode = props.onStartVoiceMode
+      return <actual.AgentCreationAids {...props} />
+    },
+  }
+})
+vi.mock('@renderer/components/sessions/related-sessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/components/sessions/related-sessions')>()
+  return {
+    ...actual,
+    RelatedSessions: (props: Parameters<typeof actual.RelatedSessions>[0]) => {
+      renderCounts.RelatedSessions = (renderCounts.RelatedSessions ?? 0) + 1
+      return <actual.RelatedSessions {...props} />
+    },
+  }
+})
 
 vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({
   useStartOnboardingSession: () => vi.fn(),
@@ -259,6 +311,7 @@ describe('AgentHome', () => {
     mockComposer.isUploading = false
     mockComposer.canSubmit = false
     mockComposer.isDragOver = false
+    mockComposerStateful = false
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
     mockRuntimeStatus.data.apiKeyConfigured = true
     mockRuntimeStatus.isPending = false
@@ -337,14 +390,23 @@ describe('AgentHome', () => {
     }
   })
 
-  it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
+  it('gives a non-owner the one centred column with no side panel', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    const layout = screen.getByTestId('agent-home-layout')
-    expect(layout).toHaveClass('w-full', 'xl:max-w-2xl')
-    expect(layout).not.toHaveClass('max-w-2xl')
+    expect(screen.getByTestId('agent-home-layout')).toHaveClass('mx-auto', 'w-full', 'max-w-[1040px]')
+    expect(screen.queryByTestId('agent-home-side-panel')).not.toBeInTheDocument()
+  })
+
+  it('always shows an owner the side panel, with no toggle for it', () => {
+    mockCanAdminAgent = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    expect(screen.getByTestId('agent-home-side-panel')).toContainElement(screen.getByTestId('home-sections-panel'))
+    expect(screen.queryByTestId('agent-home-side-panel-toggle')).not.toBeInTheDocument()
   })
 
   it('reuses the agent context menu on the agent title', () => {
@@ -357,7 +419,7 @@ describe('AgentHome', () => {
     expect(contextMenu).toContainElement(screen.getByTestId('agent-name'))
   })
 
-  it('renames the agent inline for owners', async () => {
+  it('renames the agent from the name and avatar editor for owners', async () => {
     const user = userEvent.setup()
     mockCanAdminAgent = true
 
@@ -366,15 +428,15 @@ describe('AgentHome', () => {
     )
 
     await user.click(screen.getByTestId('agent-name'))
+    expect(screen.getByTestId('agent-identity-preview')).toBeInTheDocument()
     await user.clear(screen.getByTestId('agent-name-input'))
-    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent')
-    await user.click(screen.getByTestId('agent-name-save'))
+    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent{Enter}')
 
     await waitFor(() => {
-      expect(mockUpdateAgentMutateAsync).toHaveBeenCalledWith({
-        slug: 'test-agent',
-        name: 'Renamed Agent',
-      })
+      expect(mockUpdateAgentMutate).toHaveBeenCalledWith(
+        { slug: 'test-agent', name: 'Renamed Agent' },
+        expect.anything(),
+      )
     })
   })
 
@@ -558,14 +620,14 @@ describe('AgentHome', () => {
     )
 
     const editor = screen.getByTestId('home-message-input')
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
     expect(editor.style.minHeight).toBe('')
 
     await user.click(screen.getByRole('button', { name: 'Expand input' }))
     expect(editor.className).toContain('min-h-[50vh]')
 
     await user.click(screen.getByRole('button', { name: 'Shrink input' }))
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
   })
 
   it('auto-expands to full view when the editor overflows its max-height', async () => {
@@ -601,7 +663,7 @@ describe('AgentHome', () => {
 
     expect(screen.getByTestId('view-only-banner')).toBeInTheDocument()
     expect(screen.queryByTestId('home-message-input')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('agent-avatar-picker')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-identity-trigger')).not.toBeInTheDocument()
   })
 
   it('shows agent name in view-only mode', () => {
@@ -669,7 +731,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(capturedComposerOptions.draftKey).toBe('agent:test-agent')
+    expect(capturedComposerOptions.draftKey).toBe('session:agent-home:test-agent')
   })
 
   it('hydrates a carried composer and sends its model and effort on the new session', async () => {
@@ -754,6 +816,104 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTitle('Add files')).toBeDisabled()
+  })
+
+  // --- The composer's state stops at the composer ---
+
+  describe('composer render boundary', () => {
+    const resetRenderCounts = () => {
+      for (const name of Object.keys(renderCounts)) delete renderCounts[name]
+    }
+    const oneSession = [{
+      id: 'session-1',
+      agentSlug: testAgent.slug,
+      name: 'A session',
+      createdAt: new Date('2026-08-25T12:00:00.000Z'),
+      lastActivityAt: new Date('2026-08-25T12:00:00.000Z'),
+    }]
+
+    it('typing re-renders the composer, not the page, its side panel or its sessions', () => {
+      mockComposerStateful = true
+      mockCanAdminAgent = true
+      mockSessionsData = oneSession
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+      // Both are on the page, so a count of zero below means "not re-rendered", not "not there".
+      expect(renderCounts.AgentSettingsColumn).toBeGreaterThan(0)
+      expect(renderCounts.RelatedSessions).toBeGreaterThan(0)
+      resetRenderCounts()
+
+      // Twenty keystrokes, each its own update, as the editor's onChange delivers them.
+      const text = 'summarise the inbox!'
+      expect(text).toHaveLength(20)
+      for (let i = 1; i <= text.length; i++) {
+        act(() => typeIntoComposer(text.slice(0, i)))
+      }
+
+      expect(screen.getByTestId('home-message-input')).toHaveTextContent(text)
+      expect(renderCounts.AgentHomeComposer).toBeGreaterThanOrEqual(20)
+      expect(renderCounts.AgentHome ?? 0).toBe(0)
+      expect(renderCounts.AgentSettingsColumn ?? 0).toBe(0)
+      expect(renderCounts.RelatedSessions ?? 0).toBe(0)
+    })
+
+    it('the typewriter placeholder of a new agent ticks in the composer, not the page', () => {
+      const originalMatchMedia = window.matchMedia
+      window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as typeof window.matchMedia
+      vi.useFakeTimers()
+      try {
+        mockCanAdminAgent = true
+        renderWithProviders(
+          <AgentHome agent={{ ...testAgent, name: 'Untitled' }} onSessionCreated={onSessionCreated} />
+        )
+        expect(renderCounts.AgentSettingsColumn).toBeGreaterThan(0)
+        resetRenderCounts()
+
+        // Two idle seconds: the placeholder types a character every 25 ms. One act per tick, as each timer is its
+        // own task in a browser; a single act would batch all eighty into one render.
+        for (let elapsed = 0; elapsed < 2000; elapsed += 25) {
+          act(() => { vi.advanceTimersByTime(25) })
+        }
+
+        expect(renderCounts.AgentHomeComposer).toBeGreaterThanOrEqual(40)
+        expect(renderCounts.AgentHome ?? 0).toBe(0)
+        expect(renderCounts.AgentSettingsColumn ?? 0).toBe(0)
+      } finally {
+        vi.useRealTimers()
+        window.matchMedia = originalMatchMedia
+      }
+    })
+
+    it('running a skill from the side panel still writes its command into the composer and focuses it', async () => {
+      mockComposerStateful = true
+      mockCanAdminAgent = true
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+      const input = screen.getByTestId('home-message-input')
+      input.scrollIntoView = vi.fn()
+      input.blur()
+
+      act(() => sidePanelProps.onRunSkill?.('weekly-report'))
+
+      expect(input).toHaveTextContent('/weekly-report')
+      expect(input.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+      await waitFor(() => expect(input).toHaveFocus())
+    })
+
+    it('the empty-state voice card still starts a voice session through the composer', async () => {
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+
+      act(() => creationAidsProps.onStartVoiceMode?.())
+
+      await waitFor(() => {
+        expect(onSessionCreated).toHaveBeenCalledWith('session-123', expect.any(String), 'srv-msg-uuid', { voiceMode: true })
+      })
+      expect(mockCreateSession.mutateAsync.mock.calls[0][0]).toMatchObject({ agentSlug: 'test-agent', inputMode: 'voice' })
+    })
   })
 
 })

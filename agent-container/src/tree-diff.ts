@@ -489,6 +489,22 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
 }
 
 /**
+ * The ref an action failed on because the CLI no longer finds its element, or
+ * null for any other failure. `Unknown ref: eN` and `Element ref eN is stale`
+ * name it. When the node behind a ref is gone, the CLI looks for one element
+ * with the ref's role and name and names those instead: `Could not locate
+ * element with role=…` (none has them now) or, since 0.41.1, `Stale ref for
+ * role=… cannot be recovered` (several had or have them) — then it is the ref
+ * the action was given.
+ */
+export function goneRefOf(cliText: string, actionRef?: string): string | null {
+  const named = /Unknown ref: @?(e\d+)/.exec(cliText) ?? /Element ref @?(e\d+) is stale/.exec(cliText)
+  if (named) return named[1]
+  if (!actionRef || !/Could not locate element with role=|Stale ref for role=/.test(cliText)) return null
+  return /^@?(e\d+)$/.exec(actionRef.trim())?.[1] ?? null
+}
+
+/**
  * What to add to the CLI's `✗ Unknown ref: eN`: what eN was when the agent
  * last saw it, and which refs in the current tree carry exactly that line —
  * so a ref lost to a re-render can be replaced without a snapshot. Only facts:

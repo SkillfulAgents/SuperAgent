@@ -1,19 +1,22 @@
 import { betterAuth } from 'better-auth'
+import { APIError, createAuthMiddleware, isAPIError } from 'better-auth/api'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
+import { setCookieCache } from 'better-auth/cookies'
 import { admin, bearer } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import * as schema from '@shared/lib/db/schema'
+import { createHash } from 'crypto'
 import { getOrCreateAuthSecret } from './secret'
-import { getAppBaseUrl, getTrustedOrigins } from './config'
-import { getSettings } from '@shared/lib/config/settings'
+import { appBaseUrlFrom, trustedOriginsFrom } from './config'
+import { getSettings, type AuthSettings } from '@shared/lib/config/settings'
 import { resolveAuthSettings } from './auth-settings'
 import { firstUserPromotionApplies, platformJoinRole } from './platform-role'
 import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
-import { getGenericOAuthProviderConfigs } from './provider-config'
+import { getGenericOAuthProviderConfigs, type GenericOAuthProviderConfig } from './provider-config'
 import { lazyGenericOAuth } from './lazy-generic-oauth'
 import { oidcIssuerPolicy } from './oidc-issuer-policy'
 
@@ -21,35 +24,77 @@ import { oidcIssuerPolicy } from './oidc-issuer-policy'
 // so consumers that only need the check don't pull in ESM deps.
 export { isAuthMode } from './mode'
 
-// Lazy singleton for the Better Auth instance.
-// Typed via createAuthInstance so the concrete plugin/option inference is
-// preserved (betterAuth's generic default is not assignable since 1.6).
-let _auth: ReturnType<typeof createAuthInstance> | null = null
+// Better Auth removes sessions, accounts, then the user. Any of those can be the
+// first row for this user. These hooks run after it authorizes the removal.
+async function releaseDriveOwnership(userId: string, requestPath: string | undefined, adminId: string | undefined) {
+  if (requestPath !== '/admin/remove-user') return
+  const { releaseUserVolumeGrants } = await import('@shared/lib/services/volume-access-service')
+  if (!adminId || adminId === userId) throw new APIError('FORBIDDEN')
+  await releaseUserVolumeGrants(userId, adminId)
+}
 
-/**
- * Reset the Better Auth singleton so the next getAuth() call
- * picks up new settings (session duration, password policy, etc.).
- */
-export function resetAuth() {
-  _auth = null
+/** Everything the Better Auth instance is built from that can change while the app runs. */
+interface AuthInputs {
+  authSettings: AuthSettings
+  trustedOrigins: string[]
+  baseURL: string
+  oauthProviders: GenericOAuthProviderConfig[]
+  secret: string
 }
 
 /**
- * Get the Better Auth instance. Lazily created on first call.
- * Only valid when isAuthMode() is true.
+ * Read the inputs fresh: settings, the trusted origins and base URL they give, the OIDC providers, the secret.
+ * Settings and the secret are separate records and neither read needs the other, so they are read
+ * together: every authenticated request waits for this before its session is read.
  */
-export function getAuth() {
-  if (!_auth) {
-    _auth = createAuthInstance()
+async function loadAuthInputs(): Promise<AuthInputs> {
+  const [settings, secret] = await Promise.all([getSettings(), getOrCreateAuthSecret()])
+  const trustedOrigins = trustedOriginsFrom(settings)
+  const baseURL = appBaseUrlFrom(trustedOrigins)
+  return {
+    authSettings: resolveAuthSettings(settings.auth),
+    trustedOrigins,
+    baseURL,
+    oauthProviders: getGenericOAuthProviderConfigs(baseURL),
+    secret,
   }
-  return _auth
 }
 
-function createAuthInstance() {
-  const trustedOrigins = getTrustedOrigins()
-  const settings = getSettings()
-  const authSettings = resolveAuthSettings(settings.auth)
-  const oauthProviders = getGenericOAuthProviderConfigs()
+function inputsKey(inputs: AuthInputs): string {
+  return createHash('sha256').update(JSON.stringify(inputs)).digest('hex')
+}
+
+// The Better Auth instance and the inputs it was built from. Typed via
+// createAuthInstance so the concrete plugin/option inference is preserved
+// (betterAuth's generic default is not assignable since 1.6).
+let current: { key: string; auth: ReturnType<typeof createAuthInstance> } | null = null
+
+/** Drop the instance; the next getAuth() builds a new one. */
+export function resetAuth() {
+  current = null
+}
+
+/**
+ * Get the Better Auth instance. Every call reads its inputs fresh (settings,
+ * trusted origins, base URL, OIDC providers, secret) and builds a new
+ * instance when they differ from the ones the current instance was built
+ * from, so a settings change committed by any process takes effect here on
+ * the next call. Only valid when isAuthMode() is true.
+ *
+ * A caller waits for this before it reads a session, and does not start the
+ * read on the instance it had: an instance built from older settings still
+ * writes with them (a session due for refresh gets its expiry from that
+ * instance's lifetime), even when the answer is thrown away.
+ */
+export async function getAuth() {
+  const inputs = await loadAuthInputs()
+  const key = inputsKey(inputs)
+  // Building is synchronous, so concurrent callers with the same inputs share one instance.
+  if (current?.key !== key) current = { key, auth: createAuthInstance(inputs) }
+  return current.auth
+}
+
+function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProviders, secret }: AuthInputs) {
   const oauthPlugin = oauthProviders.length > 0
     ? lazyGenericOAuth({
         config: oauthProviders,
@@ -66,6 +111,8 @@ function createAuthInstance() {
         verification: schema.verification,
       },
     }),
+    // A session is read with its user in one query (the relations are in db/schema.ts).
+    advanced: { database: { joins: true } },
     emailAndPassword: {
       enabled: true,
       minPasswordLength: authSettings.passwordMinLength,
@@ -85,6 +132,9 @@ function createAuthInstance() {
     session: {
       expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
       updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
+      ...((authSettings.sessionCookieCacheSeconds ?? 0) > 0
+        ? { cookieCache: { enabled: true, maxAge: authSettings.sessionCookieCacheSeconds } }
+        : {}),
       additionalFields: {
         // Persisted so the answer survives the request that created the
         // session: the concurrent-session cap has to recognize an installed
@@ -116,6 +166,14 @@ function createAuthInstance() {
           defaultValue: false,
           input: false, // users cannot set this on self-registration
         },
+        // 'invited': a row made for a team-directory person before they joined
+        // (claim-invited-user.ts). Declared so admin list-users can filter on it.
+        status: {
+          type: 'string',
+          required: false,
+          defaultValue: 'active',
+          input: false,
+        },
       },
     },
     plugins: [
@@ -129,8 +187,8 @@ function createAuthInstance() {
       // on the same request, before authorization or identity provisioning.
       ...(oauthPlugin ? [oauthPlugin, oidcIssuerPolicy()] : []),
     ],
-    secret: getOrCreateAuthSecret(),
-    baseURL: getAppBaseUrl(),
+    secret,
+    baseURL,
     // When trustedOrigins is explicitly configured, use that list.
     // Otherwise allow all origins (matches spec: "Default: allow all origins").
     trustedOrigins: trustedOrigins.length > 0
@@ -139,11 +197,26 @@ function createAuthInstance() {
           const origin = request?.headers.get('origin')
           return origin ? [origin] : []
         },
+    hooks: {
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== '/change-password' || !ctx.context.options.session?.cookieCache?.enabled || isAPIError(ctx.context.returned)) return
+        // The account hook clears mustChangePassword in the database, while
+        // change-password caches the user it read before that write. Refresh
+        // only after success, using the replacement session when it rotated.
+        const session = ctx.context.newSession ?? ctx.context.session
+        if (!session) return
+        const user = await ctx.context.internalAdapter.findUserById(session.user.id)
+        if (!user) return
+        const dontRememberMe = await ctx.getSignedCookie(ctx.context.authCookies.dontRememberToken.name, ctx.context.secret)
+        await setCookieCache(ctx, { session: session.session, user }, !!dontRememberMe)
+      }),
+    },
     databaseHooks: {
       user: {
         delete: {
           // What a cascade cannot do: revoke provider connections first, then settings and audit.
-          before: async (deletedUser) => {
+          before: async (deletedUser, ctx) => {
+            await releaseDriveOwnership(deletedUser.id, ctx?.path, ctx?.context.session?.user.id)
             const { beforeUserRemoved } = await import('@shared/lib/services/user-removal-service')
             await beforeUserRemoved(deletedUser.id)
           },
@@ -163,6 +236,9 @@ function createAuthInstance() {
             return role ? { data: { ...newUser, role } } : undefined
           },
           after: async (createdUser) => {
+            // Invited rows are made outside Better Auth and join when claimed
+            // (claim-invited-user.ts), which does what this hook does for them.
+            if ((createdUser as { status?: unknown }).status === 'invited') return
             try {
               // Atomic: only promote if this is the sole user in the table.
               // Platform-controlled deployments skip it, since members join
@@ -184,7 +260,7 @@ function createAuthInstance() {
               // If admin approval is required and this is NOT the first user,
               // auto-ban them pending admin review.
               // Fresh settings each time; platform-controlled forces approval off.
-              const currentAuth = resolveAuthSettings(getSettings().auth)
+              const currentAuth = resolveAuthSettings((await getSettings()).auth)
               if (!promoted && currentAuth.requireAdminApproval) {
                 await db.update(schema.user)
                   .set({ banned: true, banReason: PENDING_APPROVAL_BAN_REASON })
@@ -202,10 +278,20 @@ function createAuthInstance() {
         },
       },
       account: {
+        create: {
+          // An invited user's first account is them joining. Linking a login to
+          // an existing row fires no user.create, so their claim runs here; on
+          // a Platform sign-in it is still inside the request's role context.
+          after: async (account) => {
+            const { claimInvitedUser } = await import('./claim-invited-user')
+            await claimInvitedUser(account.userId)
+          },
+        },
         delete: {
           // Remove-user deletes the account rows before the user row, so keep the
           // Platform member id now for the revoke in user.delete.before.
           before: async (account, ctx) => {
+            await releaseDriveOwnership(account.userId, ctx?.path, ctx?.context.session?.user.id)
             if (ctx?.path !== '/admin/remove-user' || account.providerId !== 'platform') return
             const { rememberPlatformMember } = await import('@shared/lib/services/user-removal-service')
             rememberPlatformMember(account.userId, account.accountId)
@@ -236,6 +322,9 @@ function createAuthInstance() {
         },
       },
       session: {
+        delete: {
+          before: (session, ctx) => releaseDriveOwnership(session.userId, ctx?.path, ctx?.context.session?.user.id),
+        },
         create: {
           before: async (session, context) => {
             // Stamp how this session came to exist onto the row itself. The
@@ -262,7 +351,7 @@ function createAuthInstance() {
           },
           after: async (session, context) => {
             try {
-              const sessAuth = resolveAuthSettings(getSettings().auth)
+              const sessAuth = resolveAuthSettings((await getSettings()).auth)
               await enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
             } catch (err) {
               console.error('Failed to enforce max concurrent sessions:', err)

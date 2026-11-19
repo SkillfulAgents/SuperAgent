@@ -16,7 +16,7 @@ interface ReadAloudControlsProps {
 }
 
 const ICON_BUTTON = cn(
-  'inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors',
+  'inline-flex h-6 w-6 items-center justify-center rounded-control text-muted-foreground transition-colors',
   'hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]',
 )
 const ICON = 'h-3.5 w-3.5'

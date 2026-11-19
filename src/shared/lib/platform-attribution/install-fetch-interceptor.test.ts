@@ -112,4 +112,21 @@ describe('installPlatformFetchInterceptor', () => {
     // Wrapping twice would have called realFetchMock twice; assert single call.
     expect(realFetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('resolves the attribution once per request, however many platform calls it makes', async () => {
+    const resolutionsFor = async (calls: number) => {
+      mockGetPlatformAccessToken.mockClear()
+      await runWithRequestUser('user_alice', async () => {
+        await Promise.all(Array.from({ length: calls }, () => fetch('https://proxy.test/v1/foo')))
+        await fetch('https://proxy.test/v1/bar')
+      })
+      return mockGetPlatformAccessToken.mock.calls.length
+    }
+
+    expect(await resolutionsFor(1)).toBe(1)
+    expect(await resolutionsFor(8)).toBe(1)
+    for (const [, init] of realFetchMock.mock.calls) {
+      expect(new Headers((init as RequestInit).headers).get('Authorization')).toBe(`Bearer ${ORG_TOKEN}::sub_alice`)
+    }
+  })
 })

@@ -12,6 +12,8 @@ export const sessionMetadataSchema = z
     workingDirectory: z.string().min(1),
     createdAt: z.string().min(1),
     lastActivity: z.string().min(1),
+    // A host delete stopped the process but has not yet confirmed file removal.
+    releasedForDeletion: z.boolean().optional(),
     systemPrompt: z.string().optional(),
     modelPromptHints: z.array(z.string()).optional(),
     availableEnvVars: z.array(z.string()).optional(),

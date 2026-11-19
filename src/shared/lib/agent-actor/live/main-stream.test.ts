@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MainStream } from './main-stream'
 import type { SessionEvent } from './session-channel'
+import { TOOL_INPUT_FRAME_MIN_INTERVAL_MS, TOOL_INPUT_WIRE_CHARS_PER_MS } from './tool-input-throttle'
 
 /** A stream over a sink that records what it heard. */
 function recordingStream() {
@@ -40,6 +41,10 @@ const blockStop = (index = 0) => ({ type: 'content_block_stop', index })
 const messageStop = () => ({ type: 'message_stop' })
 
 describe('MainStream', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   describe('a message starting', () => {
     it('announces the stream and starts the reply context over', () => {
       const { stream, events, responsesStarted } = recordingStream()
@@ -140,12 +145,16 @@ describe('MainStream', () => {
     })
 
     it('streams the input as it accumulates', () => {
+      vi.useFakeTimers()
       const { stream, events } = recordingStream()
       stream.event(messageStart())
       stream.event(toolStart('tool_1', 'Bash'))
 
       stream.event(inputDelta('{"command":'))
       stream.event(inputDelta('"ls"}'))
+      // The first frame goes at once; the next waits its interval.
+      expect(events.at(-1)).toEqual({ type: 'tool_use_streaming', toolId: 'tool_1', toolName: 'Bash', partialInput: '{"command":' })
+      vi.advanceTimersByTime(TOOL_INPUT_FRAME_MIN_INTERVAL_MS)
 
       expect(events.slice(-2)).toEqual([
         { type: 'tool_use_streaming', toolId: 'tool_1', toolName: 'Bash', partialInput: '{"command":' },
@@ -154,12 +163,14 @@ describe('MainStream', () => {
     })
 
     it('masks a secret in a secret-bearing tool input on its way to clients', () => {
+      vi.useFakeTimers()
       const { stream, events } = recordingStream()
       stream.event(messageStart())
       stream.event(toolStart('tool_1', 'mcp__user-input__create_webhook_endpoint'))
 
       stream.event(inputDelta('{"name":"hook","secret":"s3cr'))
       stream.event(inputDelta('et"}'))
+      vi.advanceTimersByTime(TOOL_INPUT_FRAME_MIN_INTERVAL_MS)
 
       expect(events.slice(-2).map((e) => e.partialInput)).toEqual([
         '{"name":"hook","secret":"***',
@@ -237,6 +248,203 @@ describe('MainStream', () => {
     })
   })
 
+  describe('pacing a tool call\'s input', () => {
+    const streamingFrames = (events: SessionEvent[]) => events.filter((e) => e.type === 'tool_use_streaming')
+    const wireBytes = (events: SessionEvent[]) => events.reduce((sum, e) => sum + JSON.stringify(e).length, 0)
+
+    /** A Write of ~50 KB as the provider streams it: 40-character deltas, `gapMs` apart. */
+    function streamLargeWrite(gapMs: number) {
+      const recorded = recordingStream()
+      const { stream } = recorded
+      const chunks: string[] = ['{"file_path":"/workspace/report.md","content":"']
+      let length = chunks[0].length
+      while (length < 50_000) {
+        chunks.push('0123456789abcdefghijklmnopqrstuvwxyz ABC')
+        length += 40
+      }
+      chunks.push('"}')
+      const input = chunks.join('')
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'Write'))
+      let perDeltaBytes = 0
+      let soFar = ''
+      for (const chunk of chunks) {
+        vi.advanceTimersByTime(gapMs)
+        stream.event(inputDelta(chunk))
+        soFar += chunk
+        perDeltaBytes += JSON.stringify({ type: 'tool_use_streaming', toolId: 'tool_1', toolName: 'Write', partialInput: soFar }).length
+      }
+      const durationMs = gapMs * chunks.length
+      const finished = stream.event(blockStop())
+      stream.toolUseReady()
+      return { ...recorded, input, deltas: chunks.length, perDeltaBytes, durationMs, finished }
+    }
+
+    it.each([
+      ['in one burst', 0],
+      ['at 125 deltas a second', 8],
+      ['at 8 deltas a second', 125],
+    ])('keeps the bytes of a 50 KB input linear, streamed %s', (_label, gapMs) => {
+      vi.useFakeTimers()
+      const { events, input, deltas, perDeltaBytes, durationMs, finished } = streamLargeWrite(gapMs)
+      const frames = streamingFrames(events)
+      const bytes = wireBytes(frames)
+
+      // One frame per delta is what this replaces: ~31 MB for these ~1,250 deltas.
+      expect(perDeltaBytes).toBeGreaterThan(30_000_000)
+      // Never more often than the minimum interval, plus the first and the last.
+      expect(frames.length).toBeLessThanOrEqual(Math.floor(durationMs / TOOL_INPUT_FRAME_MIN_INTERVAL_MS) + 2)
+      expect(frames.length).toBeLessThanOrEqual(deltas)
+      // Every frame but the last is followed by quiet in proportion to its
+      // size, so the total is bounded by the time the input took to stream
+      // (plus the last frame and each frame's envelope), not by its square.
+      expect(bytes).toBeLessThanOrEqual(TOOL_INPUT_WIRE_CHARS_PER_MS * durationMs + 2 * input.length + 200 * frames.length)
+      expect(bytes).toBeLessThan(perDeltaBytes / 2)
+
+      // Each frame carries more of the same input than the one before it.
+      for (let i = 0; i < frames.length; i += 1) {
+        const partial = frames[i].partialInput as string
+        expect(input.startsWith(partial)).toBe(true)
+        if (i > 0) expect(partial.length).toBeGreaterThan((frames[i - 1].partialInput as string).length)
+      }
+      // The last one carries all of it, and comes before the ready frame.
+      expect(frames.at(-1)?.partialInput).toBe(input)
+      expect(finished).toEqual({ id: 'tool_1', name: 'Write', input })
+      expect(events.at(-2)).toBe(frames.at(-1))
+      expect(events.at(-1)).toEqual({ type: 'tool_use_ready', toolId: 'tool_1', toolName: 'Write' })
+    })
+
+    it('sends a burst as its first and its last frame', () => {
+      vi.useFakeTimers()
+      const { events, perDeltaBytes } = streamLargeWrite(0)
+
+      const frames = streamingFrames(events)
+      expect(frames).toHaveLength(2)
+      expect(wireBytes(frames)).toBeLessThan(perDeltaBytes / 500)
+    })
+
+    it('sends nothing after the ready frame, however long it waits', () => {
+      vi.useFakeTimers()
+      const { stream, events } = recordingStream()
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'Bash'))
+      stream.event(inputDelta('{"command":'))
+      stream.event(inputDelta('"ls"}'))
+      stream.event(blockStop())
+      stream.toolUseReady()
+      const heard = events.length
+
+      vi.advanceTimersByTime(60_000)
+
+      expect(events).toHaveLength(heard)
+      expect(events.at(-1)?.type).toBe('tool_use_ready')
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('sends a held frame when the provider pauses mid-input', () => {
+      vi.useFakeTimers()
+      const { stream, events } = recordingStream()
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'Write'))
+      stream.event(inputDelta('{"file_path":'))
+      stream.event(inputDelta('"/workspace/a.md",'))
+      stream.event(inputDelta('"content":"'))
+      expect(streamingFrames(events)).toHaveLength(1)
+
+      // No further delta: the timer, not the next delta, brings the UI up to date.
+      vi.advanceTimersByTime(TOOL_INPUT_FRAME_MIN_INTERVAL_MS)
+
+      expect(streamingFrames(events).map((e) => e.partialInput)).toEqual([
+        '{"file_path":',
+        '{"file_path":"/workspace/a.md","content":"',
+      ])
+    })
+
+    it('masks the secret in every frame it sends, held ones included', () => {
+      vi.useFakeTimers()
+      const { stream, events } = recordingStream()
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'mcp__user-input__create_webhook_endpoint'))
+      for (const chunk of ['{"name":"hook",', '"secret":"', 'hunter2-', 'part-two', '-part-three', '"}']) {
+        stream.event(inputDelta(chunk))
+        vi.advanceTimersByTime(TOOL_INPUT_FRAME_MIN_INTERVAL_MS / 2)
+      }
+      stream.event(blockStop())
+      stream.toolUseReady()
+
+      const frames = streamingFrames(events)
+      expect(frames.length).toBeGreaterThan(2)
+      expect(JSON.stringify(events)).not.toMatch(/hunter2|part-two|part-three/)
+      expect(frames.at(-1)?.partialInput).toBe('{"name":"hook","secret":"***"}')
+    })
+
+    it('drops a held frame when the turn stops', () => {
+      vi.useFakeTimers()
+      const { stream, events } = recordingStream()
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'Bash'))
+      stream.event(inputDelta('{"command":'))
+      stream.event(inputDelta('"ls"}'))
+
+      stream.stop()
+      vi.advanceTimersByTime(60_000)
+
+      expect(streamingFrames(events)).toHaveLength(1)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('holds nothing over into the next tool call', () => {
+      vi.useFakeTimers()
+      const { stream, events } = recordingStream()
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'Bash'))
+      stream.event(inputDelta('{"command":"ls"}'))
+      stream.event(blockStop())
+      stream.toolUseReady()
+
+      // Straight after the first: its own first frame still goes at once.
+      stream.event(toolStart('tool_2', 'Read', 1))
+      stream.event(inputDelta('{"file_path":', 1))
+
+      expect(events.at(-1)).toEqual({ type: 'tool_use_streaming', toolId: 'tool_2', toolName: 'Read', partialInput: '{"file_path":' })
+    })
+
+    it('does not send a held frame once the sink no longer takes late ones', () => {
+      vi.useFakeTimers()
+      const events: SessionEvent[] = []
+      let live = true
+      const stream = new MainStream({
+        emit: (event) => events.push(event),
+        responseStarted: () => {},
+        textStreamed: () => {},
+        mayStreamLate: () => live,
+      })
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'Bash'))
+      stream.event(inputDelta('{"command":'))
+      stream.event(inputDelta('"ls"}'))
+
+      live = false
+      vi.advanceTimersByTime(60_000)
+
+      expect(streamingFrames(events)).toHaveLength(1)
+    })
+
+    it('drops a held frame on request', () => {
+      vi.useFakeTimers()
+      const { stream, events } = recordingStream()
+      stream.event(messageStart())
+      stream.event(toolStart('tool_1', 'Bash'))
+      stream.event(inputDelta('{"command":'))
+      stream.event(inputDelta('"ls"}'))
+
+      stream.dropHeldToolInput()
+      vi.advanceTimersByTime(60_000)
+
+      expect(streamingFrames(events)).toHaveLength(1)
+    })
+  })
+
   describe('thinking', () => {
     it('names a thinking block by its message id and content index, matching the persisted block', () => {
       const { stream, events } = recordingStream()
@@ -281,6 +489,18 @@ describe('MainStream', () => {
       stream.event(thinkingDelta('still thinking', 2))
 
       expect(events.at(-1)).toEqual({ type: 'thinking_delta', thinkingId: 'msg_1:2', text: 'still thinking' })
+    })
+
+    it('reads thinking from a delta whose block start was missed, and ends that block at its stop', () => {
+      const { stream, events } = recordingStream()
+      stream.event(messageStart('msg_1'))
+
+      stream.event(thinkingDelta('still thinking', 2))
+      expect(stream.isThinking).toBe(true)
+
+      stream.event(blockStop(2))
+      expect(stream.isThinking).toBe(false)
+      expect(events.at(-1)).toEqual({ type: 'thinking_stop', thinkingId: 'msg_1:2' })
     })
 
     it('has no id for a block whose message start was missed', () => {

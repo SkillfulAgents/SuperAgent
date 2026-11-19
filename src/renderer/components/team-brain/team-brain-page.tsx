@@ -7,27 +7,37 @@ import { TeamBrainOnboarding } from './team-brain-onboarding'
 import { TeamBrainOverview } from './team-brain-overview'
 
 /**
- * The Team Brain page: the pitch and the set-up modal over it, or once set up,
- * its home page. Admins set it up, as they make drives global.
+ * The Team Brain page: the pitch and the set-up window over it, or once set up,
+ * its home page. Admins set it up, as they make drives global. A set-up in
+ * progress turns the pitch's button into Resume set-up and Discard set-up.
  */
 export function TeamBrainPage() {
   const tb = useTeamBrain()
   const setup = useTeamBrainSetup()
   const { isAuthMode, isAdmin } = useUser()
+  const canSetUp = !isAuthMode || isAdmin
   const { data: agents, isPending } = useAgents()
-  const brainAgent = setup.agentSlug && agents?.find((agent) => agent.slug === setup.agentSlug)
+  const brainAgent = agents?.find((agent) => agent.teamBrain)
 
   // After Start chat the page stays blank under the "Setting up your agent..." card.
   if (tb.state.status === 'launching') return null
-  // Which page it is waits on the agents, or a reload would show the pitch for a moment before the home page.
-  if (isPending) return null
+  // Which page it is waits on the agents and any set-up, or a reload would show the pitch for a moment before the right page.
+  if (isPending || setup.isPending) return null
 
   if (brainAgent) return <TeamBrainOverview agent={brainAgent} />
 
+  const inProgress = canSetUp && setup.setup
   return (
     <>
-      <TeamBrainIntro onStart={isAuthMode && !isAdmin ? undefined : tb.start} />
-      <TeamBrainOnboarding open={tb.isOnboarding} onPrepare={setup.prepare} onAddPublicSkillset={setup.addPublicSkillset} onStartChat={setup.startChat} onCancel={setup.cancel} />
+      <TeamBrainIntro
+        onStart={canSetUp && !setup.setup ? setup.start : undefined}
+        resume={inProgress ? {
+          madeSomething: !!inProgress.agentSlug || !!inProgress.volumeId,
+          onResume: setup.resume,
+          onDiscard: setup.discard,
+        } : undefined}
+      />
+      <TeamBrainOnboarding open={tb.isOnboarding} setup={setup} />
     </>
   )
 }

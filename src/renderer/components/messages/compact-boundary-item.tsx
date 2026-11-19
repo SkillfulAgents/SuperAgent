@@ -44,7 +44,7 @@ export function CompactBoundaryItem({ boundary, isCompacting }: CompactBoundaryI
 
       {/* Expanded summary */}
       {expanded && boundary.summary && (
-        <div className="mt-2 mx-4 p-3 bg-muted/30 rounded-md border text-sm max-h-96 overflow-y-auto">
+        <div className="mt-2 mx-4 p-3 bg-muted/30 rounded-card border text-sm max-h-96 overflow-y-auto">
           <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             Compaction Summary
           </div>

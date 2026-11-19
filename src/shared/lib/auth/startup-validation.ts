@@ -2,7 +2,6 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { listDirectories } from '@shared/lib/utils/file-storage'
-import { initEnvManagedPlatformStatus } from '@shared/lib/services/platform-auth-service'
 import { getAuth } from './index'
 import { getPublicAuthProviders } from './provider-config'
 
@@ -24,8 +23,7 @@ export async function validateAuthModeStartup(): Promise<void> {
     if (userCount > 0) {
       // Case 1: Normal start — user table has entries
       validateAuthProviders()
-      getAuth()
-      await initEnvManagedPlatformStatus()
+      await getAuth()
       return
     }
   }
@@ -45,8 +43,7 @@ export async function validateAuthModeStartup(): Promise<void> {
 
   // Case 3: Fresh start — no agents, no users
   validateAuthProviders()
-  getAuth()
-  await initEnvManagedPlatformStatus()
+  await getAuth()
 }
 
 function validateAuthProviders(): void {

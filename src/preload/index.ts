@@ -5,6 +5,7 @@ import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
 import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
+import type { AgentStatusPush } from '../shared/lib/types/agent-status-push'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -140,6 +141,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-external', url)
   },
 
+  // The Gamut sign-in in a sheet on the app's window (ASWebAuthenticationSession).
+  // Resolves when the sheet closes; 'browser' means there was no sheet to show
+  // and the URL went to the default browser instead.
+  // `withApple`: the native Sign in with Apple prompt runs first.
+  startPlatformSignIn: (url: string, withApple = false): Promise<'completed' | 'cancelled' | 'failed' | 'browser'> => {
+    return ipcRenderer.invoke('platform-sign-in-start', url, withApple)
+  },
+  cancelPlatformSignIn: (): Promise<void> => {
+    return ipcRenderer.invoke('platform-sign-in-cancel')
+  },
+
   openApplePasswordsExtension: (): Promise<void> => {
     return ipcRenderer.invoke('open-apple-passwords-extension')
   },
@@ -150,9 +162,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Navigation from tray menu or deep links.
-  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void): (() => void) => {
-    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown) =>
-      callback(agentSlug as string, sessionId as string | null | undefined)
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void): (() => void) => {
+    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown, messageUuid: unknown) =>
+      callback(agentSlug as string, sessionId as string | null | undefined, typeof messageUuid === 'string' ? messageUuid : undefined)
     ipcRenderer.on('navigate-to-agent', handler)
     return () => {
       ipcRenderer.removeListener('navigate-to-agent', handler)
@@ -298,6 +310,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Set dock badge count (macOS)
   setBadgeCount: (count: number): Promise<void> => {
     return ipcRenderer.invoke('set-badge-count', count)
+  },
+
+  // Hand main this window's agent list, for the tray and the Agents menu.
+  // Null withdraws it. Resolves to whether main is now using it.
+  pushAgentStatus: (payload: AgentStatusPush): Promise<boolean> => {
+    return ipcRenderer.invoke('push-agent-status', payload)
   },
 
   // Detect host browser availability
@@ -557,9 +575,11 @@ declare global {
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
+      startPlatformSignIn?: (url: string, withApple?: boolean) => Promise<'completed' | 'cancelled' | 'failed' | 'browser'>
+      cancelPlatformSignIn?: () => Promise<void>
       openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void) => () => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => () => void
       removeOpenSettings: () => void
@@ -595,6 +615,7 @@ declare global {
         >
       >
       setBadgeCount: (count: number) => Promise<void>
+      pushAgentStatus: (payload: AgentStatusPush) => Promise<boolean>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
       popupAppMenu: (x: number, y: number) => Promise<void>

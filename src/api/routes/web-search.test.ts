@@ -9,7 +9,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...a: unknown[]) => mockValidateProxyToken(...a),
 }))
 vi.mock('@shared/lib/web-provider', () => ({
-  getActiveWebProvider: () => mockGetActiveWebProvider(),
+  activeWebProviderFrom: () => mockGetActiveWebProvider(),
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
@@ -80,7 +80,22 @@ describe('POST /api/web-search/search', () => {
     expect(res.status).toBe(200)
     const json = await res.json()
     expect(json.hits[0].url).toBe('https://a.com')
-    expect(searchFn).toHaveBeenCalledWith('cats', expect.objectContaining({ numResults: 3 }))
+    expect(searchFn).toHaveBeenCalledWith('cats', expect.objectContaining({ numResults: 3 }), {})
+  })
+
+  it('reads settings once: the vendor, its credential and the site policy come from one read', async () => {
+    const stored = { webBlockedSites: ['b.com'] }
+    mockGetSettings.mockReturnValue(stored)
+    const searchFn = vi.fn().mockResolvedValue({
+      hits: [{ url: 'https://a.com', title: 'A', snippet: 's' }, { url: 'https://b.com', title: 'B', snippet: 's' }],
+    })
+    mockGetActiveWebProvider.mockReturnValue({ search: searchFn })
+
+    const json = await (await search({ query: 'q' })).json()
+
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    expect(searchFn).toHaveBeenCalledWith('q', expect.anything(), stored)
+    expect(json.hits.map((h: { url: string }) => h.url)).toEqual(['https://a.com'])
   })
 
   it('applies the allowed-sites policy and warns about removed results', async () => {

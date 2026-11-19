@@ -7,7 +7,7 @@ import type { ReactNode } from 'react'
 // (label tracking, neutral bg-background boxes, error/success text colors)
 // in one place so a style tweak is a one-line change instead of ~20 edits.
 
-const BOX = 'bg-background rounded p-2 text-xs'
+const BOX = 'bg-background rounded-item p-2 text-xs'
 
 /** Uppercase-tracked section label shown above a field box. */
 export function FieldLabel({ children }: { children: ReactNode }) {

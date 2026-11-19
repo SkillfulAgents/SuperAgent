@@ -96,12 +96,12 @@ export function AgentAssignmentList({
     {sectioned ? <>
       <div className="space-y-1.5">
         <p className="text-xs font-normal text-muted-foreground px-1">{assignedLabel}</p>
-        {withAccess.length ? <ul className="rounded-xl border bg-background divide-y divide-border/50 overflow-hidden">{withAccess.map(row)}</ul>
-          : <div className="rounded-xl border border-dashed bg-background px-4 py-6 text-center"><p className="text-xs text-muted-foreground">{emptyAssigned}</p></div>}
+        {withAccess.length ? <ul className="rounded-card border bg-background divide-y divide-border/50 overflow-hidden">{withAccess.map(row)}</ul>
+          : <div className="rounded-card border border-dashed bg-background px-4 py-6 text-center"><p className="text-xs text-muted-foreground">{emptyAssigned}</p></div>}
       </div>
       {withoutAccess.length > 0 && <div className="space-y-1.5">
         <p className="text-xs font-normal text-muted-foreground px-1">{unassignedLabel}</p>
-        <ul className="rounded-xl border bg-background divide-y divide-border/50 overflow-hidden">{withoutAccess.map(row)}</ul>
+        <ul className="rounded-card border bg-background divide-y divide-border/50 overflow-hidden">{withoutAccess.map(row)}</ul>
       </div>}
     </> : <ul className="divide-y divide-border/50">{agents.map(row)}</ul>}
   </div>

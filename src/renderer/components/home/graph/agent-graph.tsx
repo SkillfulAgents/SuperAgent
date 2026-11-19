@@ -127,18 +127,18 @@ export function AgentGraph() {
   const navigate = useNavigate()
   const graph = useGraphData()
   // Drawing is role-gated in auth mode to mirror what the server enforces:
-  // an invoke policy is written on the DRAG-SOURCE agent (owner-only
-  // endpoint); a resource link is written on the agent side (user role).
-  const { canUseAgent, canAdminAgent } = useUser()
+  // an agent link needs someone who uses both agents; a resource link is
+  // written on the agent side (user role).
+  const { canUseAgent } = useUser()
   const canDrawConnection = useCallback(
     (source: string, target: string) => {
       const kind = drawnConnectionKind(source, target)
       if (!kind) return false
-      if (kind === 'invoke') return canAdminAgent(nodeRef(source))
+      if (kind === 'invoke') return canUseAgent(nodeRef(source)) && canUseAgent(nodeRef(target))
       const agentNodeId = nodeKind(source) === 'agent' ? source : target
       return canUseAgent(nodeRef(agentNodeId))
     },
-    [canAdminAgent, canUseAgent],
+    [canUseAgent],
   )
   // Saved positions must be loaded before nodes are seeded, or the first drag
   // would persist auto-layout coordinates over the user's arrangement.
@@ -714,7 +714,7 @@ export function AgentGraph() {
         <Panel position="top-right" className="flex items-center gap-2">
           <label
             htmlFor="graph-details-switch"
-            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs shadow-sm"
+            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-control border bg-background px-2.5 text-xs shadow-sm"
           >
             Details
             <Switch
@@ -732,7 +732,7 @@ export function AgentGraph() {
         </Panel>
         {graph.topologyFailed && (
           <Panel position="top-left">
-            <div className="rounded-md border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
+            <div className="rounded-item border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
               Couldn&apos;t load connections — showing agents only
             </div>
           </Panel>

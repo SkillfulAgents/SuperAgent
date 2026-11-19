@@ -33,13 +33,21 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
+const mockGetSettings = vi.fn((): { models?: Record<string, string> } => ({}))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({}),
+  getSettings: () => mockGetSettings(),
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-browser',
     dashboardBuilderModel: 'claude-dashboard',
     agentEffort: 'low',
+  }),
+  effectiveModelsFrom: (settings: { models?: Record<string, string> }) => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-browser',
+    dashboardBuilderModel: 'claude-dashboard',
+    agentEffort: 'low',
+    ...settings.models,
   }),
 }))
 
@@ -156,6 +164,7 @@ describe('TaskScheduler model, effort, and speed resolution', () => {
     mockMarkTaskFailed.mockResolvedValue(undefined)
     mockUpdateNextExecution.mockResolvedValue(undefined)
     mockReadAgentPreferences.mockResolvedValue({})
+    mockGetSettings.mockReturnValue({})
   })
 
   afterEach(() => {
@@ -180,7 +189,8 @@ describe('TaskScheduler model, effort, and speed resolution', () => {
   it('falls back to the agent default over the global default', async () => {
     mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
     const args = await executeTask()
-    expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one')
+    // With the settings the start read once, not a read of its own.
+    expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one', expect.objectContaining({}))
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')
     expect(args.speed).toBe('slow')
@@ -192,6 +202,21 @@ describe('TaskScheduler model, effort, and speed resolution', () => {
     expect(args.model).toBe('claude-haiku-4-5-20251001')
     expect(args.effort).toBe('low')
     expect(args.speed).toBe('slow')
+  })
+
+  it('reads the settings once per execution, and the next execution reads its own', async () => {
+    mockGetSettings.mockReturnValue({ models: { browserModel: 'browser-1' } })
+    const first = await executeTask()
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    expect(first.browserModel).toBe('browser-1')
+
+    // Changed between two runs: the second run sees it.
+    mockCreateSession.mockClear()
+    mockGetSettings.mockClear()
+    mockGetSettings.mockReturnValue({ models: { browserModel: 'browser-2' } })
+    const second = await executeTask({ id: 'task-2' })
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    expect(second.browserModel).toBe('browser-2')
   })
 
   it('a stored normal task speed beats a non-normal agent default', async () => {

@@ -27,7 +27,7 @@ function message(overrides: Partial<EmailMessage> = {}): EmailMessage {
 }
 class FakeEmail extends EmailAgentIntegration {
   readonly provider = 'platform-email'
-  isAvailable = () => platform.connected
+  isAvailable = async () => platform.connected
   readonly definition = emailDefinition
   submitted: EmailSend[] = []
   incoming = message()
@@ -57,6 +57,7 @@ const scope = { agentSlug: 'agent-a', sessionId: 'session-1' }
 const question = { id: 'q1', kind: 'question', scope, blocking: true, payload: { questions: [{ question: 'Allow <both> mailboxes?', options: [{ label: 'Allow both', description: 'Skips reCAPTCHA' }, { label: 'Only Chris' }] }] } } as never
 const approval = { id: 'r1', kind: 'secret', scope, blocking: true, payload: { secretName: 'API_KEY' } } as never
 
+// Settings and host records are app records: a fresh in-memory store per test.
 describe('email access levels', () => {
   it('defaults to agent users plus replies; validates internal-only domains', () => {
     expect(config.accessLevel).toBe('agent-users-and-replies')
@@ -99,6 +100,11 @@ describe('email access levels', () => {
   })
   it('previews the actual connected account as the permitted address in non-auth mode', async () => {
     expect(await platformEmailProvider.setup!.describe!({ agentSlug: 'agent-a', callbackUrl: '' })).toMatchObject({ agentUserEmails: ['owner@company.com'] })
+  })
+  it('lets an agent name the inbox it creates, and leaves who may write to it to the owner', async () => {
+    const asAgent = { agentSlug: 'agent-a', callbackUrl: '', fromAgent: true }
+    await expect(platformEmailProvider.setup!.prepare({ localPart: 'helper', displayName: 'Helper', accessLevel: 'anyone' }, asAgent))
+      .rejects.toThrow(/An agent sets only localPart and displayName/)
   })
   it('reads current verified agent ACL members and deployment admins only', async () => {
     platform.auth = true
@@ -238,30 +244,20 @@ describe('email lifecycle and delivery', () => {
     expect(connector.submitted[0].attachmentIds).toHaveLength(1)
     expect(connector.submitted[0].text).toBeTruthy()
   })
-  it('uses email only for a single nonprivileged question and never approves or cancels', async () => {
-    const responses = vi.fn(); connector.onEvent(responses)
-    let openRequests = [{ id: 'q1', kind: 'question', payload: { questions: [{ question: 'Which day?' }] } }]
-    const actor = { sessions: { live: async () => ({ isAwaitingInput: true, openRequests }) } }
-    const context = { integration: record, externalId: 'thread-1', sessionId: 'session-1', actor } as never
-    expect(await connector.consumeInput(event(message({ text: 'Tuesday' })), context)).toBe(true)
-    expect(responses).toHaveBeenCalledWith(expect.objectContaining({ type: 'response', requestKind: 'input', value: { answers: { 'Which day?': 'Tuesday' } } }))
-    openRequests = [{ id: 'approval', kind: 'approval', payload: { questions: [] } }]
-    expect(await connector.consumeInput(event(message({ text: 'Approved' })), context)).toBe(true)
-    expect(responses).toHaveBeenCalledOnce()
-  })
-  it('lets only agent users answer by email; anyone else’s mail waits as a message', async () => {
+  it('ends whatever an agent user’s reply finds waiting and passes it on, as chat does; anyone else’s mail waits', async () => {
     await updateAgentIntegration(record.id, { config: { accessLevel: 'anyone' } })
-    const responses = vi.fn(); connector.onEvent(responses)
-    let openRequests = [question]
-    const actor = { sessions: { live: async () => ({ isAwaitingInput: true, openRequests }) } }
+    const cancelAwaiting = vi.fn(); const responses = vi.fn(); connector.onEvent(responses)
+    let isAwaitingInput = true
+    const actor = { sessions: { live: async () => ({ isAwaitingInput, openRequests: [question, approval] }) }, inputs: { cancelAwaiting } }
     const context = { integration: record, externalId: 'thread-1', sessionId: 'session-1', actor } as never
-    expect(await connector.consumeInput(event(message({ from: 'external@example.net', text: '1' })), context)).toBe(false)
-    openRequests = [approval]
     expect(await connector.consumeInput(event(message({ from: 'external@example.net', text: 'Approved' })), context)).toBe(false)
+    expect(cancelAwaiting).not.toHaveBeenCalled()
+    expect(await connector.consumeInput(event(message({ text: '2' })), context)).toBe(false)
+    expect(cancelAwaiting).toHaveBeenCalledWith('session-1')
+    isAwaitingInput = false
+    expect(await connector.consumeInput(event(message({ text: 'Thanks' })), context)).toBe(false)
+    expect(cancelAwaiting).toHaveBeenCalledOnce()
     expect(responses).not.toHaveBeenCalled()
-    openRequests = [question]
-    expect(await connector.consumeInput(event(message({ text: '1\n\nOn Tue, Agent wrote:\n> Allow <both> mailboxes?' })), context)).toBe(true)
-    expect(responses).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'q1', value: { answers: { 'Allow <both> mailboxes?': 'Allow both' } } }))
   })
   it('emails a request to an agent user as HTML with its options and a session link', async () => {
     vi.stubEnv('HOST_PUBLIC_URL', 'https://gamut.example.com')
@@ -274,7 +270,7 @@ describe('email lifecycle and delivery', () => {
     expect(asked.text).toContain('  1. Allow both — Skips reCAPTCHA')
     expect(asked.text).toContain('Answer in Gamut: https://gamut.example.com/agents/agent-a/sessions/session-1')
     expect(asked.html).toContain('Allow &lt;both&gt; mailboxes?')
-    expect(attention.text).toContain('Email replies cannot approve privileged actions.')
+    expect(attention.text).toContain('Email replies cannot approve privileged actions, and a reply here ends the request.')
     // A repeated request reuses its key, so the gateway sends it once.
     await connector.deliver(context, { type: 'request-opened', request: question })
     expect(connector.submitted[2].idempotencyKey).toBe(asked.idempotencyKey)
@@ -317,6 +313,12 @@ describe('email response composition', () => {
     composer.mockResolvedValue({ action: 'none', text: '' })
     await connector.deliver(context(), { type: 'turn-completed', event: {} })
     expect(connector.submitted).toHaveLength(1)
+  })
+  it("hands the composer an agent's tag as a plain @Name", async () => {
+    await block('[@Mike Smith](user:u_mike1), the report is ready.')
+    composer.mockResolvedValue({ action: 'send', text: 'The report is ready.' })
+    await connector.deliver(context(), { type: 'turn-completed', event: {} })
+    expect(composer).toHaveBeenLastCalledWith(connector.incoming, expect.anything(), ['@Mike Smith, the report is ready.'], 0)
   })
   it('reports send failures without creating a separate recovery job', async () => {
     await block('The answer')

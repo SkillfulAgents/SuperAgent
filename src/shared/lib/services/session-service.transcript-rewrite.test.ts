@@ -19,6 +19,10 @@ import * as os from 'os'
 
 import { removeMessage, removeToolCall } from './session-service'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
 // ---------------------------------------------------------------------------
 // Oracle: the previous implementation, verbatim logic, operating on a raw

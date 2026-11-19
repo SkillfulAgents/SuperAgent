@@ -4,22 +4,18 @@
  * A message an integration delivered has a `message_author` row naming the
  * integration instead of a user, keyed by the uuid it was sent with, and the
  * row carries the card the app draws for it. The transcript keeps exactly the
- * text the agent received. The messages API joins cards back on by uuid alone:
- * the CLI keeps the uuid for a message queued mid-turn too (as the
+ * text the agent received. The messages API joins cards by recipient, session,
+ * and message uuid. The CLI keeps the uuid for a message queued mid-turn too (as the
  * queued_command's source_uuid, which becomes its transcript id). Only the host
  * writes rows and mints their uuids, so no message — whatever its text — can
  * claim another's card. Session, agent and fork handling are message_author's.
  */
 
-import { and, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, eq, isNotNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
-import type { TransformedItem } from '@shared/lib/utils/message-transform'
-
-// D1 caps bound parameters per statement; keep each IN list well under it.
-const IN_LIST_CHUNK = 80
 
 export interface IntegrationMessageRecord {
   /** The uuid the message is sent with, which becomes its transcript id. */
@@ -47,7 +43,7 @@ export async function recordIntegrationMessage(record: IntegrationMessageRecord)
     // A retried delivery re-records under the same uuid, possibly into a new
     // session after self-heal: the latest attempt's session wins.
     await db.insert(messageAuthor).values({ id: record.id, ...row })
-      .onConflictDoUpdate({ target: messageAuthor.id, set: row })
+      .onConflictDoUpdate({ target: messageAuthor.id, targetWhere: isNotNull(messageAuthor.integrationId), set: row })
     return display
   } catch (error) {
     captureException(error, {
@@ -65,48 +61,4 @@ export async function hasIntegrationMessages(agentSlug: string, sessionId: strin
     .limit(1)
     .get()
   return !!row
-}
-
-function parseDisplay(json: string | null): IntegrationMessageDisplay | null {
-  if (!json) return null
-  try {
-    const parsed = integrationMessageDisplaySchema.safeParse(JSON.parse(json))
-    return parsed.success ? parsed.data : null
-  } catch {
-    return null
-  }
-}
-
-type UserItem = Extract<TransformedItem, { type: 'user' | 'assistant' }>
-
-/**
- * Attach `integration` to the user messages in a response, by transcript id.
- * Rows that no longer validate are skipped: that message renders as text.
- */
-export async function annotateIntegrationMessages(
-  agentSlug: string,
-  sessionId: string,
-  items: readonly (TransformedItem | null | undefined)[],
-): Promise<void> {
-  const users = items.filter((item): item is UserItem => !!item && item.type === 'user')
-  if (users.length === 0) return
-
-  const displays = new Map<string, string | null>()
-  const ids = users.map(item => item.id)
-  for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) {
-    const rows = await db.select({ id: messageAuthor.id, display: messageAuthor.display })
-      .from(messageAuthor)
-      .where(and(
-        eq(messageAuthor.agentSlug, agentSlug),
-        eq(messageAuthor.sessionId, sessionId),
-        isNotNull(messageAuthor.integrationId),
-        inArray(messageAuthor.id, ids.slice(i, i + IN_LIST_CHUNK)),
-      ))
-      .all()
-    for (const row of rows) displays.set(row.id, row.display)
-  }
-  for (const item of users) {
-    const display = parseDisplay(displays.get(item.id) ?? null)
-    if (display) item.integration = display
-  }
 }

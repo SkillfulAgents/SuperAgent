@@ -25,6 +25,7 @@ export class ClientBroadcastChannel implements NotificationChannel {
       ...(event.actionContext ? { actionContext: event.actionContext } : {}),
       // The SSE route sends a targeted frame to its recipient only.
       ...(event.recipientUserId ? { recipientUserId: event.recipientUserId } : {}),
+      ...(event.messageUuid ? { messageUuid: event.messageUuid } : {}),
       ...event.extra,
     })
   }

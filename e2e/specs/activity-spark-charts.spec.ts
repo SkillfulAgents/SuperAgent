@@ -2,6 +2,7 @@ import { test, expect, type APIRequestContext } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { openHomeSection } from '../helpers/agent-home'
 
 async function waitForDailyIssueSummaryTask(request: APIRequestContext, agentSlug: string) {
   await expect.poll(async () => {
@@ -41,6 +42,7 @@ test.describe('Activity spark charts', () => {
     // cron task, so the chart must render its placeholder grid — not vanish.
     await agentPage.selectAgent(agentName)
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 10000 })
+    await openHomeSection(page, 'Triggers')
 
     const chart = appPage.getMainContent().getByRole('img', {
       name: 'Daily Issue Summary schedule: no mature planned runs yet.',

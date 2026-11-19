@@ -29,7 +29,7 @@ export function SecretDetectionPrompt({
   return (
     <div
       data-testid="secret-detection-prompt"
-      className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-dotted border-amber-500/70 bg-amber-500/5 px-2.5 py-2 text-xs"
+      className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-item border border-dotted border-amber-500/70 bg-amber-500/5 px-2.5 py-2 text-xs"
     >
       <span className="flex items-center gap-1.5 font-medium">
         <KeyRound className="h-3.5 w-3.5 text-amber-600" />

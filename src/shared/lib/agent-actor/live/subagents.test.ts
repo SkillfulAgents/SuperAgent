@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionEvent } from './session-channel'
 import { Subagents } from './subagents'
+import { TOOL_INPUT_FRAME_MIN_INTERVAL_MS } from './tool-input-throttle'
 
 /**
  * Subagents over a sink that records what clients heard, which agents were
@@ -60,6 +61,10 @@ function startedBackground() {
 }
 
 describe('Subagents', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   describe('launches', () => {
     it('tracks a launch as foreground unless its input asks for the background', () => {
       const { subagents } = tracked()
@@ -493,6 +498,103 @@ describe('Subagents', () => {
 
       expect(events.at(-1)?.partialInput).toBe('{"secret":"***"}')
       expect(subagents.snapshot()[0].streamingToolUse?.partialInput).toBe('{"secret":"***"}')
+    })
+
+    describe('pacing a tool call\'s input', () => {
+      const toolStart = (id: string, name: string) => ({ type: 'content_block_start', content_block: { type: 'tool_use', id, name } })
+      const inputDelta = (json: string) => ({ type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: json } })
+      const streamingFrames = (events: SessionEvent[]) => events.filter((e) => e.type === 'subagent_tool_use_streaming')
+
+      it('sends a long input as a bounded number of frames, the last complete and before the ready frame', () => {
+        vi.useFakeTimers()
+        const { subagents, events } = startedForeground()
+        subagents.streamEvent('toolu_1', toolStart('inner_1', 'Write'))
+        let input = ''
+        let perDeltaBytes = 0
+        const deltas = 1_250
+        for (let i = 0; i < deltas; i += 1) {
+          const chunk = i === 0 ? '{"file_path":"/workspace/a.md","content":"' : i === deltas - 1 ? '"}' : '0123456789abcdefghijklmnopqrstuvwxyz ABC'
+          vi.advanceTimersByTime(8)
+          subagents.streamEvent('toolu_1', inputDelta(chunk))
+          input += chunk
+          perDeltaBytes += input.length
+        }
+
+        const finished = subagents.streamEvent('toolu_1', { type: 'content_block_stop' })
+        subagents.toolUseReady('toolu_1')
+        vi.advanceTimersByTime(60_000)
+
+        const frames = streamingFrames(events)
+        // 10 seconds of deltas: at most one frame per interval, plus the first and the last.
+        expect(frames.length).toBeLessThanOrEqual((deltas * 8) / TOOL_INPUT_FRAME_MIN_INTERVAL_MS + 2)
+        expect(frames.reduce((sum, e) => sum + (e.partialInput as string).length, 0)).toBeLessThan(perDeltaBytes / 10)
+        for (const frame of frames) expect(input.startsWith(frame.partialInput as string)).toBe(true)
+        expect(frames.at(-1)).toEqual({ type: 'subagent_tool_use_streaming', parentToolId: 'toolu_1', agentId: 'a1', toolId: 'inner_1', toolName: 'Write', partialInput: input })
+        expect(finished).toEqual({ id: 'inner_1', name: 'Write', input })
+        expect(events.at(-2)).toBe(frames.at(-1))
+        expect(events.at(-1)).toMatchObject({ type: 'subagent_tool_use_ready', toolId: 'inner_1' })
+        expect(vi.getTimerCount()).toBe(0)
+      })
+
+      it('sends a held frame when the provider pauses mid-input', () => {
+        vi.useFakeTimers()
+        const { subagents, events } = startedForeground()
+        subagents.streamEvent('toolu_1', toolStart('inner_1', 'Read'))
+        subagents.streamEvent('toolu_1', inputDelta('{"file'))
+        subagents.streamEvent('toolu_1', inputDelta('_path":"/a"'))
+        expect(streamingFrames(events)).toHaveLength(1)
+
+        vi.advanceTimersByTime(TOOL_INPUT_FRAME_MIN_INTERVAL_MS)
+
+        expect(streamingFrames(events).map((e) => e.partialInput)).toEqual(['{"file', '{"file_path":"/a"'])
+      })
+
+      it('masks the secret in a held frame', () => {
+        vi.useFakeTimers()
+        const { subagents, events } = startedForeground()
+        subagents.streamEvent('toolu_1', toolStart('inner_1', 'mcp__user-input__update_webhook_endpoint'))
+        subagents.streamEvent('toolu_1', inputDelta('{"secret":"hun'))
+        subagents.streamEvent('toolu_1', inputDelta('ter2"}'))
+
+        vi.advanceTimersByTime(TOOL_INPUT_FRAME_MIN_INTERVAL_MS)
+
+        expect(streamingFrames(events).map((e) => e.partialInput)).toEqual(['{"secret":"***', '{"secret":"***"}'])
+      })
+
+      it('paces each subagent on its own', () => {
+        vi.useFakeTimers()
+        const { subagents, events } = startedForeground()
+        subagents.trackLaunch('toolu_2', '{}')
+        subagents.streamEvent('toolu_1', toolStart('inner_1', 'Read'))
+        subagents.streamEvent('toolu_2', toolStart('inner_2', 'Bash'))
+
+        subagents.streamEvent('toolu_1', inputDelta('{"file'))
+        subagents.streamEvent('toolu_2', inputDelta('{"comm'))
+
+        expect(streamingFrames(events).map((e) => [e.parentToolId, e.partialInput])).toEqual([
+          ['toolu_1', '{"file'],
+          ['toolu_2', '{"comm'],
+        ])
+      })
+
+      it.each([
+        ['completes', (subagents: Subagents) => subagents.complete('toolu_1')],
+        ['is cleared with its turn', (subagents: Subagents) => subagents.clear()],
+        ['is dropped by a stop', (subagents: Subagents) => subagents.dropForeground()],
+        ['loses its attachment', (subagents: Subagents) => subagents.dropHeldToolInputs()],
+      ])('drops a held frame when the subagent %s', (_label, end) => {
+        vi.useFakeTimers()
+        const { subagents, events } = startedForeground()
+        subagents.streamEvent('toolu_1', toolStart('inner_1', 'Read'))
+        subagents.streamEvent('toolu_1', inputDelta('{"file'))
+        subagents.streamEvent('toolu_1', inputDelta('_path":"/a"'))
+
+        end(subagents)
+        vi.advanceTimersByTime(60_000)
+
+        expect(streamingFrames(events)).toHaveLength(1)
+        expect(vi.getTimerCount()).toBe(0)
+      })
     })
 
     it('returns the finished call, with its raw input, at its block stop', () => {

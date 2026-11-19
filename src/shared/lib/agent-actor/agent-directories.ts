@@ -7,7 +7,7 @@
 import * as fs from 'fs'
 import path from 'node:path'
 import { mountsFileSchema } from '@shared/lib/services/mount-schema'
-import { getLegacyAgentInstructionsPath, getAgentInstructionsPath, getAgentDir, getAgentsDir, parseMarkdownWithFrontmatter, readJsonFileStrict } from '@shared/lib/utils/file-storage'
+import { getLegacyAgentInstructionsPath, getAgentInstructionsPath, getAgentDir, getAgentsDir, getAgentWorkspaceDir, parseMarkdownWithFrontmatter, readJsonFileStrict } from '@shared/lib/utils/file-storage'
 import type { AgentSlug } from './types'
 
 /** The runtime of an agent whose workspace is a directory under the agents data directory. */
@@ -112,6 +112,39 @@ export function renameClaudeMdToAgentsMdSync(slug: AgentSlug): boolean {
   if (fs.lstatSync(agentsMd, { throwIfNoEntry: false })) return false
   fs.renameSync(legacyInstructions, agentsMd)
   return true
+}
+
+/**
+ * What the retired Chrome profile import wrote into a workspace, relative to
+ * `.browser-profile`: the selected profile's cookie, saved-password and
+ * autofill databases, its local and session storage, and the sync's manifest.
+ * `.browser-profile` is the built-in browser's user-data-dir, whose profile is
+ * `Default/`, so Chrome never read these copies, and none of these names is
+ * one Chrome keeps at the root of a user-data-dir.
+ */
+const IMPORTED_CHROME_PROFILE_ENTRIES = [
+  'Cookies', 'Cookies-journal',
+  'Login Data', 'Login Data-journal',
+  'Web Data', 'Web Data-journal',
+  'Local Storage', 'Session Storage',
+  '.superagent-profile-sync.json',
+]
+
+/**
+ * Delete what the Chrome profile import left in a local agent's workspace.
+ * Returns whether there was any. The browser's own profile under `Default/`
+ * is not touched, so the agent keeps every login.
+ */
+export async function removeImportedChromeProfileCopies(slug: AgentSlug): Promise<boolean> {
+  const browserProfile = path.join(getAgentWorkspaceDir(slug), '.browser-profile')
+  let removed = false
+  for (const entry of IMPORTED_CHROME_PROFILE_ENTRIES) {
+    const target = path.join(browserProfile, entry)
+    if (!(await fs.promises.lstat(target).catch(() => null))) continue
+    await fs.promises.rm(target, { recursive: true, force: true })
+    removed = true
+  }
+  return removed
 }
 
 /** Boot-time import only. SQLite owns mounts after this legacy file is read. */

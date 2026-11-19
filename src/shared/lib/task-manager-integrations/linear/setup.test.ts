@@ -15,7 +15,7 @@ vi.mock('../../webhook-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../webhook-relay')>()),
   getWebhookRelay: () => ({ createEndpoint: relayEndpoints.create, disableEndpoint: relayEndpoints.disable }),
 }))
-import { authorizeLinearSetup, completeLinearSetup, deleteLinearSetup, failLinearSetup, publicLinearIntegration } from './setup'
+import { authorizeLinearSetup, completeLinearSetup, deleteLinearSetup, failLinearSetup, linearSetup, publicLinearIntegration } from './setup'
 import { getLinearConfig, updateLinearConfig } from './store'
 import * as linearStore from './store'
 import { toPublicAgentIntegration } from '../../agent-integrations/serialization'
@@ -24,7 +24,7 @@ import { z } from 'zod'
 import { createAgentIntegration, getAgentIntegration } from '../../services/agent-integration-service'
 import { integrationSetupContext, prepareIntegrationSetup } from '../../agent-integrations/setup'
 async function createLinearSetup(agentSlug: string, name: string, userId: string, origin: string, input: Record<string, unknown> = {}) {
-  const prepared = await prepareIntegrationSetup('linear', input, integrationSetupContext('linear', origin, agentSlug, userId))
+  const prepared = await prepareIntegrationSetup('linear', input, await integrationSetupContext('linear', origin, agentSlug, userId))
   const id = await createAgentIntegration({ agentSlug, provider: 'linear', name, createdByUserId: userId, config: prepared.config, status: prepared.status })
   return publicLinearIntegration((await getAgentIntegration(id))!)
 }
@@ -54,6 +54,19 @@ describe('Linear webhook setup', () => {
     expect(url.searchParams.get('webhook.url')).toBe('https://relay.test/v1/hooks/whep_1')
     expect(url.searchParams.getAll('webhook.resourceTypes')).toEqual(['AppUserNotification', 'Comment', 'Issue'])
     expect(integration).toMatchObject({ webhook: { url: 'https://relay.test/v1/hooks/whep_1', secretSaved: false } })
+  })
+
+  it('tells an agent that set it up which app to create and what to bring back', async () => {
+    const { id } = await createLinearSetup('agent', 'Helper', 'owner', 'http://host.docker.internal:47897', { webhooks: true })
+    const step = linearSetup.agentNextStep!((await getAgentIntegration(id))!)
+
+    const creationUrl = new URL(step.match(/open (\S+) in your browser/)![1])
+    expect(creationUrl.searchParams.get('oauth.redirect_uris')).toBe('http://host.docker.internal:47897/api/agent-integrations/providers/linear/callback')
+    expect(creationUrl.searchParams.get('webhook.url')).toBe('https://relay.test/v1/hooks/whep_1')
+    expect(step).toContain(`authorize_agent_integration with integration_id "${id}" and config {clientId, clientSecret, webhookSecret}`)
+
+    const { id: direct } = await createLinearSetup('agent', 'Direct', 'owner', 'http://host.docker.internal:47897')
+    expect(linearSetup.agentNextStep!((await getAgentIntegration(direct))!)).toContain('config {clientId, clientSecret}.')
   })
 
   it('authorizes without the signing secret (optional), stores it when given, and never shows it', async () => {

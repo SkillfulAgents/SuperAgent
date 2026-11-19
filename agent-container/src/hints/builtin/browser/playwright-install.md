@@ -5,12 +5,8 @@ triggers:
   - event: PreToolUse
     tool: Bash
     input:
-      command: "*playwright install *"
-  - event: PreToolUse
-    tool: Bash
-    input:
-      command: "*playwright@* install *"
+      command: "*playwright* install *"
 repeat: turn
 deny: true
 ---
-Chromium is preinstalled. Don't run `playwright install` for any browser, `chromium-headless-shell` included. Launch it with `executable_path` (Python) or `executablePath` (Node) set to `/opt/playwright-browsers/chromium-current`.
+Chromium is preinstalled at `/opt/playwright-browsers/chromium-current`. Launch it with `executable_path` (Python) or `executablePath` (Node) set to that path instead of downloading a browser. If you need a browser that is not preinstalled (for example Firefox or WebKit), run the same command again; it will run.

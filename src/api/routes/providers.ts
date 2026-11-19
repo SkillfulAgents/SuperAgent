@@ -10,8 +10,8 @@ providers.use('*', Authenticated())
 
 // GET /api/providers - List the OAuth providers this host can connect
 providers.get('/', async (c) => {
-  const platformComposio = isPlatformComposioActive()
-  const providerList = getAllProviders(getDefaultAccountProvider().name)
+  const platformComposio = await isPlatformComposioActive()
+  const providerList = getAllProviders((await getDefaultAccountProvider()).name)
     .filter((p) => !p.unlisted && (!p.platformOnly || platformComposio))
   return c.json({ providers: providerList })
 })

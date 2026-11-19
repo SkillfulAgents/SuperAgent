@@ -20,6 +20,9 @@ import { agentAvatarState, getAgentActivityStatus } from '@shared/lib/types/agen
 import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
+import { useIsDark } from '@renderer/hooks/use-theme'
+import { AGENT_HALFTONE_GRID, AVATAR_INK_OPACITY, HALFTONE_STATE, avatarHalftoneInk, hashSlug } from '@renderer/components/agents/agent-halftone'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
@@ -39,9 +42,10 @@ import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, Che
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { formatLastRun } from '@renderer/lib/last-run'
+import { compactAgo, formatLastRun } from '@renderer/lib/last-run'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { toast } from 'sonner'
+import { useAmbientAnimationAllowed } from '@renderer/lib/ambient-frames'
 
 // Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
 // should pay for on a cards-only page load.
@@ -50,21 +54,14 @@ const AgentGraph = lazyWithReload(() =>
 )
 
 // Per-status ink color for the card's halftone banner. Motion/form (the motif)
-// distinguishes agents; color just reflects activity state.
+// distinguishes agents; color just reflects activity state. An agent with an
+// avatar inks it in its avatar's colour instead (AVATAR_INK_OPACITY carries the
+// state; needs-input keeps its pulse motif, full strength).
 const HALFTONE_INK: Record<ReturnType<typeof getAgentActivityStatus>, string> = {
   sleeping: 'text-muted-foreground/50',
   idle: 'text-muted-foreground',
   working: 'text-foreground',
   awaiting_input: 'text-orange-500',
-}
-
-function hashSlug(s: string): number {
-  let h = 2166136261
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = (h * 16777619) >>> 0
-  }
-  return h
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -120,7 +117,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
     // Frosted status chip with a white-bordered stop/power button inside. It's a
     // flex item in the card's control row (see AgentCard), so the kebab aligns
     // with it natively.
-    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-0.5 text-xs backdrop-blur-sm">
+    <div className="flex items-center gap-1.5 rounded-item border border-border/50 bg-white/10 dark:border-white/[0.06] dark:bg-card/60 py-0.5 pl-1.5 pr-0.5 text-xs backdrop-blur-sm">
       <span className="leading-none text-muted-foreground">{label}</span>
       <button
         type="button"
@@ -129,7 +126,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
         title={isRunning ? 'Stop agent' : 'Wake up agent'}
         onClick={activate}
         className={cn(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded border bg-background text-foreground shadow-sm',
+          'flex h-5 w-5 shrink-0 items-center justify-center rounded-control border bg-background text-foreground shadow-sm',
           'cursor-pointer transition-colors hover:bg-muted',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
           'disabled:cursor-wait disabled:opacity-60'
@@ -147,26 +144,17 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
   )
 }
 
-// Baked halftone render settings + per-state motion (chosen during exploration;
-// the dev tweak panel that produced them lives on the animation-experiments-draft
-// branch). flow_3d is the working/idle/sleeping identity; pulse (in orange ink,
-// via HALFTONE_INK) is the needs-input state.
-const HALFTONE_STATE: Record<'sleeping' | 'idle' | 'working', { speed: number; dim: number; contrast: number }> = {
-  // Clear separation: sleeping/idle are slow + faint + soft; working is notably
-  // faster, fuller, and higher-contrast (bolder, denser dots).
-  sleeping: { speed: 0.25, dim: 0.4, contrast: 1.35 },
-  idle: { speed: 0.4, dim: 0.5, contrast: 1.4 },
-  working: { speed: 0.9, dim: 1, contrast: 1.95 },
-}
-
 function AgentCardMatrix({
   slug,
+  avatar,
   status,
   hasActiveSessions,
   hasSessionsAwaitingInput,
   className,
 }: {
   slug: string
+  /** The agent's avatar: its colour inks the halftone. */
+  avatar?: ApiAgent['avatar']
   status: 'running' | 'stopped'
   hasActiveSessions: boolean
   hasSessionsAwaitingInput: boolean
@@ -175,19 +163,23 @@ function AgentCardMatrix({
 }) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
   const stateTweak = activityStatus === 'awaiting_input' ? undefined : HALFTONE_STATE[activityStatus]
+  const dark = useIsDark()
+  // Evened out across colours and themes (agent-halftone.ts).
+  const avatarInk = avatar ? avatarHalftoneInk(avatarSource(avatar).orb, dark, AVATAR_INK_OPACITY[activityStatus]) : undefined
   return (
     <div
       aria-hidden="true"
-      className={cn('w-full overflow-hidden', className ?? 'aspect-[32/9]', HALFTONE_INK[activityStatus])}
+      className={cn('w-full overflow-hidden', className ?? 'aspect-[32/9]', !avatarInk && HALFTONE_INK[activityStatus])}
+      style={avatarInk}
     >
       <LazyHalftone
+        // Passed as well as set on the wrapper, so a colour that changes redraws it (the wrapper's is read once).
+        color={avatarInk?.color}
         motif={activityStatus === 'awaiting_input' ? 'pulse' : 'flow_3d'}
         state={activityStatus === 'working' ? 'working' : activityStatus === 'awaiting_input' ? 'alert' : 'idle'}
         speed={stateTweak?.speed}
         dim={stateTweak?.dim}
-        spacing={5}
-        maxRadius={1.3}
-        vignette={0.4}
+        {...AGENT_HALFTONE_GRID}
         contrast={stateTweak?.contrast ?? 1.6}
         speedScale={1}
         seed={hashSlug(slug)}
@@ -228,17 +220,6 @@ function stripAgentPrefix(sessionName: string, agentName: string): string {
   if (matched < Math.min(2, agentWords.length)) return sessionName
   const rest = sessionWords.slice(matched).join(' ').replace(/^[\s:–—\-·]+/, '')
   return rest.length >= 3 ? rest : sessionName
-}
-
-/** Compact relative age: 4m, 1h, 2d. */
-function compactAgo(date: Date | string | undefined): string | null {
-  if (!date) return null
-  const mins = Math.max(0, Math.round((Date.now() - new Date(date).getTime()) / 60_000))
-  if (mins < 1) return 'now'
-  if (mins < 60) return `${mins}m`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.round(hours / 24)}d`
 }
 
 type SessionState = 'awaiting' | 'working' | 'mention' | 'unread'
@@ -302,7 +283,7 @@ function AgentCardSessions({
   const moreCount = notable.length - visible.length
 
   return (
-    <div className="pointer-events-auto flex max-h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
+    <div className="pointer-events-auto flex max-h-full min-h-0 flex-col overflow-hidden rounded-item border border-border/50 bg-white/10 dark:border-white/[0.06] dark:bg-card/60 backdrop-blur-sm">
       <div className="min-h-0 overflow-y-auto px-2 py-1">
         {visible.map((s) => {
           const st = sessionState(s)
@@ -342,7 +323,7 @@ function AgentCardSessions({
                         }}
                         aria-label="Mark as read"
                         title="Mark as read"
-                        className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <Check className="h-3.5 w-3.5" />
                       </button>
@@ -355,7 +336,7 @@ function AgentCardSessions({
                       }}
                       aria-label="Open session"
                       title="Open session"
-                      className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <ArrowRight className="h-3.5 w-3.5" />
                     </button>
@@ -377,7 +358,7 @@ function AgentCardSessions({
             className="group/row flex h-6 w-full cursor-pointer items-center justify-end gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <span>{moreCount} more</span>
-            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 transition-all group-hover/row:opacity-100">
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-control text-muted-foreground opacity-60 transition-all group-hover/row:opacity-100">
               <ArrowRight className="h-3.5 w-3.5" />
             </span>
           </button>
@@ -421,7 +402,9 @@ function AgentHealthCarousel({
   const [hovered, setHovered] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
   const reduceMotion = usePrefersReducedMotion()
-  const paused = hovered || focusWithin || reduceMotion
+  // Turns by itself only where it can be watched: a shown document, in the window in use.
+  const watched = useAmbientAnimationAllowed()
+  const paused = hovered || focusWithin || reduceMotion || !watched
 
   useEffect(() => {
     if (paused || count < 2) return
@@ -479,7 +462,7 @@ function AgentHealthCarousel({
           container so the halftone reads softly through it and never flashes.
           A single content layer slides up inside it on each change — nothing
           underneath to bleed through. */}
-      <div className="relative min-w-0 flex-1 overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
+      <div className="relative min-w-0 flex-1 overflow-hidden rounded-item border border-border/50 bg-white/10 dark:border-white/[0.06] dark:bg-card/60 backdrop-blur-sm">
         <div
           key={active.id}
           className={cn('px-2 py-1.5', !reduceMotion && 'animate-in slide-in-from-bottom-full duration-300')}
@@ -612,7 +595,7 @@ function AgentCard({
         : null
 
   const titleOverlay = (
-    <div className="pointer-events-none absolute bottom-2 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
+    <div className="pointer-events-none absolute bottom-2 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-item bg-white/10 px-2.5 py-1 backdrop-blur-sm dark:bg-card/60">
       <AgentAvatar agent={agent} state={agentAvatarState(agent)} size={34} />
       <div className="min-w-0">
         <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
@@ -633,7 +616,7 @@ function AgentCard({
       disableTouchLongPress={disableTouchLongPress}
     >
       <div
-        className="relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-lg border bg-card p-4 text-left shadow-sm transition-[box-shadow,transform,border-color] duration-150 hover:border-accent-foreground/20 group-hover/widget:-translate-y-0.5 group-hover/widget:shadow-md"
+        className="relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-card border border-foreground/[0.05] bg-card p-4 text-left shadow-sm transition-[box-shadow,transform] duration-150 group-hover/widget:-translate-y-0.5 group-hover/widget:shadow-md"
       >
         {/* Keep navigation as a sibling of the card controls so the DOM never
             nests buttons inside a button. Interactive rows sit above this
@@ -657,7 +640,7 @@ function AgentCard({
               })
             )
           }}
-          className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="absolute inset-0 z-20 rounded-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         />
 
         {/* The card has one visible control row and one menu surface: its
@@ -673,6 +656,7 @@ function AgentCard({
             <div className="absolute inset-0">
               <AgentCardMatrix
                 slug={agent.slug}
+                avatar={agent.avatar}
                 status={agent.status}
                 hasActiveSessions={agent.hasActiveSessions ?? false}
                 hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
@@ -691,6 +675,7 @@ function AgentCard({
             <div className="absolute inset-0">
               <AgentCardMatrix
                 slug={agent.slug}
+                avatar={agent.avatar}
                 status={agent.status}
                 hasActiveSessions={agent.hasActiveSessions ?? false}
                 hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
@@ -765,7 +750,7 @@ function HomeArrangeMenu({
           aria-label="Home options"
           title="Home options"
           data-testid="home-options-trigger"
-          className="app-no-drag flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="app-no-drag flex h-8 w-8 items-center justify-center rounded-control border border-input bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <MoreVertical className="h-4 w-4" />
         </button>
@@ -779,7 +764,7 @@ function HomeArrangeMenu({
             setOpen(false)
             onArrange()
           }}
-          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+          className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
         >
           <LayoutPanelTop className="h-4 w-4" />
           Arrange
@@ -867,9 +852,9 @@ function HomeEmptySkeletonBoard({
           implicit third column and squeeze every row. */}
       <div
         ref={ctaRef}
-        className="relative rounded-lg border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
+        className="relative rounded-card border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
       >
-        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-item bg-muted/30" />
         {/* Backgrounded like the ghost title pills it stands in for; hover
             firms it up so it still declares itself interactive. */}
         <Button
@@ -888,12 +873,12 @@ function HomeEmptySkeletonBoard({
           key={i}
           aria-hidden="true"
           className={cn(
-            'pointer-events-none relative rounded-lg border border-border/40 bg-card/25',
+            'pointer-events-none relative rounded-card border border-border/40 bg-card/25',
             size === 'W' && 'col-span-2',
           )}
         >
-          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-md bg-muted/40" />
-          <div className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-item bg-muted/40" />
+          <div className="absolute top-2 right-4 h-6 w-20 rounded-item bg-muted/30" />
         </div>
       ))}
     </div>
@@ -1234,7 +1219,7 @@ export function HomePage() {
           <button
             type="button"
             onClick={openSearch}
-            className="flex items-center gap-2 w-full max-w-md h-7 rounded-md border bg-muted/30 hover:bg-muted/60 transition-colors px-3 text-xs text-muted-foreground app-no-drag"
+            className="flex items-center gap-2 w-full max-w-md h-7 rounded-control border bg-muted/30 hover:bg-muted/60 transition-colors px-3 text-xs text-muted-foreground app-no-drag"
             data-testid="header-search-trigger"
           >
             <Search className="h-3.5 w-3.5 shrink-0" />
@@ -1244,14 +1229,14 @@ export function HomePage() {
             </kbd>
           </button>
         </div>
-        <div className="app-no-drag flex items-center gap-0.5 rounded-md border p-0.5">
+        <div className="app-no-drag flex items-center gap-0.5 rounded-item border p-0.5">
           <button
             type="button"
             onClick={() => setView('cards')}
             title="Card view"
             aria-pressed={view === 'cards'}
             data-testid="home-view-cards"
-            className={`rounded p-1 transition-colors ${view === 'cards' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            className={`rounded-item p-1 transition-colors ${view === 'cards' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <LayoutGrid className="h-3.5 w-3.5" />
           </button>
@@ -1261,7 +1246,7 @@ export function HomePage() {
             title="Graph view"
             aria-pressed={view === 'graph'}
             data-testid="home-view-graph"
-            className={`rounded p-1 transition-colors ${view === 'graph' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            className={`rounded-item p-1 transition-colors ${view === 'graph' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <Waypoints className="h-3.5 w-3.5" />
           </button>
@@ -1292,7 +1277,7 @@ export function HomePage() {
               <Waypoints className="h-8 w-8" />
               <p className="text-sm">No agents yet — the graph lights up once you create one.</p>
               <Button size="sm" onClick={() => { void createUntitledAgent({ surface: 'home' }) }} disabled={isCreatingAgent}>
-                <Plus className="h-4 w-4 mr-1" />
+                {isCreatingAgent ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
                 New Agent
               </Button>
             </div>
@@ -1313,7 +1298,7 @@ export function HomePage() {
                 Kept while loading so resolving to a populated board doesn't
                 shift the layout. */}
             {(hasAgents || agentsLoading) && (
-            <div className="flex items-center justify-between mb-4">
+            <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-medium">Your Agents</h2>
               {isArranging ? (
                 <div className="flex items-center gap-2">
@@ -1332,7 +1317,7 @@ export function HomePage() {
                     className="app-no-drag"
                     disabled={isCreatingAgent}
                   >
-                    <Plus className="h-4 w-4 mr-1" />
+                    {isCreatingAgent ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
                     New Agent
                   </Button>
                   <HomeArrangeMenu

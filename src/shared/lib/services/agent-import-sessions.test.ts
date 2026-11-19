@@ -1,15 +1,17 @@
 /**
  * Restoring sessions from a full `.agent` import.
  *
- * A full import writes real transcripts and real `session-metadata.json` into
- * the new agent's workspace. From the user's point of view the imported agent
- * has those sessions, and opening it should list them.
+ * A full import writes real transcripts into the new agent's workspace and
+ * takes the archive's `session-metadata.json` into its session index. From
+ * the user's point of view the imported agent has those sessions, and
+ * opening it should list them.
  *
- * These were `it.fails` when the suite landed: the host-owned session ownership
+ * These were `it.fails` when the suite landed: a host-owned session ownership
  * index did not know about ids arriving by any route other than session
  * creation, so a restored session sat on disk and was filtered out of every
- * listing. Removing that index — a listing is now a read of the agent's own
- * directory — is what turned them green, so they are plain `it` here.
+ * listing. The transcripts directory is the truth for which sessions exist,
+ * and the agent's session index reconciles with it on every read, however a
+ * transcript got there — which is what keeps these green.
  *
  * Everything here is real: the template service, the session service, the
  * file-storage paths and the filesystem. Only agent creation is stubbed, so a
@@ -60,6 +62,10 @@ import { listSessions, registerSession, sessionIsKnown } from './session-service
 import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
 import { getAgentDir, getAgentSessionsDir, getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
 const MINIMAL_INSTRUCTIONS = `---
 name: Test Agent

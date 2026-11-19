@@ -10,6 +10,7 @@
  */
 import { redactStreamedToolInput } from './redaction'
 import type { SessionEvent } from './session-channel'
+import { ToolInputThrottle } from './tool-input-throttle'
 
 export interface SubagentEntry {
   agentId: string | null
@@ -80,6 +81,12 @@ export class Subagents {
   private readonly entries = new Map<string, SubagentEntry>()
   /** Agents that finished in this attachment: a new task_started for one is a resumed run. */
   private readonly completedAgentIds = new Set<string>()
+  /**
+   * The pacing of each subagent's streaming tool input, by launching call. An
+   * entry's goes with it: a held frame is sent before the call's ready frame
+   * and dropped when the entry is cleared, dropped or completed.
+   */
+  private readonly toolInputs = new Map<string, ToolInputThrottle>()
 
   constructor(private readonly sink: SubagentSink) {}
 
@@ -110,6 +117,7 @@ export class Subagents {
   /** A new turn: its subagents are new. (Completed agent ids stay: a later run of one is a resume.) */
   clear(): void {
     this.entries.clear()
+    this.dropHeldToolInputs()
   }
 
   /**
@@ -119,7 +127,10 @@ export class Subagents {
    */
   dropForeground(): void {
     for (const [parentToolId, sub] of [...this.entries]) {
-      if (!sub.isBackground && !sub.isResumed) this.entries.delete(parentToolId)
+      if (!sub.isBackground && !sub.isResumed) {
+        this.entries.delete(parentToolId)
+        this.dropToolInput(parentToolId)
+      }
     }
   }
 
@@ -127,10 +138,12 @@ export class Subagents {
    * A frame from a subagent that survived a soft interrupt. Foreground
    * subagents leave the map when the turn is stopped and a restart clears it,
    * so a frame that still resolves to an entry belongs to work that is running.
+   * It resolves as `routeFrame` does: a resumed run's frames name the call
+   * that first launched the agent, which the stop may have dropped.
    */
-  isSparedFrame(parentToolUseId: unknown): boolean {
+  isSparedFrame(parentToolUseId: unknown, agentId?: unknown): boolean {
     if (typeof parentToolUseId !== 'string') return false
-    const sub = this.entries.get(parentToolUseId)
+    const sub = this.entries.get(this.liveRunFor(parentToolUseId, typeof agentId === 'string' ? agentId : undefined))
     return !!sub && (sub.isBackground || sub.isResumed)
   }
 
@@ -367,12 +380,14 @@ export class Subagents {
         sub.currentText = ''
         sub.currentToolUse = null
         sub.currentToolInput = ''
+        this.dropToolInput(parentToolId)
         this.sink.emit({ type: 'subagent_stream_start', parentToolId, agentId })
         return null
       case 'content_block_start':
         if (event.content_block?.type === 'tool_use') {
           sub.currentToolUse = { id: event.content_block.id!, name: event.content_block.name! }
           sub.currentToolInput = ''
+          this.dropToolInput(parentToolId)
           this.sink.emit({
             type: 'subagent_tool_use_start',
             parentToolId,
@@ -389,21 +404,22 @@ export class Subagents {
           this.sink.emit({ type: 'subagent_stream_delta', parentToolId, agentId, text: event.delta.text })
         } else if (event.delta?.type === 'input_json_delta') {
           sub.currentToolInput += event.delta.partial_json || ''
-          this.sink.emit({
-            type: 'subagent_tool_use_streaming',
-            parentToolId,
-            agentId,
-            toolId: sub.currentToolUse?.id,
-            toolName: sub.currentToolUse?.name,
-            partialInput: redactStreamedToolInput(sub.currentToolUse?.name, sub.currentToolInput),
-          })
+          // The frame carries the whole input so far, so it is paced rather
+          // than sent per delta; it is built (and redacted) when it goes out.
+          this.toolInputFor(parentToolId).offer(sub.currentToolInput.length, () => this.emitToolInput(parentToolId, sub))
         }
         return null
       case 'content_block_stop':
+        // The input is complete: its last frame goes out now, ahead of
+        // whatever the finished call triggers and of its ready frame.
+        this.toolInputs.get(parentToolId)?.flush()
         return sub.currentToolUse
           ? { id: sub.currentToolUse.id, name: sub.currentToolUse.name, input: sub.currentToolInput }
           : null
       case 'message_stop':
+        // A tool call whose block stop was missed: what was held is its last frame.
+        this.toolInputs.get(parentToolId)?.flush()
+        this.dropToolInput(parentToolId)
         sub.currentToolUse = null
         sub.currentToolInput = ''
         return null
@@ -416,6 +432,9 @@ export class Subagents {
   toolUseReady(parentToolId: string): void {
     const sub = this.entries.get(parentToolId)
     if (!sub?.currentToolUse) return
+    // No input frame may follow the ready frame.
+    this.toolInputs.get(parentToolId)?.flush()
+    this.dropToolInput(parentToolId)
     this.sink.emit({
       type: 'subagent_tool_use_ready',
       parentToolId,
@@ -466,12 +485,46 @@ export class Subagents {
   complete(parentToolId: string, resultText?: string): void {
     const sub = this.entries.get(parentToolId)
     if (sub?.completed) return
+    // Its run is over: an input frame still held would reopen a card that is closing.
+    this.dropToolInput(parentToolId)
     const agentId = sub?.agentId ?? null
     this.sink.emit({ type: 'subagent_updated', parentToolId, agentId })
     this.sink.emit({ type: 'subagent_completed', parentToolId, agentId, ...(resultText && { resultText }) })
     if (sub?.agentId) this.completedAgentIds.add(sub.agentId)
     if (sub) sub.completed = true
     this.sink.ended(parentToolId)
+  }
+
+  /** The attachment is being dropped: tool-input frames still held are never sent. */
+  dropHeldToolInputs(): void {
+    for (const throttle of this.toolInputs.values()) throttle.reset()
+    this.toolInputs.clear()
+  }
+
+  private toolInputFor(parentToolId: string): ToolInputThrottle {
+    let throttle = this.toolInputs.get(parentToolId)
+    if (!throttle) {
+      // A timer that fires for an entry no longer tracked sends nothing.
+      throttle = new ToolInputThrottle(() => this.toolInputs.get(parentToolId) === throttle && this.entries.has(parentToolId))
+      this.toolInputs.set(parentToolId, throttle)
+    }
+    return throttle
+  }
+
+  private dropToolInput(parentToolId: string): void {
+    this.toolInputs.get(parentToolId)?.reset()
+    this.toolInputs.delete(parentToolId)
+  }
+
+  private emitToolInput(parentToolId: string, sub: SubagentEntry): void {
+    this.sink.emit({
+      type: 'subagent_tool_use_streaming',
+      parentToolId,
+      agentId: sub.agentId,
+      toolId: sub.currentToolUse?.id,
+      toolName: sub.currentToolUse?.name,
+      partialInput: redactStreamedToolInput(sub.currentToolUse?.name, sub.currentToolInput),
+    })
   }
 
   private liveRunFor(parentToolId: string, agentId: string | undefined): string {

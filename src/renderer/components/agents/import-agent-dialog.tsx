@@ -100,7 +100,7 @@ export function ImportAgentDialog({
         <form onSubmit={handleImport}>
           <div className="py-4 space-y-4">
             <div
-              className={`border border-dashed rounded-lg p-6 text-center transition-colors bg-muted/50 ${
+              className={`border border-dashed rounded-card p-6 text-center transition-colors bg-muted/50 ${
                 importTemplate.isPending
                   ? 'opacity-50 pointer-events-none'
                   : 'cursor-pointer'

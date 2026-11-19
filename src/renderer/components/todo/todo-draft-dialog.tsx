@@ -21,6 +21,7 @@ import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { agentDefaultRuntimeOptions, fromStoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import {
   useCreateTodo,
   useDeleteTodo,
@@ -148,7 +149,7 @@ export function TodoDraftDialog({ target, onClose }: {
         className={cn(
           // Flex, not the base grid: a grid track sizes to its content, so the
           // body could never shrink to the box and spilled out of it.
-          'flex flex-col gap-0 overflow-hidden p-0 transition-[height,max-width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none sm:rounded-2xl',
+          'flex flex-col gap-0 overflow-hidden p-0 transition-[height,max-width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none sm:rounded-dialog',
           expanded ? 'h-[70vh] max-w-4xl' : 'h-[340px] max-w-3xl',
         )}
         hideClose
@@ -198,8 +199,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     newAgent: initial?.newAgent ?? false,
     model: initial?.model ?? null,
     llmProviderId: initial?.llmProviderId ?? null,
-    effort: initial?.effort ?? null,
-    speed: initial?.speed ?? null,
+    // A stored level this build does not know reads as not picked.
+    effort: fromStoredRuntimeOptions(initial ?? {}).effort ?? null,
+    speed: fromStoredRuntimeOptions(initial ?? {}).speed ?? null,
   }))
   const fieldsRef = useRef(fields)
   fieldsRef.current = fields
@@ -438,14 +440,14 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   // composer, until the person picks; a pick is kept with the draft.
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(fields.agentSlug ?? '')
   const composerOptions = useComposerOptions({
-    initialModel: initial?.model ?? undefined,
-    initialLlmProviderId: initial?.model ? initial.llmProviderId ?? undefined : undefined,
-    initialEffort: initial?.effort ?? undefined,
-    initialSpeed: initial?.speed ?? undefined,
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
+    initial: {
+      model: initial?.model ?? undefined,
+      // A stored model with no connection leaves the connection to the picker; it is not a pick of none.
+      llmProviderId: initial?.model ? initial.llmProviderId ?? undefined : undefined,
+      effort: fromStoredRuntimeOptions(initial ?? {}).effort,
+      speed: fromStoredRuntimeOptions(initial ?? {}).speed,
+    },
+    agentDefault: agentDefaultRuntimeOptions(agentPrefs),
     agentKey: fields.newAgent ? NEW_AGENT_KEY : fields.agentSlug ?? '',
     agentDefaultsReady: !fields.agentSlug || agentPrefsFetched,
   })
@@ -642,7 +644,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
 
   return (
     <div
-      className={cn('relative flex min-h-0 flex-1 flex-col rounded-2xl', fields.agentSlug && files.isDragOver && 'ring-2 ring-primary')}
+      className={cn('relative flex min-h-0 flex-1 flex-col rounded-dialog', fields.agentSlug && files.isDragOver && 'ring-2 ring-primary')}
       onPaste={pasteFiles}
       {...(finishing || saveBlocked ? holdFileDrop : fields.agentSlug ? files.dragHandlers : holdFileDrop)}
     >

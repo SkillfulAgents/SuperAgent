@@ -53,11 +53,11 @@ async function connect() {
 }
 afterEach(async () => { await integration.disconnect(); connections.remove(id); await handle.close(); vi.unstubAllGlobals() })
 const send = (items = [delivery()]) => relay.deliver(`integration:${id}`, items)
-it('requires both platform and relay availability and attaches exactly one relay consumer', () => {
-  expect(GitHubAgentIntegration.isAvailable()).toBe(true)
-  platform.token = null; expect(GitHubAgentIntegration.isAvailable()).toBe(false)
+it('requires both platform and relay availability and attaches exactly one relay consumer', async () => {
+  expect(await GitHubAgentIntegration.isAvailable()).toBe(true)
+  platform.token = null; expect(await GitHubAgentIntegration.isAvailable()).toBe(false)
   platform.token = 'token'; relay.setSnapshot({ ...relay.snapshot(), available: false })
-  expect(GitHubAgentIntegration.isAvailable()).toBe(false)
+  expect(await GitHubAgentIntegration.isAvailable()).toBe(false)
   expect(relay.consumers.size).toBe(1)
   expect(integration.isConnected()).toBe(true)
   expect(fetchMock).toHaveBeenCalledOnce() // No polling/history on connect.

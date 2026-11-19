@@ -22,6 +22,11 @@ const NO_DOUBLE_POST =
 const ATTRIBUTION =
   'Multiple people can take part. Incoming messages are prefixed with a sender identifier (for example "[Jane Doe]: ..."); the prefix is added for attribution, the sender did not type it.'
 
+export const NO_REPLY_TOKEN = 'NO_REPLY'
+
+const NO_REPLY =
+  `If a message needs no reply from you, reply with exactly ${NO_REPLY_TOKEN} and nothing is posted.`
+
 const CONVERSATIONAL_FRAMING = [
   'Keep responses concise and conversational; this is a chat, not a document.',
   'Use tools, skills, and capabilities as you normally would.',
@@ -29,7 +34,7 @@ const CONVERSATIONAL_FRAMING = [
 
 export function buildSessionContextPrompt(surface: SessionSurface): string {
   const rules = [CHAT_DELIVERY, NO_DOUBLE_POST]
-  if (surface.multiParty) rules.push(ATTRIBUTION)
+  if (surface.multiParty) rules.push(ATTRIBUTION, NO_REPLY)
   rules.push(...CONVERSATIONAL_FRAMING)
 
   const header = surface.where

@@ -10,8 +10,6 @@ const mocks = vi.hoisted(() => ({
   findLastSessionEntry: vi.fn(async () => null),
   getConfiguredLlmClient: vi.fn(() => ({ messages: {} })),
   createSummarizerText: vi.fn(),
-  resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
-  getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
   getAgentRecord: vi.fn(async () => ({ name: 'Demo Agent' })),
   getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
@@ -28,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
 }))
 
+const notifyInvitedUser = vi.hoisted(() => vi.fn(async () => 'not-invited'))
+vi.mock('@shared/lib/team-directory/invited-users', () => ({ notifyInvitedUser }))
 vi.mock('@shared/lib/services/notification-service', () => ({
   createNotification: mocks.createNotification,
   deleteMessageNotifications: mocks.deleteMessageNotifications,
@@ -37,21 +37,22 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: mocks.getSessionMetadata,
   findLastSessionEntry: mocks.findLastSessionEntry,
 }))
+// The client and the summarizer model come from one helper setup.
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  getConfiguredLlmClient: mocks.getConfiguredLlmClient,
+  getConfiguredLlmClientAndModel: async () => ({ client: mocks.getConfiguredLlmClient(), model: 'resolved-summarizer' }),
   createSummarizerText: mocks.createSummarizerText,
-}))
-vi.mock('@shared/lib/llm-provider', () => ({
-  resolveActiveProviderModel: mocks.resolveActiveProviderModel,
-}))
-vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: mocks.getEffectiveModels,
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentRecord: mocks.getAgentRecord,
 }))
+// The batched read answers from the same per-user mock, so a test sets one.
+const getUserSettingsForUsers = vi.hoisted(() =>
+  vi.fn(async (userIds: readonly string[]) =>
+    new Map(userIds.map((userId) => [userId, mocks.getUserSettings(userId)])))
+)
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
+  getUserSettingsForUsers,
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: mocks.isAuthMode,
@@ -204,6 +205,28 @@ describe('triggerSessionComplete — automated-session gating', () => {
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'A concise completion summary.' }),
     )
+  })
+
+  it('reads every recipient’s preferences in one call, however many there are', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    const members = Array.from({ length: 20 }, (_, i) => `user-${i}`)
+    mocks.getAgentAccessUserIds.mockResolvedValue(members)
+    mocks.getUserSettings.mockImplementation((userId: string) => ({
+      notifications: {
+        enabled: true,
+        sessionComplete: userId === 'user-19',
+        sessionWaiting: true,
+        sessionScheduled: true,
+      },
+    }))
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(getUserSettingsForUsers).toHaveBeenCalledTimes(1)
+    expect(getUserSettingsForUsers).toHaveBeenCalledWith(members)
+    expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
   })
 
   it('runs the summarizer under the agent owner request scope', async () => {
@@ -577,6 +600,7 @@ describe('triggerSessionMention', () => {
     expect(mockPublishGlobal).toHaveBeenCalledWith(expect.objectContaining({
       notificationType: 'session_mention',
       recipientUserId: 'user-b',
+      messageUuid: 'msg-1',
     }))
   })
 
@@ -592,6 +616,69 @@ describe('triggerSessionMention', () => {
     const [{ body }] = mockCreateNotification.mock.calls[0] as unknown as [{ body: string }]
     expect(body).toHaveLength(280)
     expect(body.endsWith('…')).toBe(true)
+  })
+
+  it('tells someone not on Gamut yet through their team directory, with the whole message', async () => {
+    const { backgroundSettled } = await import('@shared/lib/background')
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'invited-dana',
+      senderName: 'Ada Admin',
+      text: '@Dana can you take this one?',
+      relayToInvited: true,
+    })
+    await backgroundSettled()
+    expect(notifyInvitedUser).toHaveBeenCalledWith('invited-dana', expect.objectContaining({
+      kind: 'mentioned', byName: 'Ada Admin', text: '@Dana can you take this one?',
+    }))
+  })
+})
+
+describe('triggerAgentMentions', () => {
+  const tagged = { agentSlug: 'agent-x', sessionId: 'sess-1', messageUuid: 'msg-1', text: '@Mike Smith please decide' }
+  beforeEach(() => mocks.getAgentAccessUserIds.mockResolvedValue(['user-b', 'user-c']))
+
+  it("tells each member it tags once, under the agent's name, and nobody outside the app", async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    const { backgroundSettled } = await import('@shared/lib/background')
+    await notificationManager.triggerAgentMentions({ ...tagged, userIds: ['user-b', 'outsider', 'user-b'] })
+    await backgroundSettled()
+
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+    expect(mockCreateNotification).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Demo Agent mentioned you', recipientUserId: 'user-b', messageUuid: 'msg-1',
+    }))
+    expect(notifyInvitedUser).not.toHaveBeenCalled()
+  })
+
+  it('tells nobody without sign-in', async () => {
+    await notificationManager.triggerAgentMentions({ ...tagged, userIds: ['user-b'] })
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('shows a hidden run that tagged a member, keeping its own completion muted', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', { responseText: 'Done.', taggedUserIds: ['user-b'] })
+
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('leaves a hidden run that tagged only outsiders hidden', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', { responseText: 'Done.', taggedUserIds: ['outsider'] })
+    expect(mockPromoteAutomated).not.toHaveBeenCalled()
+  })
+
+  it('still tells everyone a visible run that tagged a member finished', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', { responseText: 'Done.', taggedUserIds: ['user-b'] })
+    expect(mockPromoteAutomated).not.toHaveBeenCalled()
+    expect(mockCreateNotification).toHaveBeenCalledWith(expect.objectContaining({ type: 'session_complete' }))
   })
 })
 

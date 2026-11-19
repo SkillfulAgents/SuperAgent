@@ -27,6 +27,7 @@ describe('reserved-env-vars', () => {
       'AGENT_BROWSER_USE_HOST',
       'HOST_APP_URL',
       'AGENT_ID',
+      'BROWSER_HIGH_DPI',
       'TZ',
       'HOST_PLATFORM',
       'COMPOSIO_PLATFORM_MODE',

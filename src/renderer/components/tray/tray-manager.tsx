@@ -214,7 +214,7 @@ export function TrayManager({
             setUserClosed(false)
             requestAnimationFrame(() => setIsOpen(true))
           }}
-          className="p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+          className="p-1.5 rounded-item hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
           title="Show panel"
         >
           <PanelRightOpen className="h-4 w-4" />

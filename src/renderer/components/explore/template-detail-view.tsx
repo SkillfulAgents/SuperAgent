@@ -148,9 +148,9 @@ export function TemplateDetailView({
         <PageTitle title="" back={backToExplore} />
         {isLoading ? (
           <div className="space-y-4">
-            <Skeleton className="size-16 rounded-2xl" />
+            <Skeleton className="h-16 w-16 rounded-control" />
             <Skeleton className="h-7 w-56" />
-            <Skeleton className="h-48 rounded-2xl" />
+            <Skeleton className="h-48 rounded-dialog" />
           </div>
         ) : !hasSkillsets ? (
           <NoTemplatesEmptyState />
@@ -199,7 +199,7 @@ export function TemplateDetailView({
             Decorative and inert — the arrows are part of the picture, not
             controls. The wash is the template's orb colours over the grey. ── */}
         {useCases.length > 0 && (
-          <div className="relative mt-8 overflow-hidden rounded-2xl bg-muted/60">
+          <div className="relative mt-8 overflow-hidden rounded-dialog bg-muted/60">
             <div
               className="absolute inset-0"
               style={{ backgroundImage: getTemplateGradient(template) }}
@@ -209,12 +209,12 @@ export function TemplateDetailView({
               {useCases.slice(0, 3).map((useCase) => (
                 <span
                   key={useCase}
-                  className="flex w-full max-w-[88%] items-center gap-3 rounded-2xl bg-card/85 py-2.5 pl-4 pr-2.5 shadow-sm backdrop-blur-xl"
+                  className="flex w-full max-w-[88%] items-center gap-3 rounded-dialog bg-card/85 py-2.5 pl-4 pr-2.5 shadow-sm backdrop-blur-xl"
                 >
                   <span className="min-w-0 flex-1 text-sm/6 text-foreground">
                     <span className="font-medium">@{template.name}</span> {useCase}
                   </span>
-                  <span className="grid size-7 shrink-0 place-items-center rounded-lg border bg-white text-black shadow-sm">
+                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-control border bg-white text-black shadow-sm">
                     <ArrowUp className="size-3.5" />
                   </span>
                 </span>
@@ -230,7 +230,7 @@ export function TemplateDetailView({
               {connections.map((connection) => (
                 <span
                   key={`${connection.type}-${connection.slug}`}
-                  className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] text-muted-foreground"
+                  className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-control border px-2.5 text-[11px] text-muted-foreground"
                 >
                   <ServiceIcon
                     slug={connection.slug}
@@ -261,7 +261,7 @@ export function TemplateDetailView({
                       return (
                         <Tooltip key={file.name}>
                           <TooltipTrigger asChild>
-                            <span className="inline-flex cursor-default items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-xs text-muted-foreground">
+                            <span className="inline-flex cursor-default items-center gap-1.5 rounded-item border px-2.5 py-1 font-mono text-xs text-muted-foreground">
                               <ItemIcon
                                 className="size-3.5 shrink-0 text-muted-foreground/60"
                                 aria-hidden

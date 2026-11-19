@@ -72,7 +72,7 @@ describe('bestAllowedModel', () => {
   })
 
   it('Astra falls back to OpenAI\'s default', () => {
-    expect(bestAllowedModel(PLATFORM_CATALOG, denied, byId('gpt-6-astra'))?.id).toBe('gpt-6.1-sol')
+    expect(bestAllowedModel(PLATFORM_CATALOG, denied, byId('gpt-6-astra'))?.id).toBe('gpt-6.2-sol')
   })
 
   it('without a vendor hint, takes the catalog\'s first allowed default', () => {

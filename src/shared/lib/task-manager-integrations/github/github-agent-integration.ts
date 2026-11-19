@@ -17,7 +17,7 @@ import { githubTaskEvent, readGitHubWebhook } from './relay-events'
 import { checkGitHubMcp } from './mcp'
 
 export class GitHubAgentIntegration extends TaskManagerAgentIntegration {
-  static override isAvailable(): boolean { return !!getPlatformAccessToken() && getWebhookRelay().snapshot().available }
+  static override async isAvailable(): Promise<boolean> { return !!(await getPlatformAccessToken()) && getWebhookRelay().snapshot().available }
   readonly provider = 'github'
   readonly definition = githubDefinition
   private readonly client: GitHubClient

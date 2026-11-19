@@ -1,3 +1,4 @@
+import voiceTranscripts from './routes/voice-transcripts'
 import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
@@ -6,9 +7,11 @@ import xAgentChat from './routes/x-agent-chat'
 import xAgentRules from './routes/x-agent-rules'
 import xAgentIntegrations from './routes/x-agent-integrations'
 import xAgentMeetings from './routes/x-agent-meetings'
+import xAgentSessions from './routes/x-agent-sessions'
 import webSearch from './routes/web-search'
 import volumes from './routes/volumes'
 import volumeDefinitions from './routes/volume-definitions'
+import teamBrain from './routes/team-brain'
 import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
@@ -49,10 +52,12 @@ import serverFactsRouter from './routes/server-facts'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
+import teamDirectoriesRouter from './routes/team-directories'
 import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
+import accountDeletion from './routes/account-deletion'
 import platformSsoStart from './routes/platform-sso-start'
 import tokenExchange from './routes/token-exchange'
 import mobilePairing from './routes/mobile-pairing'
@@ -64,10 +69,12 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware } from './middleware/auth-enforcement'
+import { authRateLimit } from './middleware/rate-limit'
 import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
+import { runWithSettingsMemo } from '@shared/lib/config/settings-request-memo'
 import { defaultCacheControl } from './middleware/default-cache-control'
 import { apiErrorHandler } from './error-handler'
 
@@ -80,13 +87,19 @@ const app = new Hono()
 // awaits is otherwise invisible to every later signal check (see the module).
 app.use('*', armAbortSignal)
 
+// One settings read per request: the auth middleware, the handler and the
+// services it calls share it. Dropped when the handler settles, so a stream it
+// returned reads afresh (see settings-request-memo.ts).
+app.use('*', (_c, next) => runWithSettingsMemo(next))
+
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
 app.use('*', cors({
   ...(trustedOrigins?.length ? { origin: trustedOrigins } : {}),
   // The packaged renderer is file:// calling loopback, so the cloud router's
   // not-ready marker (relayed by cloud-proxy.ts) is only readable if exposed here.
-  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER],
+  // So is a workspace file's ETag, which an open preview polls for changes.
+  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER, 'ETag'],
 }))
 
 // Uncacheable unless a route opts in — see the middleware for why an absent
@@ -112,38 +125,9 @@ if (!isAuthMode()) {
   })
 }
 
-// Simple rate limiter for auth endpoints
-const authAttempts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT_MAX = 100
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000 // 15 minutes
-
+// Rate limit for auth POSTs (sign-in, sign-up attempts): 100 per client per 15 minutes
 if (isAuthMode()) {
-  app.use('/api/auth/*', async (c, next) => {
-    // Only rate-limit POST requests (sign-in, sign-up attempts)
-    if (c.req.method !== 'POST') return next()
-
-    const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-    const now = Date.now()
-    const entry = authAttempts.get(ip)
-
-    if (entry && now < entry.resetAt) {
-      if (entry.count >= RATE_LIMIT_MAX) {
-        return c.json({ error: 'Too many attempts. Please try again later.' }, 429)
-      }
-      entry.count++
-    } else {
-      authAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW })
-    }
-
-    // Clean up old entries periodically
-    if (authAttempts.size > 1000) {
-      for (const [key, val] of authAttempts) {
-        if (now >= val.resetAt) authAttempts.delete(key)
-      }
-    }
-
-    return next()
-  })
+  app.use('/api/auth/*', authRateLimit)
 }
 
 // Auth enforcement middleware (signup mode, password policy, account lockout)
@@ -189,7 +173,7 @@ if (isAuthMode()) {
 // settings so the auth page can adapt (hide signup tab, show password policy, etc.)
 if (isAuthMode()) {
   app.get('/api/auth-config', async (c) => {
-    const authSettings = getAuthSettings()
+    const authSettings = await getAuthSettings()
     const publicProviders = getPublicAuthProviders()
 
     // Check if any users exist (first-user signup bypass)
@@ -248,6 +232,7 @@ app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/x-agent/integrations', xAgentIntegrations)
 app.route('/api/x-agent/meetings', xAgentMeetings)
 app.route('/api/x-agent/rules', xAgentRules)
+app.route('/api/x-agent/sessions', xAgentSessions)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
@@ -267,6 +252,7 @@ app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/volumes', volumes)
 app.route('/api/volume-definitions', volumeDefinitions)
+app.route('/api/team-brain', teamBrain)
 app.route('/api/volume-types', volumeTypes)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
@@ -286,14 +272,17 @@ app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
+app.route('/api/team-directories', teamDirectoriesRouter)
 app.route('/api/audit-log', auditLogRouter)
 app.route('/api/connection-logs', connectionLogsRouter)
 app.route('/api/platform-auth', platformAuth)
+app.route('/api/account-deletion', accountDeletion)
 if (isAuthMode()) {
   // Public RP-initiated Platform SSO launcher (SUP-466). Outside /api so the
   // Platform "Open Cloud Agents" link can target a stable deployment path.
   app.route('/auth', platformSsoStart)
 }
+app.route('/api/voice/agents/:id/sessions/:sessionId/transcripts', voiceTranscripts)
 app.route('/api/voice', voiceRouter)
 // Legacy prefix: the polyfill is cached for an hour in browsers and fetches
 // its token from the prefix it was built with, and third-party dashboards

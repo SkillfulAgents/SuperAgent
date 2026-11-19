@@ -36,7 +36,7 @@ export function BrowserViewport({
         className={cn(
           'col-start-1 row-start-1 relative overflow-hidden bg-background border-t border-border/40',
           isActive && !stream.needsAttention && 'browser-glow-container',
-          !(stream.needsAttention && stream.pendingBrowserInputRequests.length > 0) && 'rounded-b-lg',
+          !(stream.needsAttention && stream.pendingBrowserInputRequests.length > 0) && 'rounded-b-card',
         )}
       >
         <canvas

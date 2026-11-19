@@ -14,7 +14,7 @@ import { BaseContainerClient } from './base-container-client'
 
 vi.mock('@shared/lib/container/host-token-store', () => ({ getOrCreateHostToken: () => 'test-host-token' }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({ enableToolSearch: true }) }))
-vi.mock('@shared/lib/llm-provider', () => ({ getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }) }))
+vi.mock('@shared/lib/llm-provider', () => ({ activeLlmProviderFrom: () => ({ getContainerEnvVars: () => ({}) }) }))
 
 class PortClient extends BaseContainerClient {
   constructor(private readonly info: ContainerInfo) {

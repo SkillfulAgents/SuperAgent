@@ -137,16 +137,16 @@ function resolveDesktopOAuthProtocol(candidate?: string): string {
  * Shared with the read-only redirect-uris route so the string we show a user to
  * paste into a provider console is the same one we later send.
  */
-function buildRedirectCandidates(
+async function buildRedirectCandidates(
   c: Context,
   options: { electron: boolean; protocol?: string },
-): string[] {
+): Promise<string[]> {
   const protocol = resolveDesktopOAuthProtocol(options.protocol)
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
   const httpRedirect = options.electron
     ? loopbackRedirect
-    : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
+    : `${await getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
   return options.electron
     ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
     : [httpRedirect]
@@ -311,7 +311,7 @@ remoteMcps.post('/', async (c) => {
  */
 remoteMcps.get('/oauth-redirect-uris', async (c) => {
   const electron = c.req.query('electron') === '1'
-  const candidates = buildRedirectCandidates(c, {
+  const candidates = await buildRedirectCandidates(c, {
     electron,
     protocol: c.req.query('protocol') ?? undefined,
   })
@@ -347,7 +347,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       ? body.clientSecret.trim()
       : undefined
 
-  const redirectCandidates = buildRedirectCandidates(c, {
+  const redirectCandidates = await buildRedirectCandidates(c, {
     electron: !!body.electron,
     protocol: typeof body.protocol === 'string' ? body.protocol : undefined,
   })
@@ -423,7 +423,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
   const iss = c.req.query('iss')
 
   if (error) {
-    const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
+    const issuerValidation = await validateAndConsumeOAuthErrorResponse(state, iss)
     if (!issuerValidation.valid) {
       return c.html(mcpOAuthCallbackBody(
         { type: 'mcp-oauth-callback', state, success: false, error: 'OAuth callback validation failed' },
@@ -451,9 +451,10 @@ remoteMcps.get('/oauth-callback', async (c) => {
   }
 
   if (!result.success || !result.mcpId) {
+    // A refused callback (an expired or already used sign-in) says why.
     return c.html(mcpOAuthCallbackBody(
-      { type: 'mcp-oauth-callback', state, success: false, error: 'Token exchange failed' },
-      'OAuth failed. You can close this window.',
+      { type: 'mcp-oauth-callback', state, success: false, error: result.error ?? 'Token exchange failed' },
+      result.error ? `OAuth failed: ${result.error}. You can close this window.` : 'OAuth failed. You can close this window.',
       delivery,
     ))
   }

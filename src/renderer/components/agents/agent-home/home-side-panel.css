@@ -1,0 +1,11 @@
+/* The new-agent intro's side panel beside the page (globals.css holds the rest of the intro). Doubled class so it wins
+   over the base `.intro-step` animation whichever stylesheet loads first. */
+@keyframes agent-home-slide-in-right {
+  from { opacity: 0; transform: translateX(40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.agent-home-intro .intro-step.intro-step-side {
+  animation-name: agent-home-slide-in-right;
+  animation-duration: 440ms;
+  animation-delay: 160ms;
+}

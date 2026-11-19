@@ -3,8 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // getEffectiveApiKey reads settings; stub so the provider is configured.
 const settingsMock = vi.fn()
 vi.mock('../config/settings', () => ({
-  getSettings: () => settingsMock(),
-  getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
+  getSettings: async () => settingsMock(),
 }))
 
 import { OpenRouterLlmProvider } from './openrouter-provider'
@@ -247,14 +246,14 @@ describe('OpenRouterLlmProvider.searchModels — error paths', () => {
 
 describe('OpenRouterLlmProvider — capabilities and defaults', () => {
   // OpenRouter 400s deferred custom tools for every non-Anthropic model.
-  it('turns ENABLE_TOOL_SEARCH on for Claude models only', () => {
-    expect(provider.toolSearchEnv('anthropic/claude-opus-5.5')).toBe('true')
-    expect(provider.toolSearchEnv('claude-sonnet-5-5')).toBe('true')
-    expect(provider.toolSearchEnv('openai/gpt-6.1')).toBe('false')
-    expect(provider.toolSearchEnv()).toBe('false')
+  it('turns ENABLE_TOOL_SEARCH on for Claude models only', async () => {
+    expect(await provider.toolSearchEnv('anthropic/claude-opus-5.5')).toBe('true')
+    expect(await provider.toolSearchEnv('claude-sonnet-5-5')).toBe('true')
+    expect(await provider.toolSearchEnv('openai/gpt-6.1')).toBe('false')
+    expect(await provider.toolSearchEnv()).toBe('false')
   })
 
-  it('opts into model search and exposes bare-alias purpose defaults', () => {
+  it('opts into model search and exposes bare-alias purpose defaults', async () => {
     expect(provider.supportsModelSearch).toBe(true)
     expect(provider.getDefaultModel('summarizer')).toBe('haiku')
     expect(provider.getDefaultModel('agent')).toBe('sonnet')

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
+import { StaleAgentsNotice } from './stale-agents-notice'
 import { VolumeDetailPage } from '@renderer/components/volumes/volume-detail-page'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { IntegrationList, IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
@@ -11,13 +12,9 @@ import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settin
 import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-badge'
 import { useAgents } from '@renderer/hooks/use-agents'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 
 export function agentBackPath(source: 'home' | 'list' | undefined, from: string | undefined): string | null {
-  if (source !== 'home' || !from) return null
-  // The one query an agent's page may carry is the one that opens the Team Brain agent's Agent Home.
-  const [path, query, ...rest] = from.split('?')
-  return /^\/agents\/[^/?#]+$/.test(path) && rest.length === 0 && (query === undefined || query === TEAM_BRAIN_AGENT_HOME_QUERY) ? from : null
+  return source === 'home' && from ? from : null
 }
 
 export function VolumesTab() {
@@ -34,7 +31,7 @@ export function VolumesTab() {
   const agentPath = agentBackPath(source, from)
   const homeAgent = agents.data?.find(agent => [agent.slug, agent.displaySlug].some(slug => agentPath?.split('?')[0] === `/agents/${encodeURIComponent(slug)}`))
   const back = agentPath
-    ? { onBack: () => router.history.push(agentPath), label: homeAgent?.name ?? 'Agent' }
+    ? { onBack: () => router.history.push(agentPath), label: homeAgent?.name ?? 'Back' }
     : { onBack: backToList, label: undefined }
   const [deleting, setDeleting] = useState<VolumeDefinitionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -55,8 +52,9 @@ export function VolumesTab() {
 
   return (
     <div className="space-y-6" data-testid="volumes-settings">
+      <StaleAgentsNotice />
       {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
-        : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>Back to {back.label ?? 'drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
+        : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>{homeAgent ? `Back to ${homeAgent.name}` : back.label ?? 'Back to drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
         : <>
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">Save folders once, then add them to any of your agents from their Drives card.</p>
@@ -64,7 +62,7 @@ export function VolumesTab() {
       </div>
       {((error && !deleting) || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading drives…</p> : definitions.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center">
+        <div className="rounded-card border border-dashed p-8 text-center">
           <Folder className="mx-auto mb-3 h-7 w-7 text-muted-foreground" />
           <p className="text-sm font-medium">No saved drives</p>
           <p className="mt-1 text-sm text-muted-foreground">Folders you add to an agent are saved here for reuse.</p>
@@ -79,7 +77,9 @@ export function VolumesTab() {
               subtitle={<>
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="min-w-0 truncate font-mono" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</span>}
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
-                <span className="inline-flex shrink-0 items-center gap-1">{volume.userId === null ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.userId === null ? 'Public' : 'Private'}</span>
+                <span className="inline-flex shrink-0 items-center gap-1">{volume.visibility === 'public' ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.visibility === 'public' ? 'Public' : 'Private'}</span>
+                <span className="shrink-0">·</span>
+                <span className="truncate">{volume.visibility === 'public' ? 'Everyone in this workspace' : volume.owners.map(owner => owner.name).join(', ')}</span>
                 <span className="shrink-0">·</span>
                 <span className="shrink-0">{volume.globalAccess ? 'Every agent' : volume.attachmentCount === 0 ? 'Not added' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
               </>}

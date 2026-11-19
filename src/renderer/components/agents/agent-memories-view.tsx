@@ -8,6 +8,7 @@ import { Textarea } from '@renderer/components/ui/textarea'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { useUser } from '@renderer/context/user-context'
+import { hasUrlScheme } from '@renderer/lib/markdown-url-transform'
 import { useAgentMemories, useAgentMemory, useSaveAgentMemory, MemoryRequestError } from '@renderer/hooks/use-agent-memories'
 import type { AgentMemoryEntry } from '@shared/lib/types/memory'
 
@@ -44,7 +45,7 @@ export function AgentMemoriesView({ agentSlug }: { agentSlug: string }) {
       ) : memories.isError ? (
         <ErrorMessage message={memories.error.message} retry={() => void memories.refetch()} />
       ) : entries.length === 0 ? (
-        <div className="rounded-xl border px-6 py-12 text-center">
+        <div className="rounded-card border px-6 py-12 text-center">
           <Brain className="mx-auto mb-4 h-8 w-8 text-muted-foreground" />
           <h3 className="font-medium">No memories yet</h3>
           <p className="mt-2 text-sm text-muted-foreground">When this agent saves something to remember, it will appear here.</p>
@@ -55,7 +56,7 @@ export function AgentMemoriesView({ agentSlug }: { agentSlug: string }) {
           <Input aria-label="Search memories" placeholder="Search memories…" value={search} onChange={event => setSearch(event.target.value)} />
           {filtered.filter(entry => entry.isIndex).map(entry => <MemoryRow key={entry.path} entry={entry} onClick={() => setSelected(entry.path)} />)}
           {filtered.some(entry => !entry.isIndex) && (
-            <div className="overflow-hidden rounded-xl border divide-y">
+            <div className="overflow-hidden rounded-card border divide-y">
               {filtered.filter(entry => !entry.isIndex).map(entry => <MemoryRow key={entry.path} entry={entry} onClick={() => setSelected(entry.path)} grouped />)}
             </div>
           )}
@@ -68,7 +69,7 @@ export function AgentMemoriesView({ agentSlug }: { agentSlug: string }) {
 
 function MemoryRow({ entry, onClick, grouped = false }: { entry: AgentMemoryEntry; onClick: () => void; grouped?: boolean }) {
   return (
-    <button type="button" onClick={onClick} className={`flex w-full items-center gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${grouped ? '' : 'rounded-xl border'}`}>
+    <button type="button" onClick={onClick} className={`flex w-full items-center gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${grouped ? '' : 'rounded-card border'}`}>
       {entry.isIndex ? <FileText className="h-5 w-5 shrink-0 text-muted-foreground" /> : <Brain className="h-5 w-5 shrink-0 text-muted-foreground" />}
       <span className="min-w-0 flex-1">
         <span className="block break-words text-sm font-medium">{entry.title}</span>
@@ -155,7 +156,7 @@ function MemoryDetail({ agentSlug, path, entries, onBack, onSelect }: {
             <>
               {memory.data.description && <p className="text-sm text-muted-foreground">{memory.data.description}</p>}
               {save.isSuccess && <p role="status" className="text-sm text-muted-foreground">Memory saved.</p>}
-              <div className="prose prose-sm max-w-none break-words rounded-xl border p-5 dark:prose-invert">
+              <div className="prose prose-sm max-w-none break-words rounded-card border p-5 dark:prose-invert">
                 <AgentMarkdown
                   text={memory.data.body || '*This memory is empty.*'}
                   mode="settled"
@@ -164,7 +165,7 @@ function MemoryDetail({ agentSlug, path, entries, onBack, onSelect }: {
                     const target = entries.find(entry => entry.path === href || entry.path === `${path.split('/').slice(0, -1).join('/')}/${href}`)
                     if (target) return <button type="button" className="text-primary underline" onClick={() => onSelect(target.path)}>{children}</button>
                     // A link with a scheme takes the shared anchor; a relative link to no memory stays text.
-                    return href && /^[a-z][a-z0-9+.-]*:/i.test(href) ? null : <span>{children}</span>
+                    return href && hasUrlScheme(href) ? null : <span>{children}</span>
                   }}
                 />
               </div>

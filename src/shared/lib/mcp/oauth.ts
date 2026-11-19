@@ -6,6 +6,20 @@ import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
 import { protectedResourceMetadataSchema } from './oauth-metadata-schema'
+import {
+  mcpOAuthTokenResponseSchema,
+  type McpOAuthDelivery,
+  type McpOAuthExchange,
+  type McpOAuthTokenResponse,
+  type PendingMcpOAuthFlow,
+} from './oauth-pending-flow-schema'
+import {
+  claimPendingFlow,
+  finishAfterErrorResponse,
+  finishClaim,
+  MCP_OAUTH_EXCHANGE_TIMEOUT_MS,
+  savePendingFlow,
+} from './oauth-pending-flows'
 
 /**
  * OAuth setup failure whose message is safe to show in the UI verbatim. Carries
@@ -395,100 +409,80 @@ async function registerDynamicClientWithFallback(
   throw lastError ?? new McpOAuthSetupError('No redirect URLs available for client registration')
 }
 
-type PendingOAuthFlow = {
-  codeVerifier: string
-  redirectUri: string
-  resource: string
-  tokenEndpoint: string
-  expectedIssuer?: string
-  authorizationResponseIssParameterSupported: boolean
-  clientId: string
-  clientSecret?: string
-  mcpId?: string
-  newServer?: { name: string; url: string }
-  userId?: string
-  // True when the flow was initiated by the Electron app. Combined with whether
-  // the winning redirect is the custom app scheme, this tells the callback route
-  // how to hand the result back (see completeOAuthFlow's return).
+/**
+ * How the callback route hands the result back to the client: the custom app
+ * scheme path is fetched and parsed by the Electron main process, while the
+ * http loopback path is loaded in the external browser and must hand back to
+ * the app. Stored with the flow, since the callback may reach another process.
+ */
+type DeliveryFlags = {
   electron?: boolean
-  // The desktop app's deep-link scheme, kept on the flow because the callback
-  // may be served by a cloud deployment with no SUPERAGENT_PROTOCOL of its own.
+  redirectWasScheme?: boolean
   desktopProtocol?: string
 }
 
-type OAuthIssuerValidationResult =
-  | { valid: true }
-  | { valid: false; error: string }
-
-// In-memory store for pending OAuth flows
-const pendingOAuthFlows = new Map<string, PendingOAuthFlow>()
-
-/**
- * How the callback route should deliver the result to the client, derived from
- * the pending flow. `redirectWasScheme` is true for the custom app scheme (any
- * non-http(s) redirect) — that path is fetched+parsed by the Electron main
- * process — and false for an http loopback redirect loaded in the external
- * browser, which must be handed back to the app.
- */
-function flowDeliveryFlags(flow: PendingOAuthFlow): {
-  electron: boolean
-  redirectWasScheme: boolean
-  desktopProtocol?: string
-} {
+function deliveryFlags(delivery: McpOAuthDelivery | undefined): DeliveryFlags {
+  if (!delivery) return {}
   return {
-    electron: flow.electron === true,
-    redirectWasScheme: !/^https?:/i.test(flow.redirectUri),
-    desktopProtocol: flow.desktopProtocol,
+    electron: delivery.electron,
+    redirectWasScheme: delivery.redirectWasScheme,
+    desktopProtocol: delivery.desktopProtocol,
   }
 }
 
 // The custom app scheme candidate (if any) names the desktop deep-link protocol.
 function desktopProtocolFromCandidates(redirectCandidates: string[]): string | undefined {
-  return redirectCandidates.find((c) => !/^https?:/i.test(c))?.split('://')[0]
+  return redirectCandidates.find((c) => !/^https?:/i.test(c))?.split('://')[0] || undefined
 }
 
-function validateAuthorizationResponseIssuer(
-  flow: PendingOAuthFlow,
-  iss: string | null | undefined,
-): OAuthIssuerValidationResult {
-  const hasIss = iss !== undefined && iss !== null
-
-  if (flow.authorizationResponseIssParameterSupported && !hasIss) {
-    return {
-      valid: false,
-      error: 'Missing OAuth issuer parameter',
-    }
+/**
+ * The serializable descriptor of a started flow: everything the callback
+ * needs, on whichever process it lands, to check the response and rebuild the
+ * token request.
+ */
+function pendingFlowDescriptor(options: {
+  metadata: OAuthMetadata
+  redirectUri: string
+  redirectCandidates: string[]
+  electron: boolean
+  resource: string
+  clientId: string
+  clientSecret?: string
+  codeVerifier: string
+  target: McpOAuthExchange['target']
+}): Omit<PendingMcpOAuthFlow, 'state'> {
+  const { metadata } = options
+  return {
+    issuer: {
+      expected: typeof metadata.issuer === 'string' && metadata.issuer ? metadata.issuer : undefined,
+      required: metadata.authorization_response_iss_parameter_supported === true,
+    },
+    delivery: {
+      electron: options.electron,
+      redirectWasScheme: isCustomSchemeRedirect(options.redirectUri),
+      desktopProtocol: desktopProtocolFromCandidates(options.redirectCandidates),
+    },
+    exchange: {
+      tokenEndpoint: metadata.token_endpoint,
+      redirectUri: options.redirectUri,
+      resource: options.resource,
+      clientId: String(options.clientId),
+      clientSecret: options.clientSecret ? String(options.clientSecret) : undefined,
+      codeVerifier: options.codeVerifier,
+      target: options.target,
+    },
   }
-
-  if (!hasIss) {
-    return { valid: true }
-  }
-
-  if (!flow.expectedIssuer) {
-    return {
-      valid: false,
-      error: 'Missing expected OAuth issuer',
-    }
-  }
-
-  if (iss !== flow.expectedIssuer) {
-    return {
-      valid: false,
-      error: 'OAuth issuer mismatch',
-    }
-  }
-
-  return { valid: true }
 }
 
-export function validateAndConsumeOAuthErrorResponse(
+/**
+ * Checks an authorization error response (`?error=…`) against its flow, and
+ * ends the flow when the response is genuine. A response with the wrong issuer
+ * leaves the flow for the legitimate callback.
+ */
+export async function validateAndConsumeOAuthErrorResponse(
   state: string | null | undefined,
   iss: string | null | undefined,
-): OAuthIssuerValidationResult & {
-  electron?: boolean
-  redirectWasScheme?: boolean
-  desktopProtocol?: string
-} {
+): Promise<{ valid: true; error?: undefined } & DeliveryFlags | { valid: false; error: string } & DeliveryFlags> {
   if (!state) {
     return {
       valid: false,
@@ -496,24 +490,12 @@ export function validateAndConsumeOAuthErrorResponse(
     }
   }
 
-  const flow = pendingOAuthFlows.get(state)
-  if (!flow) {
-    return {
-      valid: false,
-      error: 'No pending OAuth flow for state',
-    }
-  }
-
-  const delivery = flowDeliveryFlags(flow)
-
-  const validation = validateAuthorizationResponseIssuer(flow, iss)
+  const validation = await finishAfterErrorResponse(state, iss)
   if (!validation.valid) {
-    console.error('[mcp/oauth] Authorization error issuer validation failed:', validation.error)
-    return { ...validation, ...delivery }
+    console.error('[mcp/oauth] Authorization error response refused:', validation.error)
+    return { valid: false, error: validation.error, ...deliveryFlags(validation.delivery) }
   }
-
-  pendingOAuthFlows.delete(state)
-  return { valid: true, ...delivery }
+  return { valid: true, ...deliveryFlags(validation.delivery) }
 }
 
 /**
@@ -637,21 +619,18 @@ export async function initiateOAuthFlow(
     })
     .where(eq(remoteMcpServers.id, mcpId))
 
-  // Store flow state for callback
-  pendingOAuthFlows.set(state, {
-    codeVerifier,
+  // Store flow state for the callback, which may reach another process.
+  await savePendingFlow(state, pendingFlowDescriptor({
+    metadata,
     redirectUri,
+    redirectCandidates,
+    electron,
     resource,
-    tokenEndpoint: metadata.token_endpoint,
-    expectedIssuer: metadata.issuer,
-    authorizationResponseIssParameterSupported:
-      metadata.authorization_response_iss_parameter_supported === true,
     clientId,
     clientSecret,
-    mcpId,
-    electron,
-    desktopProtocol: desktopProtocolFromCandidates(redirectCandidates),
-  })
+    codeVerifier,
+    target: { kind: 'existing', mcpId },
+  }))
 
   // Build authorization URL
   let authUrl: URL
@@ -756,21 +735,17 @@ export async function initiateNewServerOAuth(
   const { codeVerifier, codeChallenge } = generatePKCE()
   const state = crypto.randomBytes(16).toString('hex')
 
-  pendingOAuthFlows.set(state, {
-    codeVerifier,
+  await savePendingFlow(state, pendingFlowDescriptor({
+    metadata,
     redirectUri,
+    redirectCandidates,
+    electron,
     resource,
-    tokenEndpoint: metadata.token_endpoint,
-    expectedIssuer: metadata.issuer,
-    authorizationResponseIssParameterSupported:
-      metadata.authorization_response_iss_parameter_supported === true,
     clientId,
     clientSecret,
-    newServer: { name, url: mcpUrl },
-    userId,
-    electron,
-    desktopProtocol: desktopProtocolFromCandidates(redirectCandidates),
-  })
+    codeVerifier,
+    target: { kind: 'new', name, url: mcpUrl, userId: userId || undefined },
+  }))
 
   let authUrl: URL
   try {
@@ -805,8 +780,132 @@ export async function initiateNewServerOAuth(
 }
 
 /**
+ * Sends the authorization code to the token endpoint, once, and returns the
+ * validated tokens or null. Logs say what failed, never the request or a
+ * response that may hold a token.
+ */
+async function exchangeAuthorizationCode(
+  exchange: McpOAuthExchange,
+  code: string,
+): Promise<McpOAuthTokenResponse | null> {
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: exchange.redirectUri,
+    client_id: exchange.clientId,
+    code_verifier: exchange.codeVerifier,
+    resource: exchange.resource,
+  })
+  if (exchange.clientSecret) {
+    body.set('client_secret', exchange.clientSecret)
+  }
+
+  let res: Response
+  try {
+    res = await mcpSafeFetch(exchange.tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(MCP_OAUTH_EXCHANGE_TIMEOUT_MS),
+    })
+  } catch (error) {
+    console.error('[mcp/oauth] Token exchange error:', error)
+    return null
+  }
+
+  if (!res.ok) {
+    console.error(`[mcp/oauth] Token exchange failed (HTTP ${res.status})${await describeOAuthErrorBody(res)}`)
+    return null
+  }
+
+  // Parsed by hand so a parse error, which quotes the body, never reaches a log:
+  // some token endpoints answer form-encoded, tokens included.
+  let tokens: unknown
+  try {
+    tokens = JSON.parse(await res.text())
+  } catch {
+    console.error(`[mcp/oauth] Token exchange response is not JSON (content-type: ${res.headers.get('content-type') ?? 'none'})`)
+    return null
+  }
+  const parsed = mcpOAuthTokenResponseSchema.safeParse(tokens)
+  if (!parsed.success) {
+    console.error('[mcp/oauth] Token exchange response has no access token')
+    return null
+  }
+  return parsed.data
+}
+
+/**
+ * What a failed write says about itself, without the statement's parameters
+ * (drizzle quotes them, tokens included, in its own error's message).
+ */
+function describeSaveError(error: unknown): string {
+  if (error instanceof Error && error.cause instanceof Error) return `${error.cause.name}: ${error.cause.message}`
+  return error instanceof Error ? error.name : 'unknown error'
+}
+
+/** Writes the tokens to the server row they belong to, creating it for a new server. */
+async function saveConnectionCredentials(
+  exchange: McpOAuthExchange,
+  tokens: McpOAuthTokenResponse,
+): Promise<string> {
+  const now = new Date()
+  const expiresIn = tokens.expires_in === null || tokens.expires_in === undefined ? Number.NaN : Number(tokens.expires_in)
+  const expiresAt = Number.isFinite(expiresIn) && expiresIn > 0
+    ? new Date(now.getTime() + expiresIn * 1000)
+    : null
+
+  if (exchange.target.kind === 'new') {
+    // New server: INSERT with tokens
+    const id = crypto.randomUUID()
+    await db.insert(remoteMcpServers).values({
+      id,
+      name: exchange.target.name,
+      url: exchange.target.url,
+      userId: exchange.target.userId,
+      authType: 'oauth',
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token || null,
+      tokenExpiresAt: expiresAt,
+      oauthTokenEndpoint: exchange.tokenEndpoint,
+      oauthClientId: exchange.clientId,
+      oauthClientSecret: exchange.clientSecret || null,
+      oauthResource: exchange.resource,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    })
+    return id
+  }
+
+  // Existing server: UPDATE with tokens
+  await db
+    .update(remoteMcpServers)
+    .set({
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token || null,
+      tokenExpiresAt: expiresAt,
+      status: 'active',
+      errorMessage: null,
+      updatedAt: now,
+    })
+    .where(eq(remoteMcpServers.id, exchange.target.mcpId))
+  return exchange.target.mcpId
+}
+
+/**
  * Complete an OAuth flow by exchanging the authorization code for tokens.
  * Handles both new server creation and existing server re-auth.
+ *
+ * The flow may have been started by another process. The callback is checked
+ * against the stored flow first; a wrong state or issuer changes nothing.
+ * Then one callback claims the flow, so duplicates, on any process, never
+ * exchange the code twice. Once the code has gone to the provider the flow is
+ * finished whatever the answer: the code is single-use, a provider may already
+ * have spent one whose answer was lost, and a provider may revoke the tokens
+ * of a code presented twice (RFC 6749 §4.1.2). Starting the connection again
+ * gets a fresh code. The credentials are written only by the callback that
+ * finished the flow, after it did.
  */
 export async function completeOAuthFlow(
   state: string,
@@ -815,102 +914,33 @@ export async function completeOAuthFlow(
 ): Promise<{
   success: boolean
   mcpId?: string
-  electron?: boolean
-  redirectWasScheme?: boolean
-  desktopProtocol?: string
-}> {
-  const flow = pendingOAuthFlows.get(state)
-  if (!flow) {
-    console.error('[mcp/oauth] No pending flow for state:', state)
-    return { success: false }
+  /** For the user, when there is more to say than that the exchange failed. */
+  error?: string
+} & DeliveryFlags> {
+  const claimed = await claimPendingFlow(state, iss)
+  if (!claimed.claimed) {
+    console.error(`[mcp/oauth] Callback refused (${claimed.refusal})${claimed.detail ? `: ${claimed.detail}` : ''}`)
+    return { success: false, error: claimed.error, ...deliveryFlags(claimed.delivery) }
   }
 
-  // How the callback route should hand the result back: the custom app scheme
-  // path is fetched+parsed by the Electron main process (parseable HTML), while
-  // the http loopback path is loaded in the external browser (needs a hand-off
-  // back to the app).
-  const delivery = flowDeliveryFlags(flow)
-
-  const issuerValidation = validateAuthorizationResponseIssuer(flow, iss)
-  if (!issuerValidation.valid) {
-    console.error('[mcp/oauth] Authorization response issuer validation failed:', issuerValidation.error)
-    return { success: false, ...delivery }
+  const { claim } = claimed
+  const delivery = deliveryFlags(claim.flow.delivery)
+  const tokens = await exchangeAuthorizationCode(claim.flow.exchange, code)
+  const finished = await finishClaim(claim)
+  if (!tokens) return { success: false, ...delivery }
+  if (!finished) {
+    // The claim lapsed before the exchange returned, so this callback may no
+    // longer write: by now the user may have started over and connected.
+    console.error('[mcp/oauth] The flow ended before its token exchange returned; the tokens are dropped')
+    return { success: false, error: 'The sign-in took too long to finish. Start the connection again', ...delivery }
   }
-
-  pendingOAuthFlows.delete(state)
 
   try {
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: flow.redirectUri,
-      client_id: flow.clientId,
-      code_verifier: flow.codeVerifier,
-      resource: flow.resource,
-    })
-    if (flow.clientSecret) {
-      body.set('client_secret', flow.clientSecret)
-    }
-
-    const res = await mcpSafeFetch(flow.tokenEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-    })
-
-    if (!res.ok) {
-      const errorBody = await res.text()
-      console.error('[mcp/oauth] Token exchange failed:', res.status, errorBody)
-      return { success: false, ...delivery }
-    }
-
-    const tokens: OAuthTokenResponse = await res.json()
-    const now = new Date()
-    const expiresAt = tokens.expires_in
-      ? new Date(now.getTime() + tokens.expires_in * 1000)
-      : null
-
-    if (flow.newServer) {
-      // New server: INSERT with tokens
-      const id = crypto.randomUUID()
-      await db.insert(remoteMcpServers).values({
-        id,
-        name: flow.newServer.name,
-        url: flow.newServer.url,
-        userId: flow.userId,
-        authType: 'oauth',
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token || null,
-        tokenExpiresAt: expiresAt,
-        oauthTokenEndpoint: flow.tokenEndpoint,
-        oauthClientId: flow.clientId,
-        oauthClientSecret: flow.clientSecret || null,
-        oauthResource: flow.resource,
-        status: 'active',
-        createdAt: now,
-        updatedAt: now,
-      })
-      return { success: true, mcpId: id, ...delivery }
-    } else if (flow.mcpId) {
-      // Existing server: UPDATE with tokens
-      await db
-        .update(remoteMcpServers)
-        .set({
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token || null,
-          tokenExpiresAt: expiresAt,
-          status: 'active',
-          errorMessage: null,
-          updatedAt: now,
-        })
-        .where(eq(remoteMcpServers.id, flow.mcpId))
-      return { success: true, mcpId: flow.mcpId, ...delivery }
-    }
-
-    return { success: false, ...delivery }
+    const mcpId = await saveConnectionCredentials(claim.flow.exchange, tokens)
+    return { success: true, mcpId, ...delivery }
   } catch (error) {
-    console.error('[mcp/oauth] Token exchange error:', error)
-    return { success: false, ...delivery }
+    console.error('[mcp/oauth] Could not save the connection:', describeSaveError(error))
+    return { success: false, error: 'Could not save the connection. Start the connection again', ...delivery }
   }
 }
 

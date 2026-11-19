@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { prepareAuthSession, prepareOAuthPopup, type LoginWindow } from '@renderer/lib/oauth-popup'
 
 export const LOGIN_WINDOW_CANCEL_DELAY_MS = 10_000
 
@@ -22,15 +22,18 @@ export type LoginWindowOutcome = 'waiting' | 'no-url' | 'stale'
  * sent to the login page, which is when a completion listener should start.
  * `canCancel` turns true once an attempt has been pending for 10 s.
  * `isLoginWindow` tells whether a message came from the open window.
+ *
+ * With `authSession` the login is a sign-in sheet on the app's own window
+ * instead of a browser window; closing the sheet ends the attempt.
  */
-export function useLoginWindow() {
+export function useLoginWindow({ authSession = false }: { authSession?: boolean } = {}) {
   const [pending, setPending] = useState(false)
   const [waiting, setWaiting] = useState(false)
   const [canCancel, setCanCancel] = useState(false)
   // Each open() and close() bumps the attempt; a request that settles under a
   // different number than it started with is stale.
   const attemptRef = useRef(0)
-  const popupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
+  const popupRef = useRef<LoginWindow | null>(null)
   const cancelTimerRef = useRef<number | undefined>(undefined)
 
   const close = useCallback(() => {
@@ -52,12 +55,15 @@ export function useLoginWindow() {
 
   const open = useCallback(async (
     requestLoginUrl: () => Promise<string | null | undefined>,
+    { withApple = false }: { withApple?: boolean } = {},
   ): Promise<LoginWindowOutcome> => {
     close()
-    const popup = prepareOAuthPopup()
-    popupRef.current = popup
     const attempt = attemptRef.current
     const stale = () => attempt !== attemptRef.current
+    const popup = authSession
+      ? prepareAuthSession(() => { if (!stale()) close() }, withApple)
+      : prepareOAuthPopup()
+    popupRef.current = popup
     cancelTimerRef.current = window.setTimeout(() => setCanCancel(true), LOGIN_WINDOW_CANCEL_DELAY_MS)
     setPending(true)
 
@@ -76,7 +82,7 @@ export function useLoginWindow() {
       close()
       throw err
     }
-  }, [close])
+  }, [close, authSession])
 
   return { open, close, pending, waiting, canCancel, isLoginWindow }
 }

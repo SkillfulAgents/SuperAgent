@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { noteTurnStarted } from '@renderer/lib/session-turns'
 import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
@@ -9,7 +10,7 @@ import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
-import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
+import { applySessionActivityStatus, invalidateAgentSessionLists } from '@renderer/lib/agent-cache'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import {
@@ -67,8 +68,8 @@ interface StreamState {
   /** Provider-authored copy for the error, computed server-side by the active provider. */
   errorPresentation: ProviderErrorPresentation | null
   browserActive: boolean // Whether browser is running for this session
-  computerUseApp: string | null // Name of the app currently grabbed for computer use
-  computerUseAppIcon: string | null // Base64 PNG icon of the grabbed app
+  computerUseApp: string | null // Name of the app the agent's computer use last acted in
+  computerUseAppIcon: string | null // Base64 PNG icon of that app
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
   isCompacting: boolean // True while context compaction is in progress
   contextUsage: SessionUsage | null // Latest context window usage data
@@ -538,6 +539,9 @@ function getOrCreateEventSource(
       const current = streamStates.get(sessionId)
 
       if (data.type === 'connected') {
+        // A snapshot stands in for frames this viewer never got, and a turn may have started
+        // among them. Counting it as one can split an edit highlight, but never merges two turns.
+        noteTurnStarted(sessionId)
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
@@ -633,7 +637,11 @@ function getOrCreateEventSource(
         // opting it out is an explicit line in the turn-scoped group.
         const queuedMidTurn = data.queuedMidTurn === true
         // The thinking stream lives outside StreamState but is turn-scoped too.
-        if (!queuedMidTurn) sessionThinking.delete(sessionId)
+        // A message queued mid-turn waits for its own turn; so does the next edit highlight.
+        if (!queuedMidTurn) {
+          sessionThinking.delete(sessionId)
+          noteTurnStarted(sessionId)
+        }
         streamStates.set(sessionId, {
           ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
@@ -654,7 +662,6 @@ function getOrCreateEventSource(
             apiRetry: null,
           }),
         })
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
       else if (data.type === 'session_idle') {
         // Session became idle - query completed or interrupted
@@ -700,7 +707,9 @@ function getOrCreateEventSource(
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         invalidateMessagesThrottled(queryClient, sessionId)
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        // The global stream refetches the session lists for this event. Echo the
+        // flip from here too, for the reason session_active does.
+        applySessionActivityStatus(queryClient, agentSlug, sessionId, { isActive: false, isAwaitingInput: false })
         // The immediate invalidate above can refetch before the final assistant
         // line is durably readable in the JSONL transcript. Beat that race with a
         // short bounded reconcile so the turn's "Worked for Xs" line appears
@@ -773,7 +782,8 @@ function getOrCreateEventSource(
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         invalidateMessagesThrottled(queryClient, sessionId)
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        // As in session_idle: the global stream refetches the lists, this stream echoes.
+        applySessionActivityStatus(queryClient, agentSlug, sessionId, { isActive: false, isAwaitingInput: false })
       }
       // Per-command lifecycle (runtime >= CLI 2.1.206). A started command
       // drives queued-ghost reconciliation; 'discarded' names a message that
@@ -1038,7 +1048,7 @@ function getOrCreateEventSource(
         if (isBlockingUserInputToolName(data.toolName)) {
           // The request-specific SSE event can be missed under load while the
           // streaming fallback still renders the card. Keep status sidebars in sync.
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+          invalidateAgentSessionLists(queryClient, agentSlug)
           queryClient.invalidateQueries({ queryKey: ['agents'] })
         }
       }
@@ -1279,8 +1289,8 @@ function getOrCreateEventSource(
           })
         }
       }
-      else if (data.type === 'computer_use_grab_changed') {
-        // Computer use grab state changed (icon may arrive in a follow-up event)
+      else if (data.type === 'computer_use_app_changed') {
+        // The app the agent's computer use acts in changed (icon may arrive in a follow-up event)
         if (current) {
           streamStates.set(sessionId, {
             ...current,
@@ -1288,11 +1298,6 @@ function getOrCreateEventSource(
             computerUseAppIcon: data.appIcon ?? (data.app ? current.computerUseAppIcon : null),
           })
         }
-      }
-      else if (data.type === 'session_updated') {
-        // Session metadata changed (e.g., name) - invalidate session caches
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       }
       else if (data.type === 'scheduled_task_created' || data.type === 'scheduled_task_cancelled' || data.type === 'scheduled_task_updated') {
         // A scheduled task was created, cancelled, or updated - invalidate scheduled tasks cache
@@ -1500,10 +1505,12 @@ function getOrCreateEventSource(
             activeStartTime: null,
           })
           invalidateMessagesThrottled(queryClient, sessionId)
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+          invalidateAgentSessionLists(queryClient, agentSlug)
         }
       }
-      // Note: os_notification events are handled by GlobalNotificationHandler, not here
+      // Note: os_notification events are handled by GlobalNotificationHandler, not here.
+      // So is session_updated: the server sends it to that stream too, and the
+      // handler there refreshes this session and its agent's lists.
 
       // Replay only the outcome and its text. Working indicators continue to
       // use the existing session_active/session_idle/background-task handlers.
@@ -1594,6 +1601,12 @@ function releaseEventSource(sessionId: string): void {
   }
 }
 
+/** Whether this session's stream is open, so its events keep the session's caches current. */
+export function isSessionStreamOpen(sessionId: string): boolean {
+  const es = eventSources.get(sessionId)
+  return es !== undefined && es.readyState === EventSource.OPEN
+}
+
 // Remove a peer user message once its persisted copy is visible in fetched messages
 // Consume a discarded-command uuid once MessageList has acted on it (rescued
 // the ghost's text or dropped a peer ghost). Leftover uuids are harmless —
@@ -1664,6 +1677,7 @@ export function clearBrowserActive(sessionId: string): void {
 }
 
 const EMPTY_SLASH_COMMANDS: SlashCommandInfo[] = []
+const EMPTY_READY_TOOL_USES: StreamState['streamingToolUses'] = []
 
 export interface MessageStreamValue extends StreamState {
   slashCommands: SlashCommandInfo[]
@@ -1672,6 +1686,14 @@ export interface MessageStreamValue extends StreamState {
   workflows: WorkflowRunLive[]
   isThinking: boolean
   thinkingBlocks: ThinkingBlock[]
+  /**
+   * The entries of `streamingToolUses` whose input is complete (`ready`).
+   * Derived on read, so it follows every path that clears or replaces
+   * `streamingToolUses`. Its identity changes only when that set changes, not
+   * on each tool-input delta: select it instead of `streamingToolUses` when
+   * partial input is of no interest.
+   */
+  readyStreamingToolUses: StreamState['streamingToolUses']
 }
 
 export type MessageStreamField = keyof MessageStreamValue
@@ -1684,6 +1706,7 @@ const EMPTY_MESSAGE_STREAM_VALUE: MessageStreamValue = {
   workflows: EMPTY_WORKFLOWS,
   isThinking: EMPTY_THINKING.isThinking,
   thinkingBlocks: EMPTY_THINKING.blocks,
+  readyStreamingToolUses: EMPTY_READY_TOOL_USES,
 }
 
 // The global sets are mutated in place, so reuse the previous snapshot when the contents match.
@@ -1699,10 +1722,32 @@ function snapshotIdSet(prev: ReadonlySet<string>, current: Set<string> | undefin
   return new Set(current)
 }
 
+// The reducer keeps a tool's object when another tool changes and replaces it
+// when its own input or `ready` flag does, so comparing entries by reference
+// is exact: the previous snapshot is reused until a tool becomes ready, a
+// ready tool is replaced, or the list is cleared.
+function snapshotReadyToolUses(
+  prev: StreamState['streamingToolUses'],
+  tools: StreamState['streamingToolUses'],
+): StreamState['streamingToolUses'] {
+  let count = 0
+  let identical = true
+  for (const tool of tools) {
+    if (!tool.ready) continue
+    if (prev[count] !== tool) identical = false
+    count++
+  }
+  if (identical && count === prev.length) return prev
+  if (count === 0) return EMPTY_READY_TOOL_USES
+  return tools.filter((tool) => tool.ready)
+}
+
 function readMessageStream(sessionId: string, prev: MessageStreamValue): MessageStreamValue {
   const thinking = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+  const state = streamStates.get(sessionId) ?? prev
   return {
-    ...(streamStates.get(sessionId) ?? prev),
+    ...state,
+    readyStreamingToolUses: snapshotReadyToolUses(prev.readyStreamingToolUses, state.streamingToolUses),
     slashCommands: sessionSlashCommands.get(sessionId) ?? EMPTY_SLASH_COMMANDS,
     autoApprovedScriptRunIds: snapshotIdSet(prev.autoApprovedScriptRunIds, sessionAutoApprovedScriptRunIds.get(sessionId)),
     autoApprovedComputerUseIds: snapshotIdSet(prev.autoApprovedComputerUseIds, sessionAutoApprovedComputerUseIds.get(sessionId)),

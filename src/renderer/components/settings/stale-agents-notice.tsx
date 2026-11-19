@@ -21,7 +21,7 @@ export function StaleAgentsNotice() {
       {rows.length > 0 && (
         <Collapsible open={expanded} onOpenChange={setExpanded}>
           {/* The settings tabs' inline notice block (llm-tab's yellow one). */}
-          <div className="rounded-md bg-yellow-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-yellow-700 dark:text-yellow-500/90">
+          <div className="rounded-item bg-yellow-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-yellow-700 dark:text-yellow-500/90">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
               <p className="min-w-0 flex-1">

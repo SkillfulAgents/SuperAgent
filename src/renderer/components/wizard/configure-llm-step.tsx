@@ -106,7 +106,7 @@ export function ConfigureLLMStep({ onCanProceedChange }: ConfigureLLMStepProps) 
           return (
             <div
               key={option.id}
-              className={`rounded-lg border text-left transition-colors ${
+              className={`rounded-card border text-left transition-colors ${
                 isSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
               }`}
             >
@@ -162,7 +162,7 @@ export function ConfigureLLMStep({ onCanProceedChange }: ConfigureLLMStepProps) 
                         </button>
 
                         {showInstructions === option.id && (
-                          <div className="mt-2 p-2.5 rounded-md border bg-muted/30">
+                          <div className="mt-2 p-2.5 rounded-card border bg-muted/30">
                             <ol className="list-decimal list-inside space-y-1 text-xs text-muted-foreground">
                               {instructions.steps.map((step, i) => (
                                 <li key={i}>

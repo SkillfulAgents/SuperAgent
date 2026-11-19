@@ -8,6 +8,7 @@
  * state for route/durability cases where creation itself is not under test.
  */
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
+import type { Query } from '@tanstack/react-query'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
@@ -19,6 +20,8 @@ import {
   type TestAgent,
   type TestSession,
 } from '../helpers/agents'
+import { openHomeSection, openHomeAdvancedSettings } from '../helpers/agent-home'
+import { isWebKitTeardownFetchError } from '../helpers/page-errors'
 
 interface TestConnectedAccount {
   id: string
@@ -41,7 +44,9 @@ function uniqueName(testInfo: TestInfo, label: string) {
 
 function collectPageErrors(page: Page) {
   const errors: string[] = []
-  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('pageerror', (error) => {
+    if (!isWebKitTeardownFetchError(page, error)) errors.push(error.message)
+  })
   return errors
 }
 
@@ -165,6 +170,34 @@ test.describe('Navigation - discriminated AgentView', () => {
 
       await page.locator('[data-testid="home-button"]').click()
       await expectGlobalHome(page)
+    } catch (error) {
+      // Inspect only after a failure: importing this dev-server module during
+      // setup could warm route chunks and change the rename/navigation race.
+      const snapshot = await page.evaluate(async () => {
+        const routerModule = '/router/index.tsx'
+        const { router } = await import(routerModule)
+        const describeAgent = (data: unknown) => {
+          if (!data || typeof data !== 'object') return null
+          const row = data as Record<string, unknown>
+          return { slug: row.slug, displaySlug: row.displaySlug, name: row.name }
+        }
+        return {
+          url: location.href,
+          breadcrumb: document.querySelector('[data-testid="agent-breadcrumb"]')?.textContent,
+          queries: router.options.context.queryClient.getQueryCache().findAll({ queryKey: ['agents'] }).map((query: Query) => ({
+            key: query.queryKey,
+            data: Array.isArray(query.state.data) ? query.state.data.map(describeAgent) : describeAgent(query.state.data),
+            fetchStatus: query.state.fetchStatus,
+            isInvalidated: query.state.isInvalidated,
+            dataUpdatedAt: query.state.dataUpdatedAt,
+            observers: query.getObserversCount(),
+          })),
+        }
+      }).catch((diagnosticError: unknown) => ({ diagnosticError: String(diagnosticError) }))
+      await testInfo.attach('agent-name-cache-after-failure', {
+        body: JSON.stringify(snapshot, null, 2), contentType: 'application/json',
+      }).catch(() => undefined)
+      throw error
     } finally {
       await cleanupAgents(request, [createdAgent])
     }
@@ -176,6 +209,7 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -193,6 +227,7 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeSection(page, 'Connections')
       await page.locator('[data-testid="home-connections-open-page"]').click()
       await expect(page).toHaveURL(/\/connections$/)
       await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
@@ -226,17 +261,20 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
       await page.locator('[data-testid="api-logs-back-button"]').click()
+      await openHomeSection(page, 'Connections')
       await page.locator('[data-testid="home-connections-open-page"]').click()
       await expect(page).toHaveURL(/\/connections$/)
       await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
       await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
 
       await page.locator('[data-testid="connections-back-button"]').click()
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -253,6 +291,7 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -261,6 +300,7 @@ test.describe('Navigation - discriminated AgentView', () => {
       await page.locator('[data-testid="api-logs-back-button"]').click()
       await expectAgentHome(page, agent)
 
+      await openHomeSection(page, 'Connections')
       await page.locator('[data-testid="home-connections-open-page"]').click()
       await expect(page).toHaveURL(/\/connections$/)
       await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
@@ -305,6 +345,7 @@ test.describe('Navigation - discriminated AgentView', () => {
 
       await agentPage.selectAgent(agentB.name)
       await expectAgentHome(page, agentB)
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -438,6 +479,9 @@ test.describe('Navigation - discriminated AgentView', () => {
 
     try {
       await page.goto(`/agents/${agent.slug}`)
+      // A document load can finish before React and the route loader mount.
+      // Reload the loaded agent view, rather than racing initial hydration.
+      await expectAgentHome(page, agent)
       await appPage.reload()
       await expectAgentHome(page, agent)
       await expect(page.locator('[data-testid^="agent-item-"]', { hasText: agent.name })).toHaveAttribute('data-active', 'true')
@@ -463,18 +507,18 @@ test.describe('Navigation - discriminated AgentView', () => {
     }
   })
 
-  test('UI: Notifications route survives reload and Back leaves it', async ({ page }) => {
+  test('UI: Notifications route survives reload and Home leaves it', async ({ page }) => {
     await loadApp()
 
     await page.locator('[data-testid="notifications-button"]').click()
     await expect(page).toHaveURL(/\/notifications$/)
-    await expect(page.locator('[data-testid="notifications-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="notifications-filter-all"]')).toBeVisible()
 
     await appPage.reload()
     await expect(page).toHaveURL(/\/notifications$/)
-    await expect(page.locator('[data-testid="notifications-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="notifications-filter-all"]')).toBeVisible()
 
-    await page.locator('[data-testid="notifications-back-button"]').click()
+    await page.locator('[data-testid="home-button"]').click()
     await expect(page).not.toHaveURL(/\/notifications/)
   })
 

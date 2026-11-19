@@ -2,13 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({ token: 'platform-token' as string | null, summarize: vi.fn() }))
 vi.mock('../config/settings', () => ({
-  getSettings: () => ({ apiKeys: { openaiApiKey: 'byok-key-must-not-be-used' } }),
-  getEffectiveModels: () => ({ summarizerModel: 'summary-model' }),
+  getSettings: async () => ({ apiKeys: { openaiApiKey: 'byok-key-must-not-be-used' } }),
 }))
-vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: () => mocks.token }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({ platformAccessTokenFrom: () => mocks.token }))
 vi.mock('@shared/lib/platform-auth/config', () => ({ getPlatformProxyBaseUrl: () => 'https://proxy.test' }))
-vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: () => ({}), createSummarizerText: mocks.summarize }))
-vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: () => 'summary-model' }))
+vi.mock('../llm-provider/helpers', () => ({ configuredLlmClientFrom: async () => ({ client: {}, model: 'summary-model' }), createSummarizerText: mocks.summarize }))
 import { PlatformVoiceProvider } from './platform-provider'
 
 const provider = new PlatformVoiceProvider()
@@ -22,13 +20,13 @@ function lastCall() {
 }
 
 describe('PlatformVoiceProvider', () => {
-  it('is configured only by the platform token, never by a stored OpenAI key', () => {
-    expect(provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
-    expect(provider.getEffectiveApiKey()).toBe('platform-token')
+  it('is configured only by the platform token, never by a stored OpenAI key', async () => {
+    expect(await provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+    expect(await provider.getEffectiveApiKey()).toBe('platform-token')
     expect(provider.getSttProtocol()).toBe('openai-realtime')
     mocks.token = null
-    expect(provider.getApiKeyStatus()).toEqual({ isConfigured: false, source: 'none' })
-    expect(provider.getEffectiveApiKey()).toBeUndefined()
+    expect(await provider.getApiKeyStatus()).toEqual({ isConfigured: false, source: 'none' })
+    expect(await provider.getEffectiveApiKey()).toBeUndefined()
   })
 
   it('routes speech synthesis through the proxy OpenAI lane with the platform bearer', async () => {

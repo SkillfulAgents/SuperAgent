@@ -129,6 +129,12 @@ export interface CatalogEditorProps {
   disabled?: boolean
   /** Callout at the top of the expanded catalog, e.g. how prices apply to a subscription. */
   pricingNote?: string
+  /**
+   * The provider decides which custom models exist (Ollama: what its server has
+   * installed). They can be switched off here but not edited or removed, and
+   * adding one is the provider's own flow rather than the custom model form.
+   */
+  managedModels?: { description: string; sectionLabel: string; priceText: string; addLabel: string; onAdd: () => void }
   onChange: (change: CatalogChange) => void
 }
 
@@ -154,6 +160,7 @@ export function CatalogEditor({
   supportsModelSearch = false,
   disabled,
   pricingNote,
+  managedModels,
   onChange,
 }: CatalogEditorProps) {
   const overrides = useMemo(
@@ -280,7 +287,7 @@ export function CatalogEditor({
           <span className="flex flex-col">
             <span className="text-xs font-medium">Model catalog</span>
             <span className="text-[11px] text-muted-foreground">
-              Disable models or add your own. Prices are shared across providers.
+              {managedModels?.description ?? 'Disable models or add your own. Prices are shared across providers.'}
             </span>
           </span>
           <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
@@ -302,10 +309,10 @@ export function CatalogEditor({
               variant="outline"
               data-testid="catalog-open-add-custom-model"
               disabled={disabled}
-              onClick={() => setCustomDialog({ mode: 'add' })}
+              onClick={managedModels ? managedModels.onAdd : () => setCustomDialog({ mode: 'add' })}
             >
               <Plus className="h-3.5 w-3.5" />
-              Add model
+              {managedModels?.addLabel ?? 'Add model'}
             </Button>
           </div>
 
@@ -336,18 +343,18 @@ export function CatalogEditor({
 
             {customModels.length > 0 && (
               <div className="py-2">
-                <div className="px-4 pb-1 text-[11px] font-medium text-muted-foreground">Custom</div>
+                <div className="px-4 pb-1 text-[11px] font-medium text-muted-foreground">{managedModels?.sectionLabel ?? 'Custom'}</div>
                 <div className="divide-y divide-border/30">
                   {customModels.map((model) => (
                     <CatalogRow
                       key={model.id}
                       model={model}
-                      priceText={priceLabel(model.pricing)}
+                      priceText={managedModels?.priceText ?? priceLabel(model.pricing)}
                       enabled={overrideById.get(model.id)?.disabled !== true}
                       disabled={disabled}
                       onToggle={(enabled) => updateCustomDisabled(model, enabled)}
-                      onCustomize={() => setCustomDialog({ mode: 'edit', model })}
-                      onRemove={() => setModelPendingDeletion(model)}
+                      onCustomize={managedModels ? undefined : () => setCustomDialog({ mode: 'edit', model })}
+                      onRemove={managedModels ? undefined : () => setModelPendingDeletion(model)}
                     />
                   ))}
                 </div>

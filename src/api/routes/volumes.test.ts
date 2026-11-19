@@ -26,7 +26,7 @@ import type { BaseMountableVolume, VolumeFile } from '@shared/lib/volumes/base-m
 import volumes from './volumes'
 
 function volumeReading(file: VolumeFile): BaseMountableVolume<unknown> {
-  return { id: 'stand-in', name: 'stand-in', type: 'local', cacheMode: 'local', caseInsensitive: false, ignoreSize: false, readOnly: false, dirCacheSeconds: null, config: null, mountPath: '/mounts/stand-in', hostPath: null, sourceLabel: null, attention: null, list: vi.fn(), stat: vi.fn(), health: vi.fn(), whenReady: vi.fn(async () => {}), remounted: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
+  return { id: 'stand-in', name: 'stand-in', type: 'local', cacheMode: 'local', caseInsensitive: false, ignoreSize: false, readOnly: false, dirCacheSeconds: null, config: null, mountPath: '/mounts/stand-in', hostPath: null, sourceLabel: null, attention: null, agentNote: null, list: vi.fn(), stat: vi.fn(), health: vi.fn(), whenReady: vi.fn(async () => {}), remounted: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
 }
 
 function request(url: string, init: RequestInit & { headers?: Record<string, string> } = {}) {
@@ -68,7 +68,7 @@ describe('/api/volumes', () => {
   })
 
   it('403s a row of the agent of a type this version does not know', async () => {
-    await handle.db.insert(volumeDefinitions).values({ id: 'drive', name: 'drive', type: 'not-a-type', config: '{}', createdAt: new Date(), updatedAt: new Date() }).run()
+    await handle.db.insert(volumeDefinitions).values({ id: 'drive', name: 'drive', visibility: 'public', type: 'not-a-type', config: '{}', createdAt: new Date(), updatedAt: new Date() }).run()
     await handle.db.insert(agentVolumes).values({ id: 'drive', name: 'drive', volumeId: 'drive', agentSlug: 'agent-a', createdAt: new Date() }).run()
     expect((await request('drive/', { method: 'PROPFIND', headers: { Depth: '0' } })).status).toBe(403)
   })
@@ -176,7 +176,7 @@ describe('/api/volumes', () => {
   })
 
   it('serves only reads on a read-only mount, and changes nothing', async () => {
-    await setMountReadOnly('agent-a', volumeId, true)
+    await setMountReadOnly('agent-a', volumeId, true, { userId: null, admin: true })
     expect((await request(volumeId, { method: 'PROPFIND', headers: { Depth: '1' } })).status).toBe(207)
     expect(await (await request(`${volumeId}/a.txt`)).text()).toBe('hello world')
     expect((await request(`${volumeId}/a.txt`, { method: 'HEAD' })).status).toBe(200)

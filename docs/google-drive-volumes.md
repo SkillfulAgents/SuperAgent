@@ -96,8 +96,10 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   a suggestion. Drive's version history keeps the Doc as it was before the save.
   Uploads through 512 KiB use one `multipart/related` content request, including
   empty files, overwrites and Google-file imports. Metadata and bytes travel
-  together through Composio as opaque binary data. Larger uploads use resumable
-  512 KiB chunks, keeping the base64 request below the platform limit. Cancellation
+  together through Composio as opaque binary data, and 512 KiB keeps the base64
+  request below the platform limit. Larger uploads open a resumable session through
+  the connection, then send 16 MiB chunks straight to the session link, which carries
+  its own authorization and must be on www.googleapis.com. Cancellation
   stops body reads/staging and is checked again before publication.
 - A request Drive refuses for a rate limit was not applied, so any request, change
   or read, uses the same account-wide cooldown and bounded pacer as Dropbox:

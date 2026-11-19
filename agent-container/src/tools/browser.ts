@@ -63,13 +63,13 @@ function getTabWarning(): string {
 
 export { stripAnsi, extractScreenshotPath }
 
-async function readScreenshotAsBase64(filePath: string): Promise<{ data: string; mimeType: string } | null> {
+async function readScreenshotAsBase64(filePath: string, cssScale: unknown): Promise<{ data: string; mimeType: string } | null> {
   try {
     const buffer = await readFile(filePath.trim())
     const mimeType = filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')
       ? 'image/jpeg'
       : 'image/png'
-    const resized = await resizeScreenshot(buffer, mimeType)
+    const resized = await resizeScreenshot(buffer, mimeType, typeof cssScale === 'number' ? cssScale : 1)
     return { data: resized.data.toString('base64'), mimeType: resized.mimeType }
   } catch {
     return null
@@ -459,7 +459,7 @@ When no pixel has changed since the last screenshot of this tab (same full/viewp
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
 
     if (filePath) {
-      const image = await readScreenshotAsBase64(filePath)
+      const image = await readScreenshotAsBase64(filePath, data.cssScale)
       if (image) {
         content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
       }
@@ -638,12 +638,13 @@ const browserEvalTool = tool(
     const data = result.data as Record<string, unknown>
     const output = data.output ? String(data.output) : ''
     let text = output || '(no output)'
-    // A statement body runs inside an async IIFE, and the CLI prints `null`
-    // for a body that completes without `return` (undefined → JSON null).
+    // A statement body runs inside an async IIFE, and the CLI prints
+    // `undefined` for a body that completes without `return` (0.41.1+; it
+    // printed `null` before, which a body that returned null also printed).
     // The note is only informative in that case; on any other output it was
     // a 100% false positive in the mined sessions (theme 4).
-    if (data.wrapped && (output === '' || output === 'null')) {
-      text += '\n(note: a statement body that does not `return` also yields null — add `return` if you expected a value back)'
+    if (data.wrapped && (output === '' || output === 'undefined')) {
+      text += '\n(note: a statement body that does not `return` yields undefined — add `return` if you expected a value back)'
     }
     text += getTabWarning()
     return {
@@ -779,7 +780,7 @@ const browserGetStateTool = tool(
       if (!filePath) {
         screenshotFailure = 'no screenshot path returned'
       } else {
-        const image = await readScreenshotAsBase64(filePath)
+        const image = await readScreenshotAsBase64(filePath, data.cssScale)
         if (image) {
           content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
           parts.push(`**Screenshot:** ${filePath}`)

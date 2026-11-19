@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test'
+import { isWebKitTeardownFetchError } from '../helpers/page-errors'
 import { AppPage } from '../pages/app.page'
 import { SessionPage } from '../pages/session.page'
 
@@ -80,7 +81,9 @@ test.describe('Radix mobile interaction boundaries', () => {
   test('long press keeps navigation local, resets its submenu, and leaves ordinary taps working', async ({ page, request, browserName }) => {
     const agent = await createAgent(request, `Touch menu ${Date.now()}`)
     const pageErrors: string[] = []
-    page.on('pageerror', error => pageErrors.push(error.message))
+    page.on('pageerror', error => {
+      if (!isWebKitTeardownFetchError(page, error)) pageErrors.push(error.message)
+    })
     try {
       const sidebar = await openSidebar(page)
       const link = sidebar.getByTestId(`agent-item-${agent.slug}`)

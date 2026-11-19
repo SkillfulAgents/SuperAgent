@@ -1,6 +1,7 @@
-import { sql } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
+import { NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-filters'
 
 // =============================================================================
 // Better Auth tables (user, session, account, verification)
@@ -28,6 +29,16 @@ export const user = sqliteTable('user', {
   banReason: text('ban_reason'),
   banExpires: integer('ban_expires', { mode: 'timestamp_ms' }),
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
+  // Team directories (src/shared/lib/team-directory/invited-users.ts): someone
+  // shared with or mentioned before joining is a real row with status
+  // 'invited' and no account, so access lists, mentions and notifications
+  // keep keying on user.id. Signing in claims it (auth/claim-invited-user.ts).
+  status: text('status', { enum: ['active', 'invited'] }).notNull().default('active'),
+  invitedByUserId: text('invited_by_user_id'), // Not an FK: the inviter may be removed first
+  // The directory person the row was made for.
+  directoryProvider: text('directory_provider'),
+  directoryTenantId: text('directory_tenant_id'),
+  directoryRemoteId: text('directory_remote_id'),
 }, (table) => ({
   avatarOverrideIdx: index('user_avatar_override_idx').on(table.avatarOverride),
 }))
@@ -50,6 +61,22 @@ export const llmConnections = sqliteTable('llm_connections', {
   ownerIdx: index('llm_connections_owner_idx').on(table.userId),
   platformUnique: uniqueIndex('llm_connections_platform_unique').on(table.provider).where(sql`provider = 'platform'`),
 }))
+
+/**
+ * The columns of stored runtime options (`StoredRuntimeOptions` in
+ * `@shared/lib/container/runtime-options`): a pick that overrides the agent's
+ * defaults, each null where nothing was picked. A table that keeps one spreads
+ * this in, so a new knob reaches them all. Deleting a connection drops the
+ * pick of it back to the default.
+ */
+export function runtimeOptionsColumns() {
+  return {
+    llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+    model: text('model'),
+    effort: text('effort'),
+    speed: text('speed'),
+  }
+}
 
 /**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
@@ -157,6 +184,19 @@ export const mobilePairingToken = sqliteTable('mobile_pairing_token', {
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   expiresAtIdx: index('mobile_pairing_token_expires_at_idx').on(table.expiresAt),
+}))
+
+
+// What Better Auth reads together: a session or an account with its user, and a user with its
+// accounts. With these, its adapter sends one query for each instead of two (`joins` in auth/index.ts).
+export const authSessionRelations = relations(authSession, ({ one }) => ({
+  user: one(user, { fields: [authSession.userId], references: [user.id] }),
+}))
+export const authAccountRelations = relations(authAccount, ({ one }) => ({
+  user: one(user, { fields: [authAccount.userId], references: [user.id] }),
+}))
+export const userRelations = relations(user, ({ many }) => ({
+  accounts: many(authAccount),
 }))
 
 export const verification = sqliteTable('verification', {
@@ -270,7 +310,7 @@ export const agentBrowserAccounts = sqliteTable('agent_browser_accounts', {
 export const browserAccountSessions = sqliteTable('browser_account_sessions', {
   id: text('id').primaryKey(),
   accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
-  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform'] }).notNull(),
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform', 'steel', 'tabtender'] }).notNull(),
   bundle: text('bundle').notNull(), // Sealed JSON (vault-crypto, sessionBundleSchema)
   version: integer('version').notNull().default(1), // Bumped on every capture
   capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
@@ -306,7 +346,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   isRecurring: integer('is_recurring', { mode: 'boolean' }).notNull().default(false),
   executionCount: integer('execution_count').notNull().default(0),
 
-  // Overlap guard (recurring tasks): consecutive poll cycles this task was held
+  // Overlap guard (recurring tasks): consecutive looks this task was held
   // because its previous run was still busy, and when it was last held. Reset on
   // any fire (scheduled or manual) and on a re-anchor (resume/reset); kept across
   // failed fire attempts. Written for skip observability — no reader yet.
@@ -325,10 +365,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   timezone: text('timezone'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -342,12 +379,16 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   pendingWakePerSession: uniqueIndex('scheduled_tasks_pending_wake_unique')
     .on(table.resumeSessionId)
     .where(sql`status = 'pending' AND resume_session_id IS NOT NULL`),
+  // Every per-agent read (the schedule list, Home's pending tasks, automation
+  // history, agent cleanup) names the agent and most name a status. Rows are
+  // never pruned, so without this each of them scans every agent's history.
+  agentStatusIdx: index('scheduled_tasks_agent_slug_status_idx').on(table.agentSlug, table.status),
 }))
 
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration', 'session_mention'] }).notNull(),
+  type: text('type', { enum: NOTIFICATION_TYPES }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
@@ -370,7 +411,14 @@ export const notifications = sqliteTable('notifications', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
-  agentSlugIsReadIdx: index('notifications_agent_slug_is_read_idx').on(table.agentSlug, table.isRead),
+  // The polled badge and tab counts group a viewer's whole history by type, and
+  // the unread dots read session ids: the columns after (agent_slug, is_read)
+  // let both be answered from the index alone, with no table lookup per row.
+  // Keep the (agent_slug, is_read) prefix; every unread query seeks on it.
+  agentReadTypeIdx: index('notifications_agent_read_type_idx').on(table.agentSlug, table.isRead, table.type, table.recipientUserId, table.sessionId),
+  // The list is "my agents' rows, newest first, 50 at a time": with each
+  // agent's rows in time order the read stops early instead of sorting them all.
+  agentCreatedAtIdx: index('notifications_agent_created_at_idx').on(table.agentSlug, table.createdAt),
   sessionIdIdx: index('notifications_session_id_idx').on(table.sessionId),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
   // One mention row per person per message, so a retried insert is a no-op.
@@ -591,6 +639,19 @@ export const dataMigrations = sqliteTable('data_migrations', {
   appliedAt: integer('applied_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// App records - the deployment's small host records that used to be files in
+// the data dir (settings, tenant id, auth secret, host container tokens, …):
+// one JSON value per key, validated by the key's Zod schema on every read and
+// write (see app-records/). `revision` is 1 on insert and goes up by one on
+// every write, so a writer compares-and-sets against the revision it read
+// instead of holding a transaction open.
+export const appRecords = sqliteTable('app_records', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  revision: integer('revision').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
 // Agents - which agents exist and what they are called. The row is the
 // authority for name and description; the agent's AGENTS.md keeps a
 // frontmatter projection of them that the host writes on create and rename.
@@ -611,10 +672,35 @@ export const agents = sqliteTable('agents', {
   workspaceHandle: text('workspace_handle'),
 })
 
-// Reusable sources. A NULL owner makes a volume available to every user.
+// Agent sessions - the session index of an agent whose actor runs in this
+// process: one row per session, holding what the app keeps about it (name,
+// star, how it was started; null for a transcript nobody registered) and its
+// transcript as last seen (null until one appears). It is the local actor's
+// own storage, behind `SessionIndexStorage`: an actor that runs elsewhere
+// keeps its index elsewhere, so nothing but
+// `agent-actor/db-session-index-storage.ts` reads or writes this table (the
+// factory reset empties it with every other one), and no other table refers
+// to it. No FK to `agents`: a rebuild of that table
+// would cascade into every session's name.
+export const agentSessions = sqliteTable('agent_sessions', {
+  agentSlug: text('agent_slug').notNull(),
+  sessionId: text('session_id').notNull(),
+  // JSON, validated by `sessionMetadataSchema` on every read and write.
+  metadata: text('metadata'),
+  // File times keep their sub-millisecond part, hence `real`.
+  transcriptMtimeMs: real('transcript_mtime_ms'),
+  transcriptBirthtimeMs: real('transcript_birthtime_ms'),
+  transcriptSize: integer('transcript_size'),
+}, (table) => ({
+  // A session id is unique only within its agent.
+  pk: primaryKey({ columns: [table.agentSlug, table.sessionId] }),
+}))
+
+// The creator seeds the first ACL entry on insert. Subsequent access comes from visibility and volume_acl.
 export const volumeDefinitions = sqliteTable('volume_definitions', {
   id: text('id').primaryKey(),
-  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  createdBy: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+  visibility: text('visibility', { enum: ['public', 'private'] }).notNull(),
   name: text('name').notNull(),
   type: text('type').notNull(),
   config: text('config').notNull(),
@@ -622,7 +708,25 @@ export const volumeDefinitions = sqliteTable('volume_definitions', {
   globalAccess: text('global_access', { enum: ['read', 'write'] }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
-}, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
+}, table => ({
+  creatorIdx: index('volume_definitions_creator_idx').on(table.createdBy),
+  visibilityCheck: check('volume_visibility_check', sql`${table.visibility} in ('public', 'private') and (${table.globalAccess} is null or ${table.visibility} = 'public')`),
+}))
+
+// A NULL principal represents the workspace on old public drives with no recorded creator
+// and in single-user mode. Its managers are workspace admins. Only public drives can have one.
+export const volumeAcl = sqliteTable('volume_acl', {
+  id: text('id').primaryKey(),
+  volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  role: text('role', { enum: ['owner'] }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  memberUnique: uniqueIndex('volume_acl_member_unique').on(table.volumeId, table.userId),
+  workspaceUnique: uniqueIndex('volume_acl_workspace_unique').on(table.volumeId).where(sql`${table.userId} is null`),
+  userIdx: index('volume_acl_user_idx').on(table.userId),
+  roleCheck: check('volume_acl_role_check', sql`${table.role} = 'owner'`),
+}))
 
 // An attachment owns its mount name and WebDAV identity; renaming a definition
 // never changes a running agent's /mounts/<name> path.
@@ -661,25 +765,30 @@ export const userSettings = sqliteTable('user_settings', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
-// Message author attribution - tracks who sent each user message (auth mode only)
-// Who sent a user message: a person in the app (auth mode), or an agent
-// integration, whose row also carries the card the app draws for it (JSON,
-// integrationMessageDisplaySchema). Host-written only. An integration row has
-// no foreign key: its name snapshot outlives a rename or deletion.
+// Host-recorded sender of a transcript message. An agent's slug and an
+// integration's card survive deletion of the sender. For an agent call the
+// payer is a separate reference that can be cleared when the account is deleted.
 export const messageAuthor = sqliteTable('message_author', {
-  id: text('id').primaryKey(), // Same UUID passed to the SDK and written into JSONL
+  id: text('id').notNull(), // Transcript UUID; a queued prompt keeps it in a fork.
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
   integrationId: text('integration_id'),
   display: text('display'),
+  authorAgentSlug: text('author_agent_slug'),
+  billedUserId: text('billed_user_id').references(() => user.id, { onDelete: 'set null' }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' })
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .notNull(),
 }, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.sessionId, table.id] }),
   sessionIdx: index('message_author_session_idx').on(table.sessionId),
-  // Exactly one author; an integration author always has its card.
-  authorCheck: check('message_author_author_check', sql`(${table.userId} is null) <> (${table.integrationId} is null) and (${table.integrationId} is null) = (${table.display} is null)`),
+  // A retried integration delivery can move to a replacement session.
+  integrationDelivery: uniqueIndex('message_author_integration_delivery_idx').on(table.id).where(sql`${table.integrationId} is not null`),
+  authorCheck: check('message_author_author_check', sql`
+    (${table.userId} is not null) + (${table.integrationId} is not null) + (${table.authorAgentSlug} is not null) = 1
+    and (${table.integrationId} is null) = (${table.display} is null)
+    and (${table.billedUserId} is null or ${table.authorAgentSlug} is not null)`),
 }))
 
 // API scope policies - per-account scope-level access policies
@@ -818,10 +927,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -847,10 +953,8 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'), // Claude model override; null = use default
-  effort: text('effort'), // Effort level override; null = use default
-  speed: text('speed'), // Speed level override; null = use default
+  // Runtime options (override the defaults when set; null = use default)
+  ...runtimeOptionsColumns(),
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
@@ -863,6 +967,12 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+
+  // Moves on every write to the row, so a copy read from it says which write it
+  // saw. The trigger `chat_integrations_version_bump` (migration 0062) adds 1 to
+  // any update that does not raise it itself; a writer that needs the version it
+  // produced sets `version + 1` and reads it back with RETURNING.
+  version: integer('version').notNull().default(0),
 }, (table) => ({
   agentSlugIdx: index('chat_integrations_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('chat_integrations_status_idx').on(table.status),
@@ -903,7 +1013,12 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
-  integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
+  // Every inbound chat message looks up its chat's session, and archived
+  // sessions pile up under an integration: seek to the one chat's rows. The
+  // integration_id prefix still serves the per-integration reads and the FK cascade.
+  integrationChatIdx: index('chat_integration_sessions_integration_chat_idx').on(table.integrationId, table.externalChatId),
+  // A session that starts a turn finds its chat by this.
+  sessionIdIdx: index('chat_integration_sessions_session_id_idx').on(table.sessionId),
 }))
 
 // Meetings an agent was asked to attend (meeting integration family). The
@@ -990,7 +1105,10 @@ export const auditLog = sqliteTable('audit_log', {
   details: text('details'), // JSON
 }, (table) => ({
   createdAtIdx: index('audit_log_created_at_idx').on(table.createdAt),
-  objectIdx: index('audit_log_object_idx').on(table.object),
+  // "This kind of object, newest first" (the audit page's filter) and "this
+  // kind within the last day" (the vault's fill-rate check) both walk it in
+  // order, with no sort and without reading the object's older history.
+  objectCreatedAtIdx: index('audit_log_object_created_at_idx').on(table.object, table.createdAt),
   userIdIdx: index('audit_log_user_id_idx').on(table.userId),
 }))
 
@@ -1019,10 +1137,7 @@ export const todos = sqliteTable('todos', {
   // brief. Never set together with agentSlug: the start assigns the new agent.
   newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
   // What to start it on, where the person picked over the agent's defaults.
-  model: text('model'),
-  llmProviderId: text('llm_provider_id'),
-  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
+  ...runtimeOptionsColumns(),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that
@@ -1049,6 +1164,43 @@ export const todos = sqliteTable('todos', {
   // and only started work has one.
   sessionCheck: check('todos_session_check', sql`${table.sessionId} is null or (${table.agentSlug} is not null and ${table.status} <> 'draft')`),
 }))
+
+/**
+ * Team directories — a workspace's people as another system lists them
+ * (src/shared/lib/team-directory/). One row per connected workspace; the
+ * people themselves are never stored here, only cached in AppState.
+ */
+export const teamDirectories = sqliteTable('team_directories', {
+  id: text('id').primaryKey(),
+  provider: text('provider').notNull(), // A registered provider id, e.g. 'slack'
+  tenantId: text('tenant_id').notNull(), // The provider's workspace id (Slack team or enterprise)
+  tenantName: text('tenant_name').notNull(),
+  credentials: text('credentials').notNull(), // Sealed JSON (team-directory/credentials.ts)
+  // Bumped whenever the credentials change: cached listings are keyed by it,
+  // and a status write from a listing made with older credentials is dropped.
+  revision: integer('revision').notNull().default(1),
+  status: text('status', { enum: ['active', 'error'] }).notNull().default('active'),
+  errorMessage: text('error_message'),
+  createdByUserId: text('created_by_user_id').references(() => user.id, { onDelete: 'set null' }), // Null in local mode
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  // Creating agents' own apps (team-directory/provisioning.ts), for a provider
+  // that can: credentials apart from the directory's own, because they rotate
+  // (Slack's app configuration token, every 12 hours) and the listing cache
+  // must not move with them. Null until an admin adds them.
+  provisioningCredentials: text('provisioning_credentials'), // Sealed JSON
+  // Bumped on every write of the credentials: a rotation saves only over the pair it rotated.
+  provisioningRevision: integer('provisioning_revision').notNull().default(0),
+  provisioningStatus: text('provisioning_status', { enum: ['active', 'needs_reconnect'] }),
+  provisioningError: text('provisioning_error'),
+  // The directory's own app when Gamut created it from the provisioning
+  // credentials (team-directory/directory-app.ts), deleted with the directory.
+  // Null when an admin made the app by hand.
+  directoryApp: text('directory_app'), // Sealed JSON
+}, (table) => ({
+  providerTenantUnique: uniqueIndex('team_directories_provider_tenant_unique').on(table.provider, table.tenantId),
+}))
+export type TeamDirectoryRow = typeof teamDirectories.$inferSelect
 
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect

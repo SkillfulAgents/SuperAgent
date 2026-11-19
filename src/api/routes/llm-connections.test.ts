@@ -1,6 +1,7 @@
 import { PlatformLlmProvider } from '@shared/lib/llm-provider/platform-provider'
 import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
 import { BaseLlmProvider } from '@shared/lib/llm-provider/base-llm-provider'
+import { OllamaLlmProvider } from '@shared/lib/llm-provider/ollama-provider'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { Hono, type MiddlewareHandler } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -432,6 +433,30 @@ it('binds OAuth grants to the initiating owner and never returns subscription cr
   expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
 })
 
+it('lets only the user who started a sign-in cancel it, and refuses its save afterwards', async () => {
+  const login = await (await request('/oauth/grok/start', 'POST', { userId: 'alice' }, 'alice')).json()
+  expect(await (await request(`/oauth/${login.id}`, 'DELETE', undefined, 'bob')).json()).toEqual({ cancelled: false })
+  expect(await (await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')).json()).toEqual({ status: 'connected', accountLabel: 'Alice Grok' })
+  expect(await (await request(`/oauth/${login.id}`, 'DELETE', undefined, 'alice')).json()).toEqual({ cancelled: true })
+  const polled = await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')
+  expect(polled.status).toBe(400)
+  expect(await polled.json()).toEqual({ error: 'Sign-in expired. Start again.' })
+  const saved = await request('', 'POST', { name: 'Grok', provider: 'grok-subscription', userId: 'alice', oauthLoginId: login.id, config: {} }, 'alice')
+  expect(saved.status).toBe(400)
+})
+
+it('hands a sign-in back when its save fails, so a corrected save can use it', async () => {
+  const login = await (await request('/oauth/grok/start', 'POST', { userId: 'alice' }, 'alice')).json()
+  await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')
+  const draft = { name: 'Grok', provider: 'grok-subscription', userId: 'alice', oauthLoginId: login.id, config: {} }
+  const insert = state.db!.insert.bind(state.db)
+  const failing = vi.spyOn(state.db!, 'insert').mockImplementationOnce(() => { throw new Error('Database is busy') })
+  expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
+  failing.mockImplementation(insert)
+  expect((await request('', 'POST', draft, 'alice')).status).toBe(201)
+  expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
+})
+
 it('preserves the rotated credential pair when a name edit lands during refresh', async () => {
   const { resolveConnectionCredential } = await import('@shared/lib/llm-provider/connection-credentials')
   const { connectionConfigSchema } = await import('@shared/lib/llm-provider/connection-schema')
@@ -558,5 +583,68 @@ describe('connection allowance access', () => {
       expect(res.headers.get('cache-control')).toBe('no-store')
       if (caller === 'alice') expect(await res.json()).toMatchObject({ status: 'unsupported', limits: [] })
     }
+  })
+})
+
+// Last in the file: it loads a second copy of the modules, as another process would.
+it('saves a sign-in once when two processes save it at the same time', async () => {
+  const login = await (await request('/oauth/grok/start', 'POST', { userId: 'alice' }, 'alice')).json()
+  await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')
+  const connection = { name: 'Grok', provider: 'grok-subscription', userId: 'alice', oauthLoginId: login.id, config: {} }
+  // Its own copy of the connections module, with its own save queue.
+  vi.resetModules()
+  const other = await import('@shared/lib/llm-provider/connections')
+  const saves = await Promise.allSettled([
+    (async () => {
+      const response = await request('', 'POST', connection, 'alice')
+      if (response.status !== 201) throw new Error(`${response.status}`)
+    })(),
+    other.saveConnection(connection, { userId: 'alice', admin: false }),
+  ])
+  expect(saves.filter(save => save.status === 'fulfilled')).toHaveLength(1)
+  expect(await database.db.select().from(llmConnections).where(eq(llmConnections.provider, 'grok-subscription')).all()).toHaveLength(1)
+})
+
+describe('model server routes', () => {
+  const ollama = (userId: string | null, ollamaBaseUrl = 'localhost:9000/') =>
+    ({ connection: { provider: 'ollama', userId, config: { apiKeys: { ollamaBaseUrl } } } })
+
+  it('asks the draft\'s own provider, at its normalized address, before the connection has a name', async () => {
+    const status = vi.spyOn(OllamaLlmProvider.prototype, 'getServerStatus').mockImplementation(async function (this: OllamaLlmProvider) {
+      return { state: 'running', baseUrl: (this as unknown as { baseUrl: string }).baseUrl, upgradeRequired: false, models: [] }
+    })
+    const response = await request('/server-status', 'POST', ollama(null))
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ state: 'running', baseUrl: 'http://localhost:9000' })
+    expect(status).toHaveBeenCalledOnce()
+  })
+
+  it('tells a member only that the server did not answer, not why', async () => {
+    vi.spyOn(OllamaLlmProvider.prototype, 'getServerStatus').mockResolvedValue({
+      state: 'unreachable', baseUrl: 'http://10.0.0.5:8080', error: 'http://10.0.0.5:8080/api/version returned 404',
+    })
+    const body = await (await request('/server-status', 'POST', ollama('alice', 'http://10.0.0.5:8080'), 'alice')).json() as { error: string }
+    expect(body.error).toBe('Could not reach Ollama at http://10.0.0.5:8080')
+  })
+
+  it('checks a draft like a save: a member cannot ask through a global connection', async () => {
+    expect((await request('/server-status', 'POST', ollama(null), 'alice')).status).toBe(400)
+  })
+
+  it('refuses a provider without the capability', async () => {
+    const response = await request('/server-status', 'POST', { connection: draft() })
+    expect(response.status).toBe(400)
+    expect((await response.json() as { error: string }).error).toContain('does not support')
+  })
+
+  it('lets only an admin download, and says what is wrong with a name', async () => {
+    const start = vi.spyOn(OllamaLlmProvider.prototype, 'startModelDownload')
+    expect((await request('/model-downloads', 'POST', { ...ollama('alice'), model: 'm:latest' }, 'alice')).status).toBe(403)
+    expect((await request('/model-downloads/cancel', 'POST', { ...ollama('alice'), model: 'm:latest' }, 'alice')).status).toBe(403)
+    expect(start).not.toHaveBeenCalled()
+
+    const refused = await request('/model-downloads', 'POST', { ...ollama(null), model: 'glm-5.3:cloud' })
+    expect(refused.status).toBe(400)
+    expect((await refused.json() as { error: string }).error).toContain('Cloud models')
   })
 })

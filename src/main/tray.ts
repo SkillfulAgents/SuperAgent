@@ -1,23 +1,23 @@
 import { Tray, Menu, nativeImage, BrowserWindow, app } from 'electron'
 import path from 'path'
-import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
+import type { ActivityStatus, AgentInfo } from './agent-status'
+import { agentStatusSource } from './agent-status-source'
 
 let tray: Tray | null = null
-let updateInterval: NodeJS.Timeout | null = null
+// The tray draws the shared agent list (agent-status-source.ts) and is told
+// when it changes; it neither fetches nor polls.
+let unsubscribe: (() => void) | null = null
 let mainWindowRef: BrowserWindow | null = null
-// A getter rather than a stored URL: in cloud mode the effective base is the
-// keyed proxy prefix, and which one is in force can change on a target switch.
-let getApiBaseUrlRef: (() => string) | null = null
+// Whether startup created a tray. One that startup left out (the setting was
+// off) is not created by setTrayVisible later in the session.
+let createdAtStartup = false
 
 /**
  * Create the system tray with menu
  */
-export function createTray(
-  mainWindow: BrowserWindow | null,
-  getApiBaseUrl: () => string
-): Tray {
+export function createTray(mainWindow: BrowserWindow | null): Tray {
   mainWindowRef = mainWindow
-  getApiBaseUrlRef = getApiBaseUrl
+  createdAtStartup = true
 
   // Create programmatic template icon (black circle for macOS menu bar)
   const icon = createTrayIcon()
@@ -30,13 +30,8 @@ export function createTray(
     tray.on('click', () => showWindow())
   }
 
-  // Initial menu build
-  updateTrayMenu()
-
-  // Set up polling (every 30 seconds - container status is cached server-side)
-  updateInterval = setInterval(() => {
-    updateTrayMenu()
-  }, 30000)
+  // Built from the current agent list when there is one, and on every change
+  unsubscribe = agentStatusSource.subscribe(updateTrayMenu)
 
   return tray
 }
@@ -52,10 +47,8 @@ export function updateTrayWindow(mainWindow: BrowserWindow | null): void {
  * Destroy the tray and clean up resources
  */
 export function destroyTray(): void {
-  if (updateInterval) {
-    clearInterval(updateInterval)
-    updateInterval = null
-  }
+  unsubscribe?.()
+  unsubscribe = null
   if (tray) {
     tray.destroy()
     tray = null
@@ -68,7 +61,7 @@ export function destroyTray(): void {
 export function setTrayVisible(visible: boolean): void {
   if (visible && !tray) {
     // Create tray if it doesn't exist and we have the required refs
-    if (getApiBaseUrlRef) {
+    if (createdAtStartup) {
       const icon = createTrayIcon()
       tray = new Tray(icon)
       tray.setToolTip('Gamut')
@@ -88,15 +81,9 @@ export function setTrayVisible(visible: boolean): void {
       ])
       tray.setContextMenu(initialMenu)
 
-      // Update menu in background (don't await)
-      updateTrayMenu()
-
-      // Set up polling (every 30 seconds - container status is cached server-side)
-      if (!updateInterval) {
-        updateInterval = setInterval(() => {
-          updateTrayMenu()
-        }, 30000)
-      }
+      // Replaced at once when the agent list is already known, and on every change
+      unsubscribe?.()
+      unsubscribe = agentStatusSource.subscribe(updateTrayMenu)
     }
   } else if (!visible && tray) {
     // Destroy tray
@@ -184,31 +171,10 @@ function showWindow(): void {
 }
 
 /**
- * Rebuild the tray menu now instead of waiting out the poll. Called on a target
- * switch, where the 30s interval would leave the previous Superagent's agents
- * on screen. No-op while the tray is hidden.
+ * Draw the tray context menu for an agent list
  */
-export function refreshTrayMenu(): void {
-  void updateTrayMenu()
-}
-
-/**
- * Builds overlap: the 30s poll and the target-switch refresh both come through
- * updateTrayMenu, and the base URL is sampled before the await. Without this a
- * slow response from the previous target could land after the switch refresh
- * painted the new one and overwrite it. Last started wins.
- */
-let menuGeneration = 0
-
-/**
- * Update the tray context menu with current agent data
- */
-async function updateTrayMenu(): Promise<void> {
-  if (!tray || !getApiBaseUrlRef) return
-
-  const generation = ++menuGeneration
-  const agents = await fetchAgentsWithStatus(getApiBaseUrlRef())
-  if (generation !== menuGeneration) return
+function updateTrayMenu(agents: AgentInfo[]): void {
+  if (!tray) return
 
   // Group agents by status
   const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
@@ -288,9 +254,6 @@ async function updateTrayMenu(): Promise<void> {
     label: 'Quit',
     click: () => app.quit(),
   })
-
-  // Check again after async operations in case tray was destroyed during quit
-  if (!tray) return
 
   const contextMenu = Menu.buildFromTemplate(menuTemplate)
   tray.setContextMenu(contextMenu)

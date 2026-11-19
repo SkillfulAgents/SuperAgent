@@ -288,7 +288,7 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
                   return (
                     <div
                       key={`peek-${depth}`}
-                      className="rounded-t-[12px] border-x border-t bg-card"
+                      className="rounded-t-dialog border-x border-t bg-card"
                       aria-hidden="true"
                       data-testid="request-stack-peek"
                       style={{

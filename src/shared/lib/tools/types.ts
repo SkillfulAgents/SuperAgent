@@ -52,6 +52,25 @@ export interface Question {
   multiSelect?: boolean
 }
 
+/**
+ * How a question ended without an answer, as the CLI records it in
+ * AskUserQuestion's `annotations[question].unanswered` (CLI 2.1.312+).
+ */
+export const UNANSWERED_REASONS = ['skipped', 'replied_in_chat', 'dismissed'] as const
+export type UnansweredReason = (typeof UNANSWERED_REASONS)[number]
+
+/** Question text → how it went unanswered, read from AskUserQuestion's structured result. */
+export function unansweredQuestionsFrom(annotations: unknown): Record<string, UnansweredReason> | undefined {
+  if (typeof annotations !== 'object' || annotations === null) return undefined
+  const out: Record<string, UnansweredReason> = {}
+  for (const [question, annotation] of Object.entries(annotations)) {
+    const reason = (annotation as { unanswered?: unknown } | null)?.unanswered
+    // Any other value counts as absent (the CLI's own rule).
+    if ((UNANSWERED_REASONS as readonly unknown[]).includes(reason)) out[question] = reason as UnansweredReason
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 export type UserRequestEvent =
   | {
       type: 'question_request'

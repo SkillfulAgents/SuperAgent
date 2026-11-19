@@ -62,6 +62,21 @@ describe('handleMutationError', () => {
     expect(mockCapture).toHaveBeenCalledTimes(2)
   })
 
+  it('refreshes settings after a send finds an expired provider sign-in, so the lists show it', async () => {
+    const client = createAppQueryClient()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const reconnect = await readAgentRuntimeError(new ProviderReconnectRequiredError('expired').toHttpResponse(), 'Failed')
+    const run = (error: Error) => client.getMutationCache().build(client, {
+      mutationFn: async () => { throw error },
+      meta: { skipGlobalErrorToast: true },
+    }).execute(undefined).catch(() => {})
+
+    await run(new Error('unrelated'))
+    expect(invalidate).not.toHaveBeenCalled()
+    await run(reconnect)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['settings'] })
+  })
+
   it('keeps the fallback message for an error body without a code', async () => {
     const res = new Response(JSON.stringify({ error: 'Failed to send message' }), { status: 500 })
     const error = await readAgentRuntimeError(res, 'Failed to send message')

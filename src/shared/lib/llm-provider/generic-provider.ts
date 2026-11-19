@@ -1,10 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
 import { translatedMessagesFetch } from './translated-messages-fetch'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
-import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import { BaseLlmProvider, type AgentIdentity, type ModelPurpose, type ProviderSettings } from './base-llm-provider'
+import type { ModelCatalogSettings, ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
-import { getModelCatalogSettings, type ApiKeyStatus } from '../config/settings'
+import type { ApiKeyStatus } from '../config/settings'
 import { isHostOnlyHostname, rewriteLoopbackForContainer } from './container-url'
 import {
   GENERIC_CATALOG_DEFAULT_MODELS,
@@ -105,9 +105,9 @@ export class GenericLlmProvider extends BaseLlmProvider {
   // The OpenAI translations rebuild every tool, so `defer_loading` never
   // reaches the endpoint. An Anthropic-wire endpoint we can't vouch for stays
   // off, except Anthropic's own API (the guard the CLI applied before 2.1.304).
-  override toolSearchEnv(): 'true' | 'false' {
+  override async toolSearchEnv(): Promise<'true' | 'false'> {
     if (this.apiFormat !== 'messages') return 'true'
-    return isAnthropicApiHost(this.getEffectiveBaseUrl()) ? 'true' : 'false'
+    return isAnthropicApiHost(await this.getEffectiveBaseUrl()) ? 'true' : 'false'
   }
   protected readonly settingsKeyField = 'genericApiKey' as const
   protected readonly envVarName = 'GENERIC_API_KEY'
@@ -117,24 +117,33 @@ export class GenericLlmProvider extends BaseLlmProvider {
    * searchModels both require the base URL, so reporting configured on the key
    * alone lets getConfiguredLlmClient's guard pass and then throw downstream.
    */
-  override getApiKeyStatus(): ApiKeyStatus {
-    const status = super.getApiKeyStatus()
-    if (!status.isConfigured || this.getEffectiveBaseUrl()) return status
+  override apiKeyStatusFrom(settings: ProviderSettings | undefined): ApiKeyStatus {
+    const status = super.apiKeyStatusFrom(settings)
+    if (!status.isConfigured || this.effectiveBaseUrlFrom(settings)) return status
     return { isConfigured: false, source: 'none' }
   }
 
-  /** User-supplied endpoint, from settings (preferred) or GENERIC_BASE_URL env. */
-  getEffectiveBaseUrl(): string | undefined {
-    const fromSettings = this.configuredKeys().genericBaseUrl?.trim()
+  /**
+   * User-supplied endpoint, from settings (preferred) or GENERIC_BASE_URL env.
+   * `settings`: the global settings already read, if any.
+   */
+  async getEffectiveBaseUrl(settings?: ProviderSettings): Promise<string | undefined> {
+    return this.effectiveBaseUrlFrom(await this.ambientSettings(settings))
+  }
+
+  /** {@link getEffectiveBaseUrl} from global settings already read. */
+  private effectiveBaseUrlFrom(settings: ProviderSettings | undefined): string | undefined {
+    const fromSettings = this.keysFrom(settings).genericBaseUrl?.trim()
     if (fromSettings) return fromSettings
     const fromEnv = this.envValue(BASE_URL_ENV)?.trim()
     return fromEnv || undefined
   }
 
-  createClient(): Anthropic {
-    const baseURL = this.getEffectiveBaseUrl()
+  async createClientFrom(given?: ProviderSettings): Promise<Anthropic> {
+    const settings = await this.ambientSettings(given)
+    const baseURL = this.effectiveBaseUrlFrom(settings)
     if (!baseURL) throw new Error('Generic provider base URL not configured')
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = this.effectiveApiKeyFrom(settings)
     if (!apiKey) throw new Error('Generic provider API key not configured')
     // Anthropic-wire endpoint with Bearer auth (same shape as OpenRouter/Platform).
     return new Anthropic({ baseURL, authToken: apiKey,
@@ -144,8 +153,9 @@ export class GenericLlmProvider extends BaseLlmProvider {
 
   override async getContainerProxyConfig(): Promise<LlmProxyConfig | undefined> {
     if (this.apiFormat === 'messages') return undefined
-    const baseUrl = this.getEffectiveBaseUrl()
-    const accessToken = this.getEffectiveApiKey()
+    const settings = await this.ambientSettings()
+    const baseUrl = this.effectiveBaseUrlFrom(settings)
+    const accessToken = this.effectiveApiKeyFrom(settings)
     if (!baseUrl || !accessToken) throw new Error('Generic provider URL and API key are required')
     return { format: this.apiFormat, baseUrl: rewriteLoopbackForContainer(openAiBaseUrl(baseUrl))!,
       credential: { accessToken, generation: 0 }, headers: {}, chatTokenLimitField: this.configuration?.chatTokenLimitField ?? 'max_completion_tokens' }
@@ -156,21 +166,22 @@ export class GenericLlmProvider extends BaseLlmProvider {
     return []
   }
 
-  getDefaultModel(_purpose: ModelPurpose): string {
+  override getDefaultModel(_purpose: ModelPurpose, modelCatalog?: ModelCatalogSettings): string {
     // No built-in catalog: default to the first user-added model, then an
     // env-configurable default, then a placeholder the user overrides.
-    return getCatalogDefaultModels(this.id, getModelCatalogSettings()).agentModel
+    return getCatalogDefaultModels(this.id, modelCatalog).agentModel
   }
 
-  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
+  async getContainerEnvVars(_agent?: AgentIdentity, given?: ProviderSettings): Promise<Record<string, string | undefined>> {
     // A loopback endpoint (e.g. ollama on the host) isn't reachable as
     // localhost from inside the agent container; rewrite to the host gateway
     // (same translation the platform provider applies).
-    const containerUrl = rewriteLoopbackForContainer(this.getEffectiveBaseUrl())
+    const settings = await this.ambientSettings(given)
+    const containerUrl = rewriteLoopbackForContainer(this.effectiveBaseUrlFrom(settings))
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
-      ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
+      ANTHROPIC_AUTH_TOKEN: this.effectiveApiKeyFrom(settings),
     }
   }
 
@@ -189,10 +200,10 @@ export class GenericLlmProvider extends BaseLlmProvider {
     apiKey: string,
     opts?: { baseUrl?: string },
   ): Promise<{ valid: boolean; error?: string }> {
-    const effectiveKey = apiKey || this.getEffectiveApiKey()
+    const effectiveKey = apiKey || await this.getEffectiveApiKey()
     if (!effectiveKey) return { valid: false, error: 'API key is required' }
     // baseURL may not be saved yet during first-time setup, so accept it inline.
-    const baseURL = opts?.baseUrl?.trim() || this.getEffectiveBaseUrl()
+    const baseURL = opts?.baseUrl?.trim() || await this.getEffectiveBaseUrl()
     if (!baseURL) return { valid: false, error: 'Base URL is required' }
     // Validation probes from the HOST, where the OS resolver qualifies bare
     // hostnames via search domains and scoped resolvers (Tailscale MagicDNS,
@@ -259,9 +270,10 @@ export class GenericLlmProvider extends BaseLlmProvider {
    * accepts a search parameter the way OpenRouter does.
    */
   override async searchModels(query: string): Promise<ModelSearchResult[]> {
-    const baseURL = this.getEffectiveBaseUrl()
+    const settings = await this.ambientSettings()
+    const baseURL = this.effectiveBaseUrlFrom(settings)
     if (!baseURL) throw new Error('Generic provider base URL not configured')
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = this.effectiveApiKeyFrom(settings)
     if (!apiKey) throw new Error('Generic provider API key not configured')
 
     let response: Response

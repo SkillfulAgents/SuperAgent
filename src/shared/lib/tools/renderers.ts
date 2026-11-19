@@ -40,6 +40,8 @@ import {
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
 } from './browser-tools/renderer'
 import {
   createDashboardRenderer,
@@ -59,6 +61,7 @@ import {
   listChatProvidersRenderer,
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
   sendChatMessageRenderer,
 } from './chat-tools/renderer'
 import {
@@ -116,6 +119,8 @@ const toolRenderers = new Map([
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
   createDashboardRenderer,
   startDashboardRenderer,
   listDashboardsRenderer,
@@ -129,6 +134,7 @@ const toolRenderers = new Map([
   listChatProvidersRenderer,
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
   sendChatMessageRenderer,
 ].map(renderer => [renderer.definition, renderer]))
 

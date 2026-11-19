@@ -14,7 +14,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 
 interface HomeAgentIntegrationsProps {
   agentSlug: string
@@ -44,6 +44,17 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Agen
 
 export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegrationsProps) {
   const { data: integrations } = useAgentIntegrations(agentSlug)
+  const rows = Array.isArray(integrations) ? integrations : []
+
+  return (
+    <HomeCollapsible id="integrations" title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
+      <HomeAgentIntegrationsBody agentSlug={agentSlug} rows={rows} />
+    </HomeCollapsible>
+  )
+}
+
+// Mounted only while the section is open, so the providers the agent could add are read only then.
+function HomeAgentIntegrationsBody({ agentSlug, rows }: { agentSlug: string; rows: AgentIntegrationListItem[] }) {
   const navigate = useNavigate()
   const { canAdminAgent, canUseAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
@@ -53,13 +64,12 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
     .filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug
-  const rows = Array.isArray(integrations) ? integrations : []
   const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
-    <HomeCollapsible title="External Integrations" className={className}>
+    <>
       {rows.length > 0 ? (
-        <div className="mt-2 divide-y divide-border/50">
+        <div className="mt-2">
           {rows.map((integration) => {
             // Fall back to the agent's name (matches the connector page title), not
             // "<Provider> Bot" - the provider already shows in the subtitle below.
@@ -67,6 +77,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
             return (
               <IntegrationRow
                 key={integration.id}
+                hoverFill={false}
                 iconSlug={integration.provider}
                 iconFallback="mcp"
                 name={displayName}
@@ -88,30 +99,29 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
           })}
         </div>
       ) : (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">Not configured yet</p>
-          <p className="text-xs mt-1">
-            {providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
-          </p>
-          {providers.length > 0 && <div className={`mt-3 grid ${providers.length === 3 ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5`}>
+        <HomeEmptyState
+          description={providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
+        >
+          {providers.length > 0 && <div className="mt-3 flex flex-col gap-1.5">
             {providers.map((tile) => (
+              // One soft grey tile per service: the fill is its edge, so there is no border or shadow to compete
+              // with the panel's. Only the icon chip keeps its outline, light in both themes so black marks read.
               <button
                 key={tile.slug}
+                type="button"
                 onClick={() => setSetupProvider(tile)}
-                aria-label={`Connect via ${tile.label}`}
-                className="flex items-center gap-2 rounded-lg border border-border bg-background p-2 shadow-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Set up ${tile.label}`}
+                className="flex items-center gap-2.5 rounded-lg bg-muted/60 p-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:bg-zinc-200 shadow-sm">
                   <ServiceIcon slug={tile.slug} fallback="mcp" className="h-4 w-4" />
                 </div>
-                <div className="flex flex-col items-start">
-                  <span className="text-2xs font-normal text-muted-foreground">Connect via</span>
-                  <span className="text-xs font-normal text-foreground">{tile.label}</span>
-                </div>
+                <span className="min-w-0 flex-1 truncate text-xs font-normal text-foreground">{tile.label}</span>
+                <span aria-hidden="true" className="shrink-0 pr-1 text-2xs font-normal text-muted-foreground">Set up</span>
               </button>
             ))}
           </div>}
-        </div>
+        </HomeEmptyState>
       )}
       {rows.length > 0 && providers.length > 0 && (
         <div className="flex items-center justify-between mt-1 px-4 pb-1">
@@ -126,10 +136,10 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
                 {providers.map((tile) => (
                   <button
                     key={tile.slug}
-                    className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                    className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                     onClick={() => setSetupProvider(tile)}
                   >
-                    <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border bg-background dark:bg-zinc-200">
+                    <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-control border border-border bg-background dark:bg-zinc-200">
                       <ServiceIcon slug={tile.slug} fallback="mcp" className="h-3 w-3" />
                     </div>
                     {tile.label}
@@ -145,6 +155,6 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
         provider={setupProvider}
         onOpenChange={(open) => { if (!open) setSetupProvider(null) }}
       />
-    </HomeCollapsible>
+    </>
   )
 }

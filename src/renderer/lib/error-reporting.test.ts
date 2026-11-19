@@ -31,11 +31,28 @@ describe('renderer error reporting facade', () => {
       environment: 'electron-renderer',
       release: expect.any(String),
       tracesSampleRate: 0,
+      enableLogs: false,
     })
     expect(options.beforeSend({ id: 'event' })).toEqual({ id: 'event' })
 
     reporting.setRendererErrorReportingEnabled(false)
     expect(options.beforeSend({ id: 'event' })).toBeNull()
+
+    reporting.setRendererErrorReportingEnabled(true)
+    expect(options.beforeSend({ id: 'event' })).toEqual({ id: 'event' })
+    expect(sentry.init).toHaveBeenCalledOnce()
+  })
+
+  it('preserves opt-out set before the provider is loaded', async () => {
+    reporting.setRendererErrorReportingEnabled(false)
+    reporting.initRendererErrorReporting()
+
+    await vi.waitFor(() => expect(sentry.init).toHaveBeenCalledOnce())
+    const { beforeSend } = sentry.init.mock.calls[0][0]
+    expect(beforeSend({ id: 'early-event' })).toBeNull()
+
+    reporting.setRendererErrorReportingEnabled(true)
+    expect(beforeSend({ id: 'later-event' })).toEqual({ id: 'later-event' })
   })
 
   it('drops WorkspaceUnavailableError events but keeps other exceptions', async () => {

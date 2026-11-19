@@ -12,7 +12,7 @@ type RuntimeClient = Pick<ContainerClient, 'fetch' | 'getHostApiBaseUrl'>
 /** The part of an agent's container runtime a sync needs: is it up, and how to reach it. */
 export interface ConnectionRuntime {
   getCachedInfo(): ContainerInfo
-  getClient(): RuntimeClient
+  getClient(): Promise<RuntimeClient>
 }
 
 export type ConnectionRuntimeKind = 'connected-accounts' | 'remote-mcps'
@@ -73,7 +73,7 @@ export async function syncAgentConnectionEnvironment(
   }
 
   try {
-    const client = runtime.getClient()
+    const client = await runtime.getClient()
     const response = kind === 'remote-mcps'
       ? await updateRemoteMcpEnvironment(agentSlug, client)
       : await updateConnectedAccountsEnvironment(agentSlug, client)

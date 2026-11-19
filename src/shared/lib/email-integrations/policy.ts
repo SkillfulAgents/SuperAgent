@@ -1,4 +1,4 @@
-import type { IntegrationSessionContext } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationSessionContext } from '../agent-integrations/types'
 import { getAgentIntegration } from '../services/agent-integration-service'
 
 import { parseEmailConfig, parseEmailIntegrationConfig } from './config-schema'
@@ -17,11 +17,11 @@ export function emailAddress(value: string): string | null {
 }
 export async function agentUserEmails(agentSlug: string): Promise<Set<string>> {
   if (!isAuthMode()) {
-    const address = getPlatformAuthStatus().email
+    const address = (await getPlatformAuthStatus()).email
     return new Set(address ? [address.toLowerCase()] : [])
   }
   const rows = await db.select({ email: user.email }).from(user).where(and(
-    eq(user.emailVerified, true), or(eq(user.banned, false), isNull(user.banned)),
+    eq(user.emailVerified, true), or(eq(user.banned, false), isNull(user.banned)), eq(user.status, 'active'),
     or(eq(user.role, 'admin'), inArray(user.id, db.select({ id: agentAcl.userId }).from(agentAcl).where(and(eq(agentAcl.agentSlug, agentSlug), inArray(agentAcl.role, ['owner', 'user']))))),
   )).all()
   return new Set(rows.map(row => row.email.toLowerCase()))
@@ -48,15 +48,16 @@ export function wasContacted(message: EmailMessage, history: EmailMessage[]): bo
     && previous.createdAt < message.createdAt && !!previous.messageId && ['sent', 'delivered', 'delivery_delayed'].includes(previous.status)
     && [...previous.to, ...previous.cc, ...previous.bcc].some(address => emailAddress(address) === sender))
 }
-export function platformConnected() { return !!getPlatformAccessToken() }
+export async function platformConnected(): Promise<boolean> { return !!(await getPlatformAccessToken()) }
 
 export class EmailPolicyError extends Error {
   constructor(message: string) { super(message); this.name = 'EmailPolicyError' }
 }
 
 /** Read authoritative mail from the gateway, without copying it into app tables. */
-export async function emailSessionAllowed(context: IntegrationSessionContext, admission?: { message: EmailMessage; contacted: boolean }): Promise<boolean> {
-  const record = await getAgentIntegration(context.integration.id)
+export async function emailSessionAllowed(context: IntegrationSessionContext, admission?: { message: EmailMessage; contacted: boolean }, current?: AgentIntegrationRecord): Promise<boolean> {
+  // `current` is the row when the caller read it for this check; it is not read again.
+  const record = current?.id === context.integration.id ? current : await getAgentIntegration(context.integration.id)
   if (!record || record.status !== 'active') return false
   const config = parseEmailIntegrationConfig(record.config)
   if (!admission) {

@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createAgent, deleteAgentViaApi, uniqueName } from '../helpers/agents'
 import { mockDropboxVolumes } from '../helpers/dropbox-volumes'
+import { openHomeSection } from '../helpers/agent-home'
 
 test('manages a volume from its own page and browses files without starting an agent', async ({ page, request }, testInfo) => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-details-e2e-')))
@@ -68,6 +69,7 @@ test('manages a volume from its own page and browses files without starting an a
     await expect(page.getByTestId('folder-entry').filter({ hasText: 'budget.xlsx' })).not.toBeVisible()
     await page.getByLabel('Filter files').fill('')
     await page.goto(`/agents/${agent.slug}`)
+    await openHomeSection(page, 'Drives')
     await page.getByRole('button', { name: `Open ${name} drive settings` }).click()
     await expect(page).toHaveURL(new RegExp(`volume=${id}`))
     await expect(page.getByTestId('volume-title')).toHaveText(name)
@@ -91,11 +93,12 @@ test('renders provider-owned logos on the homepage and in saved volumes', async 
     for (const type of ['dropbox', 'googledrive'] as const) {
       const volume = { id: type, name: type === 'dropbox' ? 'Team Dropbox' : 'Team Drive', type, hostPath: null,
         sourceLabel: type === 'dropbox' ? 'Dropbox · /Team' : 'Google Drive · Team', health: 'ok' as const,
-        userId: null, canManage: true, attachmentCount: 1, globalAccess: null }
+        visibility: 'public' as const, owners: [{ userId: null, name: 'Workspace admins', role: 'owner' as const }], canManage: true, attachmentCount: 1, globalAccess: null }
       state.definitions.push(volume)
       state.mounts.push({ ...volume, id: `mount-${type}`, volumeId: volume.id, volumeName: volume.name, readOnly: false })
     }
     await page.goto(`/agents/${agent.slug}`)
+    await openHomeSection(page, 'Drives')
     for (const type of ['dropbox', 'googledrive']) await expect(page.locator(`img[src*="${type}"]`).first()).toBeVisible()
     await page.goto('/settings/volumes')
     for (const type of ['dropbox', 'googledrive']) await expect(page.getByTestId('saved-volume-row').locator(`img[src*="${type}"]`)).toBeVisible()

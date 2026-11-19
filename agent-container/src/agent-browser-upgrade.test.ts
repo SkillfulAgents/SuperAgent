@@ -1,5 +1,5 @@
 /**
- * Regression guards for the agent-browser 0.12.0 → 0.25.3 → 0.27.2 upgrades.
+ * Regression guards for the agent-browser upgrades (0.12.0 → … → 0.41.2).
  *
  * These tests prevent re-introducing issues discovered during the upgrades:
  * - --remote-debugging-port in AGENT_BROWSER_ARGS hangs the daemon on ARM64
@@ -17,21 +17,27 @@ const DOCKERFILE_PATH = path.resolve(__dirname, '../Dockerfile')
 const dockerfile = fs.readFileSync(DOCKERFILE_PATH, 'utf-8')
 
 describe('Dockerfile agent-browser config', () => {
-  it('installs agent-browser 0.39.1 or later', () => {
+  it('installs agent-browser 0.41.2 or later', () => {
     const match = dockerfile.match(/agent-browser@(\d+\.\d+\.\d+)/)
     expect(match).not.toBeNull()
     const [major, minor, patch] = match![1].split('.').map(Number)
-    // Must be >= 0.39.1: persistent refs, which the after-action tree read
+    // Must be >= 0.41.2: persistent refs, which the after-action tree read
     // relies on (0.38.0, #1443), screenshot --if-changed (0.38.0), tab
-    // targetId (0.34.0), no retry of a mutating command after a lost reply (0.39.1)
-    expect(major * 1_000_000 + minor * 1_000 + patch).toBeGreaterThanOrEqual(39_001)
+    // targetId (0.34.0), no retry of a mutating command after a lost reply
+    // (0.39.1), refs and reads inside role="none"/"presentation" frames
+    // (0.41.1, #2262 — the harness no longer drops that role itself), the
+    // AGENT_BROWSER_NO_VERSION_CHECK switch (0.41.2, #2309)
+    expect(major * 1_000_000 + minor * 1_000 + patch).toBeGreaterThanOrEqual(41_002)
   })
 
-  it('turns off the idle shutdown and WebMCP (SUP-1265)', () => {
+  it('turns off the idle shutdown, WebMCP and the browser version check', () => {
     // 0.33.1+: the daemon exits after an hour idle unless told otherwise.
     expect(dockerfile).toMatch(/^ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=0$/m)
     // 0.36+: WebMCP announcements land in observer eval output.
     expect(dockerfile).toMatch(/^ENV AGENT_BROWSER_NO_WEBMCP=1$/m)
+    // 0.41.2+: an outdated-Chrome warning that tells the agent to update a
+    // browser pinned with the image, and a version round trip per command.
+    expect(dockerfile).toMatch(/^ENV AGENT_BROWSER_NO_VERSION_CHECK=1$/m)
   })
 
   it('prunes other platforms\' binaries only when agent-browser links straight to this one', () => {
@@ -61,6 +67,13 @@ describe('Dockerfile agent-browser config', () => {
       // Allow in else branch or after a semicolon following else
       expect(line.trim().startsWith('else') || line.trim().startsWith('npx playwright install')).toBe(true)
     }
+  })
+
+  it('tells the launched Chrome where page-started downloads go', () => {
+    // Without it the headless shell drops a clicked attachment or a page's
+    // blob save; it does not read the Preferences download dir. Same dir as
+    // browser_download (browser-download.ts DOWNLOADS_DIR).
+    expect(dockerfile).toMatch(/^ENV AGENT_BROWSER_DOWNLOAD_PATH=\/workspace\/downloads$/m)
   })
 
   it('points agent-browser at the chromium-current symlink', () => {

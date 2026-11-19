@@ -4,13 +4,18 @@ import type { AppDatabase } from '../db/drivers/types'
 import { chatIntegrations } from '../db/schema'
 import type { AgentIntegrationRecord, IntegrationInputEvent } from '../agent-integrations/types'
 import type { MeetingBotHost, MeetingBotStatus } from './bot-host'
-import type { MeetingIntegrationSettings, MeetingParticipantEvent } from './schemas'
+import type { MeetingIntegrationSettings } from './schemas'
+import { InMemoryFileOps } from '../agent-actor/testing/in-memory-file-ops'
 
 let database: AppDatabase
 let handle: TestDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))
-vi.mock('../agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) } }))
+let workspace = new InMemoryFileOps()
+vi.mock('../agent-actor', () => ({
+  agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) },
+  agentRegistry: { get: vi.fn(() => ({ files: workspace })) },
+}))
 vi.mock('../agent-integrations/app-link', () => ({ resolveInternetAppBaseUrl: vi.fn(() => 'https://app.example') }))
 let authMode = false
 let agentOwner: string | null = null
@@ -22,14 +27,16 @@ const { getMeeting, listMeetings, toPublicMeeting, transitionMeeting, verifyPart
 const { leaveOpenMeetings } = await import('./definitions')
 const { meetingEventPayloadSchema } = await import('./schemas')
 const { meetingRoster } = await import('./roster')
+const { backgroundSettled } = await import('../background')
+const { receiveMeetingBotEvent } = await import('./bot-events')
 
 const record: AgentIntegrationRecord = {
   id: 'integration', agentSlug: 'agent', provider: 'recall', name: null, config: '{}', status: 'active', errorMessage: null,
-  createdByUserId: 'owner', llmProviderId: null, model: null, effort: null, speed: null, createdAt: new Date(), updatedAt: new Date(),
+  createdByUserId: 'owner', llmProviderId: null, model: null, effort: null, speed: null, createdAt: new Date(), version: 0, updatedAt: new Date(),
 }
 
 class FakeHost implements MeetingBotHost {
-  created: Array<{ meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string }> = []
+  created: Array<{ meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string; framesUrl?: string }> = []
   status: MeetingBotStatus = { status: 'joining' }
   left: string[] = []
   chats: Array<[string, string]> = []
@@ -39,7 +46,7 @@ class FakeHost implements MeetingBotHost {
   holdCreate = false
   private releases: Array<() => void> = []
   releaseCreate() { for (const release of this.releases.splice(0)) release() }
-  async createBot(request: { meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string }) {
+  async createBot(request: { meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string; framesUrl?: string }) {
     if (this.fail) throw new Error('Recall.ai has no bot capacity right now. Try again in a moment.')
     if (this.holdCreate) await new Promise<void>(resolve => this.releases.push(resolve))
     this.created.push(request); return { botId: `bot-${this.created.length}` }
@@ -49,10 +56,6 @@ class FakeHost implements MeetingBotHost {
   async leaveCall(botId: string) { if (this.failLeave) throw new Error('503 from the bot host'); this.left.push(botId) }
   async sendChatMessage(botId: string, message: string) { this.chats.push([botId, message]) }
   async recordingLink(botId: string) { return { url: `https://cdn.example/${botId}.mp4`, linkExpiresAt: null } }
-  parseEvent(body: unknown) {
-    const event = body as { kind?: MeetingParticipantEvent['kind']; participant?: MeetingParticipantEvent['participant'] } | null
-    return event?.kind && event.participant ? { kind: event.kind, participant: event.participant } : null
-  }
 }
 
 class TestIntegration extends MeetingAgentIntegration {
@@ -69,6 +72,7 @@ let integration: TestIntegration
 let events: IntegrationInputEvent[]
 beforeEach(async () => {
   vi.useFakeTimers()
+  workspace = new InMemoryFileOps()
   authMode = false; agentOwner = null
   handle = await createTestDatabase(); database = handle.db
   await database.insert(chatIntegrations).values({ id: 'integration', provider: 'recall', agentSlug: 'agent', config: '{"apiKey":"k","region":"us-west-2"}', status: 'active', createdAt: new Date(), updatedAt: new Date() }).run()
@@ -95,6 +99,8 @@ describe('MeetingAgentIntegration', () => {
     expect(pageUrl.origin + pageUrl.pathname).toBe(`https://app.example/meeting/${meeting.id}`)
     // The host's callback URL carries the same token, with the trailing slash Recall needs before the query.
     expect(host.created[0].eventsUrl).toBe(`https://app.example/api/meeting-participant/${meeting.id}/events/?token=${pageUrl.searchParams.get('token')}`)
+    // Shared-screen frames come back over a websocket next to it, under the same token.
+    expect(host.created[0].framesUrl).toBe(`wss://app.example/api/meeting-participant/${meeting.id}/frames/?token=${pageUrl.searchParams.get('token')}`)
     expect(await verifyParticipantToken(meeting.id, pageUrl.searchParams.get('token')!)).not.toBeNull()
     expect(await verifyParticipantToken(meeting.id, 'wrong')).toBeNull()
     expect((await getMeeting(meeting.id))?.createdByUserId).toBe('alice')
@@ -102,12 +108,17 @@ describe('MeetingAgentIntegration', () => {
     expect(prepared.text).toContain('Take notes')
     expect(prepared.text).toContain('Google Meet')
     expect(prepared.systemPrompt).toMatch(/spoken/)
+    expect(prepared.systemPrompt).toContain('/workspace/sessions/<sessionId>/screenshots/')
+    expect(prepared.systemPrompt).not.toContain(`/workspace/meetings/${meeting.id}`)
     expect(prepared.systemPrompt).not.toContain('Standing instructions')
     // The installation's standing instructions ride along in the session prompt, read at brief time.
     integration.settings = { instructions: 'Never quote prices.' }
     const briefed = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
     expect(briefed.systemPrompt).toContain('Standing instructions for every meeting you join:\nNever quote prices.')
     expect(briefed.text).not.toContain('Never quote prices')
+    const resumed = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, sessionId: 'session-1', actor: {} as never })
+    expect(resumed.systemPrompt).toContain('/workspace/sessions/session-1/screenshots/')
+    expect(resumed.systemPrompt).not.toContain('<sessionId>')
   })
 
   it("with accounts, attributes the agent's own join to the installation's creator, else the agent's owner", async () => {
@@ -310,28 +321,48 @@ describe('MeetingAgentIntegration', () => {
     expect(host.chats.filter(([bot]) => bot === 'bot-2').map(([, text]) => text)).toEqual([expect.stringMatching(/^Hi, I'm/)])
   })
 
+  it('keeps meeting speaker attribution for the shared voice transcript, and points the agent to its notice', async () => {
+    const { appState } = await import('../app-state')
+    const { meetingSpeakersKey } = await import('./transcript-speakers')
+    const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
+    const prepared = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
+    expect(prepared.systemPrompt).toContain('voice conversation announces its live transcript path')
+    const speechOn = async (id: number, name: string) => receiveMeetingBotEvent((await getMeeting(meeting.id))!, { event: 'participant_events.speech_on', data: { data: { participant: { id, name } } } })
+    await speechOn(1, 'Mike')
+    await speechOn(9, 'Ada')
+    expect((await appState().get(meetingSpeakersKey(meeting.id)))?.value.map(speaker => speaker.name)).toEqual(['Mike'])
+  })
+
   it('keeps the roster from host events and forgets it when the call ends', async () => {
     const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     const rosters: Array<string[]> = []
-    const unsubscribe = meetingRoster.subscribe(meeting.id, roster => rosters.push(roster.participants.map(person => person.name)))
+    const watch = await meetingRoster.watch(meeting.id, roster => rosters.push(roster.participants.map(person => person.name)))
+    // The callback route applies host events to the roster; the connector only ends it.
     const iddo = { id: '1', name: 'Iddo', isHost: true }
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: iddo })).toBe(true)
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: { id: '2', name: 'Maya', isHost: false } })).toBe(true)
-    // The bot's own entry is not a participant; unrelated callbacks are acknowledged but ignored.
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: { id: '3', name: 'Ada', isHost: false } })).toBe(true)
-    expect(await integration.receiveBotEvent(meeting.id, { event: 'transcript.data' })).toBe(false)
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: iddo })).toBe(true)
-    expect(meetingRoster.get(meeting.id)).toEqual({ participants: [iddo, { id: '2', name: 'Maya', isHost: false }], speaking: ['1'] })
-    await integration.receiveBotEvent(meeting.id, { kind: 'leave', participant: { id: '2', name: 'Maya', isHost: false } })
-    expect(meetingRoster.get(meeting.id).participants.map(person => person.name)).toEqual(['Iddo'])
+    await meetingRoster.apply(meeting.id, { kind: 'join', participant: iddo }, meeting.botName)
+    await meetingRoster.apply(meeting.id, { kind: 'join', participant: { id: '2', name: 'Maya', isHost: false } }, meeting.botName)
+    await backgroundSettled()
+    expect(rosters.at(-1)).toEqual(['Iddo', 'Maya'])
     host.status = { status: 'ended', detail: 'everyone_left' }
     await vi.advanceTimersByTimeAsync(5000)
-    expect(meetingRoster.get(meeting.id)).toEqual({ participants: [], speaking: [] })
+    await backgroundSettled()
+    expect(await meetingRoster.get(meeting.id)).toEqual({ participants: [], speaking: [] })
     expect(rosters.at(-1)).toEqual([])
-    unsubscribe()
-    // Nothing is tracked for a call that is over.
-    await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: iddo })
-    expect(meetingRoster.get(meeting.id).participants).toEqual([])
+    await watch.stop()
+    // A callback that was on its way when the call ended does not start the roster again.
+    await meetingRoster.apply(meeting.id, { kind: 'join', participant: iddo }, meeting.botName)
+    expect((await meetingRoster.get(meeting.id)).participants).toEqual([])
+  })
+
+  it('still tells the agent the call ended when the roster cannot be ended', async () => {
+    const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
+    const clear = vi.spyOn(meetingRoster, 'clear').mockRejectedValueOnce(new Error('AppState unavailable'))
+    host.status = { status: 'ended', detail: 'everyone_left' }
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(clear).toHaveBeenCalledWith(meeting.id)
+    expect((await getMeeting(meeting.id))?.status).toBe('ended')
+    expect(events.map(event => meetingEventPayloadSchema.parse(event.payload).kind)).toEqual(['join', 'ended'])
+    clear.mockRestore()
   })
 
   it('leaves on request and refuses chat when not in a call', async () => {
@@ -398,8 +429,10 @@ describe('MeetingAgentIntegration', () => {
   it('leaves every open meeting of an installation on cleanup', async () => {
     const a = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     const b = await integration.requestJoin({ meetingUrl: 'https://zoom.us/j/123' })
+    await meetingRoster.apply(a.id, { kind: 'join', participant: { id: '1', name: 'Iddo', isHost: true } }, a.botName)
     await leaveOpenMeetings('integration', host)
     expect(host.left.sort()).toEqual(['bot-1', 'bot-2'])
+    expect(await meetingRoster.get(a.id)).toEqual({ participants: [], speaking: [] })
     expect((await getMeeting(a.id))?.status).toBe('ended')
     expect((await getMeeting(b.id))?.status).toBe('ended')
   })

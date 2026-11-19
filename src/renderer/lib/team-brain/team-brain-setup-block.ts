@@ -1,4 +1,4 @@
-import { TEAM_BRAIN_SCHEDULES, type TeamBrainSchedule } from './team-brain-schema'
+import { TEAM_BRAIN_SCHEDULES, type TeamBrainSchedule } from '@shared/lib/config/team-brain-schema'
 
 /** The upkeep task's cron for each schedule. */
 export const TEAM_BRAIN_CRON: Record<TeamBrainSchedule, string> = {
@@ -17,6 +17,15 @@ const SCHEDULE_TEXT: Record<TeamBrainSchedule, string> = {
   weekly: `weekly, Mondays at midnight (cron \`${TEAM_BRAIN_CRON.weekly}\`)`,
 }
 
+/**
+ * A value set-up chooses: its placeholder, or once filled, the value after its label, so a Start chat run again after
+ * a changed choice writes the new one over the old.
+ */
+function fillChoice(instructions: string, placeholder: string, label: string, value: string): string {
+  if (instructions.includes(placeholder)) return instructions.replace(placeholder, () => value)
+  return instructions.replace(new RegExp(`^(- \\*\\*${label}:\\*\\* ).*$`, 'm'), (_line, head: string) => head + value)
+}
+
 /** Fill the Team Brain template's setup block; placeholders the modal does not settle stay for the agent. */
 export function fillTeamBrainSetupBlock(
   instructions: string,
@@ -25,10 +34,9 @@ export function fillTeamBrainSetupBlock(
     accounts: { toolkitSlug: string; status: string }[] | undefined
   },
 ): string {
-  let filled = instructions
-    .replace('`{{brain_path}}`', () => `\`${brainPath}\``)
+  let filled = fillChoice(instructions, '`{{brain_path}}`', 'Brain location', `\`${brainPath}\``)
     .replace('`{{agent_slug}}`', () => `\`${agentSlug}\``)
-    .replace('`{{schedule}}`', SCHEDULE_TEXT[schedule])
+  filled = fillChoice(filled, '`{{schedule}}`', 'Maintenance schedule', SCHEDULE_TEXT[schedule])
   if (setUpBy) filled = filled.replace('`{{set_up_by}}`', () => `\`${setUpByText(setUpBy)}\``)
   if (accounts) filled = filled.replace('`{{connected_accounts}}`', () => `\`${connectedText(accounts)}\``)
   return filled

@@ -79,7 +79,7 @@ export function LinearIntegrationMessage({ display, message, renderMarkdown, ico
   const people = [task?.assignee && `Assignee: ${task.assignee}`, task?.project, task?.team].filter(Boolean) as string[]
   return (
     <div className="flex w-full max-w-[560px] flex-col items-end gap-1.5" data-testid="integration-message" data-provider="linear">
-      <div className="w-full overflow-hidden rounded-xl border border-border bg-background text-left shadow-sm">
+      <div className="w-full overflow-hidden rounded-card border border-border bg-background text-left shadow-sm">
         <IntegrationEventLine display={display} iconClassName={iconClassName} className="border-b border-border bg-muted/30 px-3 py-2">
           {!request && sentAt && <span className="ml-auto shrink-0 pl-2 tabular-nums">{sentAt}</span>}
         </IntegrationEventLine>

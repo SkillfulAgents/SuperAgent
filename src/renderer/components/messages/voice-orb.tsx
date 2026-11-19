@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { DotOrb, readLevel, smoothLevel, syntheticEnvelope, type DotOrbGround, type DotOrbState } from '@renderer/lib/voice/orb/dot-orb'
 import { useIsDark } from '@renderer/hooks/use-theme'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 interface VoiceOrbProps {
   state: DotOrbState
@@ -76,14 +77,11 @@ export function VoiceOrb({ state, monochrome = false, size, getAnalyser, classNa
       return () => { stillRef.current = null; orbRef.current = null }
     }
 
-    let frame = 0
-    let running = false
     let last = 0
     let level = 0
     let voicedAt = -Infinity
     let buffer: Uint8Array<ArrayBuffer> | null = null
     const tick = (now: number) => {
-      if (!running) return
       const dt = Math.min(0.1, last ? (now - last) / 1000 : 1 / 60)
       last = now
       const { state: asked, getAnalyser: analyserOf } = latest.current
@@ -107,24 +105,12 @@ export function VoiceOrb({ state, monochrome = false, size, getAnalyser, classNa
       orb.setLevel(level)
       orb.step(dt)
       paint()
-      frame = requestAnimationFrame(tick)
     }
-    const start = () => {
-      if (running) return
-      running = true
-      last = 0
-      frame = requestAnimationFrame(tick)
-    }
-    const stop = () => {
-      running = false
-      cancelAnimationFrame(frame)
-    }
-    const onVisibility = () => (document.visibilityState === 'hidden' ? stop() : start())
-    document.addEventListener('visibilitychange', onVisibility)
-    start()
+    // Live: a voice conversation goes on while the person works in another window, and the
+    // orb's state is worked out in this tick. 60 paints a second at most (ambient-frames.ts).
+    const stop = subscribeToAmbientFrames(tick, { kind: 'live' })
     return () => {
       stop()
-      document.removeEventListener('visibilitychange', onVisibility)
       orbRef.current = null
     }
   }, [size])

@@ -162,7 +162,7 @@ describe('formatComments', () => {
 
   it('extracts filename from full path', () => {
     const result = formatComments('/workspace/deep/nested/file.pdf', [
-      { id: '1', filePath: '/workspace/deep/nested/file.pdf', agentSlug: 'test-agent', text: 'test', anchor: { kind: 'file' } },
+      { text: 'test', anchor: { kind: 'file' } },
     ])
     expect(result).toContain('`file.pdf`')
   })

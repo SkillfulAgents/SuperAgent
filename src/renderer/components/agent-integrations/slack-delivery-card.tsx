@@ -31,7 +31,7 @@ export function SlackAppsLink({ children = 'api.slack.com/apps' }: { children?: 
 
 function WebhookUrl({ url }: { url: string }) {
   return <div className="space-y-1.5">
-    <p className="break-all select-all rounded-md border bg-muted/40 px-2 py-1.5 font-mono text-xs" data-testid="slack-webhook-url">{url}</p>
+    <p className="break-all select-all rounded-item border bg-muted/40 px-2 py-1.5 font-mono text-xs" data-testid="slack-webhook-url">{url}</p>
     <CopyTextButton text={url} label="Copy URL" />
   </div>
 }
@@ -133,7 +133,7 @@ function SlackAppSteps({ url }: { url: string }) {
       <summary className="cursor-pointer">Or edit the app manifest</summary>
       <div className="mt-2 space-y-2">
         <p>In <strong className="font-medium text-foreground">App Manifest</strong>, replace the <code>settings</code> section with this, then save. Slack asks you to verify the URL.</p>
-        <pre className="max-h-40 overflow-auto rounded-md border bg-background p-2 text-2xs leading-relaxed select-all">{settings}</pre>
+        <pre className="max-h-40 overflow-auto rounded-item border bg-background p-2 text-2xs leading-relaxed select-all">{settings}</pre>
         <CopyTextButton text={settings} label="Copy settings" />
       </div>
     </details>
@@ -197,7 +197,7 @@ function RemoveWebhooks({ integrationId, slack }: { integrationId: string; slack
   const { save, pending, error } = useSave(integrationId)
   if (!slack.botTokenSaved) return null
   if (!open) return <Button size="sm" variant="ghost" className="-ml-2" onClick={() => setOpen(true)}>Remove webhooks</Button>
-  return <div className="space-y-3 rounded-md border p-3" data-testid="slack-webhook-remove">
+  return <div className="space-y-3 rounded-card border p-3" data-testid="slack-webhook-remove">
     <p className="text-xs font-medium">Move the app back to Socket Mode</p>
     <ol className={steps}>
       <li>In your app at <SlackAppsLink />, open <strong className="font-medium text-foreground">Socket Mode</strong> and turn on <em>Enable Socket Mode</em>.</li>

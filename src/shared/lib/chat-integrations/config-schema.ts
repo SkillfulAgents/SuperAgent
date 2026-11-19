@@ -6,6 +6,7 @@
 
 import { z } from 'zod'
 import { integrationRelayConfigShape } from '../agent-integrations/transport'
+import { provisionedAppConfigShape } from '../agent-integrations/provisioned-app'
 
 export const telegramConfigSchema = z.object({
   botToken: z.string().min(1, 'Bot token is required'),
@@ -41,6 +42,10 @@ export const slackConfigFieldsSchema = z.object({
    * clears it.
    */
   webhookStatus: z.enum(['verified', 'rejected']).optional(),
+  /** The Slack app's id, as its bot token reports it: for a link to its settings. */
+  appId: z.string().optional(),
+  /** The app a team directory created for this agent (agent-integrations/provisioned-app.ts). */
+  ...provisionedAppConfigShape,
 })
 
 /** Socket Mode needs both tokens; an installation with webhooks may still be waiting for its bot token. */
@@ -76,7 +81,7 @@ export const imessageConfigSchema = z.object({
 /** Config the host writes itself; a settings patch or setup input can't supply it. */
 const HOST_OWNED_FIELDS: Partial<Record<string, readonly string[]>> = {
   telegram: ['relay', 'webhookSecret'],
-  slack: ['relay', 'webhookStatus'],
+  slack: ['relay', 'webhookStatus', 'appId', 'provisionedApp'],
   imessage: ['relay', 'webhookSecret'],
 }
 

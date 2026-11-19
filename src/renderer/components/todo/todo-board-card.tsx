@@ -85,7 +85,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
   return (
     <div
       className={cn(
-        'group/card relative w-full scroll-my-2 rounded-lg border border-border/30 bg-card text-left shadow-sm transition-[border-color,box-shadow] hover:border-border/60 hover:shadow-md',
+        'group/card relative w-full scroll-my-2 rounded-item border border-border/30 bg-card text-left shadow-sm transition-[border-color,box-shadow] hover:border-border/60 hover:shadow-md',
         selected && 'border-border/70 shadow-md ring-1 ring-ring/40',
       )}
       onMouseEnter={() => onHover?.(todo)}
@@ -102,7 +102,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
           onClick={() => onOpen(todo)}
           aria-label={`Open ${title}`}
           aria-haspopup={todo.column === 'drafts' ? 'dialog' : undefined}
-          className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="absolute inset-0 rounded-item focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
       )}
 

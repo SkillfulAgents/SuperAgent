@@ -4,10 +4,10 @@
  * the host opens no stream: it registers a relay endpoint as the webhook, and
  * each pointer wakes the mailbox's cursor poll, which stays the source of truth.
  *
- * One endpoint serves every mailbox claimed under the same relay scope (the
- * creator's platform member), to stay inside the platform's per-org endpoint
- * quota. Each installation stores a copy of it; the generic release disables
- * it only once no installation uses it.
+ * Mailboxes reuse an endpoint in the same relay scope (the creator's platform
+ * member) when one exists. Concurrent first connections may mint redundant
+ * endpoints, an accepted quota cost. Each installation stores its binding;
+ * the generic release disables it only once no installation uses it.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -61,15 +61,6 @@ async function saveWebhook(integrationId: string, webhook: EmailWebhook): Promis
   return changesOf(result) > 0
 }
 
-/** One mint at a time per scope, so mailboxes connecting together share the first one's endpoint. */
-const minting = new Map<string, Promise<unknown>>()
-function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
-  const next = (minting.get(key) ?? Promise.resolve()).catch(() => {}).then(run)
-  minting.set(key, next)
-  next.catch(() => {}).finally(() => { if (minting.get(key) === next) minting.delete(key) })
-  return next
-}
-
 /**
  * The installation's endpoint and signing secret. The first connect with a
  * relay takes those of another mailbox in the same scope, or mints them; after
@@ -79,34 +70,30 @@ export async function ensureEmailWebhook(integration: Pick<AgentIntegrationRecor
   const own = await readWebhook(installation(integration.id))
   if (!own || own.webhook) return own?.webhook ?? null
   const scope = await integrationRelayScope(integration.createdByUserId ?? undefined)
-  return oneAtATime(scope, async () => {
-    const current = await readWebhook(installation(integration.id))
-    if (!current || current.webhook) return current?.webhook ?? null
-    const shared = await readWebhook(and(
-      eq(chatIntegrations.provider, EMAIL_PROVIDER), ne(chatIntegrations.id, integration.id),
-      sql`json_extract(${chatIntegrations.config}, '$.relay.scope') = ${scope}`,
-      sql`json_extract(${chatIntegrations.config}, '$.webhookSecret') IS NOT NULL`,
-    ))
-    if (shared?.webhook) {
-      if (await saveWebhook(integration.id, shared.webhook)) return shared.webhook
-      return (await readWebhook(installation(integration.id)))?.webhook ?? null
-    }
+  const shared = await readWebhook(and(
+    eq(chatIntegrations.provider, EMAIL_PROVIDER), ne(chatIntegrations.id, integration.id),
+    sql`json_extract(${chatIntegrations.config}, '$.relay.scope') = ${scope}`,
+    sql`json_extract(${chatIntegrations.config}, '$.webhookSecret') IS NOT NULL`,
+  ))
+  if (shared?.webhook) {
+    if (await saveWebhook(integration.id, shared.webhook)) return shared.webhook
+    return (await readWebhook(installation(integration.id)))?.webhook ?? null
+  }
 
-    const secret = `whsec_${randomBytes(32).toString('base64')}`
-    const relay = await provisionIntegrationRelay('Email inboxes', integration.createdByUserId ?? undefined, emailVerificationProfile(secret))
-    let stored = false
-    try {
-      stored = await saveWebhook(integration.id, { relay, secret })
-      return stored ? { relay, secret } : (await readWebhook(installation(integration.id)))?.webhook ?? null
-    } finally {
-      // Unused: the installation is gone, it got an endpoint meanwhile, or the write failed.
-      if (!stored) {
-        await disableIntegrationRelay(relay).catch((error: unknown) => {
-          captureException(error, { tags: { component: 'email-integration', operation: 'release-relay-endpoint' }, extra: { integrationId: integration.id } })
-        })
-      }
+  const secret = `whsec_${randomBytes(32).toString('base64')}`
+  const relay = await provisionIntegrationRelay('Email inboxes', integration.createdByUserId ?? undefined, emailVerificationProfile(secret))
+  let stored = false
+  try {
+    stored = await saveWebhook(integration.id, { relay, secret })
+    return stored ? { relay, secret } : (await readWebhook(installation(integration.id)))?.webhook ?? null
+  } finally {
+    // Unused: the installation is gone, it got an endpoint meanwhile, or the write failed.
+    if (!stored) {
+      await disableIntegrationRelay(relay).catch((error: unknown) => {
+        captureException(error, { tags: { component: 'email-integration', operation: 'release-relay-endpoint' }, extra: { integrationId: integration.id } })
+      })
     }
-  })
+  }
 }
 
 /** The gateway's post: a pointer to one event. The cursor poll reads the event itself. */

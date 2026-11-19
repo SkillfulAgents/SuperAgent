@@ -30,6 +30,15 @@ export function isHostOnlyHostname(hostname: string): boolean {
   return !hostname.includes('.')
 }
 
+/** Whether a URL names this machine. Anything unparseable does not. */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    return LOOPBACK_HOSTNAMES.has(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
 export function rewriteLoopbackForContainer(url: string | undefined): string | undefined {
   if (!url) return url
   let parsed: URL

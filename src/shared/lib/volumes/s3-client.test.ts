@@ -19,16 +19,16 @@ describe('S3 signed transport', () => {
     expect(request.headers.host).toBe(new URL(f.config.endpoint).host)
     expect(request.key).toBe('mounted/file')
   })
-  it('shares mutation and throttle scope across equivalent endpoint spellings', () => {
+  it('shares mutation and throttle scope across equivalent endpoint spellings', async () => {
     const f = s3Fixture()
-    const first = new S3VolumeClient(sealedS3Access(f.config))
+    const first = new S3VolumeClient(await sealedS3Access(f.config))
     const respelled = { ...f.config, endpoint: `${f.config.endpoint.toUpperCase()}:443/` }
-    const second = new S3VolumeClient(sealedS3Access(respelled))
+    const second = new S3VolumeClient(await sealedS3Access(respelled))
     expect(second.namespace).toBe(first.namespace)
   })
   it('retries an uncertain read but never an uncertain published write', async () => {
     const f = s3Fixture(); f.put('file', Buffer.from('file'))
-    const client = new S3VolumeClient(sealedS3Access(f.config))
+    const client = new S3VolumeClient(await sealedS3Access(f.config))
     f.transport.mockResolvedValueOnce(reply('ServiceUnavailable', 503))
     const response = await client.send(new GetObjectCommand({ Bucket: f.config.bucket, Key: 'mounted/file' }), { read: true })
     expect(Buffer.from(await response.Body!.transformToByteArray()).toString()).toBe('file')
@@ -41,14 +41,14 @@ describe('S3 signed transport', () => {
   it('honors long Retry-After, returns 429, and shares cooldown across clients', async () => {
     const f = s3Fixture()
     f.transport.mockResolvedValueOnce(reply('SlowDown', 503, { 'retry-after': '60' }))
-    const first = new S3VolumeClient(sealedS3Access(f.config)), second = new S3VolumeClient(sealedS3Access(f.config))
+    const first = new S3VolumeClient(await sealedS3Access(f.config)), second = new S3VolumeClient(await sealedS3Access(f.config))
     const command = () => new GetObjectCommand({ Bucket: f.config.bucket, Key: 'mounted/file' })
     await expect(first.send(command(), { read: true })).rejects.toMatchObject({ status: 429, retryAfter: 60 })
     await expect(second.send(command(), { read: true })).rejects.toMatchObject({ status: 429 })
     expect(f.transport).toHaveBeenCalledTimes(1)
   })
   it('aborts requests before sending credentials or content', async () => {
-    const f = s3Fixture(), client = new S3VolumeClient(sealedS3Access(f.config))
+    const f = s3Fixture(), client = new S3VolumeClient(await sealedS3Access(f.config))
     const signal = new AbortController(); signal.abort()
     await expect(client.send(new PutObjectCommand({ Bucket: f.config.bucket, Key: 'mounted/file', Body: Buffer.from('x') }), { signal: signal.signal })).rejects.toMatchObject({ status: 409 })
     expect(f.transport).not.toHaveBeenCalled()
@@ -62,7 +62,7 @@ describe('S3 signed transport', () => {
     await expect(client.send(command(), { read: true })).rejects.toBe(busy)
     expect(keys).toHaveBeenCalledTimes(1)
     expect(f.transport).not.toHaveBeenCalled()
-    await expect(new S3VolumeClient(sealedS3Access(f.config)).send(command(), { read: true })).resolves.toBeDefined()
+    await expect(new S3VolumeClient(await sealedS3Access(f.config)).send(command(), { read: true })).resolves.toBeDefined()
   })
   it('maps provider failures without exposing signed requests or secrets', () => {
     expect(s3Error({ name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } }).message).toContain('Bucket not found')

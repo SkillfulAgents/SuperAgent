@@ -55,6 +55,30 @@ const requestCards = (kind: string) =>
 const openStreamRequestIds = () =>
   userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'stream')
 
+/** The ways the agent's container goes away under a session; each takes the calls it was making with it. */
+const CONTAINER_STOPS: Array<[string, () => void]> = [
+  ['stopped mid-turn', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().markAllInactive()
+  }],
+  ['stopped while the session was idle', () => sessions().markAllInactive()],
+  ['stopped mid-recovery', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().claimMidTurnForRecovery()
+    sessions().markAllInactive()
+  }],
+  ['stopped, ending its recovery', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().claimMidTurnForRecovery()
+    sessions().markAllInactive({ settleRecovering: true })
+  }],
+  ['died and recovery gave up', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().claimMidTurnForRecovery()
+    sessions().settleRecovering([SESSION_ID])
+  }],
+]
+
 /** The global feed from now on, as a subscriber that joined now would see it. */
 function collectGlobalEvents(): () => any[] {
   const start = live.host.sends.length
@@ -66,7 +90,7 @@ const waitingInputNotifications = () =>
   live.host.sent('notification').filter((n) => n.kind === 'session_waiting_input')
 
 /** The agent holds a grant for every computer-use level and the host shell. */
-const grantComputerUse = () => vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockReturnValue('granted')
+const grantComputerUse = () => vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockResolvedValue('granted')
 
 beforeEach(async () => {
   mockClient = createStreamClient()
@@ -1091,6 +1115,8 @@ describe('awaiting input status tracking', () => {
       try {
         sessions().markActive(SESSION_ID)
         simulateToolUse('mcp__computer-use__computer_click', 'cu-1', { ref: 'win:1' })
+        // The request parks once the grant check (a settings read) lands.
+        await new Promise((resolve) => setTimeout(resolve, 0))
         expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
         expect(sessions().pendingComputerUse(SESSION_ID)).toHaveLength(1)
         live.runtime.containerFetch.mockClear()
@@ -1490,7 +1516,8 @@ describe('Script run request detection', () => {
 
   // Use existing simulateToolUse helper (already defined above in awaiting input tests)
   // Re-define locally since the other is scoped to that describe block
-  function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+  // Async: a script request registers once the grant check (a settings read) lands.
+  async function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
     mockClient.emit({
       type: 'stream_event',
       event: {
@@ -1509,12 +1536,13 @@ describe('Script run request detection', () => {
       type: 'stream_event',
       event: { type: 'content_block_stop' },
     })
+    await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
-  it('registers a script_run with autoApproved:false when permission needed', () => {
+  it('registers a script_run with autoApproved:false when permission needed', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-1', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-1', {
       script: 'sw_vers',
       explanation: 'Check macOS version',
       scriptType: 'shell',
@@ -1539,7 +1567,7 @@ describe('Script run request detection', () => {
     sseEvents.length = 0
     live.host.answer('hostScript', { exitCode: 0, stdout: 'ProductName: macOS', stderr: '' })
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-granted', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-granted', {
       script: 'sw_vers',
       explanation: 'Check macOS version',
       scriptType: 'shell',
@@ -1566,10 +1594,10 @@ describe('Script run request detection', () => {
     expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(0)
   })
 
-  it('registers a script_run even without prior permission (prompts user)', () => {
+  it('registers a script_run even without prior permission (prompts user)', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-2', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-2', {
       script: 'sw_vers',
       explanation: 'Check version',
       scriptType: 'shell',
@@ -1580,10 +1608,10 @@ describe('Script run request detection', () => {
     expect(scriptEvents).toHaveLength(1)
   })
 
-  it('registers nothing when script is missing from input', () => {
+  it('registers nothing when script is missing from input', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-4', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-4', {
       explanation: 'Check version',
       scriptType: 'shell',
     })
@@ -1592,10 +1620,10 @@ describe('Script run request detection', () => {
     expect(scriptEvents).toHaveLength(0)
   })
 
-  it('registers nothing when scriptType is missing', () => {
+  it('registers nothing when scriptType is missing', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-5', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-5', {
       script: 'sw_vers',
       explanation: 'Check version',
     })
@@ -1604,8 +1632,8 @@ describe('Script run request detection', () => {
     expect(scriptEvents).toHaveLength(0)
   })
 
-  it('sets isAwaitingInput after request_script_run tool fires (prompt path)', () => {
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
+  it('sets isAwaitingInput after request_script_run tool fires (prompt path)', async () => {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
       script: 'sw_vers',
       explanation: 'Check version',
       scriptType: 'shell',
@@ -1614,11 +1642,126 @@ describe('Script run request detection', () => {
     expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
   })
 
-  it('does NOT set isAwaitingInput when use_host_shell is auto-approved', () => {
+  it('runs nothing for a granted script whose grant check was still in flight when the turn was stopped', async () => {
+    // The grant check is a settings read: hold it until after the Stop.
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+    sseEvents.length = 0
+
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-stopped', {
+      script: 'rm -rf ~/scratch',
+      explanation: 'Clean up',
+      scriptType: 'shell',
+    })
+    sessions().markInterrupted(SESSION_ID)
+    landCheck('granted')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(live.host.calls.filter(([name]) => name === 'hostScript')).toEqual([])
+    expect(requestCards('script_run')).toHaveLength(0)
+    expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-sr-stopped')).toBeNull()
+  })
+
+  // However many microtasks after the grant check lands the Stop comes, nothing
+  // runs after it: either the check is still pending and is dropped, or the
+  // request is already registered and the Stop cancels it, or the run had
+  // already begun before the Stop.
+  it.each([0, 1, 2, 3, 4, 5, 6, 8, 12])('runs no script after a Stop that lands %i microtasks after its grant check', async (ticks) => {
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+    const scripts = () => live.host.calls.filter(([name]) => name === 'hostScript').length
+
+    await simulateToolUse('mcp__user-input__request_script_run', `tool-sr-handoff-${ticks}`, {
+      script: 'rm -rf ~/scratch',
+      explanation: 'Clean up',
+      scriptType: 'shell',
+    })
+    landCheck('granted')
+    for (let i = 0; i < ticks; i++) await Promise.resolve()
+    const ranBeforeStop = scripts()
+    sessions().markInterrupted(SESSION_ID)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(scripts()).toBe(ranBeforeStop)
+  })
+
+  it.each(CONTAINER_STOPS)('runs nothing for a granted script whose grant check was in flight when the container %s', async (_how, stop) => {
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-container-stopped', {
+      script: 'rm -rf ~/scratch',
+      explanation: 'Clean up',
+      scriptType: 'shell',
+    })
+    stop()
+    landCheck('granted')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(live.host.calls.filter(([name]) => name === 'hostScript')).toEqual([])
+    expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-sr-container-stopped')).toBeNull()
+  })
+
+  it.each([0, 1, 2, 3, 4, 5, 6, 8, 12])('runs no script after the container stops %i microtasks after its grant check', async (ticks) => {
+    sessions().markActive(SESSION_ID)
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+    const scripts = () => live.host.calls.filter(([name]) => name === 'hostScript').length
+
+    await simulateToolUse('mcp__user-input__request_script_run', `tool-sr-container-handoff-${ticks}`, {
+      script: 'rm -rf ~/scratch',
+      explanation: 'Clean up',
+      scriptType: 'shell',
+    })
+    landCheck('granted')
+    for (let i = 0; i < ticks; i++) await Promise.resolve()
+    const ranBeforeStop = scripts()
+    sessions().markAllInactive()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(scripts()).toBe(ranBeforeStop)
+  })
+
+  it('still runs a granted script whose grant check lands after a reattach of the stream', async () => {
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-reattached', {
+      script: 'sw_vers',
+      explanation: 'Check version',
+      scriptType: 'shell',
+    })
+    // The socket dropped and the session was attached again: it goes on.
+    await sessions().subscribe(SESSION_ID, createStreamClient(), SESSION_ID)
+    landCheck('granted')
+
+    await vi.waitFor(() => expect(live.host.calls.filter(([name]) => name === 'hostScript')).toHaveLength(1))
+  })
+
+  it('does NOT set isAwaitingInput when use_host_shell is auto-approved', async () => {
     grantComputerUse()
     live.host.answer('hostScript', { exitCode: 0, stdout: '', stderr: '' })
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-auto-status', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-auto-status', {
       script: 'sw_vers',
       explanation: 'Check version',
       scriptType: 'shell',
@@ -1661,11 +1804,11 @@ describe('Computer use request detection', () => {
     process.env.E2E_MOCK = 'true'
     grantComputerUse()
     sseEvents.length = 0
-    live.host.answer('computerUse', 'Calculator, Finder')
+    live.host.answer('computerUse', { output: 'Calculator, Finder' })
 
     try {
-      simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted', {
-        includeHidden: false,
+      simulateToolUse('mcp__computer-use__computer_list_apps', 'tool-cu-granted', {
+        app: 'Calculator',
       })
 
       await vi.waitFor(() => {
@@ -1674,8 +1817,16 @@ describe('Computer use request detection', () => {
         }))
       })
       expect(live.host.calls).toEqual([
-        ['computerUsePermissions', {}],
-        ['computerUse', { method: 'apps', params: { includeHidden: false } }],
+        // Checked when the grant is, and again as the run starts.
+        ['computerUsePermissions', { screenRecording: false }],
+        ['computerUsePermissions', { screenRecording: false }],
+        ['computerUse', {
+          method: 'list-apps',
+          params: { argv: ['--app=Calculator'] },
+          caller: { sessionId: SESSION_ID, agentSlug: AGENT_SLUG },
+          // Nobody watches an auto-run, so it must start in time or be dropped unrun.
+          startBy: expect.any(Number),
+        }],
       ])
 
       const computerUseEvents = requestCards('computer_use')
@@ -1685,8 +1836,8 @@ describe('Computer use request detection', () => {
         autoApproved: true,
         scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
         payload: {
-          method: 'apps',
-          params: { includeHidden: false },
+          method: 'list-apps',
+          params: { argv: ['--app=Calculator'] },
           permissionLevel: 'list_apps_windows',
         },
       })
@@ -1706,7 +1857,7 @@ describe('Computer use request detection', () => {
     const originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'
     sessions().grantComputerUse(SESSION_ID)
-    live.host.answer('computerUse', 'launched')
+    live.host.answer('computerUse', { output: 'launched' })
 
     try {
       simulateToolUse('mcp__computer-use__computer_launch', 'tool-cu-session', { name: 'Safari' })
@@ -1733,22 +1884,98 @@ describe('Computer use request detection', () => {
     const originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'
     grantComputerUse()
-    let finishCommand!: (output: string) => void
-    live.host.answer('computerUse', () => new Promise<string>((resolve) => {
+    let finishCommand!: (result: { output: string }) => void
+    live.host.answer('computerUse', () => new Promise<{ output: string }>((resolve) => {
       finishCommand = resolve
     }))
     try {
       // A subagent's tool call arrives on its stream events and again in its
       // complete message; the second delivery finds the first run holding it.
-      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
-      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
+      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@s1:e1' })
+      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@s1:e1' })
       await vi.waitFor(() => expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1))
-      finishCommand('clicked')
+      finishCommand({ output: 'clicked' })
       await vi.waitFor(() => expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-twice')).toBeNull())
       expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1)
       expect(live.runtime.containerFetch.mock.calls.filter(([path]) => String(path).includes('tool-cu-twice'))).toEqual([
         ['/inputs/tool-cu-twice/resolve', expect.objectContaining({ body: JSON.stringify({ value: 'clicked' }) })],
       ])
+    } finally {
+      if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+      else process.env.E2E_MOCK = originalE2eMock
+    }
+  })
+
+  it('runs nothing for a granted command whose grant check was still in flight when the turn was stopped', async () => {
+    const originalE2eMock = process.env.E2E_MOCK
+    process.env.E2E_MOCK = 'true'
+    sessions().markActive(SESSION_ID)
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('computerUse', { output: 'clicked' })
+    try {
+      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-stopped', { ref: '@b1' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      sessions().markInterrupted(SESSION_ID)
+      landCheck('granted')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(live.host.calls.filter(([name]) => name === 'computerUse')).toEqual([])
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-stopped')).toBeNull()
+    } finally {
+      if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+      else process.env.E2E_MOCK = originalE2eMock
+    }
+  })
+
+  it.each([0, 1, 2, 3, 4, 5, 6, 8, 12])('runs no command after a Stop that lands %i microtasks after its grant check', async (ticks) => {
+    const originalE2eMock = process.env.E2E_MOCK
+    process.env.E2E_MOCK = 'true'
+    sessions().markActive(SESSION_ID)
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('computerUse', { output: 'clicked' })
+    const commands = () => live.host.calls.filter(([name]) => name === 'computerUse').length
+    try {
+      simulateToolUse('mcp__computer-use__computer_click', `tool-cu-handoff-${ticks}`, { ref: '@b1' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      landCheck('granted')
+      for (let i = 0; i < ticks; i++) await Promise.resolve()
+      const ranBeforeStop = commands()
+      sessions().markInterrupted(SESSION_ID)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(commands()).toBe(ranBeforeStop)
+    } finally {
+      if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+      else process.env.E2E_MOCK = originalE2eMock
+    }
+  })
+
+  it.each(CONTAINER_STOPS)('runs nothing for a granted command whose grant check was in flight when the container %s', async (_how, stop) => {
+    const originalE2eMock = process.env.E2E_MOCK
+    process.env.E2E_MOCK = 'true'
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('computerUse', { output: 'clicked' })
+    try {
+      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-container-stopped', { ref: '@b1' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      stop()
+      landCheck('granted')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(live.host.calls.filter(([name]) => name === 'computerUse')).toEqual([])
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-container-stopped')).toBeNull()
     } finally {
       if (originalE2eMock === undefined) delete process.env.E2E_MOCK
       else process.env.E2E_MOCK = originalE2eMock
@@ -1765,10 +1992,12 @@ describe('Computer use request detection', () => {
     const originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'
     grantComputerUse()
-    live.host.answer('computerUse', '[mock] apps executed successfully')
+    // Held, so the request is still open while the test looks: it registers
+    // after the grant check (asynchronous), and the run would settle it.
+    live.host.answer('computerUse', () => new Promise(() => {}))
 
     try {
-      simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted-reg', {
+      simulateToolUse('mcp__computer-use__computer_list_apps', 'tool-cu-granted-reg', {
         includeHidden: false,
       })
 

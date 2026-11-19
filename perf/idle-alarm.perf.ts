@@ -29,9 +29,6 @@ describe('idle alarm — small profile', () => {
   beforeAll(async () => {
     perf = await bootPerfApp('small')
     ;({ containerHost: host, agentRegistry: registry } = await import('@shared/lib/agent-actor'))
-    // Settings are read from disk once and cached for the process; that read
-    // is the app's, not the alarm's, so pay it here.
-    ;(await import('@shared/lib/config/settings')).getSettings()
     for (const slug of perf.seeded.agentSlugs) await registry.get(slug).container.start()
   })
 

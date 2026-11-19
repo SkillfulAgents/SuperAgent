@@ -58,18 +58,23 @@ let mockWarmStartEnabled = true
 const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
+  useAgent: () => ({ data: undefined }),
   useListedAgents: () => mockUseAgents(),
   useStartAgent: () => ({ mutate: mockStartAgent }),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   // Resolve the route param to the canonical id the way the real hook does,
   // using the mocked params + agents so active-state tests behave faithfully.
-  useRouteAgentId: () => {
-    const slug = mockRouteParams.slug
-    if (!slug) return undefined
-    const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
-    return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
-  },
+  useRouteAgentId: () => mockResolveAgentId(mockRouteParams.slug),
+  useResolvedAgentId: (slug: string | undefined) => mockResolveAgentId(slug),
 }))
+function mockResolveAgentId(slug: string | undefined) {
+  if (!slug) return undefined
+  const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
+  return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
+}
+// The rows' route selection is the real one (the shared setup stubs it),
+// running over the mocked router state below.
+vi.mock('@renderer/router/use-route-agent', async (importOriginal) => importOriginal())
 
 const mockCreateUntitledAgent = vi.fn()
 vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
@@ -85,8 +90,27 @@ vi.mock('@renderer/hooks/use-agent-members', () => ({
 }))
 
 const mockUseSessions = vi.fn()
+// `mockUseSessions` is the server's list for an agent. The row reads its first
+// rows and their count; `fullListReads` records who asked for every session.
+const fullListReads: string[] = []
+let mockServerReportsTotal = true
+const RECENT_LIMIT = 6
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: (slug: string | null) => mockUseSessions(slug),
+  useSessions: (slug: string | null) => {
+    if (!slug) return { data: undefined, isLoading: false }
+    fullListReads.push(slug)
+    return mockUseSessions(slug)
+  },
+  useRecentSessions: (slug: string | null) => {
+    if (!slug) return { data: undefined, isLoading: false }
+    const result = mockUseSessions(slug)
+    return { ...result, data: result.data?.slice(0, RECENT_LIMIT) }
+  },
+  useSessionTotal: (slug: string | null) => (slug && mockServerReportsTotal ? mockUseSessions(slug).data?.length : undefined),
+  recentSessionsQueryOptions: (_queryClient: unknown, slug: string) => ({
+    queryKey: ['sessions', slug, 'recent', RECENT_LIMIT],
+    queryFn: () => Promise.resolve([]),
+  }),
   useCreateSession: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
@@ -145,6 +169,8 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
 // (matches the global setup mock, which this file-level mock replaces).
 let mockRouteParams: Record<string, string | undefined> = {}
 let mockRoutePathname = '/'
+// The deepest match's path template; the rows read the view kind from it.
+let mockRouteFullPath = '/'
 let mockHistorySubscribers: Array<(opts: { action: { type: string } }) => void> = []
 const mockHistory = {
   location: { state: { __TSR_index: 0 } },
@@ -164,9 +190,15 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     ...actual,
     useRouter: () => ({ history: mockHistory }),
     useNavigate: () => mockNavigate,
-    useParams: () => mockRouteParams,
-    useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
-      opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
+    useParams: (opts?: { select?: (params: Record<string, string | undefined>) => unknown }) =>
+      opts?.select ? opts.select(mockRouteParams) : mockRouteParams,
+    useRouterState: (opts?: { select?: (s: unknown) => unknown }) =>
+      opts?.select
+        ? opts.select({
+            location: { pathname: mockRoutePathname },
+            matches: [{ fullPath: mockRouteFullPath, params: mockRouteParams, search: {} }],
+          })
+        : undefined,
   }
 })
 
@@ -262,12 +294,12 @@ vi.mock('@renderer/components/sessions/session-context-menu', async () => {
       activity,
     }: {
       children: React.ReactNode
-      activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+      activity: { isActive: boolean; isAwaitingInput: boolean }
     }) => (
       <ContextMenu>
         <ContextMenuTrigger asChild>
           {isValidElement(children)
-            ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
+            ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive) } as any)
             : children}
         </ContextMenuTrigger>
       </ContextMenu>
@@ -455,6 +487,9 @@ beforeEach(() => {
   mockGetPlatform.mockReturnValue('web')
   mockRouteParams = {}
   mockRoutePathname = '/'
+  mockRouteFullPath = '/'
+  fullListReads.length = 0
+  mockServerReportsTotal = true
   mockHistorySubscribers = []
   setMockHistoryIndex(0)
   _resetApiTargetForTest()
@@ -672,7 +707,7 @@ describe('AppSidebar — agent rows', () => {
     expect(members.className).not.toContain('focus-within')
     expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
     expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
-    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', true)
   })
 
   it.each([
@@ -683,7 +718,9 @@ describe('AppSidebar — agent rows', () => {
     mockUserContext.agentMemberCount.mockReturnValue(count)
     renderWithProviders(<AppSidebar />)
     expect(screen.queryByTestId('sidebar-members-test-agent')).toBeNull()
-    expect(mockUseAgentMembers).not.toHaveBeenCalled()
+    // Every row mounts the stack (a member agent can make it appear), but a
+    // private agent's roster is never fetched.
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith(expect.anything(), true)
   })
 
   it('renders agent rows', () => {
@@ -853,6 +890,57 @@ describe('AppSidebar — agent rows', () => {
     const sessionItem = screen.getByTestId('session-item-session-1')
     expect(sessionItem).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
     expect(sessionItem).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent', sessionId: 'session-1' }))
+  })
+
+  describe('sessions under a row', () => {
+    const manySessions = (count: number) =>
+      Array.from({ length: count }, (_, i) => makeSession({ id: `session-${i + 1}`, name: `Session ${i + 1}` }))
+    const useAgentSessions = (count: number) => {
+      mockRouteParams = { slug: 'test-agent' }
+      mockUseSessions.mockImplementation((slug: string | null) => ({
+        data: slug === 'test-agent' ? manySessions(count) : [],
+        isLoading: false,
+      }))
+    }
+    const sessionRows = () => screen.queryAllByTestId(/^session-item-/).map((row) => row.getAttribute('data-testid'))
+
+    it('shows the first five and the total from the bounded read, without reading every session', () => {
+      useAgentSessions(40)
+      renderWithProviders(<AppSidebar />)
+      expect(sessionRows()).toEqual([1, 2, 3, 4, 5].map((n) => `session-item-session-${n}`))
+      expect(screen.getByRole('button', { name: 'Show all (40)' })).toBeInTheDocument()
+      expect(fullListReads).toEqual([])
+    })
+
+    it('offers no "Show all" for five sessions or fewer', () => {
+      useAgentSessions(5)
+      renderWithProviders(<AppSidebar />)
+      expect(sessionRows()).toHaveLength(5)
+      expect(screen.queryByRole('button', { name: /Show all/ })).not.toBeInTheDocument()
+      expect(fullListReads).toEqual([])
+    })
+
+    it('reads every session once "Show all" is pressed, and goes back to five on "Show less"', async () => {
+      const user = userEvent.setup()
+      // "Show less" scrolls the row back into view; jsdom has no layout to scroll.
+      Element.prototype.scrollIntoView = vi.fn()
+      useAgentSessions(8)
+      renderWithProviders(<AppSidebar />)
+      await user.click(screen.getByRole('button', { name: 'Show all (8)' }))
+      expect(fullListReads).toContain('test-agent')
+      expect(sessionRows()).toHaveLength(8)
+      await user.click(screen.getByRole('button', { name: 'Show less' }))
+      expect(sessionRows()).toHaveLength(5)
+    })
+
+    it('counts from the full list where the server does not report a total', () => {
+      mockServerReportsTotal = false
+      useAgentSessions(9)
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByRole('button', { name: 'Show all (9)' })).toBeInTheDocument()
+      expect(sessionRows()).toHaveLength(5)
+      expect(fullListReads).toContain('test-agent')
+    })
   })
 
   it('shows an unread dot on a session sub-item with hasUnreadNotifications', () => {

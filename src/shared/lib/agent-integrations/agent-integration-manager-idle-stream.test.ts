@@ -49,6 +49,9 @@ vi.mock('../chat-integrations/resolve-awaiting-input', () => ({ consumeOrCancelA
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 
 const manager = agentIntegrationManager as unknown as {
   connections: Map<string, unknown>

@@ -672,9 +672,9 @@ export function RemoteMcpRequestItem({
         {waitingForOAuth && 'Waiting for authorization…'}
         {waitingForOAuth && canCancelLogin && ', Cancel available'}
       </span>
-      <div ref={launchAreaRef} tabIndex={-1} className="mt-3 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+      <div ref={launchAreaRef} tabIndex={-1} className="mt-3 rounded-card focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
         {waitingForOAuth ? (
-          <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+          <div className="flex items-center gap-3 rounded-card border border-border bg-white px-4 py-3 dark:bg-background">
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
             <div className="flex-1">
               <p className="text-sm font-normal text-foreground">
@@ -738,9 +738,9 @@ export function RemoteMcpRequestItem({
             {setupGuide && (
               <McpSetupGuide guide={setupGuide} redirectUri={redirectUris?.preferred} />
             )}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border border-border bg-white px-4 py-3 dark:bg-background">
               <div className="flex min-w-0 grow basis-40 items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-control border border-border bg-white dark:bg-zinc-200">
                   <McpSourceIcon slug={connectCardSlug} />
                 </div>
                 <div className="min-w-0 flex-1">

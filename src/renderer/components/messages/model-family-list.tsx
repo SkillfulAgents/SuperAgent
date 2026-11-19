@@ -28,6 +28,7 @@ const VENDOR_LABELS: Record<string, string> = {
   kimi: 'Moonshot AI',
   deepseek: 'DeepSeek',
   gemini: 'Google',
+  qwen: 'Alibaba',
 }
 
 // Tab order: frontier labs first, open-weight labs after, so the overflow
@@ -77,8 +78,9 @@ export function vendorDefault(
  * keep one row per concrete model.
  */
 const LINEAGE_FAMILIES = new Set([
-  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor',
-  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-argon',
+  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor', 'muse-ember',
+  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-carbon', 'gemini-argon', 'gemini-hydrogen',
+  'gemini-neon',
 ])
 
 /**
@@ -137,6 +139,12 @@ function comparePriceDesc(a: ModelDefinition, b: ModelDefinition): number {
     bp.inputPerMtok - ap.inputPerMtok ||
     Number(!!b.isLatest) - Number(!!a.isLatest)
   )
+}
+
+/** Strongest-first by the catalog's `strengthRank` when both declare one, else by price. */
+function compareStrength(a: ModelDefinition, b: ModelDefinition): number {
+  if (a.strengthRank !== undefined && b.strengthRank !== undefined) return a.strengthRank - b.strengthRank
+  return comparePriceDesc(a, b)
 }
 
 /** The priciest member — what ranks a collapsed row among its siblings. */
@@ -312,7 +320,7 @@ function Row({
       data-locked={locked || undefined}
       onClick={onClick}
       className={cn(
-        'flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent',
+        'flex items-center justify-between gap-2 rounded-item px-2 py-1 text-left text-xs hover:bg-accent',
         indent && 'pl-7',
         isSelected && 'bg-accent'
       )}
@@ -395,7 +403,7 @@ function LineRow({
     <>
       <div
         className={cn(
-          'group flex items-center gap-1 rounded-sm pr-2 hover:bg-accent',
+          'group flex items-center gap-1 rounded-item pr-2 hover:bg-accent',
           selected && 'bg-accent'
         )}
       >
@@ -462,7 +470,7 @@ function LineRow({
             aria-label={`${label} versions`}
             aria-expanded={versionsOpen}
             onClick={() => setVersionsOpen((open) => !open)}
-            className="hidden shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground has-touch:inline-flex"
+            className="hidden shrink-0 rounded-icon p-1 text-muted-foreground hover:text-foreground has-touch:inline-flex"
           >
             <Settings className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
@@ -507,7 +515,8 @@ function LineRow({
  * …) collapse to one row with per-version pin chips revealed on hover/selection,
  * and non-lineage models whose labels share a versioned base ("GPT-5.6
  * Sol/Terra/Luna") collapse the same way; remaining models render one row each.
- * Rows list strongest-first, ranked by each row's priciest model; version chips
+ * Rows list strongest-first, ranked by each row's priciest model (or by the
+ * catalog's `strengthRank` where declared); version chips
  * within a row stay newest-first. When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
@@ -543,7 +552,7 @@ function groupVendorModels(
     lineage: LINEAGE_FAMILIES.has(family),
   }))
   // Strongest family first, ranked by its priciest version.
-  groups.sort((a, b) => comparePriceDesc(strongestOf(a.versions), strongestOf(b.versions)))
+  groups.sort((a, b) => compareStrength(strongestOf(a.versions), strongestOf(b.versions)))
   loose.sort(comparePriceDesc)
   return { families: groups, standalone: loose }
 }
@@ -620,7 +629,7 @@ export function ModelFamilyList({
           <div
             role="radiogroup"
             aria-label="Model vendor"
-            className="mx-1 my-1 flex items-center rounded-lg bg-muted p-0.5 text-muted-foreground"
+            className="mx-1 my-1 flex items-center rounded-item bg-muted p-0.5 text-muted-foreground"
           >
             {tabs.map((key) => {
               const isActive = key === activeTab
@@ -656,7 +665,7 @@ export function ModelFamilyList({
                         }
                       }}
                       className={cn(
-                        'inline-flex h-6 flex-1 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        'inline-flex h-6 flex-1 items-center justify-center rounded-control transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                         isActive && 'bg-background text-foreground shadow'
                       )}
                     >
@@ -680,7 +689,7 @@ export function ModelFamilyList({
                     // default to auto-pick: it only switches the list.
                     onClick={() => setPickedTab(MORE_TAB)}
                     className={cn(
-                      'inline-flex h-6 flex-1 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      'inline-flex h-6 flex-1 items-center justify-center rounded-control transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       activeTab === MORE_TAB && 'bg-background text-foreground shadow'
                     )}
                   >
@@ -852,7 +861,7 @@ export function ModelFamilyList({
       {dataWarning && resolved && selectionShown && (
         <div
           data-testid="model-data-use-warning"
-          className="mx-1 mt-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+          className="mx-1 mt-1 flex items-start gap-1.5 rounded-item bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
         >
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span>{dataWarning}</span>
@@ -861,7 +870,7 @@ export function ModelFamilyList({
       {webWarning && resolved && selectionShown && (
         <div
           data-testid="model-no-websearch-warning"
-          className="mx-1 mt-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+          className="mx-1 mt-1 flex items-start gap-1.5 rounded-item bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
         >
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span>{webWarning}</span>
@@ -879,7 +888,7 @@ export function ModelFamilyList({
                 data-testid="model-long-context-cliff-warning"
                 // px-2 (no margin) lines the text up with the row labels above.
                 // Same blues as the effort slider's accents (light/dark pair).
-                className="mt-1 flex cursor-default items-center gap-1 rounded-sm px-2 py-1 text-left text-[11px] text-[#007DED] dark:text-[#4EB3FF]"
+                className="mt-1 flex cursor-default items-center gap-1 rounded-item px-2 py-1 text-left text-[11px] text-[#007DED] dark:text-[#4EB3FF]"
               >
                 {/* The cliff is a family-wide trait (every GPT entry shares
                     it), so name the family's generation ("GPT-5 models")

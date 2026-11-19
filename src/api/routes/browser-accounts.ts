@@ -4,6 +4,9 @@ import { zValidator } from '@hono/zod-validator'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getViewerUserId } from '@shared/lib/auth/ownership'
 import { providerName } from '@shared/lib/browser-vault/providers'
+import { stopSessionWatches } from '@shared/lib/browser-vault/session-host'
+import { forgetAccountSessions, listAccountSessions } from '@shared/lib/browser-vault/session-service'
+import type { BrowserType } from '@shared/lib/browser-vault/vault-schemas'
 import {
   deleteAccount,
   getOwnedAccount,
@@ -26,7 +29,11 @@ import { AgentUser, Authenticated, getAgentId } from '../middleware/auth'
 const browserAccounts = new Hono()
 browserAccounts.use('*', Authenticated())
 
-function accountDto(account: VaultAccount, agents?: Array<{ slug: string; name: string }>) {
+function accountDto(
+  account: VaultAccount,
+  agents?: Array<{ slug: string; name: string }>,
+  sessions?: Array<{ browserType: BrowserType; capturedAt: Date }>,
+) {
   return {
     id: account.id,
     site: account.site,
@@ -40,6 +47,8 @@ function accountDto(account: VaultAccount, agents?: Array<{ slug: string; name: 
     lastUsedAt: account.lastUsedAt?.toISOString() ?? null,
     rejectedAt: account.rejectedAt?.toISOString() ?? null,
     ...(agents ? { agentSlugs: agents.map((agent) => agent.slug), agents } : {}),
+    // Which browser types hold a saved session of it, and since when: never the session.
+    ...(sessions ? { sessions: sessions.map((session) => ({ browserType: session.browserType, capturedAt: session.capturedAt.toISOString() })) } : {}),
   }
 }
 
@@ -49,7 +58,10 @@ const renameBodySchema = z.object({ label: z.string().trim().max(200).nullable()
 browserAccounts.get('/', async (c) => {
   c.header('Cache-Control', 'no-store')
   const accounts = await listOwnedAccounts(getViewerUserId(c))
-  return c.json({ accounts: accounts.map((account) => accountDto(account, account.agents)) })
+  const sessions = await listAccountSessions(accounts.map((account) => account.id))
+  return c.json({
+    accounts: accounts.map((account) => accountDto(account, account.agents, sessions.filter((session) => session.accountId === account.id))),
+  })
 })
 
 // GET /api/browser-accounts/:id/agents - The agents that may sign in with an account
@@ -74,7 +86,19 @@ browserAccounts.delete('/:id', async (c) => {
   const id = c.req.param('id')
   const deleted = await deleteAccount(viewer, id)
   if (!deleted) return c.json({ error: 'Saved account not found' }, 404)
+  stopSessionWatches(id)
   await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: id, action: 'deleted', details: { agentSlugs: deleted.agentSlugs } })
+  return c.json({ success: true })
+})
+
+// DELETE /api/browser-accounts/:id/sessions - Forget an account's saved sessions: the
+// next sign-in with it fills its values. Agents' browsers stay signed in as they are.
+browserAccounts.delete('/:id/sessions', async (c) => {
+  const viewer = getViewerUserId(c)
+  const id = c.req.param('id')
+  if (!(await forgetAccountSessions(viewer, id))) return c.json({ error: 'Saved account not found' }, 404)
+  stopSessionWatches(id)
+  await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: id, action: 'updated', details: { sessionsForgotten: true } })
   return c.json({ success: true })
 })
 
@@ -85,6 +109,7 @@ browserAccounts.delete('/:id/agents/:agentSlug', async (c) => {
   const id = c.req.param('id')
   const agentSlug = c.req.param('agentSlug')
   if (!(await revokeAccount({ owner: viewer, accountId: id, agentSlug }))) return c.json({ error: 'Grant not found' }, 404)
+  stopSessionWatches(id, agentSlug)
   await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: id, action: 'unassigned', details: { agentSlug } })
   return c.json({ success: true })
 })

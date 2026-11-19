@@ -14,28 +14,29 @@ export class ClaudeSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = ANTHROPIC_CATALOG_DEFAULT_MODELS
   protected readonly settingsKeyField = 'claudeSubscriptionToken' as const
   protected readonly envVarName = 'CLAUDE_CODE_OAUTH_TOKEN'
-  override toolSearchEnv() { return 'true' as const }
+  override async toolSearchEnv() { return 'true' as const }
   override readonly supportsDirectApi = false
 
   // Optional connections never adopt ambient host or legacy settings credentials.
-  override getEffectiveApiKey(): string | undefined {
+  protected override async ambientSettings() { return undefined }
+  protected override effectiveApiKeyFrom(): string | undefined {
     return this.configuration?.apiKeys.claudeSubscriptionToken
   }
 
-  override getApiKeyStatus() {
-    return this.getEffectiveApiKey()
+  override apiKeyStatusFrom() {
+    return this.effectiveApiKeyFrom()
       ? { isConfigured: true, source: 'settings' as const }
       : { isConfigured: false, source: 'none' as const }
   }
 
-  createClient(): Anthropic {
+  async createClientFrom(): Promise<Anthropic> {
     throw new Error('Claude Subscription supports agent sessions only. Choose an API-capable global summarizer in Settings → Model Providers.')
   }
 
   getBuiltinCatalog() { return CLAUDE_BARE_CATALOG }
 
   async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
-    return { CLAUDE_CODE_OAUTH_TOKEN: this.getEffectiveApiKey() }
+    return { CLAUDE_CODE_OAUTH_TOKEN: await this.getEffectiveApiKey() }
   }
 
   async validateKey(): Promise<{ valid: boolean; error?: string }> {
@@ -43,7 +44,7 @@ export class ClaudeSubscriptionLlmProvider extends BaseLlmProvider {
     return { valid: false, error: 'Claude Subscription authentication is checked when you send an agent message. Save the token and start a session to verify it.' }
   }
 
-  protected override parseErrorResponseOverride(status: number | undefined, body: unknown, apiErrorCode?: string): ProviderErrorPresentation | null {
+  protected override async parseErrorResponseOverride(status: number | undefined, body: unknown, apiErrorCode?: string): Promise<ProviderErrorPresentation | null> {
     const message = extractErrorMessage(body)
     const error = body && typeof body === 'object' && 'error' in body ? body.error : body
     const authenticationError = error && typeof error === 'object' && 'type' in error && error.type === 'authentication_error'

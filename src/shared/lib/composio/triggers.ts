@@ -26,7 +26,7 @@ async function triggerFetch<T>(
   endpoint: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = getPlatformAccessToken()
+  const token = await getPlatformAccessToken()
   if (!token) {
     throw new ComposioTriggerError('Platform access token not available', 401)
   }

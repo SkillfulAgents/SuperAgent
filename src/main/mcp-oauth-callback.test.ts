@@ -77,4 +77,21 @@ describe('parseMcpOAuthCompletionResponse', () => {
       error: 'OAuth failed',
     })
   })
+
+  it('reports the reason the page carries for a failure', () => {
+    // As the callback route renders it: the payload as escaped script JSON,
+    // then the same payload again, JSON-encoded, for localStorage.
+    const payload = { type: 'mcp-oauth-callback', state: 's', success: false, error: 'This sign-in has expired or was already used. Start the "connection" again' }
+    const html = `
+      <html><body><script>
+        const payload = ${JSON.stringify(payload).replace(/</g, '\\u003c')};
+        localStorage.setItem('superagent.mcp-oauth-callback', ${JSON.stringify(JSON.stringify(payload))});
+      </script><p>OAuth failed: ${payload.error}. You can close this window.</p></body></html>
+    `
+    expect(parseMcpOAuthCompletionResponse(html)).toEqual({
+      success: false,
+      mcpId: null,
+      error: 'This sign-in has expired or was already used. Start the "connection" again',
+    })
+  })
 })

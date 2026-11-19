@@ -99,10 +99,16 @@ describe('skillset install', () => {
     expectWithinBudget('skillset installAgentFromSkillset', measurement, {
       // Includes one source-directory read to distinguish a real second
       // instructions file from the AGENTS.md created with the new agent,
-      // and one index.json read for the template's avatar.
+      // and one index.json read for the template's avatar. This fixture has
+      // no index.json, so that read also checks whether the cache folder is absent
+      // before attempting a restore.
       // Legacy templates additionally read, write and remove CLAUDE.md.
       // Each atomic write counts its data write and its two fsyncs.
-      totalOps: instructionsFile === 'AGENTS.md' ? 124 : 131,
+      // One readFile is the new agent's actor first using its session index:
+      // a session-metadata.json still in the workspace is taken in.
+      // The template hash streams each file: a stat and a read stream where a
+      // whole-file read was one op.
+      totalOps: instructionsFile === 'AGENTS.md' ? 167 : 174,
       // Recorded 430–490 ms on an idle machine; ~2× that, as the home
       // profiles are budgeted, so runner load cannot trip it while a
       // serialised copy path still would.

@@ -21,13 +21,12 @@ import {
   createNotification,
   listNotifications,
   countNotifications,
-  getUnreadCount,
+  getNotificationCounts,
   getSessionIdsWithUnreadNotifications,
   getUnreadNotificationsByAgents,
   getUnreadNotificationPreviewsByAgents,
   getSessionIdsWithUnreadMentions,
   getUnreadMentionsByAgents,
-  getUnreadMentionCount,
   markSessionNotificationsRead,
   markAllAsRead,
   deleteMessageNotifications,
@@ -73,8 +72,8 @@ describe('targeted mention notifications', () => {
     expect(await listNotifications(50, SARA)).toEqual([])
     expect(await countNotifications(MIKE)).toBe(1)
     expect(await countNotifications(SARA)).toBe(0)
-    expect(await getUnreadCount(MIKE)).toBe(1)
-    expect(await getUnreadCount(SARA)).toBe(0)
+    expect((await getNotificationCounts(MIKE)).count).toBe(1)
+    expect((await getNotificationCounts(SARA)).count).toBe(0)
   })
 
   it("dots the session for its recipient only, and still shows everyone's shared rows", async () => {
@@ -114,8 +113,8 @@ describe('targeted mention notifications', () => {
     await mention(SARA)
 
     expect(await markSessionNotificationsRead(SESSION, SARA)).toBe(1)
-    expect(await getUnreadCount(SARA)).toBe(0)
-    expect(await getUnreadCount(MIKE)).toBe(1)
+    expect((await getNotificationCounts(SARA)).count).toBe(0)
+    expect((await getNotificationCounts(MIKE)).count).toBe(1)
 
     await markAllAsRead(SARA)
     const [mikeRow] = await testDb.select().from(notifications).where(eq(notifications.recipientUserId, MIKE))
@@ -129,12 +128,12 @@ describe('targeted mention notifications', () => {
     expect(await getSessionIdsWithUnreadMentions(AGENT, MIKE)).toEqual(new Set([SESSION]))
     expect(await getSessionIdsWithUnreadMentions(AGENT, SARA)).toEqual(new Set())
     expect((await getUnreadMentionsByAgents([AGENT, 'other'], MIKE)).get(AGENT)).toEqual(new Set([SESSION]))
-    expect(await getUnreadMentionCount(MIKE)).toBe(1)
-    expect(await getUnreadMentionCount(SARA)).toBe(0)
+    expect((await getNotificationCounts(MIKE)).mentions).toBe(1)
+    expect((await getNotificationCounts(SARA)).mentions).toBe(0)
 
     await markSessionNotificationsRead(SESSION, MIKE)
     expect(await getSessionIdsWithUnreadMentions(AGENT, MIKE)).toEqual(new Set())
-    expect(await getUnreadMentionCount(MIKE)).toBe(0)
+    expect((await getNotificationCounts(MIKE)).mentions).toBe(0)
   })
 
   it('holds one row per person per message', async () => {

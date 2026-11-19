@@ -47,7 +47,7 @@ userSettingsRouter.put('/', async (c) => {
   }
   // Which voice ids exist is the configured provider's business.
   const ttsVoice = voiceFields.data.voice?.ttsVoice
-  if (ttsVoice && !getConfiguredVoiceProvider()?.hasTtsVoice(ttsVoice)) {
+  if (ttsVoice && !(await getConfiguredVoiceProvider())?.hasTtsVoice(ttsVoice)) {
     return c.json({ error: 'Unknown text-to-speech voice' }, 400)
   }
   const updated = await updateUserSettings(userId, body)

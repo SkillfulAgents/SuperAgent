@@ -31,6 +31,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 }))
 vi.mock('@shared/lib/account-providers', () => ({
   getAccountProviderByName: () => ({
+    credentialsFrom: () => ({ provider: 'composio' }),
     getConnection: async () => ({ status: 'ACTIVE' }),
     makeApiCall: async (call: { method: string; targetUrl: string }) => {
       upstreamCalls.push({ method: call.method, targetUrl: call.targetUrl })
@@ -594,7 +595,7 @@ describe('a deny with a reason', () => {
     { proxy: 'MCP', call: mcpCall },
   ])('the $proxy proxy tells the agent what the user typed, and a plain deny keeps its message', async ({ call }) => {
     const denied = call()
-    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny', 'Use the shared folder')
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny', { reason: 'Use the shared folder' })
     expect((await (await denied).json() as { message: string }).message).toBe('Request denied by user. They said: "Use the shared folder"')
 
     const plain = call()

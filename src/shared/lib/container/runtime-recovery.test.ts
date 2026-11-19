@@ -68,7 +68,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
   const deps: RuntimeRecoveryDeps = {
     agentId: 'agent-1',
     isStopping: () => false,
-    getClient: () => client,
+    getClient: async () => client,
     restartAgent,
     ensureRunning,
     snapshotMidTurnSessions: () => {

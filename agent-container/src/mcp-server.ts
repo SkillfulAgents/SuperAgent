@@ -42,7 +42,7 @@ import { requestBrowserInputTool } from './tools/request-browser-input'
 import { createRequestLoginTool } from './tools/request-login'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { createBrowserTools } from './tools/browser'
-import { computerUseTools } from './tools/computer-use'
+import { COMPUTER_USE_SERVER, computerUseTools } from './tools/computer-use'
 import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
@@ -51,16 +51,18 @@ import { createWidgetTool } from './tools/create-widget'
 import { refreshWidgetTool } from './tools/refresh-widget'
 import { listWidgetsTool } from './tools/list-widgets'
 import { listAgentsTool } from './tools/agents/list-agents'
+import { listAgentMembersTool } from './tools/agents/list-agent-members'
 import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
 import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
 import { downloadAgentFileTool } from './tools/agents/download-agent-file'
-import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
+import { listAvailableIntegrationProvidersTool } from './tools/chat/list-available-integration-providers'
 import { listAgentIntegrationsTool } from './tools/integrations/list-agent-integrations'
 import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
-import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
+import { addAgentIntegrationTool } from './tools/chat/add-agent-integration'
+import { authorizeAgentIntegrationTool } from './tools/chat/authorize-agent-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
 import { meetingTools } from './tools/meetings/meeting-tools'
 
@@ -132,7 +134,7 @@ export function createBrowserMcpServer(tools: ReturnType<typeof createBrowserToo
  */
 export function createComputerUseMcpServer(options: { alwaysLoad?: boolean } = {}) {
   return createSdkMcpServer({
-    name: 'computer-use',
+    name: COMPUTER_USE_SERVER,
     version: '1.0.0',
     tools: computerUseTools,
     ...(options.alwaysLoad ? { alwaysLoad: true } : {}),
@@ -167,6 +169,7 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
     version: '1.0.0',
     tools: [
       listAgentsTool,
+      listAgentMembersTool,
       createAgentTool,
       makeInvokeAgentTool(getCallerSessionId),
       getSessionsTool,
@@ -187,11 +190,12 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
     name: 'chat',
     version: '1.0.0',
     tools: [
-      listAvailableChatProvidersTool,
+      listAvailableIntegrationProvidersTool,
       listAgentIntegrationsTool,
       listChatUsersTool,
       listChatChannelsTool,
-      addChatIntegrationTool,
+      addAgentIntegrationTool,
+      authorizeAgentIntegrationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
   })

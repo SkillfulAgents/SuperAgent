@@ -121,7 +121,7 @@ describe('OIDC callback compatibility', () => {
   })
 
   it('links the existing unverified password account and keeps subject identity stable across email changes', async () => {
-    const local = await getAuth().api.signUpEmail({
+    const local = await (await getAuth()).api.signUpEmail({
       body: { name: 'Local Name', email: 'ada@example.com', password: 'ExistingPassword123!' },
     })
     expect(local.user.emailVerified).toBe(false)
@@ -209,7 +209,7 @@ describe('OIDC rejection boundaries', () => {
 
   it('recovers after failed first-use discovery without restarting the app', async () => {
     oidc.state.discoveryUnavailable = true
-    await getAuth().$context
+    await (await getAuth()).$context
     expect(oidc.state.discoveryRequests).toBe(0)
     const failed = await request('sign-in/social', { provider: 'platform', callbackURL: `${BASE}/` })
     expect(failed.status).toBe(404)
@@ -273,7 +273,7 @@ describe('direct provider ID-token sign-in', () => {
     // Approval is disabled on platform-controlled deployments. Use a plain
     // auth deployment to exercise the admin approval hook itself.
     vi.stubEnv('PLATFORM_TOKEN', '')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'First Admin', email: 'admin@example.com', password: 'FirstAdminPassword123!' },
     })
     authSettings.requireAdminApproval = true
@@ -315,13 +315,13 @@ describe('platform role on join', () => {
     return responseCookies(finish)
   }
   async function seedOtherMember() {
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Earlier Member', email: 'earlier@example.com', password: 'EarlierPassword123!' },
     })
   }
 
   it('promotes nobody for arriving first outside a Platform sign-in', async () => {
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Earliest', email: 'earliest@example.com', password: 'EarliestPassword123!' },
     })
     expect(await roleOf('earliest@example.com')).toBe('user')
@@ -353,7 +353,7 @@ describe('platform role on join', () => {
 
   it('keeps the role of an existing password user who links Platform', async () => {
     await seedOtherMember()
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'ExistingPassword123!' },
     })
     await signIn('owner')
@@ -383,7 +383,7 @@ describe('platform role on join', () => {
   })
 
   it('does not report a missing role when linking an existing user', async () => {
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'ExistingPassword123!' },
     })
     await signIn(undefined)

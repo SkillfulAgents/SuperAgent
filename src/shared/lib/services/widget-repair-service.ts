@@ -1,11 +1,10 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { getEffectiveModels } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import { getAgentOwnerUserId } from './agent-owner'
-import { readAgentPreferences } from './agent-preferences-service'
+import { resolveSessionDefaults } from './session-defaults'
 import { getSecretEnvVars } from './secrets-service'
 import { readWidgetLogTail } from './widget-service'
 
@@ -171,13 +170,15 @@ async function startRepairSession(
   try {
     const actor = agentRegistry.get(agentSlug)
     await actor.container.start()
-    const [availableEnvVars, agentPrefs, logTail] = await Promise.all([
+    // One read of the settings for this repair's session start.
+    const settings = await getSettings()
+    const [availableEnvVars, launch, logTail] = await Promise.all([
       getSecretEnvVars(agentSlug),
-      readAgentPreferences(agentSlug),
+      resolveSessionDefaults(settings, agentSlug),
       readWidgetLogTail(agentSlug, widgetSlug),
     ])
-    const models = getEffectiveModels()
-    const resolved = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
+    const { models } = launch
+    const resolved = await launch.resolve({})
 
     const session = await actor.sessions.start({
       create: {

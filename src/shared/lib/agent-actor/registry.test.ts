@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
-import { getSessionSummaryCacheSlot } from '@shared/lib/services/session-summary-cache'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { ReviewManager } from '@shared/lib/proxy/review-manager'
 import { AccountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
@@ -21,13 +20,16 @@ import { createRecordingHostPort } from './testing/recording-host-port'
 // they are the actor's own and are what the tests below exercise.
 vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {} } }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
-vi.mock('@shared/lib/services/session-service', () => ({}))
+vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(async () => null),
+  readAgentSlashCommands: vi.fn(async () => []),
+}))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(),
   appendAssistantEntry: vi.fn(),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@shared/lib/services/session-summary-cache')>()),
+vi.mock('@shared/lib/services/session-activity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-activity')>()),
   recordSessionActivity: vi.fn(),
 }))
 vi.mock('./local-transcript-ops', () => ({
@@ -92,11 +94,13 @@ function fakeDeps() {
     fetch: vi.fn(async (_path: string, _init?: RequestInit) => new Response(null, { status: 200 })),
     getHostAuthHeaders: vi.fn().mockReturnValue({ 'x-host': '1' }),
     getWebSocketBaseUrl: vi.fn().mockReturnValue('ws://127.0.0.1:4321'),
+    releaseSession: vi.fn(async (_sessionId: string) => true),
+    deleteSession: vi.fn(async (_sessionId: string) => true),
   }
   // One fake runtime per slug, created the way the real host creates them: on first use.
   const fakeRuntime = (slug: string) => ({
     slug,
-    getClient: vi.fn().mockReturnValue(client),
+    getClient: vi.fn().mockResolvedValue(client),
     ensureRunning: vi.fn().mockResolvedValue(client),
     getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
     keepAlive: vi.fn(),
@@ -104,6 +108,8 @@ function fakeDeps() {
     idleSince: vi.fn<() => number | null>().mockReturnValue(null),
     getHealthWarnings: vi.fn().mockReturnValue([]),
     isStale: vi.fn().mockReturnValue(false),
+    holdsDrives: vi.fn().mockReturnValue(true),
+    isStarting: vi.fn().mockReturnValue(false),
     markStale: vi.fn(),
     restartContainer: vi.fn().mockResolvedValue(undefined),
   })
@@ -165,6 +171,7 @@ function fakeDeps() {
     containerHost,
     runtimes,
     client,
+    host,
     reviewManager,
     inputManager,
     transitions,
@@ -221,12 +228,8 @@ describe('createAgentRegistry', () => {
     const registry = createAgentRegistry(fake.deps)
     expect(fake.containerHost.attachAgentWorkspaces).toHaveBeenCalledTimes(1)
     const access = fake.containerHost.attachAgentWorkspaces.mock.calls[0][0] as {
-      files: (slug: string) => unknown
       instructions: (slug: string) => Promise<string | null>
     }
-    // The same file operations the actor hands out, for the same agent.
-    expect(access.files('a')).toBe(registry.get('a').files)
-    expect(access.files('b')).not.toBe(registry.get('a').files)
     // Instructions are the actor's config document.
     const getDoc = vi.spyOn(registry.get('a').config, 'get').mockResolvedValue('---\nname: A\n---\n')
     expect(await access.instructions('a')).toBe('---\nname: A\n---\n')
@@ -577,7 +580,7 @@ describe('createAgentRegistry', () => {
       scopeDescriptions: {},
     }
 
-    it('settles every open request, rejects every parked call, and forgets the grants and the summary', async () => {
+    it('settles every open request, rejects every parked call, and forgets the grants and what its index learned', async () => {
       const registry = createAgentRegistry(fake.deps)
       const actor = registry.get('a') as LocalAgentActor
 
@@ -587,8 +590,7 @@ describe('createAgentRegistry', () => {
       const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' }, { waitId: 'wait-1' })
       const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' }, { waitId: 'wait-2' })
       await actor.inputs.computerUse.grant('use_host_shell', 'once')
-      await actor.inputs.computerUse.setGrabbedApp('Calculator')
-      getSessionSummaryCacheSlot(actor.store).revision = 7
+      await actor.inputs.computerUse.setActiveApp('s1', 'Calculator')
       expect((await actor.live()).openRequests).toHaveLength(4)
       fake.transitions.mockClear()
       const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
@@ -622,11 +624,11 @@ describe('createAgentRegistry', () => {
       expect(freshLive.openRequests).toEqual([])
       expect(freshLive.pendingReviews).toEqual([])
       expect(await fresh.inputs.recentResolution('q1')).toBeUndefined()
-      expect(fresh.state.computerUse.grabbed()).toBeUndefined()
-      expect(fresh.state.computerUse.activeGrants()).toEqual([])
+      expect(fresh.state.computerUse.activeApp('s1')).toBeUndefined()
+      expect(await fresh.state.computerUse.activeGrants()).toEqual([])
       expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
       expect(fresh.state.mcpReauth.openEntryIds()).toEqual([])
-      expect(getSessionSummaryCacheSlot(fresh.store).revision).toBe(0)
+      expect(fresh.store.index).not.toBe(actor.store.index)
       // And the old handle holds nothing either.
       expect((await actor.live()).openRequests).toEqual([])
       expect(actor.state.reviews.settlerIds()).toEqual([])
@@ -696,14 +698,18 @@ describe('createAgentRegistry', () => {
   })
 
   describe('a read → decide → write is one op', () => {
-    it('container.invalidate marks a running container stale, restarts it when asked, and leaves a stopped one', async () => {
+    it('container.invalidate marks a container holding its drives stale, restarts a running one when asked, and leaves the rest', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       const runtime = fake.containerHost.runtime('a')
       expect(await actor.container.invalidate()).toBe('marked-stale')
       expect(runtime.markStale).toHaveBeenCalledOnce()
       expect(await actor.container.invalidate({ restart: true })).toBe('restarted')
       expect(runtime.restartContainer).toHaveBeenCalledOnce()
-      runtime.getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
+      // A start past its drive read comes up stale rather than being torn down.
+      runtime.isStarting.mockReturnValue(true)
+      expect(await actor.container.invalidate({ restart: true })).toBe('marked-stale')
+      expect(runtime.restartContainer).toHaveBeenCalledOnce()
+      runtime.holdsDrives.mockReturnValue(false)
       expect(await actor.container.invalidate({ restart: true })).toBe('not-running')
       expect(runtime.restartContainer).toHaveBeenCalledOnce()
     })
@@ -766,19 +772,32 @@ describe('createAgentRegistry', () => {
       })
     })
 
-    it('computerUse.releaseGrab forgets the grab, revokes the app and tells the session\'s viewers', async () => {
+    it('computerUse.releaseApp forgets the grab, revokes the app and tells the session\'s viewers', async () => {
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       await actor.inputs.computerUse.grant('use_application', 'always', 'Calculator')
-      await actor.inputs.computerUse.setGrabbedApp('Calculator')
+      await actor.inputs.computerUse.setActiveApp('s1', 'Calculator')
       const emit = vi.spyOn(actor.state.sessions, 'emit')
       const revoke = vi.spyOn(actor.state.computerUse, 'revoke')
 
-      expect(await actor.inputs.computerUse.releaseGrab('s1')).toEqual({ appName: 'Calculator' })
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: 'Calculator' })
 
-      expect(actor.state.computerUse.grabbed()).toBeUndefined()
+      expect(actor.state.computerUse.activeApp('s1')).toBeUndefined()
       expect(revoke).toHaveBeenCalledWith('use_application', 'Calculator')
-      expect(emit).toHaveBeenCalledWith('s1', { type: 'computer_use_grab_changed', app: null })
-      expect(await actor.inputs.computerUse.releaseGrab('s1')).toEqual({ appName: undefined })
+      expect(emit).toHaveBeenCalledWith('s1', { type: 'computer_use_app_changed', app: null })
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: undefined })
+    })
+
+    it('computerUse.releaseApp takes back the app of the session it is asked for, not another session\'s', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      await actor.inputs.computerUse.setActiveApp('s1', 'Safari')
+      await actor.inputs.computerUse.setActiveApp('s2', 'Mail')
+      const revoke = vi.spyOn(actor.state.computerUse, 'revoke')
+
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: 'Safari' })
+
+      expect(revoke).toHaveBeenCalledWith('use_application', 'Safari')
+      expect(revoke).not.toHaveBeenCalledWith('use_application', 'Mail')
+      expect(actor.state.computerUse.activeApp('s2')).toBe('Mail')
     })
 
     it('a re-auth card answered with another connection releases its parked calls, or settles the card when none are parked', async () => {
@@ -804,11 +823,13 @@ describe('createAgentRegistry', () => {
       expect((registry.get('b') as LocalAgentActor).state.accountReauth.openEntryIds()).toHaveLength(1)
     })
 
-    it('deleting sessions lets go of their streams first; a batch keeps a session running now', async () => {
+    it('deleting sessions lets go of the container and the stream before the files; a batch keeps a session running now', async () => {
       const sessionService = fake.deps.sessionService as unknown as Record<string, unknown>
       const order: string[] = []
       sessionService.deleteSession = vi.fn(async () => { order.push('delete'); return true })
       sessionService.deleteSessionsBatch = vi.fn(async (_store: unknown, ids: string[]) => { order.push(`delete-batch ${ids.join(',')}`); return ids })
+      fake.client.releaseSession.mockImplementation(async (sessionId) => { order.push(`release ${sessionId}`); return true })
+      fake.client.deleteSession.mockImplementation(async (sessionId) => { order.push(`forget ${sessionId}`); return true })
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       vi.spyOn(actor.state.sessions, 'unsubscribe').mockImplementation((sessionId) => { order.push(`unsubscribe ${sessionId}`) })
       // Went active after the caller listed it as idle.
@@ -817,7 +838,44 @@ describe('createAgentRegistry', () => {
       await actor.sessions.delete('s1')
       expect(await actor.sessions.deleteMany(['s2', 's3', 's4'])).toEqual(['s2', 's3'])
 
-      expect(order).toEqual(['unsubscribe s1', 'delete', 'unsubscribe s2', 'unsubscribe s3', 'delete-batch s2,s3'])
+      expect(order).toEqual([
+        'unsubscribe s1', 'release s1', 'delete', 'forget s1',
+        'unsubscribe s2', 'release s2', 'delete-batch s2', 'forget s2',
+        'unsubscribe s3', 'release s3', 'delete-batch s3', 'forget s3',
+      ])
+    })
+
+    it('deleting a session mid-turn tells its viewers and the feed the turn ended, then ends their wires', async () => {
+      const sessionService = fake.deps.sessionService as unknown as Record<string, unknown>
+      sessionService.deleteSession = vi.fn(async () => true)
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      actor.state.sessions.markActive('s1')
+      const wire = (await actor.messages.follow('s1', {})).getReader()
+      fake.host.sends.length = 0
+
+      await actor.sessions.delete('s1')
+
+      expect(fake.client.releaseSession).toHaveBeenCalledExactlyOnceWith('s1')
+      const frames: Array<Record<string, unknown>> = []
+      for (let next = await wire.read(); !next.done; next = await wire.read()) frames.push(JSON.parse(next.value.data))
+      expect(frames.map((frame) => frame.type)).toEqual(['connected', 'session_idle'])
+      expect(frames[1]).toMatchObject({ isActive: false, outcome: 'cancelled' })
+      expect(fake.host.sent('global')).toContainEqual(expect.objectContaining({ type: 'session_idle', sessionId: 's1' }))
+      expect(actor.state.sessions.isActive('s1')).toBe(false)
+    })
+
+    it('a delete the container refused says nothing: the session stays', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      actor.state.sessions.markActive('s1')
+      const wire = (await actor.messages.follow('s1', {})).getReader()
+      await wire.read()
+      fake.host.sends.length = 0
+      fake.client.releaseSession.mockRejectedValueOnce(new Error('unreachable'))
+
+      await expect(actor.sessions.delete('s1')).rejects.toThrow('Container did not drop')
+
+      expect(fake.host.sent('global')).toEqual([])
+      await wire.cancel()
     })
   })
 })

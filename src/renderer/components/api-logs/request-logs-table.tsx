@@ -233,7 +233,7 @@ export function RequestLogsTable({
 
   if (entries.length === 0 && page === 0) {
     return (
-      <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+      <div className="rounded-card border border-dashed p-8 text-center text-sm text-muted-foreground">
         {emptyMessage}
       </div>
     )

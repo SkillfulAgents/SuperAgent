@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ProviderSettings } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import { CLAUDE_DEFAULT_MODEL_OPTIONS, OPENROUTER_CATALOG } from './builtin-catalogs'
 import { OPENROUTER_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -147,12 +147,12 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   // and searched `anthropic/*` slugs. A session that switches model mid-run
   // keeps its env; the CLI retries a refused request without deferred tools
   // (2.1.304+), so a wrong guess costs one request, not the turn.
-  override toolSearchEnv(model?: string): 'true' | 'false' {
+  override async toolSearchEnv(model?: string): Promise<'true' | 'false'> {
     return model && /^(anthropic\/|claude-)/.test(model) ? 'true' : 'false'
   }
 
-  createClient(): Anthropic {
-    const apiKey = this.getEffectiveApiKey()
+  async createClientFrom(settings?: ProviderSettings): Promise<Anthropic> {
+    const apiKey = this.effectiveApiKeyFrom(await this.ambientSettings(settings))
     if (!apiKey) throw new Error('OpenRouter API key not configured')
     // OpenRouter uses the Anthropic-compatible API with Bearer auth.
     return new Anthropic({
@@ -165,11 +165,11 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
     return OPENROUTER_CATALOG
   }
 
-  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
+  async getContainerEnvVars(_agent?: AgentIdentity, settings?: ProviderSettings): Promise<Record<string, string | undefined>> {
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: OPENROUTER_BASE_URL,
-      ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
+      ANTHROPIC_AUTH_TOKEN: this.effectiveApiKeyFrom(await this.ambientSettings(settings)),
     }
   }
 
@@ -191,7 +191,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   }
 
   override async searchModels(query: string): Promise<ModelSearchResult[]> {
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) throw new Error('OpenRouter API key not configured')
 
     const params = new URLSearchParams()

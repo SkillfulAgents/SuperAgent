@@ -9,10 +9,9 @@
  *
  * The work starts at once, exactly as with `void`: a function is called
  * synchronously. A rejection is logged and reported, tagged with `name`, and
- * goes no further. The work is tracked until it settles, so a test can wait
- * for it with `backgroundSettled()`.
+ * goes no further. The work is tracked until it settles (a failure, until it
+ * has been reported), so a test can wait for it with `backgroundSettled()`.
  */
-import { captureException } from './error-reporting'
 
 interface Entry {
   name: string
@@ -45,18 +44,27 @@ export function background(work: PromiseLike<unknown> | (() => PromiseLike<unkno
     collected.unregister(entry)
     leave(entry)
   }
-  const tracked = Promise.resolve(started).then(settle, (error: unknown) => {
+  const tracked = Promise.resolve(started).then(settle, async (error: unknown) => {
+    await reportFailure(name, error)
     settle()
-    reportFailure(name, error)
   })
   const entry: Entry = { name, work: new WeakRef(tracked) }
   inFlight.add(entry)
   collected.register(tracked, entry, entry)
 }
 
-function reportFailure(name: string, error: unknown): void {
+/** Never rejects: reporting a failure must not become one. */
+async function reportFailure(name: string, error: unknown): Promise<void> {
   console.error(`[background] ${name} failed:`, error)
-  captureException(error, { tags: { background: name } })
+  try {
+    // Loaded on the first failure, not with this module: error reporting brings
+    // the Sentry SDK, which most of this module's importers never otherwise
+    // load (every unit test gets AppState, whose listeners run through here).
+    const { captureException } = await import('./error-reporting')
+    captureException(error, { tags: { background: name } })
+  } catch (reportError) {
+    console.error(`[background] reporting ${name} failed:`, reportError)
+  }
   // A test run still fails on it, as it did when this was an unhandled rejection.
   if (process.env.VITEST) queueMicrotask(() => { throw error })
 }

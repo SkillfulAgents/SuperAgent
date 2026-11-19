@@ -5,10 +5,12 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
-import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
+import type { HealthCheckResult } from '@shared/lib/container/types'
+import type { RuntimeOptions, StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionOrigin, SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { UnansweredReason } from '@shared/lib/tools/types'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import type { AgentAvatar } from './agent-avatar'
 
@@ -29,6 +31,8 @@ export interface ApiAgent {
   name: string
   /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
   teamBrain?: { volumeId: string }
+  /** The agent of a Team Brain set-up still in progress: no list shows it. */
+  teamBrainSettingUp?: true
   /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
   avatar?: AgentAvatar | null
   description?: string
@@ -145,7 +149,7 @@ export interface ApiDiscoverableAgent {
 /**
  * Session response from API
  */
-export interface ApiSession {
+export interface ApiSession extends RuntimeOptions {
   id: string
   agentSlug: string
   name: string
@@ -174,18 +178,15 @@ export interface ApiSession {
   // parent's metadata on the single-session GET; undefined when the parent is gone.
   forkedFromSessionId?: string
   forkedFromSessionName?: string
-  // Last effort level used on this session (seeds the composer selector)
-  effort?: EffortLevel
-  // Last processing speed used on this session (seeds the composer selector)
-  speed?: SpeedLevel
-  // Last model used on this session (seeds the composer selector)
-  model?: string
-  llmProviderId?: string | null
+  // The inherited RuntimeOptions are the last ones used on this session; they
+  // seed the composer selector.
   // Present when the session has a pending scheduled wake (long sleep):
   // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  /** Auth mode, list only: the people who wrote in it, in the order they first did. */
+  participants?: ApiMessageSender[]
 }
 
 // ============================================================================
@@ -210,6 +211,10 @@ export interface ApiToolCall {
   }
   /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
   backgroundTaskId?: string
+  /** A TaskCreate call's description as the CLI saved it (CLI 2.1.317+). */
+  taskDescription?: string
+  /** An AskUserQuestion call's questions that ended without an answer, by question text. */
+  unansweredQuestions?: Record<string, UnansweredReason>
 }
 
 /**
@@ -236,6 +241,8 @@ export interface ApiMessage {
   toolCalls: ApiToolCall[]
   createdAt: Date
   sender?: ApiMessageSender
+  /** Set instead of `sender` when another agent sent the message. */
+  agentSender?: Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
   /**
    * Present on a message an integration delivered (Slack, Linear, …). Written
    * by the host beside the transcript, never parsed from the message text, so
@@ -458,7 +465,7 @@ export interface ApiSkillsetConfig {
 /**
  * Scheduled task response from API
  */
-export interface ApiScheduledTask {
+export interface ApiScheduledTask extends StoredRuntimeOptions {
   id: string
   agentSlug: string
   scheduleType: 'at' | 'cron'
@@ -473,10 +480,6 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
-  llmProviderId?: string | null
-  model: string | null
-  effort: string | null
-  speed: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null

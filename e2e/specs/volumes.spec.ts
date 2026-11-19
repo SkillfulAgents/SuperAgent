@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createAgent, deleteAgentViaApi, uniqueName } from '../helpers/agents'
+import { openHomeSection } from '../helpers/agent-home'
 
 test('reuses a saved volume, edits its definition, and detaches without deleting files', async ({ page, request }, testInfo) => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shared-volume-e2e-')))
@@ -32,6 +33,7 @@ test('reuses a saved volume, edits its definition, and detaches without deleting
     await expect(page.getByTestId('saved-volume-row').filter({ hasText: `${renamed} draft` })).toBeVisible()
 
     await page.goto(`/agents/${first.slug}`)
+    await openHomeSection(page, 'Drives')
     await page.getByRole('button', { name: `Open ${renamed} draft drive settings` }).hover()
     await page.getByRole('button', { name: 'Drive actions', exact: true }).click()
     await page.getByRole('button', { name: 'Rename', exact: true }).click()
@@ -41,6 +43,7 @@ test('reuses a saved volume, edits its definition, and detaches without deleting
     await expect(page.getByText(`/mounts/${original.name}`, { exact: true })).toBeVisible()
 
     await page.goto(`/agents/${second.slug}`)
+    await openHomeSection(page, 'Drives')
     await page.getByTestId('add-mount-menu').click()
     await expect(page.getByRole('menuitem', { name: 'New Drive' })).toBeVisible()
     await page.getByRole('menuitem', { name: renamed, exact: false }).click()

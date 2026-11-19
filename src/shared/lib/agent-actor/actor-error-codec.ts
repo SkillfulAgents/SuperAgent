@@ -12,7 +12,7 @@ import { MemoryError } from './memory-schema'
 import { ConfigDocError, type ConfigDocErrorCode, type ConfigDocId } from './config-schema'
 import { DeliveryError, StartError, type DeliveryErrorCode, type StartErrorCode } from './delivery-errors'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { ContainerNotFoundError } from '@shared/lib/container/types'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 import { ProviderRefreshUnavailableError } from '@shared/lib/agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
@@ -74,7 +74,6 @@ const REVIVERS: Record<string, Reviver> = {
   StartError: (f, message, cause) => new StartError(f.code as StartErrorCode, f.revoked === true, message, { cause }),
   MessageNotAcceptedError: (f, message, cause) =>
     new MessageNotAcceptedError(f.reason as MessageNotAcceptedError['reason'], message, { cause }),
-  ContainerConflictError: (_f, message) => new ContainerConflictError(message),
   ContainerNotFoundError: (_f, message) => new ContainerNotFoundError(message),
   LlmProviderNotFoundError: () => new LlmProviderNotFoundError(),
   ProviderReconnectRequiredError: (_f, message, cause) => new ProviderReconnectRequiredError(message, { cause }),

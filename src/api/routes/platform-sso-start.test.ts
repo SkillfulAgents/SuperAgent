@@ -7,7 +7,7 @@ const mockGetGenericOAuthProviderConfigs = vi.fn()
 const mockCaptureException = vi.fn()
 
 vi.mock('@shared/lib/auth/index', () => ({
-  getAuth: () => ({
+  getAuth: async () => ({
     api: {
       getSession: mockGetSession,
       signInSocial: mockSignInSocial,
@@ -17,6 +17,10 @@ vi.mock('@shared/lib/auth/index', () => ({
 
 vi.mock('@shared/lib/auth/provider-config', () => ({
   getGenericOAuthProviderConfigs: () => mockGetGenericOAuthProviderConfigs(),
+}))
+
+vi.mock('@shared/lib/auth/config', () => ({
+  getAppBaseUrl: async () => 'https://app.example.com',
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({

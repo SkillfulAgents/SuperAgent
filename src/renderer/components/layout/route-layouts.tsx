@@ -13,6 +13,7 @@ import { MenuCommandHandler } from '@renderer/components/menu-command-handler'
 import { PackageImportHandler } from '@renderer/components/package-import-handler'
 import { HistoryNavigationHandler } from '@renderer/components/history-navigation-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
+import { AgentStatusPush } from '@renderer/components/notifications/agent-status-push'
 import { SignupHandoffConsumer } from '@renderer/components/signup-handoff-consumer'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
 import { useSearch } from '@renderer/context/search-context'
@@ -27,6 +28,7 @@ import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
 import { homeSearchSchema } from '@renderer/router/search-schemas'
 import { lenient } from '@renderer/router/zod-search'
+import { AuthRouteBoundary } from '@renderer/router/auth-boundary'
 
 const SearchDialog = lazyRouteComponent(
   () => import('@renderer/components/search/search-dialog'),
@@ -43,6 +45,10 @@ const GettingStartedWizard = lazyRouteComponent(
  * shell.
  */
 export function RootLayout() {
+  return <AuthRouteBoundary><RootLayoutContent /></AuthRouteBoundary>
+}
+
+function RootLayoutContent() {
   useTheme()
   useInsetRadius()
   useDocumentTitle()
@@ -156,6 +162,7 @@ export function RootLayout() {
             <PackageImportHandler />
             <HistoryNavigationHandler />
             <GlobalNotificationHandler />
+            <AgentStatusPush />
             <ContainerSetupHandler />
             <WindowControls />
             <UpdateToastNotifier />

@@ -32,6 +32,8 @@ export interface PublicSlackDelivery {
   appTokenSaved: boolean
   signingSecretSaved: boolean
   webhook: { url: string; status: 'pending' | 'verified' | 'rejected' } | null
+  /** The Slack app's id, once its bot token has reported it: its settings are at api.slack.com/apps/{appId}. */
+  appId?: string
 }
 
 export type PublicChatIntegration = PublicAgentIntegration<PublicChatIntegrationSettings>
@@ -87,6 +89,7 @@ export function toPublicChatIntegration(integration: ChatIntegration): PublicCha
         appTokenSaved: !!slack.appToken,
         signingSecretSaved: !!slack.signingSecret,
         webhook: slack.relay ? { url: slack.relay.url, status: webhookStatus } : null,
+        ...(slack.appId ? { appId: slack.appId } : {}),
       },
       // The card follows Slack's first delivery as it arrives.
       ...(slack.relay && webhookStatus !== 'verified' ? { refreshIntervalMs: 5000 } : {}),

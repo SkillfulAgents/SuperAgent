@@ -146,7 +146,7 @@ function AgentToolbar({ data, selected }: { data: AgentNodeData; selected: boole
       >
         <button
           type="button"
-          className="graph-toolbar-item flex items-center gap-1 rounded-md border border-border/60 bg-card px-1.5 py-1 text-2xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground dark:border-white/10 dark:bg-neutral-800"
+          className="graph-toolbar-item flex items-center gap-1 rounded-item border border-border/60 bg-card px-1.5 py-1 text-2xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground dark:border-white/10 dark:bg-neutral-800"
           onClick={(event) => {
             event.stopPropagation()
             openGraphNode(navigate, data)
@@ -163,7 +163,7 @@ function AgentToolbar({ data, selected }: { data: AgentNodeData; selected: boole
             <button
               key={session.id}
               type="button"
-              className="graph-toolbar-item flex w-full items-center gap-1.5 rounded-md border border-border/60 bg-card px-2 py-1 text-left text-[9px] leading-3 shadow-sm transition-colors hover:bg-muted dark:border-white/10 dark:bg-neutral-800"
+              className="graph-toolbar-item flex w-full items-center gap-1.5 rounded-item border border-border/60 bg-card px-2 py-1 text-left text-[9px] leading-3 shadow-sm transition-colors hover:bg-muted dark:border-white/10 dark:bg-neutral-800"
               style={{ animationDelay: `${(index + 1) * 45}ms` }}
               onClick={(event) => {
                 event.stopPropagation()
@@ -191,7 +191,7 @@ function AgentToolbar({ data, selected }: { data: AgentNodeData; selected: boole
         {overflowCount > 0 && (
           <button
             type="button"
-            className="graph-toolbar-item flex w-full items-center justify-center gap-1 rounded-md border border-border/60 bg-card px-2 py-1 text-[9px] leading-3 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground dark:border-white/10 dark:bg-neutral-800"
+            className="graph-toolbar-item flex w-full items-center justify-center gap-1 rounded-item border border-border/60 bg-card px-2 py-1 text-[9px] leading-3 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground dark:border-white/10 dark:bg-neutral-800"
             style={{ animationDelay: `${(visibleSessions.length + 1) * 45}ms` }}
             onClick={(event) => {
               event.stopPropagation()
@@ -300,7 +300,7 @@ export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData,
         openMenuOnKey(event)
       }}
       className={cn(
-        'group relative flex h-20 w-44 cursor-pointer flex-col rounded-xl border-[0.5px] px-3 py-2.5 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
+        'group relative flex h-20 w-44 cursor-pointer flex-col rounded-card border-[0.5px] px-3 py-2.5 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
         CARD_SURFACE,
         agentBorder[activityStatus],
       )}
@@ -436,7 +436,7 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
           handlers so Settings is reachable. */}
       <div
         className={cn(
-          'group relative flex h-10 w-10 items-center justify-center rounded-lg border-[0.5px] border-border/60 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg dark:border-white/10',
+          'group relative flex h-10 w-10 items-center justify-center rounded-control border-[0.5px] border-border/60 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg dark:border-white/10',
           CARD_SURFACE,
         )}
         onMouseEnter={openHover}
@@ -467,7 +467,7 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
       >
       <div
         className={cn(
-          'flex w-full flex-col rounded-lg border px-3 py-2 transition-[transform,background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]',
+          'flex w-full flex-col rounded-popover border px-3 py-2 transition-[transform,background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]',
           pinned
             ? 'translate-y-0 scale-100 border-border/60 bg-card shadow-md dark:border-white/10 dark:bg-neutral-800'
             : 'translate-y-1 scale-90 border-transparent bg-card/40 backdrop-blur-sm dark:bg-neutral-800/40',
@@ -523,7 +523,7 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
           {shown && (
             <button
               type="button"
-              className="-mr-1 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-2xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              className="-mr-1 flex shrink-0 items-center gap-0.5 rounded-icon px-1 py-0.5 text-2xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation()
                 openGraphNode(navigate, data)

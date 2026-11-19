@@ -1,4 +1,4 @@
-import { xAgentFileTransferSchema } from '@shared/lib/proxy/x-agent-review'
+import { xAgentFileTransferSchema, xAgentRuntimeSchema } from '@shared/lib/proxy/x-agent-review'
 import { z } from 'zod'
 
 /**
@@ -195,6 +195,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
           operation: lenientString,
           preview: lenientString,
           fileTransfer: xAgentFileTransferSchema.optional().catch(undefined),
+          runtime: xAgentRuntimeSchema.optional().catch(undefined),
           attachments: z.array(z.string()).optional().catch(undefined),
         })
         .optional()
@@ -223,6 +224,17 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
 
 export type PendingUserInputRequest = z.infer<typeof pendingUserInputRequestSchema>
 export type PendingUserInputRequestInput = z.input<typeof pendingUserInputRequestSchema>
+
+/**
+ * Kinds that hold a parked proxied call. One scoped to a session stays open
+ * after its turn ends, because a background script can still be waiting on it.
+ */
+export const PARKED_CALL_KINDS: ReadonlySet<PendingUserInputRequest['kind']> = new Set([
+  'proxy_review',
+  'x_agent_review',
+  'account_reauth_required',
+  'mcp_reauth_required',
+])
 
 /**
  * The lifecycle class of a kind. The names come from the pre-registry stores,

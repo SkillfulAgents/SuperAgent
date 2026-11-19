@@ -34,8 +34,11 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addEr
 // output here (that's the builder's concern), we only verify the runtime
 // delivers the agent's own config.envVars through runHookPayload.
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
+  activeLlmProviderFrom: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
+
+// The host token is an app record; these tests have no database.
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: async () => 'hostc_test' }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
 const autoResumeOnUnexpectedDeath = vi.fn((): boolean => true)
@@ -410,6 +413,31 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
 
   it('getInfoFromRuntime reports stopped before any start (no state)', async () => {
     expect(await newClient().getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(await newClient().isDefinitelyStopped()).toBe(false)
+  })
+
+  it.each(['RUNNING', 'PENDING', 'SUSPENDING', 'SUSPENDED', 'TERMINATING', 'TERMINATED'])('proves VM exit only once TERMINATED (%s)', async (state) => {
+    const client = newClient()
+    await client.start()
+    responses.getState = state
+    expect(await client.isDefinitelyStopped()).toBe(state === 'TERMINATED')
+  })
+
+  it('checks a terminating VM even after routing state was discarded', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATING'
+    await client.getInfoFromRuntime()
+    expect(await client.isDefinitelyStopped()).toBe(false)
+    responses.getState = 'TERMINATED'
+    expect(await client.isDefinitelyStopped()).toBe(true)
+  })
+
+  it('does not treat an unsuccessful VM lookup as proof of exit', async () => {
+    const client = newClient()
+    await client.start()
+    sendMock.mockRejectedValueOnce(new Error('network error'))
+    expect(await client.isDefinitelyStopped()).toBe(false)
   })
 
   it('getInfoFromRuntime treats SUSPENDED as stopped and terminates the leftover VM', async () => {
@@ -1664,6 +1692,31 @@ describe('LocalAuthForwardProxy', () => {
     expect(first.body).toBe('UPSTREAM_OK')
     expect(second.body).toBe('UPSTREAM_OK')
     expect(http2ConnectCalls).toBe(1)
+  })
+
+  it('answers /health on its own HTTP/2 session while other requests are stuck', async () => {
+    const sessions: string[][] = []
+    http2ConnectImpl = () => {
+      const paths: string[] = []
+      sessions.push(paths)
+      return mockH2Session((headers, stream) => {
+        const path = String(headers[':path'])
+        paths.push(path)
+        // A stalled media download never answers; /health must not wait behind it.
+        if (path !== '/health') return
+        h2Respond(stream, 200, 'HEALTHY')
+      })
+    }
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const stuck = http.get({ host: '127.0.0.1', port, path: '/artifacts/studio/media/final/video.mp4' })
+    stuck.on('error', () => {})
+    await new Promise((r) => setTimeout(r, 20))
+
+    const res = await httpGet(port, '/health')
+    stuck.destroy()
+
+    expect(res.body).toBe('HEALTHY')
+    expect(sessions).toEqual([['/artifacts/studio/media/final/video.mp4'], ['/health']])
   })
 
   it('keeps HTTP/2 streams flowing while a WebSocket is open', async () => {

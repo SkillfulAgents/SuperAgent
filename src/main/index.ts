@@ -12,6 +12,7 @@ const ShowInFolderPath = z.string().min(1)
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand } from './app-menu'
+import { agentStatusSource, isAgentStatusEvent, startAgentStatus } from './agent-status-source'
 import {
   handleSpotlightActivity,
   requestSpotlightSync,
@@ -23,13 +24,14 @@ import {
 } from './spotlight'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
-import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
+import { registerUpdateHandlers, initAutoUpdater, automaticUpdateChecks, startAutomaticUpdateChecks, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
 import { captureRegion } from './capture-region'
 import {
-  prewarmQuickDispatchWindow,
+  scheduleQuickDispatchPrewarm,
+  quickDispatchMainWindowPainted,
   toggleQuickDispatchWindow,
   hideQuickDispatchWindow,
   closeQuickDispatchWindow,
@@ -47,11 +49,20 @@ import { isCaptureRect } from '@shared/lib/quick-dispatch-capture'
 import { loadQuickDispatchGlass } from './quick-dispatch-glass'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
+import { addImageThumbnails } from './recent-file-thumbnails'
 import { parseAgentDeepLink } from './agent-deep-link'
 import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oauth-callback'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import {
+  appleSignInSheetUrl,
+  cancelAppleSignIn,
+  cancelWebAuthSession,
+  isPlatformLoginUrl,
+  runWebAuthSession,
+} from './web-auth-session'
+import { getPlatformBaseUrl, getPlatformCallbackUri } from '@shared/lib/platform-auth/config'
 import { osNotificationOptions, reviewIdOf, reviewNotificationId } from './os-notification-options'
 import { areOsNotificationsBlocked } from './notification-authorization'
 import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
@@ -107,12 +118,13 @@ process.env.SUPERAGENT_DATA_DIR ??= app.getPath('userData')
 console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
 // Initialize error reporting as early as possible (after data dir is set)
-import { initErrorReporting, captureException, flushErrorReporting } from '@shared/lib/error-reporting'
+import { initErrorReporting, captureException, flushErrorReporting, attachErrorReportingIdentity } from '@shared/lib/error-reporting'
+import { createServerProvider } from '@shared/lib/error-reporting/sentry-provider'
 import { recordFatalError, reportCrashMarkerFromLastRun, toReportableError } from './crash-marker'
 
 // Only report errors in production builds — dev mode generates too much noise
 if (app.isPackaged) {
-  initErrorReporting({ environment: 'electron' })
+  initErrorReporting(createServerProvider({ environment: 'electron' }))
   // If the last session died in a fatal handler, its Sentry event may have
   // been lost (no offline transport) — deliver the on-disk record now.
   void reportCrashMarkerFromLastRun()
@@ -126,13 +138,17 @@ registerUpdateHandlers()
 import { serve } from '@hono/node-server'
 import api from '../api'
 import { openDatabase } from '@shared/lib/db'
-import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
+import { initializeLocalAppState } from '@shared/lib/app-state'
+import { installDesktopKeyManager } from './keys/install-desktop-key-manager'
+import { initializeBackgroundWork, serviceHost } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
+import { afterBindInitialize, registerBackgroundWork, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
-import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
-import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
+import { cloudProxyTargetFrom, resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { preferredApiTargetFrom } from '@shared/lib/services/api-target-preference'
 import { coerceApiTarget, resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { desktopClientFacts, factsForRenderer } from './facts'
@@ -142,6 +158,8 @@ import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/l
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
+import { registerComputerUseCursorRenderer } from './computer-use-cursor'
+import { registerComputerUseScreenshotDecoder } from './computer-use-screenshots'
 import { isAllowedRendererPermission } from './renderer-permissions'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -501,13 +519,13 @@ ipcMain.handle('get-api-url', () => {
 })
 
 /** The cloud workspace this app can drive, or null when there is none. */
-function cloudProxyTarget() {
+async function cloudProxyTarget() {
   return isCloudProxyEnabled() ? resolveCloudProxyTarget() : null
 }
 
 /** The cloud proxy's base URL and the deployment behind it, or null when there is no workspace to drive. */
-function cloudEndpoint(): CloudEndpoint | null {
-  const target = cloudProxyTarget()
+async function cloudEndpoint(): Promise<CloudEndpoint | null> {
+  const target = await cloudProxyTarget()
   if (!target) return null
   return {
     baseUrl: `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`,
@@ -516,13 +534,13 @@ function cloudEndpoint(): CloudEndpoint | null {
 }
 
 /** Which Superagent this app is driving, and the base URL that reaches it. */
-function activeApiTarget() {
-  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudEndpoint())
+async function activeApiTarget() {
+  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, await cloudEndpoint())
 }
 
 /** Open a popout where the dashboard lives: the cloud workspace's own address, or the local API. */
-function openDashboard(agentSlug: string, dashboardSlug: string) {
-  const { baseUrl, deploymentUrl } = activeApiTarget()
+async function openDashboard(agentSlug: string, dashboardSlug: string): Promise<void> {
+  const { baseUrl, deploymentUrl } = await activeApiTarget()
   openDashboardWindow(agentSlug, dashboardSlug, deploymentUrl ?? baseUrl, deploymentUrl !== null)
 }
 
@@ -535,10 +553,10 @@ ipcMain.handle('get-api-target', () => activeApiTarget())
 // The facts a renderer gates on, for the target it settled. It passes that
 // target back rather than main re-resolving it, so a preference written in
 // between can't hand it the other Superagent's facts. See facts.ts.
-ipcMain.handle('get-facts', (_event, target: unknown) => factsForRenderer(coerceApiTarget(target), cloudEndpoint()))
+ipcMain.handle('get-facts', async (_event, target: unknown) => factsForRenderer(coerceApiTarget(target), await cloudEndpoint()))
 
-ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
-  applyPreferredApiTarget(target)
+ipcMain.handle('set-preferred-api-target', async (_event, target: unknown) => {
+  await applyPreferredApiTarget(target)
   // Spotlight reads the side the app is leaving one last time, and polls the
   // side it is moving to.
   requestSpotlightSync()
@@ -558,6 +576,7 @@ ipcMain.handle('begin-target-switch', async () => {
 // off the window that is still blank.
 ipcMain.on('renderer-painted', (event) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) return
+  quickDispatchMainWindowPainted()
   void finishTargetSwitchOverlay()
 })
 
@@ -570,6 +589,53 @@ ipcMain.on('renderer-painted', (event) => {
 // above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
   await safeOpenExternalFromApp(url)
+})
+
+// The Gamut sign-in in a sheet on the app's window (ASWebAuthenticationSession),
+// which the Mac App Store build uses instead of the default browser. Only the
+// platform's own login page is opened this way. The page ends on the same
+// deep link the browser would open, handled the same way.
+// With `withApple`, the native Sign in with Apple prompt runs first and an
+// ephemeral sheet opens the platform's Apple page instead, which then continues
+// to the same login URL. Cancel and a newer start bump the attempt, so a prompt or
+// sheet that ends after them delivers nothing.
+let platformSignInAttempt = 0
+ipcMain.handle('platform-sign-in-start', async (_event, url: unknown, withApple: unknown) => {
+  if (!isPlatformLoginUrl(url, getPlatformBaseUrl())) {
+    console.warn('[WebAuth] Refusing to open a sign-in session on a URL that is not the platform login')
+    return 'failed'
+  }
+  const attempt = ++platformSignInAttempt
+  const sheet = withApple === true
+    ? await appleSignInSheetUrl(url, () => attempt === platformSignInAttempt)
+    : { url, ephemeral: false }
+  const result = 'url' in sheet
+    ? await runWebAuthSession(sheet.url, PROTOCOL_SCHEME, { ephemeral: sheet.ephemeral })
+    : sheet
+  if (attempt !== platformSignInAttempt) return 'cancelled'
+  if (!result) {
+    await safeOpenExternalFromApp(url)
+    return 'browser'
+  }
+  if ('cancelled' in result) return 'cancelled'
+  // The login page ends on the platform-auth deep link and nothing else; any
+  // other link on the app's scheme is not this sign-in's to deliver.
+  if ('url' in result && result.url.startsWith(`${getPlatformCallbackUri(PROTOCOL_SCHEME)}?`)) {
+    handleDeepLinkUrl(result.url)
+    return 'completed'
+  }
+  console.error('[WebAuth] The sign-in session failed:', 'error' in result ? result.error : 'unexpected callback URL')
+  mainWindow?.webContents.send('platform-auth-callback', {
+    success: false,
+    error: 'Sign-in could not be completed. Please try again.',
+  })
+  return 'failed'
+})
+
+ipcMain.handle('platform-sign-in-cancel', async () => {
+  platformSignInAttempt++
+  await cancelAppleSignIn()
+  await cancelWebAuthSession()
 })
 
 // First-party, argument-free launcher for the exact Apple extension listing.
@@ -677,9 +743,9 @@ ipcMain.handle('show-notification', (
       // If the notification carries agent/session context, navigate there
       // so the click lands on the conversation that needs attention rather
       // than dumping the user on the homepage.
-      const ctx = context as { agentSlug?: string; sessionId?: string | null } | undefined
+      const ctx = context as { agentSlug?: string; sessionId?: string | null; messageUuid?: unknown } | undefined
       if (ctx?.agentSlug) {
-        mainWindow.webContents.send('navigate-to-agent', ctx.agentSlug, ctx.sessionId ?? null)
+        mainWindow.webContents.send('navigate-to-agent', ctx.agentSlug, ctx.sessionId ?? null, typeof ctx.messageUuid === 'string' ? ctx.messageUuid : undefined)
       }
     }
     event.sender.send('notification-event', { type: 'click', context })
@@ -804,9 +870,17 @@ ipcMain.handle('set-badge-count', (_event, count: number) => {
   }
 })
 
+// The main window's agent list, which the tray and the Agents menu are drawn
+// from while it is open instead of polling the API (agent-status-source.ts).
+// Only the main window's: a dashboard popout or the launcher has no say.
+ipcMain.handle('push-agent-status', (event, payload: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false
+  return agentStatusSource.acceptPush(event.sender, payload)
+})
+
 // IPC handler for detecting host browser availability
-ipcMain.handle('detect-host-browser', () => {
-  return { providers: detectAllProviders() }
+ipcMain.handle('detect-host-browser', async () => {
+  return { providers: await detectAllProviders() }
 })
 
 // IPC handler for opening a native directory picker.
@@ -878,8 +952,6 @@ const MIME_TYPES: Record<string, string> = {
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 }
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
-
 // Track paths returned by get-recent-files so read-local-file can validate (#1 security)
 const allowedRecentPaths = new Set<string>()
 // Paths the user explicitly opened via the OS (dock drop / "Open With"). Kept
@@ -911,21 +983,7 @@ ipcMain.handle('get-recent-files', async (_event, rawLimit: unknown): Promise<{ 
     allowedRecentPaths.clear()
     for (const f of files) allowedRecentPaths.add(f.path)
 
-    // Generate small thumbnails for image files using Electron's nativeImage
-    return files.map((f) => {
-      const ext = path.extname(f.name).toLowerCase()
-      if (!IMAGE_EXTS.has(ext)) return f
-      try {
-        const img = nativeImage.createFromPath(f.path)
-        if (img.isEmpty()) return f
-        // Only constrain width — let height scale to preserve aspect ratio (#4)
-        const resized = img.resize({ width: 32, quality: 'good' })
-        const png = resized.toPNG()
-        return { ...f, thumbnail: `data:image/png;base64,${png.toString('base64')}` }
-      } catch {
-        return f
-      }
-    })
+    return await addImageThumbnails(files, nativeImage)
   } catch (err) {
     console.error('Failed to get recent files:', err)
     return []
@@ -1026,8 +1084,8 @@ ipcMain.handle('show-emoji-panel', () => {
 ipcMain.handle('capture-region', (event, rect: unknown) => captureRegion(event.sender, rect))
 
 // IPC handler for opening a dashboard in a separate window
-ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboard(agentSlug, dashboardSlug)
+ipcMain.handle('open-dashboard-window', async (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
+  await openDashboard(agentSlug, dashboardSlug)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1228,25 +1286,25 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       // Resolved against the effective target, not always the local API: the
       // renderer interprets the slug on whichever Superagent it is driving, so
       // the session lookup must ask that same one.
-      const linkBaseUrl = activeApiTarget().baseUrl
-      fetch(`${linkBaseUrl}/api/agents/${encodeURIComponent(slug)}/sessions`)
-        .then(res => res.ok ? res.json() : [])
-        .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
-          if (!Array.isArray(sessions)) return null
-          const active = sessions.find(s => s.isActive)
-          return (active ?? sessions[0])?.id ?? null
-        })
-        .catch(() => null)
-        .then((sessionId: string | null) => {
-          // A switch while the lookup was in flight leaves both the slug and
-          // the session id belonging to the previous Superagent — delivering
-          // them navigates the new renderer to someone else's agent. Drop the
-          // link rather than land it wrong.
-          if (activeApiTarget().baseUrl !== linkBaseUrl) return
-          sendToMainWindowWhenReady((win) =>
-            win.webContents.send('navigate-to-agent', slug, sessionId),
-          )
-        })
+      activeApiTarget()
+        .then(({ baseUrl: linkBaseUrl }) => fetch(`${linkBaseUrl}/api/agents/${encodeURIComponent(slug)}/sessions`)
+          .then(res => res.ok ? res.json() : [])
+          .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
+            if (!Array.isArray(sessions)) return null
+            const active = sessions.find(s => s.isActive)
+            return (active ?? sessions[0])?.id ?? null
+          })
+          .catch(() => null)
+          .then(async (sessionId: string | null) => {
+            // A switch while the lookup was in flight leaves both the slug and
+            // the session id belonging to the previous Superagent — delivering
+            // them navigates the new renderer to someone else's agent. Drop the
+            // link rather than land it wrong.
+            if ((await activeApiTarget()).baseUrl !== linkBaseUrl) return
+            sendToMainWindowWhenReady((win) =>
+              win.webContents.send('navigate-to-agent', slug, sessionId),
+            )
+          }))
         // Terminal catch: an unhandled rejection here is fatal (the process-level
         // handler quits the app), and a failed deep link must never do that.
         .catch((error) => {
@@ -1266,7 +1324,9 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboard(agentSlug, dashboardSlug)
+        openDashboard(agentSlug, dashboardSlug).catch((error) => {
+          console.error('Failed to open dashboard from deep link:', error)
+        })
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1304,42 +1364,51 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     // Planned against the active target, not always the local API: with the
     // Cloud toggle on, the pending OAuth state lives in the cloud deployment's
     // memory, so the completion fetch must go through the cloud proxy (SUP-560).
-    const plan = planMcpOAuthCallback(url, activeApiTarget().baseUrl)
-    if (!plan) {
-      console.error('Failed to parse MCP OAuth callback URL:', url)
+    activeApiTarget().then(({ baseUrl }) => {
+      const plan = planMcpOAuthCallback(url, baseUrl)
+      if (!plan) {
+        console.error('Failed to parse MCP OAuth callback URL:', url)
+        mainWindow?.webContents.send('mcp-oauth-callback', {
+          success: false,
+          error: 'Invalid callback URL',
+        })
+        return
+      }
+
+      if (plan.action === 'notify') {
+        // http-loopback path: the initiating API server already completed the
+        // token exchange (and any error/issuer validation) in the external
+        // browser and bounced the result back here — the hand-off page always
+        // carries `success`. Notify the renderer directly; no second exchange.
+        mainWindow?.webContents.send('mcp-oauth-callback', plan.result)
+      } else {
+        // Custom-scheme path: the app received the raw code/state, so forward to
+        // the active Superagent's API to complete the token exchange.
+        fetch(plan.completionUrl)
+          .then(async (res) => {
+            const text = await res.text()
+            mainWindow?.webContents.send(
+              'mcp-oauth-callback',
+              { ...parseMcpOAuthCompletionResponse(text), state: plan.state },
+            )
+          })
+          .catch((err) => {
+            console.error('Failed to complete MCP OAuth callback:', err)
+            mainWindow?.webContents.send('mcp-oauth-callback', {
+              success: false,
+              error: err.message || 'Failed to complete OAuth',
+              state: plan.state,
+            })
+          })
+      }
+    }).catch((error) => {
+      // The active target could not be read, so nothing was forwarded.
+      console.error('Failed to complete MCP OAuth callback:', error)
       mainWindow?.webContents.send('mcp-oauth-callback', {
         success: false,
-        error: 'Invalid callback URL',
+        error: 'Failed to complete OAuth',
       })
-      return
-    }
-
-    if (plan.action === 'notify') {
-      // http-loopback path: the initiating API server already completed the
-      // token exchange (and any error/issuer validation) in the external
-      // browser and bounced the result back here — the hand-off page always
-      // carries `success`. Notify the renderer directly; no second exchange.
-      mainWindow?.webContents.send('mcp-oauth-callback', plan.result)
-    } else {
-      // Custom-scheme path: the app received the raw code/state, so forward to
-      // the active Superagent's API to complete the token exchange.
-      fetch(plan.completionUrl)
-        .then(async (res) => {
-          const text = await res.text()
-          mainWindow?.webContents.send(
-            'mcp-oauth-callback',
-            { ...parseMcpOAuthCompletionResponse(text), state: plan.state },
-          )
-        })
-        .catch((err) => {
-          console.error('Failed to complete MCP OAuth callback:', err)
-          mainWindow?.webContents.send('mcp-oauth-callback', {
-            success: false,
-            error: err.message || 'Failed to complete OAuth',
-            state: plan.state,
-          })
-        })
-    }
+    })
     mainWindow?.focus()
   }
 
@@ -1462,6 +1531,10 @@ function startNotificationListener(): void {
       // relies on Spotlight's own poll.
       if (data.type === 'os_notification') requestSpotlightSync()
 
+      // An agent's activity may have moved. With a window open this is a
+      // no-op: the renderer heard the same event and pushes its list.
+      if (isAgentStatusEvent(data.type)) agentStatusSource.requestRefresh()
+
       if (data.type === 'os_notification') {
         // Only show notification if window is closed/destroyed.
         // When the window is open the renderer drives this via IPC (with the
@@ -1577,6 +1650,26 @@ async function startApp() {
     app.quit()
     return
   }
+  // Reports so far went without the tenant identity, which lives in the database.
+  await attachErrorReportingIdentity()
+  // Then the state the API shares across requests, in this process's memory.
+  await initializeLocalAppState()
+
+  // Key custody next, before the API serves anything: the vault seals through
+  // it, and it checks a key against the sealed data (so after the database).
+  // It waits for app `ready` (safeStorage needs it). A key it cannot hand out
+  // is reported by the vault when used; the app still runs.
+  try {
+    await installDesktopKeyManager()
+  } catch (error) {
+    console.error('Failed to set up key custody:', error)
+    captureException(error, { tags: { component: 'keys', operation: 'install' } })
+  }
+  // Then task dispatch: a request can schedule work as soon as the bind below lands.
+  await initializeBackgroundWork(new LocalTaskManager())
+  registerBackgroundWork()
+  serviceHost().register(automaticUpdateChecks)
+  startAutomaticUpdateChecks()
 
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the
@@ -1634,7 +1727,9 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboard(link.agentSlug, link.dashboardSlug)
+    openDashboard(link.agentSlug, link.dashboardSlug).catch((error) => {
+      console.error('Failed to open dashboard from deep link:', error)
+    })
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()
@@ -1646,33 +1741,43 @@ async function startApp() {
   // A cold start into a cloud workspace faces the same wait as a switch: the
   // renderer cannot ask for anything until it has loaded. Start those calls
   // alongside the window rather than after it (no-op without a workspace).
-  if (activeApiTarget().target === 'cloud') startCloudBootPrefetch()
+  // Not awaited: a head start is never worth holding up, or failing, the boot.
+  activeApiTarget()
+    .then(({ target }) => (target === 'cloud' ? startCloudBootPrefetch() : undefined))
+    .catch((error) => {
+      console.error('Failed to start the cloud boot prefetch:', error)
+    })
 
   createWindow()
 
-  // Create the application menu (macOS menu bar). The getter re-resolves the
-  // effective base URL on every poll, so the Agents menu and the tray follow a
-  // target switch (via the keyed cloud proxy) instead of always listing this
-  // machine's agents.
-  createAppMenu(mainWindow, () => activeApiTarget().baseUrl)
+  // The Agents menu and the tray share one agent list. The getter re-resolves
+  // the effective base URL on every fetch, so they follow a target switch (via
+  // the keyed cloud proxy) instead of always listing this machine's agents.
+  startAgentStatus({ activeTarget: activeApiTarget })
+
+  // Create the application menu (macOS menu bar)
+  createAppMenu(mainWindow)
 
   // Create system tray if enabled in settings
-  const settings = getSettings()
-  if (settings.app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, () => activeApiTarget().baseUrl)
+  if ((await getSettings()).app?.showMenuBarIcon !== false) {
+    createTray(mainWindow)
   }
 
   // Spotlight indexes both Superagents, not just the active one, so each is
   // reached by its own base URL (the cloud one through the keyed proxy).
   startSpotlight({
-    baseUrl: (target) => (target === 'local' ? `http://localhost:${actualApiPort}` : cloudEndpoint()?.baseUrl ?? null),
+    baseUrl: async (target) => (target === 'local' ? `http://localhost:${actualApiPort}` : (await cloudEndpoint())?.baseUrl ?? null),
     activation: {
-      activeTarget: () => activeApiTarget().target,
+      activeTarget: async () => (await activeApiTarget()).target,
       openAgent: (agentSlug, sessionId) => {
         showOrCreateMainWindow()
         sendMenuCommand({ channel: 'navigate-to-agent', agentSlug, sessionId })
       },
-      openDashboard,
+      openDashboard: (agentSlug, dashboardSlug) => {
+        openDashboard(agentSlug, dashboardSlug).catch((error) => {
+          console.error('Failed to open dashboard from Spotlight:', error)
+        })
+      },
       showMainWindow: showOrCreateMainWindow,
       requestTargetSwitch: (target) => {
         showOrCreateMainWindow()
@@ -1687,10 +1792,12 @@ async function startApp() {
     console.error('Failed to restore keep-awake state:', error)
   })
 
-  // Quick-dispatch launcher: pre-create the hidden panel and bind its global
-  // shortcut so the first invocation appears instantly.
-  await prewarmQuickDispatchWindow()
-  const dispatchResult = registerGlobalDispatchShortcut(settings.app?.globalDispatchShortcut, toggleQuickDispatchWindow)
+  // Quick-dispatch launcher: bind its global shortcut, and pre-create the hidden
+  // panel once the main window has painted (see `renderer-painted`), so the
+  // panel's renderer does not load alongside the window's. A press before then
+  // builds it on demand.
+  await scheduleQuickDispatchPrewarm()
+  const dispatchResult = registerGlobalDispatchShortcut((await getSettings()).app?.globalDispatchShortcut, toggleQuickDispatchWindow)
   if (!dispatchResult.success) {
     console.warn(`Quick-dispatch shortcut not registered: ${dispatchResult.error}`)
   }
@@ -1699,8 +1806,8 @@ async function startApp() {
   for (const filePath of openedFilesFrom(process.argv)) {
     handleOpenedFile(filePath)
   }
-  // The launcher window now exists, so any files opened before startup finished
-  // (dock drop on macOS, argv above) can be delivered to it.
+  // The launcher window can now be built, so any files opened before startup
+  // finished (dock drop on macOS, argv above) can be delivered to it.
   flushPendingOpenedFiles()
 }
 
@@ -1751,26 +1858,31 @@ function focusMainWindowOnSession(agentSlug: string, sessionId: string): void {
 }
 
 app.whenReady().then(() => {
+  // Agents' computer-use cursors (their colour, orb and name) are drawn in
+  // offscreen windows of this process.
+  registerComputerUseCursorRenderer()
+  // Their screenshots are decoded and shrunk with Electron's native image code.
+  registerComputerUseScreenshotDecoder()
   // Installed here, not with the main window: a dashboard link queued at cold
   // start opens its popout before the main window exists.
-  // Read per request, so re-derived only when settings change: every settings
-  // write replaces the cached object.
-  let signing: { settings: ReturnType<typeof getSettings>; workspace: { token: string; deploymentUrl: string } | null } | null = null
+  // Read fresh per request, so a switch to local, a disconnect or a re-mint
+  // applies to the next request with nothing to reset: the record and the
+  // preferred target from one settings read. Requests to the local API are
+  // never workspace requests and read nothing.
   installCloudDashboardAuth(
     session.defaultSession,
     () => mainWindow?.webContents.id ?? null,
-    () => {
-      const settings = getSettings()
-      if (signing?.settings !== settings) {
-        const target = cloudProxyTarget()
-        const workspace = resolveApiTarget(readPreferredApiTarget(), target?.deploymentUrl ?? null).target === 'cloud' ? target : null
-        // The record's URL passed `isDeploymentUrlAllowed`, which parses it. Compare
-        // by origin, the form Chromium reports frames in.
-        // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- validated on read
-        signing = { settings, workspace: workspace && { token: workspace.token, deploymentUrl: new URL(workspace.deploymentUrl).origin } }
-      }
-      return signing.workspace
+    async () => {
+      if (!isCloudProxyEnabled()) return null
+      const settings = await getSettings()
+      const target = cloudProxyTargetFrom(settings)
+      const workspace = resolveApiTarget(preferredApiTargetFrom(settings), target?.deploymentUrl ?? null).target === 'cloud' ? target : null
+      // The record's URL passed `isDeploymentUrlAllowed`, which parses it. Compare
+      // by origin, the form Chromium reports frames in.
+      // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- validated on read
+      return workspace && { token: workspace.token, deploymentUrl: new URL(workspace.deploymentUrl).origin }
     },
+    () => [`http://localhost:${actualApiPort}`, `http://127.0.0.1:${actualApiPort}`],
   )
 
   app.on('activate', () => {
@@ -1973,6 +2085,8 @@ app.on('before-quit', async (event) => {
   if (!isShuttingDown) {
     event.preventDefault()
     stopSpotlight()
+    // A sign-in sheet still up holds one of the worker threads until it ends.
+    void cancelWebAuthSession().catch(() => {})
 
     // Hard deadline: force-exit if graceful shutdown hangs (e.g., stuck Lima VM)
     // Covers bounded upload preparation plus the existing stop/kill/force chain.

@@ -5,9 +5,13 @@ import './globals.css'
 import { initApiBaseUrl, isElectron, getPlatform } from './lib/env'
 import { initRendererErrorReporting } from './lib/error-reporting'
 import { applyWebFavicon } from './lib/favicon'
+import { installAmbientAnimationPause } from './lib/ambient-styles'
 
 // Initialize Sentry error reporting as early as possible
 initRendererErrorReporting()
+
+// Looping animation holds still while the window is not the one in use (docs/animations.md).
+installAmbientAnimationPause()
 
 // Precaching service worker, web production only. __WEB__ is false in every
 // Electron build (dead-code-stripped; file:// can't host a SW anyway) and dev

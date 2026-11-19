@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
-import { SessionManager, SessionBusyError, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
+import { SessionManager, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
 import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
@@ -19,11 +19,12 @@ import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import { z } from 'zod';
 
-import { inputManager } from './input-manager';
+import { inputManager, UNANSWERED_REASONS } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
 import { widgetManager } from './widget-manager';
+import { registerRenderRoute } from './render-route';
 import {
   dashboardHttpForwardHeaders,
   dashboardHttpUpstreamPath,
@@ -50,6 +51,7 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
+import { clampViewerWidth, screencastSize } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { CdpConnection } from './login-cdp';
 import type { LoginFillDeps, PageActivity } from './login-fill';
@@ -57,6 +59,9 @@ import type { FieldBox } from './login-form-script';
 import { closePreparedLogins } from './login-requests';
 import type { LoginFillReport } from './login-schema';
 import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
+import { registerSessionRoutes } from './session-routes';
+import { isSessionStubTarget } from './browser-session';
+import { browserCommand } from './browser-gate';
 import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -188,6 +193,14 @@ app.get('/sessions', (c) => {
   return c.json(sessions);
 });
 
+app.post('/sessions/:id/release', async (c) => {
+  const sessionId = c.req.param('id');
+  await sessionManager.releaseSession(sessionId);
+  inputManager.rejectForSession(sessionId);
+  // Also acknowledges an unknown session: it has no process to release.
+  return c.json({ success: true });
+});
+
 app.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
   const deleted = await sessionManager.deleteSession(sessionId);
@@ -255,9 +268,6 @@ app.post('/sessions/:id/fork', async (c) => {
     }
     return c.json({ id }, 201);
   } catch (error: any) {
-    if (error instanceof SessionBusyError) {
-      return c.json({ error: error.message, code: 'session_busy' }, 409);
-    }
     if (isSdkSessionNotFound(error)) {
       return c.json({ error: 'Session not found' }, 404);
     }
@@ -407,19 +417,6 @@ app.delete('/files/*', async (c) => {
   }
 });
 
-app.post('/files/*/mkdir', async (c) => {
-  const dirPath = (c.req.param('*') || '').replace('/mkdir', '');
-  const fullPath = path.join('/workspace', dirPath);
-
-  try {
-    await fs.promises.mkdir(fullPath, { recursive: true });
-    return c.json({ success: true, path: dirPath });
-  } catch (error: any) {
-    console.error('Error creating directory:', error);
-    return c.json({ error: error.message || 'Failed to create directory' }, 500);
-  }
-});
-
 app.get('/files/tree', async (c) => {
   const depth = parseInt(c.req.query('depth') || '3');
   const startPath = c.req.query('path') || '';
@@ -456,15 +453,23 @@ app.post('/inputs/:toolUseId/resolve', async (c) => {
   }
 });
 
+// `unanswered`: the person chose not to answer (the card's Decline); a
+// question then ends as an annotated answer rather than a failed tool call.
+const rejectInputBodySchema = z.object({
+  reason: z.string().optional(),
+  unanswered: z.enum(UNANSWERED_REASONS).optional(),
+});
+
 // POST /inputs/:toolUseId/reject - Reject a pending input request
 app.post('/inputs/:toolUseId/reject', async (c) => {
   const toolUseId = c.req.param('toolUseId');
 
   try {
-    const body = await c.req.json<{ reason?: string }>();
-    const reason = body.reason || 'User declined';
+    const parsed = rejectInputBodySchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const reason = parsed.data.reason || 'User declined';
 
-    if (inputManager.reject(toolUseId, reason)) {
+    if (inputManager.reject(toolUseId, reason, parsed.data.unanswered)) {
       return c.json({ success: true });
     }
 
@@ -667,6 +672,8 @@ app.get('/artifacts/:slug/widget/logs', async (c) => {
   }
 });
 
+registerRenderRoute(app);
+
 // Shared handler for proxying requests to a dashboard server
 async function proxyToDashboard(c: any) {
   const slug = c.req.param('slug');
@@ -754,7 +761,7 @@ import {
   resolveBrowserRuntimeLocation,
   shouldRefuseImplicitHostLoopback,
 } from './browser-location';
-import { confirmNoPagesLeft, readTabSources, recheckPageTarget } from './browser-liveness';
+import { confirmNoPagesLeft, listPageTargetsExcept, readTabSources, recheckPageTarget } from './browser-liveness';
 
 // Bumped each time /browser/open succeeds. External-close detection spans real
 // time (two target lookups 750ms apart, then a confirmation request); a browser
@@ -807,12 +814,12 @@ import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, extractScreenshotPath, navigationNetError, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, capReadText, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
-import { CLEAR_PRESENTATIONAL_ROLE_SCRIPT } from './presentational-frames';
 import { formatStatusLine, waitForLoaded } from './page-status';
 import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, effectWantsTree, sameDocument, newDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
-import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
+import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, goneRefOf, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
 import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead, formatUnreadFrames } from './page-reader';
+import { browserScale, pinBrowserScaleArgs } from './browser-scale';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
 import { parseNetworkActivity, type NetworkActivity } from './network-activity';
@@ -870,9 +877,14 @@ function cleanupAgentBrowserDaemon(): void {
   try { fs.unlinkSync(path.join(profile, 'SingletonLock')); } catch { /* ignore */ }
 }
 
-// Execute an agent-browser CLI command and return the result.
+// Execute an agent-browser CLI command and return the result: never while a
+// saved-session operation runs (browser-gate.ts).
+function execBrowser(...args: Parameters<typeof runBrowserCommand>): ReturnType<typeof runBrowserCommand> {
+  return browserCommand(() => runBrowserCommand(...args));
+}
+
 // Uses execFile (no shell) to prevent command injection.
-async function execBrowser(
+async function runBrowserCommand(
   args: string[],
   cdpUrl?: string,
   opts: { timeoutMs?: number; outputCap?: number } = {},
@@ -946,22 +958,24 @@ async function observePage(script: string): Promise<string | null> {
   return r.exitCode === 0 ? r.stdout : null;
 }
 
+/**
+ * With 2x rendering on, what scales a capture to the page's CSS size, for the image the agent
+ * gets. Its image's pixels are then the coordinates `mouse` takes, and it costs what it does at
+ * 1x. The saved file stays as captured, because `diff screenshot` compares it with a new capture.
+ */
+async function screenshotCssScale(): Promise<number | undefined> {
+  const scale = browserScale();
+  if (!scale) return undefined;
+  const ratio = await observePage('window.devicePixelRatio');
+  // A page emulating another ratio (`set viewport`, `set device`) keeps what it asked for.
+  return ratio !== null && Number(ratio) === scale ? 1 / scale : undefined;
+}
+
 /** One observation of the current page. */
 async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObservation> {
   const out = await observePage(observerScript(opts));
   const obs = out === null ? null : parseObservation(out);
   return obs ? withAddressBarUrl(obs) : EMPTY_OBSERVATION;
-}
-
-/**
- * Before a tree read: when the observation counted frames marked
- * role="none"/"presentation", drop that role so the CLI reads into them
- * (presentational-frames.ts).
- */
-async function readIntoPresentationalFrames(obs: PageObservation | null): Promise<void> {
-  if (!obs?.presentationalFrames) return;
-  const r = await execBrowser(['eval', CLEAR_PRESENTATIONAL_ROLE_SCRIPT], browserState.cdpUrl || undefined);
-  if (r.exitCode !== 0) console.warn(`[Browser] Could not clear the role of a presentational frame: ${r.stdout.slice(0, 200)}`);
 }
 
 /**
@@ -984,12 +998,10 @@ const TREE_READ_TIMEOUT_MS = 10_000;
  * Read the interactive tree after an action and diff it, by ref, against the
  * last tree the agent was shown on this page (tree-diff.ts). The read becomes
  * the new baseline either way. Null when it could not run or there was no
- * baseline for this page to compare with. `observed`: the observation after
- * the action.
+ * baseline for this page to compare with.
  */
-async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[]; overlayOpened?: boolean }, docStart = 0, observed: PageObservation | null = null): Promise<EffectTreeDiff | null> {
+async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[]; overlayOpened?: boolean }, docStart = 0): Promise<EffectTreeDiff | null> {
   const prior = getTreeBaseline(url, docStart);
-  await readIntoPresentationalFrames(observed);
   const r = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (r.exitCode !== 0) return null;
   const now = Date.now();
@@ -1047,44 +1059,41 @@ async function runWithEffect(
   const effect = digest?.navigated && !sameDoc ? null : settled.effect;
   const docStart = settled.after?.docStart ?? 0;
   const treeDiff = effect && digest && effectWantsTree(effect, policy.verb)
-    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees, overlayOpened: effect.opened.length > 0 }, docStart, settled.after)
+    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees, overlayOpened: effect.opened.length > 0 }, docStart)
     : null;
   return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff, docStart };
 }
 
 /**
- * The CLI's `✗ Unknown ref: eN`, plus what eN was when the agent last saw it
- * and which current refs carry exactly that line (tree-diff.ts
- * formatUnknownRef). Refs persist since 0.38, so this error now means the
- * element left the tree — most often a site re-rendering it under a new ref.
- * Costs one tree read, only on this error; the read becomes the baseline.
+ * The CLI's answer that a ref's element is gone (`✗ Unknown ref: eN`, or a
+ * role+name fallback that found none or several — tree-diff.ts goneRefOf),
+ * plus what eN was when the agent last saw it and which current refs carry
+ * exactly that line (formatUnknownRef). Refs persist since 0.38, so this
+ * means the element left the tree — most often a site re-rendering it under
+ * a new ref. Costs one tree read, only on this error; the read becomes the
+ * baseline.
  */
 async function explainUnknownRef(stdout: string, actionRef?: string): Promise<string> {
-  // 0.39.1 falls back to role+name for a ref whose node is gone, and says
-  // "Could not locate element with role=… name=…" when that fails too: the
-  // same situation, named by the ref the action was given.
-  const m = /Unknown ref: @?(e\d+)/.exec(stdout)
-    ?? (/Could not locate element with role=/.test(stdout) && actionRef ? /@?(e\d+)/.exec(actionRef) : null);
-  if (!m) return stdout;
+  const ref = goneRefOf(stdout, actionRef);
+  if (!ref) return stdout;
   const cdp = browserState.cdpUrl || undefined;
   // By document, not URL: after an in-page URL change (a back within the
   // page, a hash) the baseline is still this document's.
   const page = await observeNow();
   if (!page.url) return stdout;
-  const was = getTreeBaseline(page.url, page.docStart)?.seen.get(m[1]);
+  const was = getTreeBaseline(page.url, page.docStart)?.seen.get(ref);
   if (!was) {
     // A ref from before the page loaded a new document (the observer's load
     // start moved on): every ref of that document is gone.
-    const old = lineFromPreviousDocument(m[1]);
+    const old = lineFromPreviousDocument(ref);
     return old
-      ? `${stdout}\n${m[1]} was ${lineWithoutRef(old.text).slice(0, 160)} on the previous page load (${old.url}); the page has loaded a new document since, and refs from before the load do not carry over.`
+      ? `${stdout}\n${ref} was ${lineWithoutRef(old.text).slice(0, 160)} on the previous page load (${old.url}); the page has loaded a new document since, and refs from before the load do not carry over.`
       : stdout;
   }
-  await readIntoPresentationalFrames(page);
   const fresh = await execBrowser(['snapshot', '-i', '-c'], cdp, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (fresh.exitCode !== 0) return stdout;
   setTreeBaseline(page.url, fresh.stdout, 'action', Date.now(), page.docStart);
-  return stdout + formatUnknownRef(m[1], was, parseTreeRefs(fresh.stdout));
+  return stdout + formatUnknownRef(ref, was, parseTreeRefs(fresh.stdout));
 }
 
 /**
@@ -1397,9 +1406,11 @@ function broadcastBrowserEvent(active: boolean, targetSessionId: string | null =
 
 // validateBrowserSession is imported from ./browser-state
 
-// GET /browser/status - Check if browser is running
+// GET /browser/status - Check if browser is running. `generation` names this
+// opening of it: a saved-session watch on the host tells a browser closed and
+// opened again between two of its looks.
 app.get('/browser/status', (c) => {
-  return c.json(_getBrowserState());
+  return c.json({ ..._getBrowserState(), generation: browserOpenGeneration });
 });
 
 
@@ -1490,7 +1501,10 @@ app.post('/browser/open', async (c) => {
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
-    // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
+    // Create /workspace/downloads and name it in the profile's preferences. The
+    // headless shell does not read those preferences: the Chrome agent-browser
+    // launches saves there because of AGENT_BROWSER_DOWNLOAD_PATH (Dockerfile),
+    // and a host browser because of setDownloadBehaviorViaCDP below.
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
     // Clear leftover daemon state only before a net-new launch. While a browser
@@ -1739,7 +1753,6 @@ app.post('/browser/snapshot', async (c) => {
     // site that rewrote its URL after load must not make that action read as
     // a navigation (bench, Meta Ad Library: "Page NAVIGATED" on a dialog click).
     if (probe.url) observeUrl(probe.url);
-    await readIntoPresentationalFrames(probe);
 
     // The snapshot has its own cap (capSnapshot) that reports the true size;
     // the exec-level cap must not truncate first.
@@ -2094,7 +2107,7 @@ app.post('/browser/screenshot', async (c) => {
       if (result.exitCode !== 0) {
         return c.json({ error: result.stdout, success: false }, 500);
       }
-      return c.json({ success: true, output: result.stdout });
+      return c.json({ success: true, output: result.stdout, cssScale: await screenshotCssScale() });
     }
 
     // Otherwise only when the page looks different from the last image this
@@ -2107,7 +2120,7 @@ app.post('/browser/screenshot', async (c) => {
     const shot = parseIfChangedOutput(conditional.stdout);
     if (shot?.changed && shot.path) {
       rememberScreenshot(key, shot.path);
-      return c.json({ success: true, path: shot.path });
+      return c.json({ success: true, path: shot.path, cssScale: await screenshotCssScale() });
     }
     if (shot && !shot.changed) {
       const previous = recallScreenshot(key);
@@ -2132,7 +2145,7 @@ app.post('/browser/screenshot', async (c) => {
     }
     const path = extractScreenshotPath(result.stdout);
     if (shot && !shot.changed && path.startsWith('/')) rememberScreenshot(key, path);
-    return c.json({ success: true, output: result.stdout });
+    return c.json({ success: true, output: result.stdout, cssScale: await screenshotCssScale() });
   } catch (error: any) {
     console.error('[Browser] Error taking screenshot:', error);
     return c.json({ error: error.message || 'Failed to take screenshot' }, 500);
@@ -2628,7 +2641,6 @@ app.post('/browser/run', async (c) => {
       // "Unknown ref" until a snapshot. Refs persist per document, so one read
       // brings them back unchanged.
       if (verb.startsWith('tab') && commandArgs[1]?.toLowerCase() !== 'list' && commandArgs.length > 1) {
-        await readIntoPresentationalFrames(front);
         const restore = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
         if (restore.exitCode === 0 && front.url) setTreeBaseline(front.url, restore.stdout, 'action', Date.now(), front.docStart);
       }
@@ -2787,7 +2799,10 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
       return;
     }
 
+    // The viewer's canvas width rides on the URL so the first screencast already has the right size.
+    const viewerWidth = clampViewerWidth(url.searchParams.get('width'));
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      if (viewerWidth !== undefined) viewerWidths.set(ws, viewerWidth);
       handleBrowserStreamConnection(ws);
     });
     return;
@@ -2989,13 +3004,42 @@ let cdpScreencast: {
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
+  screencastStarted: boolean;
 } | null = null;
 
-/** Derive the CDP HTTP endpoint from the current browser state */
+/** Canvas width in device pixels each viewer last reported. */
+const viewerWidths = new WeakMap<WebSocket, number>();
+const VIEWER_WIDTH_DEBOUNCE_MS = 200;
+
+/** CDP can't resize a running screencast, so a new viewer width restarts it. */
+function setViewerWidth(ws: WebSocket, width: number): void {
+  if (width === viewerWidths.get(ws)) return;
+  viewerWidths.set(ws, width);
+  const state = cdpScreencast;
+  // Not started yet (e.g. a remote session still attaching): startScreencast reads the width.
+  if (state?.clientWs !== ws || !state.screencastStarted || state.cdpWs.readyState !== WebSocket.OPEN) return;
+  state.cdpWs.send(cdpMsg(state, 'Page.stopScreencast'));
+  startScreencast(state);
+}
+
+/** Stream frames no wider than the viewer's canvas. */
+function startScreencast(state: NonNullable<typeof cdpScreencast>): void {
+  state.cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
+    format: 'jpeg', quality: 80, everyNthFrame: 1, ...screencastSize(viewerWidths.get(state.clientWs)),
+  }));
+  state.screencastStarted = true;
+}
+
+/**
+ * Derive the CDP HTTP endpoint from the current browser state: the CDP URL's
+ * host, over TLS when the URL is (a remote provider's wss:// endpoint carries
+ * its credentials in the query, which stays out of it, and may not answer on
+ * plain HTTP at all: Steel's never does).
+ */
 function getCdpHttpEndpoint(): string {
   if (browserState.cdpUrl) {
-    const match = browserState.cdpUrl.match(/^wss?:\/\/([^/]+)/);
-    if (match) return `http://${match[1]}`;
+    const match = browserState.cdpUrl.match(/^(wss?):\/\/([^/?#]+)/);
+    if (match) return `${match[1] === 'wss' ? 'https' : 'http'}://${match[2]}`;
   }
   // Local browser: read the dynamic port from Chrome's DevToolsActivePort file
   const port = readChromeDebugPort();
@@ -3014,6 +3058,19 @@ interface PageTarget {
   requiresSession: boolean;
 }
 
+/** How long a /json lookup may take: instant on a local Chrome. */
+const CDP_JSON_TIMEOUT_MS = 5_000;
+
+/**
+ * Whether the browser may serve Chrome's HTTP /json: a local or host Chrome
+ * does, and its endpoint is Chrome's own `/devtools/browser/<id>`. A remote
+ * provider's (Browserbase, Steel, Tab Tender, over ws:// or wss://) does
+ * not, and is not asked.
+ */
+function cdpServesJson(): boolean {
+  return !browserState.cdpUrl || /^ws:\/\/[^/]+\/devtools\/browser\//.test(browserState.cdpUrl);
+}
+
 /**
  * Strict variant of the /json lookup: throws when Chrome cannot be reached or
  * answers garbage, so confirmNoPagesLeft can tell "answered: no pages" from
@@ -3022,40 +3079,46 @@ interface PageTarget {
  * close, and guessing costs a leaked remote session.
  */
 async function listPageTargetsStrict(): Promise<Array<{ type: string }>> {
-  const res = await fetch(`${getCdpHttpEndpoint()}/json`);
+  if (!cdpServesJson()) throw new Error('A remote browser serves no CDP /json');
+  const res = await fetch(`${getCdpHttpEndpoint()}/json`, { signal: AbortSignal.timeout(CDP_JSON_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`CDP /json answered ${res.status}`);
   const targets = await res.json() as Array<{ type: string }>;
   return targets.filter(t => t.type === 'page');
 }
 
-/** Get ALL CDP page targets across all strategies */
+/** Get ALL CDP page targets across all strategies, except the tabs a saved session is read on */
 async function getAllPageTargets(): Promise<PageTarget[]> {
-  // Try Chrome's HTTP /json endpoint first (works for local Chrome)
+  return (await discoverPageTargets()).filter((target) => !isSessionStubTarget(target.id));
+}
+
+/** Page targets from Chrome's HTTP /json; none when it cannot be reached or lists none. */
+async function pageTargetsFromJson(): Promise<PageTarget[]> {
   const endpoint = getCdpHttpEndpoint();
   try {
-    const res = await fetch(`${endpoint}/json`);
+    const res = await fetch(`${endpoint}/json`, { signal: AbortSignal.timeout(CDP_JSON_TIMEOUT_MS) });
     const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; faviconUrl?: string; webSocketDebuggerUrl: string }>;
-
-    const pages = targets.filter(t => t.type === 'page');
-    if (pages.length > 0) {
-      // Chrome's /json may return webSocketDebuggerUrl with localhost which won't
-      // work from inside a Docker container. Rewrite to the host we actually used.
-      const cdpHost = endpoint.replace(/^https?:\/\//, '');
-      for (const page of pages) {
-        page.webSocketDebuggerUrl = page.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${cdpHost}`);
-      }
-
-      return pages.map(p => ({
-        id: p.id,
-        url: p.url,
-        title: decodeChromeTargetTitle(p.title || ''),
-        faviconUrl: p.faviconUrl || undefined,
-        wsUrl: p.webSocketDebuggerUrl,
-        requiresSession: false,
-      }));
-    }
+    // Chrome's /json may return webSocketDebuggerUrl with localhost which won't
+    // work from inside a Docker container. Rewrite to the host we actually used.
+    const cdpHost = endpoint.replace(/^https?:\/\//, '');
+    return targets.filter(t => t.type === 'page').map(p => ({
+      id: p.id,
+      url: p.url,
+      title: decodeChromeTargetTitle(p.title || ''),
+      faviconUrl: p.faviconUrl || undefined,
+      wsUrl: p.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${cdpHost}`),
+      requiresSession: false,
+    }));
   } catch {
-    // HTTP /json not available — fall through to WebSocket CDP approach
+    // HTTP /json not available — the caller falls through to the WebSocket CDP approach
+    return [];
+  }
+}
+
+async function discoverPageTargets(): Promise<PageTarget[]> {
+  // Try Chrome's HTTP /json endpoint first (works for local Chrome)
+  if (cdpServesJson()) {
+    const pages = await pageTargetsFromJson();
+    if (pages.length > 0) return pages;
   }
 
   // For remote CDP providers (e.g. Browserbase), try the host API debug endpoint first.
@@ -3090,10 +3153,10 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
     }
   }
 
-  // Fallback: try CDP Target.getTargets over WebSocket
+  // Fallback: Target.getTargets over the browser-level WebSocket (Steel serves
+  // neither /json nor page-level endpoints, so its pages are always found here).
   if (!browserState.cdpUrl) return [];
-  const target = await findPageTargetViaCdp(browserState.cdpUrl);
-  return target ? [target] : [];
+  return findPageTargetsViaCdp(browserState.cdpUrl);
 }
 
 /** Find Chrome's active page. Credential actions opt into the viewer page. */
@@ -3119,11 +3182,15 @@ async function findActivePageTarget(preferViewer = false): Promise<PageTarget | 
   );
 }
 
-/** Discover page targets via CDP WebSocket protocol (for remote providers) */
-function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> {
+/**
+ * Discover page targets via CDP WebSocket protocol (for remote providers).
+ * Every page, in Chrome's order: the active one is picked against the
+ * daemon's tabs, as with /json.
+ */
+function findPageTargetsViaCdp(browserWsUrl: string): Promise<PageTarget[]> {
   return new Promise((resolve) => {
     const ws = new WebSocket(browserWsUrl);
-    const timeout = setTimeout(() => { ws.close(); resolve(null); }, 5000);
+    const timeout = setTimeout(() => { ws.close(); resolve([]); }, 5000);
 
     ws.on('open', () => {
       ws.send(JSON.stringify({ id: 1, method: 'Target.getTargets' }));
@@ -3136,16 +3203,20 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
           clearTimeout(timeout);
           ws.close();
           const pages = (msg.result?.targetInfos || []).filter(
-            (t: { type: string }) => t.type === 'page'
-          );
-          if (pages.length === 0) { resolve(null); return; }
-          const target = pages[pages.length - 1];
-          resolve({ id: target.targetId, url: target.url || '', title: target.title || '', wsUrl: browserWsUrl, requiresSession: true });
+            (t: { type: string; targetId: string }) => t.type === 'page' && !isSessionStubTarget(t.targetId)
+          ) as Array<{ targetId: string; url?: string; title?: string }>;
+          resolve(pages.map((target) => ({
+            id: target.targetId,
+            url: target.url || '',
+            title: target.title || '',
+            wsUrl: browserWsUrl,
+            requiresSession: true,
+          })));
         }
       } catch { /* wait for next message */ }
     });
 
-    ws.on('error', () => { clearTimeout(timeout); resolve(null); });
+    ws.on('error', () => { clearTimeout(timeout); resolve([]); });
   });
 }
 
@@ -3432,6 +3503,39 @@ registerLoginRoutes(app, {
   notifyBrowserAction,
 });
 
+/** The browser's own CDP endpoint, not a page's: a host browser's is the one it launched with. */
+async function browserWsUrl(): Promise<string> {
+  if (browserState.cdpUrl) return browserState.cdpUrl;
+  const endpoint = getCdpHttpEndpoint();
+  const response = await fetch(`${endpoint}/json/version`);
+  if (!response.ok) throw new Error(`CDP /json/version answered ${response.status}`);
+  const { webSocketDebuggerUrl } = await response.json() as { webSocketDebuggerUrl?: string };
+  if (!webSocketDebuggerUrl) throw new Error('the browser named no endpoint');
+  return webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${endpoint.replace(/^https?:\/\//, '')}`);
+}
+
+// ── Saved sessions ──────────────────────────────────────────────────────────
+// The endpoints live in session-routes.ts; reading or replacing a site's
+// state goes over a browser-level connection of our own.
+
+registerSessionRoutes(app, {
+  hostAuthEnabled,
+  validateSession: validateBrowserSessionWithRecovery,
+  browserActive: () => browserState.active,
+  // A remote browser answers slower; a database read is one call.
+  connectBrowser: async () => CdpConnection.openBrowser(await browserWsUrl(), { callTimeoutMs: 20_000 }),
+  activeTabId: async () => (await findActivePageTarget())?.id ?? null,
+  keepActiveTab: (work) => tabManager.keepActiveTab(work),
+  observeUrl: async () => {
+    const digest = await observeUrlDigest();
+    return digest ? { ...digest } : null;
+  },
+  pageReplaced: () => {
+    resetTreeBaseline();
+    notifyBrowserAction();
+  },
+});
+
 /** Helper to build a CDP message, adding sessionId when in session mode */
 function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
   const msg: Record<string, unknown> = { id: ++state.msgId, method };
@@ -3447,7 +3551,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
   const state: NonNullable<typeof cdpScreencast> = {
     clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
     lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
-    autoFollow: prevAutoFollow, pendingSelections: new Set(),
+    autoFollow: prevAutoFollow, pendingSelections: new Set(), screencastStarted: false,
     navigation: createBrowserNavigation({
       targetId,
       sendCommand(method, params) {
@@ -3475,9 +3579,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
-      cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-        format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-      }));
+      startScreencast(state);
       // Enable Page domain to receive navigation lifecycle events
       cdpWs.send(cdpMsg(state, 'Page.enable'));
       // Discover the main frame ID so we only forward loading events for the
@@ -3496,9 +3598,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
         state.cdpSessionId = msg.result.sessionId;
-        cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-          format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-        }));
+        startScreencast(state);
         // Discover the main frame in remote session mode too.
         cdpWs.send(cdpMsg(state, 'Page.enable'));
         cdpWs.send(cdpMsg(state, 'Page.getFrameTree'));
@@ -3620,12 +3720,10 @@ function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
 /** Activate a tab in Chrome without stealing OS focus.
  *  Opens a short-lived browser-level CDP connection to send Target.activateTarget. */
 function activateTargetInBackground(targetId: string): void {
-  const endpoint = getCdpHttpEndpoint();
-  // Fetch the browser WebSocket URL, then send activateTarget
-  fetch(`${endpoint}/json/version`)
-    .then(res => res.json() as Promise<{ webSocketDebuggerUrl: string }>)
-    .then(info => {
-      const browserWs = new WebSocket(info.webSocketDebuggerUrl);
+  // The browser's own endpoint: a remote provider's serves no /json/version.
+  browserWsUrl()
+    .then(url => {
+      const browserWs = new WebSocket(url);
       browserWs.on('open', () => {
         browserWs.send(JSON.stringify({
           id: 1,
@@ -3802,12 +3900,22 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 
   // Start tab list polling for this connection (replaces any previous viewer's timer)
   const tabPoll = startTabPolling(() => broadcastTabList());
+  let viewerWidthTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Forward input events and handle tab control messages from client
   // Protocol: see src/renderer/components/browser/browser-preview.tsx
   ws.on('message', async (rawData) => {
     try {
       const data = JSON.parse(rawData.toString());
+      if (data.type === 'viewport') {
+        // Applied once reports settle: a dragged panel sends many, and each restart makes Chrome encode a frame.
+        const width = clampViewerWidth(data.width);
+        if (width !== undefined) {
+          clearTimeout(viewerWidthTimer);
+          viewerWidthTimer = setTimeout(() => setViewerWidth(ws, width), VIEWER_WIDTH_DEBOUNCE_MS);
+        }
+        return;
+      }
       if (!cdpScreencast) return;
 
       if (data.type === 'switch_tab' && data.targetId) {
@@ -3820,11 +3928,8 @@ function handleBrowserStreamConnection(ws: WebSocket) {
         }
       } else if (data.type === 'close_tab' && data.targetId) {
         // Close a tab via CDP Target.closeTarget on a temporary browser-level connection
-        const endpoint = getCdpHttpEndpoint();
         try {
-          const versionRes = await fetch(`${endpoint}/json/version`);
-          const versionInfo = await versionRes.json() as { webSocketDebuggerUrl: string };
-          const browserWs = new WebSocket(versionInfo.webSocketDebuggerUrl);
+          const browserWs = new WebSocket(await browserWsUrl());
           browserWs.on('open', () => {
             browserWs.send(JSON.stringify({
               id: 1,
@@ -3832,18 +3937,28 @@ function handleBrowserStreamConnection(ws: WebSocket) {
               params: { targetId: data.targetId },
             }));
           });
-          browserWs.on('message', () => {
+          browserWs.on('message', async (raw) => {
             browserWs.close();
-            // If we just closed the tab we were screencasting, switch to another
-            if (cdpScreencast?.currentTargetId === data.targetId) {
-              findActivePageTarget().then(target => {
+            const reply = JSON.parse(raw.toString()) as { error?: unknown };
+            const listPageTargets = reply.error
+              ? getAllPageTargets
+              : listPageTargetsExcept(getAllPageTargets, data.targetId);
+            try {
+              const sources = await readTabSources(listPageTargets, () => tabManager.queryTabs());
+              // If we just closed the tab we were screencasting, switch to another
+              if (cdpScreencast?.currentTargetId === data.targetId) {
+                const target = selectActivePageTarget(
+                  sources.allTargets,
+                  sources.daemonTabs,
+                  (left, right) => tabManager.urlsMatch(left, right),
+                );
                 if (target && cdpScreencast) {
                   switchScreencastTarget(target, ws);
                 }
-                broadcastTabList();
-              });
-            } else {
-              broadcastTabList();
+              }
+              broadcastTabList(sources);
+            } catch (err) {
+              console.error('[CDP] Failed to refresh tabs after close:', err);
             }
           });
           browserWs.on('error', () => {});
@@ -3932,11 +4047,13 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 
   ws.on('close', () => {
     stopTabPolling(tabPoll);
+    clearTimeout(viewerWidthTimer);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
   ws.on('error', () => {
     stopTabPolling(tabPoll);
+    clearTimeout(viewerWidthTimer);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
@@ -3966,6 +4083,8 @@ setInterval(() => inputManager.cleanupStale(), 60_000).unref();
 // Pin agent-browser's screenshot directory and sweep stale files (boot +
 // hourly). Every screenshot is a uniquely named PNG nothing else deletes.
 startScreenshotJanitor();
+
+pinBrowserScaleArgs();
 
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');

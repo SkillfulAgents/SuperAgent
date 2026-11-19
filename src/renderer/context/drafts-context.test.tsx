@@ -135,7 +135,7 @@ describe('appendToSessionDraft', () => {
 describe('seedAgentTemplatePrompt', () => {
   it('stores the template prompt under the new agent home draft key', () => {
     const { result } = renderHook(() => ({
-      draft: useDraft<string>('agent:new-agent'),
+      draft: useDraft<string>('session:agent-home:new-agent'),
       store: useDraftsStore(),
     }), { wrapper })
 
@@ -150,7 +150,7 @@ describe('seedAgentTemplatePrompt', () => {
     const { result } = renderHook(() => useDraftsStore(), { wrapper })
 
     expect(seedAgentTemplatePrompt(result.current, 'new-agent', undefined)).toBe(false)
-    expect(result.current.get('agent:new-agent')).toBeUndefined()
+    expect(result.current.get('session:agent-home:new-agent')).toBeUndefined()
   })
 })
 

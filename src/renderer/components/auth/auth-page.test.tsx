@@ -257,4 +257,26 @@ describe('AuthPage', () => {
     if (offered) expect(screen.getByTestId('auth-tab-signup')).toBeInTheDocument()
     else expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
   })
+
+  it.each([
+    ['invitation_only', true],
+    ['closed', false],
+  ])('opens sign-up with the email from a team-directory invitation link (%s)', async (signupMode, offered) => {
+    window.history.replaceState(null, '', '/?join=dana%40acme.test')
+    apiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        signupMode, allowLocalAuth: true, allowSocialAuth: false, providers: [],
+        passwordMinLength: 8, passwordRequireComplexity: false, requireAdminApproval: false, hasUsers: true,
+      }),
+    })
+    try {
+      render(<AuthPage />)
+      await waitFor(() => expect(screen.getByTestId(offered ? 'signup-submit' : 'signin-submit')).toBeInTheDocument())
+      if (offered) expect(screen.getByLabelText('Email')).toHaveValue('dana@acme.test')
+      else expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
+    } finally {
+      window.history.replaceState(null, '', '/')
+    }
+  })
 })

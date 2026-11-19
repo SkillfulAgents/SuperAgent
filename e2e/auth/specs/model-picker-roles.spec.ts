@@ -3,6 +3,7 @@ import { AuthPage } from '../pages/auth.page'
 import { UserBarPage } from '../pages/user-bar.page'
 import { AppPage } from '../../pages/app.page'
 import { AgentPage } from '../../pages/agent.page'
+import { openHomeAdvancedSettings } from '../../helpers/agent-home'
 
 // Serial narrative: admin signs up first, then a regular (non-admin) member —
 // every later test drives the MEMBER's browser context.
@@ -70,6 +71,7 @@ test.describe('Model picker for non-admin users', () => {
   })
 
   test('member can change the agent default model from the home card', async ({ user2Page }) => {
+    await openHomeAdvancedSettings(user2Page)
     const card = user2Page.locator('[data-testid="home-default-model-card"]')
     await expect(card).toBeVisible()
 
@@ -93,6 +95,7 @@ test.describe('Model picker for non-admin users', () => {
 
     // Durable proof it hit the server, not just local state.
     await user2Page.reload()
+    await openHomeAdvancedSettings(user2Page)
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText(/haiku/i, { timeout: 15000 })
   })
 })

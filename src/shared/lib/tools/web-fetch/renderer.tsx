@@ -8,7 +8,7 @@ import { hostnameOf, parseFetchResult, stripLeadingTitle } from '../ui/web-resul
 import { FieldLabel, HostTooltip, NO_MARKDOWN_IMAGES, SourceMeta } from '../ui/shared'
 import type { CollapsedContentProps, ToolRendererProps } from '../renderer-types'
 
-const BOX = 'bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto card-scrollbar'
+const BOX = 'bg-background rounded-item p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto card-scrollbar'
 
 /** Site icon for the fetched page, mirroring the source strip on search rows. */
 function CollapsedContent({ result, isError }: CollapsedContentProps) {

@@ -1,4 +1,4 @@
-import type { TeamBrainSchedule } from './team-brain-schema'
+import type { TeamBrainSchedule } from '@shared/lib/config/team-brain-schema'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE

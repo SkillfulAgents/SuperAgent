@@ -10,7 +10,7 @@ import { factsForRenderer } from './facts'
 const known = vi.hoisted(() => new Map<string, unknown>())
 
 vi.mock('@shared/lib/services/cloud-server-facts', () => ({
-  readCloudServerFacts: (deploymentUrl: string) => known.get(deploymentUrl) ?? null,
+  readCloudServerFacts: async (deploymentUrl: string) => known.get(deploymentUrl) ?? null,
 }))
 
 const CLOUD = { baseUrl: 'http://localhost:3000/cloud/KEY', deploymentUrl: 'https://acme.example' }
@@ -28,28 +28,28 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('describes this install on both sides for the local API, which main hosts', () => {
-  const facts = factsForRenderer('local', CLOUD)
+it('describes this install on both sides for the local API, which main hosts', async () => {
+  const facts = await factsForRenderer('local', CLOUD)
 
   expect(facts.client.shell).toBe('electron')
   expect(facts.server).toEqual(getServerFacts())
 })
 
 describe('for a cloud workspace', () => {
-  it('answers from what main last heard from the deployment, without asking it', () => {
+  it('answers from what main last heard from the deployment, without asking it', async () => {
     known.set(CLOUD.deploymentUrl, DEPLOYMENT_FACTS)
 
-    expect(factsForRenderer('cloud', CLOUD).server).toEqual(DEPLOYMENT_FACTS)
+    expect((await factsForRenderer('cloud', CLOUD)).server).toEqual(DEPLOYMENT_FACTS)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('has no server facts for a deployment main hasn’t heard from yet', () => {
-    expect(factsForRenderer('cloud', CLOUD).server).toBeNull()
+  it('has no server facts for a deployment main hasn’t heard from yet', async () => {
+    expect((await factsForRenderer('cloud', CLOUD)).server).toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('has no server facts when there is no workspace', () => {
+  it('has no server facts when there is no workspace', async () => {
     known.set(CLOUD.deploymentUrl, DEPLOYMENT_FACTS)
-    expect(factsForRenderer('cloud', null).server).toBeNull()
+    expect((await factsForRenderer('cloud', null)).server).toBeNull()
   })
 })

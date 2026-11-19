@@ -1,15 +1,17 @@
 import { z } from 'zod'
+import type { SessionMetadata } from '@shared/lib/types/agent'
 
 /**
- * Zod schema for the per-agent `session-metadata.json` map, validated at the
- * file read boundary (project convention; fail-closed hardening).
+ * Zod schema for what the app keeps about a session, validated wherever it
+ * is stored or read back: an entry of the agent's session index, and an
+ * entry of `session-metadata.json`, the index's portable form.
  *
- * Design: deliberately LENIENT so it never rejects a legitimately-evolving file
- * (a too-strict schema would refuse to write and wedge the feature). The
- * schema's job here is to catch *corruption* — a torn/half-written file (caught
- * by JSON.parse) or a value that isn't the expected record-of-objects shape —
- * NOT to police every field. Inner objects use `.loose()` so unknown / future
- * fields pass through untouched on a read-modify-write instead of being dropped.
+ * Design: deliberately LENIENT so it never rejects a legitimately-evolving
+ * entry (a too-strict schema would refuse to write and wedge the feature).
+ * The schema's job here is to catch *corruption* — a value that isn't the
+ * expected object shape — NOT to police every field. `.loose()` lets unknown /
+ * future fields pass through untouched on a read-modify-write instead of
+ * being dropped.
  *
  * Keep in sync with the `SessionMetadata` interface in
  * `@shared/lib/types/agent` (the canonical shape).
@@ -107,4 +109,13 @@ export const sessionMetadataSchema = z
   })
   .loose()
 
-export const sessionMetadataMapSchema = z.record(z.string(), sessionMetadataSchema)
+/**
+ * `session-metadata.json` (see `session-metadata-file`): session id → its
+ * metadata, plus when its transcript was last written, which the index keeps
+ * beside the metadata rather than in it.
+ */
+export const portableSessionMetadataSchema = sessionMetadataSchema.extend({ lastActivityAt: z.string().optional() })
+
+export const portableSessionMetadataMapSchema = z.record(z.string(), portableSessionMetadataSchema)
+
+export type PortableSessionMetadataMap = Record<string, SessionMetadata & { lastActivityAt?: string }>

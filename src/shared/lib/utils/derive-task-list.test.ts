@@ -199,6 +199,52 @@ describe('deriveTaskList keying by real task id', () => {
   })
 })
 
+describe('deriveTaskList task descriptions', () => {
+  it('prefers the description the CLI saved over the call input', () => {
+    // CLI 2.1.317+ echoes the saved task in TaskCreate's result; it differs
+    // from the input when the CLI corrected the call or a hook rewrote it.
+    const messages = [
+      assistantMsg([
+        {
+          ...taskCreate('Write the report', 1),
+          input: { subject: 'Write the report', description: 'as sent', activeForm: 'Writing' },
+          taskDescription: 'as saved',
+        },
+      ]),
+    ]
+    expect(deriveTaskList(messages).todos).toEqual([
+      { content: 'Write the report', status: 'pending', activeForm: 'Writing', description: 'as saved' },
+    ])
+  })
+
+  it("falls back to the call's own description (older CLI, or a create still in flight)", () => {
+    const messages = [
+      assistantMsg([
+        { ...taskCreate('Review it', null), input: { subject: 'Review it', description: 'Read every section.' } },
+      ]),
+    ]
+    expect(deriveTaskList(messages).todos?.[0].description).toBe('Read every section.')
+  })
+
+  it('leaves the description out when neither the result nor the input has one', () => {
+    const messages = [
+      assistantMsg([
+        { ...taskCreate('Blank', 1), input: { subject: 'Blank', description: '   ' }, taskDescription: '' },
+      ]),
+    ]
+    expect(deriveTaskList(messages).todos?.[0]).not.toHaveProperty('description')
+  })
+
+  it('follows a TaskUpdate that rewrites the description, and ignores a failed one', () => {
+    const messages = [
+      assistantMsg([{ ...taskCreate('Ship it', 4), taskDescription: 'first draft' }]),
+      assistantMsg([{ name: 'TaskUpdate', input: { taskId: '4', description: 'second draft' }, result: 'Updated task #4' }]),
+      assistantMsg([{ name: 'TaskUpdate', input: { taskId: '4', description: 'rejected' }, result: 'Error', isError: true }]),
+    ]
+    expect(deriveTaskList(messages).todos?.[0].description).toBe('second draft')
+  })
+})
+
 describe('deriveTaskList TodoWrite fallback', () => {
   it('uses the last TodoWrite when no TaskCreate calls exist', () => {
     const todosInput: Todo[] = [

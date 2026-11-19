@@ -1,6 +1,7 @@
 import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
 import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
 import { VOICE_PROVIDERS } from '../voice/provider-types'
+import { COMPUTER_USE_INPUT_MODES } from '../computer-use/types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -10,7 +11,6 @@ import type {
 } from './settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from './capability-policy-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
-import { teamBrainRecordSchema } from './team-brain-schema'
 import { validateFaviconDataUrl } from './favicon'
 import { isValidAccelerator } from './shortcuts'
 import {
@@ -85,8 +85,7 @@ export const appSettingsPatchSchema = z.object({
   apiLogAutoDeleteDays: z.number().int().nonnegative(),
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
-  hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
-  chromeProfileId: z.string(),
+  hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform', 'steel', 'tabtender']).nullable(),
   chromeHeadless: z.boolean(),
   allowPrereleaseUpdates: z.boolean(),
   theme: z.enum(['system', 'light', 'dark']),
@@ -98,6 +97,7 @@ export const appSettingsPatchSchema = z.object({
     },
   ),
   maxBrowserTabs: z.number(),
+  containerBrowserHighDpi: z.boolean(),
   faviconDataUrl: faviconDataUrlPatchSchema,
   browserbaseAdvancedStealth: z.boolean(),
   browserbaseStealthOs: z.enum(['linux', 'windows', 'mac', 'mobile', 'tablet']),
@@ -105,6 +105,11 @@ export const appSettingsPatchSchema = z.object({
   browserbaseProxyCountry: z.string(),
   browserbaseProxyState: z.string(),
   browserbaseProxyCity: z.string(),
+  steelSolveCaptcha: z.boolean(),
+  steelProxies: z.boolean(),
+  steelProxyCountry: z.string(),
+  steelProxyState: z.string(),
+  steelProxyCity: z.string(),
 }).partial().strict()
 
 export const apiKeySettingsPatchSchema = z.object({
@@ -120,6 +125,9 @@ export const apiKeySettingsPatchSchema = z.object({
   composioUserId: z.string(),
   browserbaseApiKey: z.string(),
   browserbaseProjectId: z.string(),
+  steelApiKey: z.string(),
+  tabtenderUrl: z.string(),
+  tabtenderApiKey: z.string(),
   deepgramApiKey: z.string(),
   openaiApiKey: z.string(),
   nangoSecretKey: z.string(),
@@ -181,7 +189,7 @@ const voiceSettingsPatchSchema = z.object({
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({
-  level: z.enum(['list_apps_windows', 'use_application', 'use_host_shell']),
+  level: z.enum(['list_apps_windows', 'use_application', 'use_any_application', 'use_host_shell']),
   appName: z.string().optional(),
   grantType: z.literal('always'),
 }).strict()
@@ -191,6 +199,8 @@ const computerUseSettingsPatchSchema = z.object({
     z.string(),
     z.object({ grants: z.array(computerUseGrantSchema) }).strict(),
   ),
+  showCursor: z.boolean(),
+  inputMode: z.enum(COMPUTER_USE_INPUT_MODES),
 }).partial().strict()
 
 const analyticsTargetSchema = z.object({
@@ -211,7 +221,6 @@ export const generalSettingsPatchSchema = z.object({
   enableToolSearch: z.boolean(),
   agentCapabilities: agentCapabilitySettingsPatchSchema.strict(),
   globalInstructions: globalInstructionsSchema,
-  teamBrain: teamBrainRecordSchema,
 }).partial().strict()
 
 /** The complete, allowlisted patch accepted by PUT /api/settings. */
@@ -504,17 +513,10 @@ export const generalSettingsComponent = {
         patch.globalInstructions !== undefined
           ? patch.globalInstructions
           : before.globalInstructions,
-      teamBrain: patch.teamBrain !== undefined ? patch.teamBrain : before.teamBrain,
     }
   },
 
-  validate({ before, patch }: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
-    // One Team Brain per workspace: a set-up that lost the race to another admin's is refused; a retry of the same record is not.
-    const current = before.teamBrain
-    const next = patch?.teamBrain
-    if (current && next && (current.agentSlug !== next.agentSlug || current.volumeId !== next.volumeId)) {
-      return [{ status: 409, message: 'Team Brain is already set up' }]
-    }
+  validate(_args: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
     return []
   },
 } satisfies SettingsComponent<typeof generalSettingsPatchSchema>
@@ -544,7 +546,6 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     enableToolSearch: patch.enableToolSearch,
     agentCapabilities: patch.agentCapabilities,
     globalInstructions: patch.globalInstructions,
-    teamBrain: patch.teamBrain,
   }
 }
 

@@ -2,14 +2,16 @@ import type { DOMOutputSpec } from 'prosemirror-model'
 import { mentionName } from '@shared/lib/utils/mentions'
 import type { Chip } from '@renderer/lib/chip-marker'
 import type { ComposerChipKind, ComposerChipTrigger } from './composer-chips'
-import { AgentMentionIcon, MENTION_CHIP_CLASS, UserMentionIcon, agentForSlug } from './mention-chip'
+import { AgentMentionIcon, MENTION_AT_CLASS, MENTION_CHIP_CLASS, agentForSlug } from './mention-chip'
 import { offerReach, offerShare } from './mention-access-gate'
 import { MentionMenu } from './mention-menu'
 
-function renderMention(testId: string) {
+/** A teammate's chip is just their name; an agent's leads with its icon, drawn into the empty span. */
+function renderMention(testId: string, { icon }: { icon: boolean }) {
   return (chip: Chip): DOMOutputSpec => ['span', { 'data-testid': testId, class: MENTION_CHIP_CLASS },
-    ['span', { 'data-chip-icon': '' }],
-    `@${mentionName(chip.label)}`,
+    ...(icon ? [['span', { 'data-chip-icon': '' }] as DOMOutputSpec] : []),
+    // One span for the @ and the name, so the chip's gap stays between icon and text.
+    ['span', ['span', { class: MENTION_AT_CLASS }, '@'], mentionName(chip.label)],
   ]
 }
 
@@ -20,8 +22,7 @@ const toAgentText = (chip: Chip) => `@${mentionName(chip.label)}`
 export const userChip: ComposerChipKind = {
   kind: 'user',
   referent: /^[A-Za-z0-9_-]+$/,
-  render: renderMention('user-mention'),
-  Icon: UserMentionIcon,
+  render: renderMention('user-mention', { icon: false }),
   toAgentText,
   mention: (chip, { members }) => {
     const email = members?.get(chip.referent)?.email
@@ -36,7 +37,7 @@ export const userChip: ComposerChipKind = {
 export const agentChip: ComposerChipKind = {
   kind: 'agent',
   referent: /^[a-z0-9-]+$/,
-  render: renderMention('agent-mention'),
+  render: renderMention('agent-mention', { icon: true }),
   Icon: AgentMentionIcon,
   toAgentText,
   // The display slug, as list_agents prints it; the tools resolve either.

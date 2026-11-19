@@ -30,7 +30,7 @@
 
 .pwa-banner {
   position: relative;
-  border-radius: 0.75rem;
+  border-radius: var(--radius-card);
 }
 
 /* Soft colored glow — ::before paints first → behind everything, bleeds out. */

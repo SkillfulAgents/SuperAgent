@@ -286,12 +286,6 @@ vi.mock('@shared/lib/computer-use/permission-manager', () => ({
 
 vi.mock('@shared/lib/computer-use/executor', () => ({
   executeComputerUseCommand: vi.fn(),
-  checkACPermissions: vi.fn(),
-  ungrabAC: vi.fn(),
-}))
-
-vi.mock('@shared/lib/computer-use/types', () => ({
-  resolveTargetApp: vi.fn(),
 }))
 
 vi.mock('@shared/lib/llm-provider/helpers', () => ({

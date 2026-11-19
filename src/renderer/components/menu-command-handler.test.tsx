@@ -94,6 +94,24 @@ describe('MenuCommandHandler: switch-target', () => {
     await waitFor(() => expect(api.declineTargetSwitch).toHaveBeenCalledTimes(1))
   })
 
+  it('opens a clicked mention banner on the message it tags', async () => {
+    installElectronApi([])
+    let live: ((agentSlug: string, sessionId?: string | null, messageUuid?: string) => void) | undefined
+    window.electronAPI!.onNavigateToAgent = (callback) => {
+      live = callback
+      return () => {}
+    }
+    render(<MenuCommandHandler />)
+    await waitFor(() => expect(live).toBeDefined())
+
+    act(() => live!('finance', 's1', 'msg-7'))
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/sessions/$sessionId',
+      params: { slug: 'finance', sessionId: 's1' },
+      search: { message: 'msg-7' },
+    })
+  })
+
   it('opens the session a replayed navigation names', async () => {
     installElectronApi([{ channel: 'navigate-to-agent', agentSlug: 'finance', sessionId: 's1' }])
     render(<MenuCommandHandler />)
@@ -102,6 +120,7 @@ describe('MenuCommandHandler: switch-target', () => {
       expect(navigate).toHaveBeenCalledWith({
         to: '/agents/$slug/sessions/$sessionId',
         params: { slug: 'finance', sessionId: 's1' },
+        search: { message: undefined },
       }),
     )
   })
