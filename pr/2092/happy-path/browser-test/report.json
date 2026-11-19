@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, and report the page title \"Example Domain\"",
+  "steps": [
+    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut application home page with agent list visible",
+    "Step 2 - Found and clicked the \"QA-20261119-185320-kovf\" agent in the sidebar — Successfully navigated to the agent's configuration page",
+    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully entered in the textbox",
+    "Step 4 - Clicked send button to send the message — Message successfully sent; agent began processing and created a new session titled \"Browser Page Title Check\"",
+    "Step 5 - Waited for agent response — Agent completed work in 8 seconds with 3 tool calls and provided response: \"The page title is \"Example Domain\". The page loaded normally, and I've closed the browser since that's all you needed.\"",
+    "Step 5 - Verified response mentions \"Example Domain\" — VERIFIED: The agent response explicitly states the page title is \"Example Domain\", which confirms successful browser navigation and page title detection"
+  ],
+  "bugs": [],
+  "durationMs": 90428,
+  "sessionId": "7b6c1fc4-e03e-4ca9-a84a-3a073d9aeb62",
+  "cost": {
+    "inputTokens": 380,
+    "outputTokens": 12560,
+    "cacheCreationTokens": 80007,
+    "cacheReadTokens": 1088777,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.272066
+  }
+}
