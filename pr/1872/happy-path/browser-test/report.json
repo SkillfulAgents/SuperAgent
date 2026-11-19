@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully enables agent to open a browser, navigate to a URL, retrieve the page title, and report results",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response within the 3-minute timeout.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with agent list visible",
-    "Found and clicked the \"QA-20261119-184058-pvld\" agent in the sidebar — Successfully opened the agent session at /agents/qa-20261119-184058-pvld-1ln4hqj11i/sessions/5b06341c-0966-458f-ab75-2d10e908f108",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input field — Message successfully entered in the textbox",
-    "Clicked the Send message button — Message successfully sent and agent transitioned to \"working\" state",
-    "Waited for agent response — Agent completed task in 4 seconds with 3 tool calls and 163,069 tokens used",
-    "Verified response mentions \"Example Domain\" — Response states: \"The page title is \"Example Domain\". I've closed the browser.\" ✓",
-    "Took final screenshot showing complete conversation — Screenshot captured showing both user message and agent response with correct page title"
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut dashboard page with agent list in sidebar",
+    "Found and clicked the \"QA-20261119-192046-prno\" agent in the sidebar - Successfully clicked the agent button and navigated to agent page at http://localhost:47891/agents/qa-20261119-192046-prno-jz6o9v5goa",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully typed and sent the message; page navigated to new session URL with \"Browser Page Title Check\" title",
+    "Waited up to 3 minutes for a response - Agent completed work in 4 seconds and returned response containing \"Example Domain\"",
+    "Verified response mentions \"Example Domain\" and took screenshot - Response confirmed: \"The page title is \\\"Example Domain\\\". I've closed the browser.\" Status shows \"Worked for 4s · 3 tool calls · 163,069 tokens\""
   ],
   "bugs": [],
-  "durationMs": 137944,
-  "sessionId": "fb0c333a-6259-419a-92e6-f5f70885af23",
+  "durationMs": 60063,
+  "sessionId": "00b052dd-5bfd-4b26-8534-8c1c7b399326",
   "cost": {
-    "inputTokens": 452,
-    "outputTokens": 13288,
-    "cacheCreationTokens": 70689,
-    "cacheReadTokens": 1253539,
+    "inputTokens": 320,
+    "outputTokens": 9763,
+    "cacheCreationTokens": 67119,
+    "cacheReadTokens": 859774,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.280607
+    "totalCostUsd": 0.219011
   }
 }
