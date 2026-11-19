@@ -21,6 +21,7 @@ import {
 import { updateScheduledTaskInputSchema, type ScheduledTaskUpdateInput } from '@shared/lib/services/automation-update-schema'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
+import { scheduleResumeInputSchema, type ScheduleResumeInput } from '@shared/lib/tools/schedule-resume/schema'
 import { agentModelChoice, errorMessage, parseToolInput, rejected, resolved, sessionOwnerOf } from './host-tool-result'
 
 interface ScheduleTaskInput {
@@ -104,9 +105,10 @@ export async function scheduleTask({ agentSlug, sessionId, toolUseId, input: raw
  * session instead of starting a new one. Same contract as `scheduleTask`.
  */
 export async function scheduleResume({ agentSlug, sessionId, toolUseId, input: raw }: HostToolRequest): Promise<HostToolResult> {
-  const input = parseToolInput<{ wakeTime?: string; note?: string; timezone?: string }>(raw)
-  if (input === undefined) {
-    console.error('[HostTools] Failed to parse schedule resume input:', raw)
+  let input: ScheduleResumeInput
+  try {
+    input = scheduleResumeInputSchema.parse(JSON.parse(raw))
+  } catch {
     return rejected('Invalid tool input')
   }
   if (!input.wakeTime?.trim() || !input.note?.trim()) {
@@ -127,6 +129,7 @@ export async function scheduleResume({ agentSlug, sessionId, toolUseId, input: r
       agentSlug,
       scheduleExpression,
       note: input.note,
+      summary: input.summary || undefined,
       sessionId,
       createdByUserId: await sessionOwnerOf(agentSlug, sessionId),
       timezone,

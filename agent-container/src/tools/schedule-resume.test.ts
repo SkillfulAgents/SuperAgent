@@ -12,17 +12,27 @@ describe('scheduleResumeTool', () => {
     const { scheduleResumeTool } = await import('./schedule-resume')
     const handler = (scheduleResumeTool as any).handler
 
-    const result = await handler({ wakeTime: 'tomorrow 9am', note: '   ' })
+    const result = await handler({ wakeTime: 'tomorrow 9am', summary: 'Waiting on a reply', note: '   ' })
 
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('note')
+  })
+
+  it('returns error when the summary is empty', async () => {
+    const { scheduleResumeTool } = await import('./schedule-resume')
+    const handler = (scheduleResumeTool as any).handler
+
+    const result = await handler({ wakeTime: 'tomorrow 9am', summary: '  ', note: 'Check the email' })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('summary')
   })
 
   it('returns error when the wakeTime is empty', async () => {
     const { scheduleResumeTool } = await import('./schedule-resume')
     const handler = (scheduleResumeTool as any).handler
 
-    const result = await handler({ wakeTime: '  ', note: 'Check the email' })
+    const result = await handler({ wakeTime: '  ', summary: 'Waiting on a reply', note: 'Check the email' })
 
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('wakeTime')
@@ -32,7 +42,7 @@ describe('scheduleResumeTool', () => {
     const { scheduleResumeTool } = await import('./schedule-resume')
     const handler = (scheduleResumeTool as any).handler
 
-    const result = await handler({ wakeTime: 'tomorrow 9am', note: 'Check the email' })
+    const result = await handler({ wakeTime: 'tomorrow 9am', summary: 'Waiting on a reply', note: 'Check the email' })
 
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('no tool use ID available')
@@ -46,7 +56,7 @@ describe('scheduleResumeTool', () => {
     const { scheduleResumeTool } = await import('./schedule-resume')
     const handler = (scheduleResumeTool as any).handler
 
-    const result = await handler({ wakeTime: 'tomorrow 9am', note: 'Check the email' })
+    const result = await handler({ wakeTime: 'tomorrow 9am', summary: 'Waiting on a reply', note: 'Check the email' })
 
     expect(result.isError).toBeUndefined()
     expect(result.content[0].text).toContain('auto-resume')
@@ -60,7 +70,7 @@ describe('scheduleResumeTool', () => {
     const { scheduleResumeTool } = await import('./schedule-resume')
     const handler = (scheduleResumeTool as any).handler
 
-    const result = await handler({ wakeTime: 'yesterday', note: 'Impossible' })
+    const result = await handler({ wakeTime: 'yesterday', summary: 'Waiting on a reply', note: 'Impossible' })
 
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('in the past')

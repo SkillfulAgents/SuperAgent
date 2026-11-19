@@ -7,7 +7,7 @@ import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
  * message (so it never promotes an automated session to the interactive
  * eviction class). The agent's own note is echoed back verbatim.
  *
- * Shared by the scheduler's wake branch and the run-now ("Wake now") route so
+ * Shared by the scheduler's wake branch and the run-now ("Run now") route so
  * both deliver the same shape.
  */
 export function buildWakeMessage(

@@ -274,7 +274,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
-    // Session wake ("Wake now"): resume the target session instead of creating
+    // Session wake ("Run now"): resume the target session instead of creating
     // a new one. deliverSessionWake is the same claimed path the scheduler
     // uses, so a wakeup firing at the same instant can never double-deliver.
     if (task.resumeSessionId) {

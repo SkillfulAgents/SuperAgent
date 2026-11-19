@@ -100,6 +100,18 @@ describe('scheduled-task-service session wakes', () => {
       expect(task!.prompt).toBe('Check whether Dana replied to the intro email')
     })
 
+    it('stores the summary as the task name', async () => {
+      const { taskId } = await createSessionWake({
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at tomorrow 9am',
+        summary: 'Waiting on Dana\'s reply',
+        note: 'Check whether Dana replied to the intro email',
+        sessionId: 'session-abc',
+      })
+
+      expect((await getScheduledTask(taskId))!.name).toBe('Waiting on Dana\'s reply')
+    })
+
     it('appears in getDueTasks once its time arrives', async () => {
       await createSessionWake({
         agentSlug: 'test-agent',
