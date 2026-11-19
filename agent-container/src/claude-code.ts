@@ -366,6 +366,8 @@ export interface SystemPromptVars {
   appSandbox: boolean;
   /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
   meetings: boolean;
+  /** The session lists request_file and the Requesting Files section renders; off where files arrive by reply. */
+  fileRequests: boolean;
   hasModelHints: boolean;
   modelHints: string[];
   hasConnectedAccounts: boolean;
@@ -403,6 +405,7 @@ export function buildSystemPromptVars(
   subagentModels?: SubagentModelDefinition[],
   globalInstructions?: string,
   availableIntegrationFamilies?: string[],
+  fileRequests = true,
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
@@ -444,6 +447,7 @@ export function buildSystemPromptVars(
     computerUseHostLine: isComputerUseHost() ? computerUseHostLine() : '',
     appSandbox: isAppSandboxHost(),
     meetings: meetingsAvailable(availableIntegrationFamilies),
+    fileRequests,
     hasModelHints: modelHints.length > 0,
     modelHints,
     hasConnectedAccounts: connectedAccounts.length > 0,
@@ -478,6 +482,7 @@ export function generateSystemPrompt(
   subagentModels?: SubagentModelDefinition[],
   globalInstructions?: string,
   availableIntegrationFamilies?: string[],
+  fileRequests?: boolean,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -489,6 +494,7 @@ export function generateSystemPrompt(
     subagentModels,
     globalInstructions,
     availableIntegrationFamilies,
+    fileRequests,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -574,6 +580,7 @@ export interface ClaudeCodeProcessOptions {
   webSearchProvider?: string;
   webFetchProvider?: string;
   availableIntegrationFamilies?: string[];
+  fileRequests?: boolean;
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
@@ -618,6 +625,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
   private availableIntegrationFamilies: string[] | undefined;
+  private fileRequests: boolean;
   /** Toolsets in the prompt from the first turn, not behind ToolSearch. */
   private readonly preloadToolsets: ReadonlySet<PreloadToolset>;
   private maxOutputTokens: number | undefined;
@@ -761,6 +769,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.availableIntegrationFamilies = options.availableIntegrationFamilies;
+    this.fileRequests = options.fileRequests ?? true;
     this.preloadToolsets = new Set(knownPreloadToolsets(options.preloadToolsets));
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
@@ -797,6 +806,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.subagentModels,
       this.globalInstructions,
       this.availableIntegrationFamilies,
+      this.fileRequests,
     );
   }
 
@@ -1062,7 +1072,7 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
     const servers: Record<string, McpServerConfig> = {
-      'user-input': createUserInputMcpServer(() => this, () => this.sessionId),
+      'user-input': createUserInputMcpServer(() => this, () => this.sessionId, this.fileRequests),
       'browser': createBrowserMcpServer(browserMcpTools),
       'dashboards': createDashboardsMcpServer(),
       'widgets': createWidgetsMcpServer(),
@@ -1364,7 +1374,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
             'Read',
             'Glob',
-            'mcp__user-input__request_file',
+            ...(this.fileRequests ? ['mcp__user-input__request_file'] : []),
             'mcp__user-input__request_browser_input',
             'mcp__user-input__request_login',
             'mcp__user-input__add_sign_in_method',
@@ -2052,6 +2062,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.subagentModels,
           this.globalInstructions,
           this.availableIntegrationFamilies,
+          this.fileRequests,
         );
       }
       this.reconcilePendingCapabilityReviews();
