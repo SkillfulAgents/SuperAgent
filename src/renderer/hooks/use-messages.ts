@@ -16,6 +16,11 @@ import { isSessionStreamOpen } from '@renderer/hooks/use-message-stream'
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
 
+// How many older pages one fetchOlder call walks through while they add
+// nothing new (a replayed transcript serves copies, then the originals). The
+// cursor still advances, so the next call resumes where this one stopped.
+const MAX_EMPTY_OLDER_PAGE_HOPS = 25
+
 /**
  * Thrown when the session's JSONL transcript is absent (HTTP 404) — e.g. it was
  * deleted by the CLI's retention cleanup while the metadata entry lingers in the
@@ -196,11 +201,16 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   // holding isFetchingOlder, which blocks every fresh fetchOlder call.
   const olderGenRef = useRef(0)
   const olderAbortRef = useRef<AbortController | null>(null)
+  // Cursors this generation of older history has paged from. Each page's
+  // cursor is older than the last, so one that comes back a second time means
+  // the server is handing out pages in a circle (see fetchOlder).
+  const pagedCursorsRef = useRef(new Set<string>())
 
   useEffect(() => {
     olderGenRef.current++
     olderAbortRef.current?.abort()
     olderAbortRef.current = null
+    pagedCursorsRef.current = new Set()
     setOlder([])
     setOlderCursor(undefined)
     prevLatestRef.current = EMPTY_MESSAGES
@@ -220,6 +230,7 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     olderGenRef.current++
     olderAbortRef.current?.abort()
     olderAbortRef.current = null
+    pagedCursorsRef.current = new Set()
     prevLatestRef.current = EMPTY_MESSAGES
     setOlder([])
     setOlderCursor(undefined)
@@ -258,6 +269,11 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 
   const fetchOlder = useCallback(async (onBeforePrepend?: () => void): Promise<boolean> => {
     if (!sessionId || !agentSlug || isFetchingOlder || !hasOlder) return false
+    // A second call from the same render still reads isFetchingOlder as false;
+    // the ref holds the walk in flight. A second walk from the same cursor,
+    // answering late, hands back a cursor the first has since paged from,
+    // which reads as a circle and ends history.
+    if (olderAbortRef.current) return false
     const cursor =
       olderCursor ?? latest.data?.nextCursor ?? older[0]?.id ?? latestMessages[0]?.id
     if (!cursor) return false
@@ -266,24 +282,50 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     olderAbortRef.current = controller
     setIsFetchingOlder(true)
     try {
-      const page = await fetchMessagesPage(agentSlug, sessionId, {
-        limit: MESSAGES_PAGE_OLDER_LIMIT,
-        cursor,
-        signal: controller.signal,
-      })
-      // Older-history state was reset while this page was in flight (resync
-      // or session switch): the response belongs to the previous transcript
-      // generation and must not commit.
-      if (gen !== olderGenRef.current) return false
-      const existing = new Set(older.map((m) => m.id))
-      const prepended = page.messages.filter((m) => !existing.has(m.id) && !deleted.has(m.id))
-      if (prepended.length > 0) onBeforePrepend?.()
-      setOlder((cur) => {
-        const seen = new Set(cur.map((m) => m.id))
-        return [...page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id)), ...cur]
-      })
-      setOlderCursor(page.nextCursor)
-      return prepended.length > 0
+      // Items already on screen, in the older buffer or the trailing page. A
+      // page made only of these is skipped and the walk goes on in the same
+      // call, so the reader doesn't have to scroll once per repeated page.
+      const seen = new Set([...older, ...latestMessages].map((m) => m.id))
+      let added: ApiMessageOrBoundary[] = []
+      let nextCursor: string | null = cursor
+      for (let hop = 0; hop < MAX_EMPTY_OLDER_PAGE_HOPS && nextCursor; hop++) {
+        pagedCursorsRef.current.add(nextCursor)
+        const page = await fetchMessagesPage(agentSlug, sessionId, {
+          limit: MESSAGES_PAGE_OLDER_LIMIT,
+          cursor: nextCursor,
+          signal: controller.signal,
+        })
+        // Older-history state was reset while this page was in flight (resync
+        // or session switch): the response belongs to the previous transcript
+        // generation and must not commit.
+        if (gen !== olderGenRef.current) return false
+        added = page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id))
+        nextCursor = page.nextCursor
+        if (nextCursor !== null && pagedCursorsRef.current.has(nextCursor)) {
+          // Already paged from: following it again would fetch the same
+          // pages for as long as the reader scrolls, or for as long as a
+          // jump to a message keeps asking for more. The walk ends here, with
+          // what it has, and the report says a transcript pages in a circle.
+          captureRendererException(new Error('Older-page cursor repeated'), {
+            tags: { area: 'messages', op: 'fetch-older' },
+          })
+          nextCursor = null
+        }
+        // Kept per page: if a later page fails, the next call starts after
+        // the repeated pages this one already walked.
+        setOlderCursor(nextCursor)
+        if (added.length > 0) break
+      }
+      if (added.length > 0) {
+        onBeforePrepend?.()
+        setOlder((cur) => {
+          const have = new Set(cur.map((m) => m.id))
+          return [...added.filter((m) => !have.has(m.id)), ...cur]
+        })
+      }
+      // True too when the walk stopped at the page cap with history left, so
+      // a caller that loads until a target shows calls again.
+      return added.length > 0 || nextCursor !== null
     } catch (error) {
       // Rejection caused by our own generation reset (abort) — not an error.
       if (gen !== olderGenRef.current) return false

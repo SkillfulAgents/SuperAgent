@@ -9,7 +9,8 @@ import * as path from 'path'
 import * as os from 'os'
 import { LocalFileOps } from './local-file-ops'
 import { prng } from './testing/prng'
-import { iterateLinesBackward, readChunkFor, readTailLines, READ_CHUNK_MAX, READ_CHUNK_MIN, streamLines } from './jsonl-files'
+import { iterateLinesBackward, iterateLinesBackwardFrom, lineStartAtOrAfter, readChunkFor, readTailLines, READ_CHUNK_MAX, READ_CHUNK_MIN, streamLines } from './jsonl-files'
+import type { OpenFile } from './types'
 
 let testDir: string
 let files: LocalFileOps
@@ -345,6 +346,92 @@ describe('iterateLinesBackward', () => {
     // yielded — the abort stops the walk before the second chunk read.
     expect(iterated.length).toBeGreaterThan(0)
     expect(iterated.length).toBeLessThanOrEqual(65)
+  })
+})
+
+/** Run `fn` on an open handle of a file the test wrote, closing it after. */
+async function withOpenFile<T>(
+  filePath: string,
+  fn: (file: OpenFile, size: number) => Promise<T>,
+): Promise<T> {
+  const file = await files.open(rel(filePath))
+  try {
+    return await fn(file, await file.size())
+  } finally {
+    await file.close()
+  }
+}
+
+describe('iterateLinesBackwardFrom', () => {
+  it('walks back from the given line boundary', async () => {
+    const filePath = path.join(testDir, 'end.jsonl')
+    await fs.promises.writeFile(filePath, 'aa\nbbb\ncc\ndd\n')
+
+    const seen = await withOpenFile(filePath, async (file) => {
+      const out: Array<[string, number]> = []
+      // 7 is the start of "cc": the walk yields "bbb" first.
+      for await (const { line, offset } of iterateLinesBackwardFrom(file, 7)) {
+        out.push([line.toString('utf-8'), offset])
+      }
+      return out
+    })
+    expect(seen).toEqual([['bbb', 3], ['aa', 0]])
+  })
+
+  it('leaves the handle open for the caller', async () => {
+    const filePath = path.join(testDir, 'owned.jsonl')
+    await fs.promises.writeFile(filePath, 'aa\nbb\n')
+
+    const after = await withOpenFile(filePath, async (file, size) => {
+      for await (const item of iterateLinesBackwardFrom(file, size)) void item
+      return Buffer.from(await file.readAt(0, 2)).toString('utf-8')
+    })
+    expect(after).toBe('aa')
+  })
+})
+
+describe('lineStartAtOrAfter', () => {
+  const content = 'aa\nbbb\ncc\n'
+
+  it('returns the offset itself when it starts a line', async () => {
+    const filePath = path.join(testDir, 'starts.jsonl')
+    await fs.promises.writeFile(filePath, content)
+    await withOpenFile(filePath, async (file, size) => {
+      expect(await lineStartAtOrAfter(file, size, 0)).toBe(0)
+      expect(await lineStartAtOrAfter(file, size, 3)).toBe(3)
+    })
+  })
+
+  it('returns the next line start for an offset inside a line', async () => {
+    const filePath = path.join(testDir, 'inside.jsonl')
+    await fs.promises.writeFile(filePath, content)
+    await withOpenFile(filePath, async (file, size) => {
+      expect(await lineStartAtOrAfter(file, size, 1)).toBe(3)
+      expect(await lineStartAtOrAfter(file, size, 4)).toBe(7)
+    })
+  })
+
+  it('returns undefined when no line starts before the end', async () => {
+    const filePath = path.join(testDir, 'none.jsonl')
+    await fs.promises.writeFile(filePath, content)
+    await withOpenFile(filePath, async (file, size) => {
+      expect(await lineStartAtOrAfter(file, size, 8)).toBeUndefined()
+      expect(await lineStartAtOrAfter(file, size, 500)).toBeUndefined()
+    })
+    const emptyPath = path.join(testDir, 'empty.jsonl')
+    await fs.promises.writeFile(emptyPath, '')
+    await withOpenFile(emptyPath, async (file, size) => {
+      expect(await lineStartAtOrAfter(file, size, 0)).toBeUndefined()
+    })
+  })
+
+  it('finds a newline past the first read chunk', async () => {
+    const filePath = path.join(testDir, 'long-row.jsonl')
+    const row = 'x'.repeat(READ_CHUNK_MIN * 3)
+    await fs.promises.writeFile(filePath, `${row}\nnext\n`)
+    await withOpenFile(filePath, async (file, size) => {
+      expect(await lineStartAtOrAfter(file, size, 1)).toBe(row.length + 1)
+    })
   })
 })
 

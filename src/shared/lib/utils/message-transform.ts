@@ -315,6 +315,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // messages (tripled text, duplicated tool calls).
   const messageEntries: JsonlMessageEntry[] = []
   const seenUuids = new Set<string>()
+  // Indices of the replayed copies dropped here (see `runsBeforeUuid`).
+  const replayedIndices = new Set<number>()
 
   for (let i = 0; i < entries.length; i++) {
     if (skipIndices.has(i)) continue
@@ -325,7 +327,10 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       if (isSyntheticPlaceholderMessage(entry)) continue
       const uuid = (entry as JsonlMessageEntry).uuid
       if (uuid) {
-        if (seenUuids.has(uuid)) continue
+        if (seenUuids.has(uuid)) {
+          replayedIndices.add(i)
+          continue
+        }
         seenUuids.add(uuid)
       }
       messageEntries.push(entry as JsonlMessageEntry)
@@ -337,6 +342,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // with the same message.id but different UUIDs. We need to merge them into one message.
   const mergedEntries: JsonlMessageEntry[] = []
   const assistantMessageIds = new Map<string, number>() // message.id -> index in mergedEntries
+  // Later rows of a merged response, by uuid, to the uuid its item goes by.
+  const mergedIntoUuid = new Map<string, string>()
 
   // Extended-thinking blocks per merged entry. Extracted here — before the merge
   // collapses per-block entries — because the duration is derived from entry
@@ -386,6 +393,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         }
         // Keep the original entry's uuid and timestamp for correct ordering
         target = existing
+        mergedIntoUuid.set(entry.uuid, existing.uuid)
       } else {
         // First time seeing this message.id - clone to avoid mutating original
         const clonedEntry = {
@@ -470,15 +478,34 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
-  // Build a map of message UUID -> system items that precede it
-  // This allows us to insert boundaries/recalls at the correct position in the output
-  const boundaryBeforeUuid = new Map<string, TransformedCompactBoundary>()
-  const recallBeforeUuid = new Map<string, TransformedMemoryRecall[]>()
-  const informationalBeforeUuid = new Map<string, TransformedInformational[]>()
-  // Also track items that appear at the very end (no following message)
-  const trailingBoundaries: TransformedCompactBoundary[] = []
-  const trailingRecalls: TransformedMemoryRecall[] = []
-  const trailingInformationals: TransformedInformational[] = []
+  // System rows show before the message that follows them. The rows between
+  // the same two message rows are a run: its recalls show first, then its
+  // boundary, then its banners, whatever their order in the file.
+  interface SystemRun {
+    recalls: TransformedMemoryRecall[]
+    boundaries: TransformedCompactBoundary[]
+    informationals: TransformedInformational[]
+  }
+  /** Index of the first message row after `idx` (entries.length: none). */
+  const nextMessageIndex = (idx: number): number => {
+    for (let j = idx + 1; j < entries.length; j++) {
+      if (skipIndices.has(j)) continue
+      const nextEntry = entries[j]
+      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') return j
+    }
+    return entries.length
+  }
+  // Runs by the index of the message row that ends them.
+  const runsByEnd = new Map<number, SystemRun>()
+  const runOf = (idx: number): SystemRun => {
+    const end = nextMessageIndex(idx)
+    let run = runsByEnd.get(end)
+    if (!run) {
+      run = { recalls: [], boundaries: [], informationals: [] }
+      runsByEnd.set(end, run)
+    }
+    return run
+  }
 
   for (const [idx, { boundary, summaryContent }] of compactBoundaries) {
     const item: TransformedCompactBoundary = {
@@ -490,23 +517,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       createdAt: new Date(boundary.timestamp),
       ...(boundary.forkedFrom && { forked: true }),
     }
-
-    // Find the next non-skipped message entry after this boundary
-    let nextUuid: string | null = null
-    for (let j = idx + 1; j < entries.length; j++) {
-      if (skipIndices.has(j)) continue
-      const nextEntry = entries[j]
-      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
-        nextUuid = (nextEntry as JsonlMessageEntry).uuid
-        break
-      }
-    }
-
-    if (nextUuid) {
-      boundaryBeforeUuid.set(nextUuid, item)
-    } else {
-      trailingBoundaries.push(item)
-    }
+    runOf(idx).boundaries.push(item)
   }
 
   for (const [idx, sysEntry] of memoryRecalls) {
@@ -517,24 +528,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       createdAt: new Date(sysEntry.timestamp),
       ...(sysEntry.forkedFrom && { forked: true }),
     }
-
-    let nextUuid: string | null = null
-    for (let j = idx + 1; j < entries.length; j++) {
-      if (skipIndices.has(j)) continue
-      const nextEntry = entries[j]
-      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
-        nextUuid = (nextEntry as JsonlMessageEntry).uuid
-        break
-      }
-    }
-
-    if (nextUuid) {
-      const existing = recallBeforeUuid.get(nextUuid) || []
-      existing.push(item)
-      recallBeforeUuid.set(nextUuid, existing)
-    } else {
-      trailingRecalls.push(item)
-    }
+    runOf(idx).recalls.push(item)
   }
 
   for (const [idx, sysEntry] of informationals) {
@@ -546,47 +540,48 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       createdAt: new Date(sysEntry.timestamp),
       ...(sysEntry.forkedFrom && { forked: true }),
     }
+    runOf(idx).informationals.push(item)
+  }
 
-    let nextUuid: string | null = null
-    for (let j = idx + 1; j < entries.length; j++) {
-      if (skipIndices.has(j)) continue
-      const nextEntry = entries[j]
-      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
-        nextUuid = (nextEntry as JsonlMessageEntry).uuid
-        break
-      }
-    }
-
-    if (nextUuid) {
-      const existing = informationalBeforeUuid.get(nextUuid) || []
-      existing.push(item)
-      informationalBeforeUuid.set(nextUuid, existing)
+  // Where each run shows: before the message row that ends it. When that row
+  // is a replayed copy, before the next message that is new instead. A copy is
+  // not a place in the conversation: keyed on its uuid, the run would show
+  // before the copy's original, turns before it was written. A later row of a
+  // merged response has no item of its own: the run shows before the
+  // response's item, which goes by its first row's uuid (keyed on the later
+  // row's uuid it would not show at all). Runs that meet before one message
+  // stay apart, in file order, so each reads the same in a page window that
+  // holds the copy without its original, where the copy is a message like
+  // any other.
+  const runsBeforeUuid = new Map<string, SystemRun[]>()
+  // Runs no new message follows. Before a message only a run's newest
+  // boundary shows; the run that nothing at all follows keeps every one.
+  const runsAfterMessages: Array<{ run: SystemRun; everyBoundary: boolean }> = []
+  for (const end of [...runsByEnd.keys()].sort((a, b) => a - b)) {
+    const run = runsByEnd.get(end)!
+    let target = end
+    while (target < entries.length && replayedIndices.has(target)) target = nextMessageIndex(target)
+    const rowUuid = target < entries.length ? (entries[target] as JsonlMessageEntry).uuid : null
+    const uuid = rowUuid ? (mergedIntoUuid.get(rowUuid) ?? rowUuid) : null
+    if (uuid) {
+      const runs = runsBeforeUuid.get(uuid) ?? []
+      runs.push(run)
+      runsBeforeUuid.set(uuid, runs)
     } else {
-      trailingInformationals.push(item)
+      runsAfterMessages.push({ run, everyBoundary: !replayedIndices.has(end) })
     }
   }
 
-  // Transform merged message entries, inserting boundaries at correct positions
+  // Transform merged message entries, inserting system runs at their positions
   const result: TransformedItem[] = []
+  const pushRun = (run: SystemRun, everyBoundary: boolean) => {
+    result.push(...run.recalls)
+    result.push(...(everyBoundary ? run.boundaries : run.boundaries.slice(-1)))
+    result.push(...run.informationals)
+  }
 
   for (const entry of mergedEntries) {
-    // Insert any memory recalls that precede this message
-    const recalls = recallBeforeUuid.get(entry.uuid)
-    if (recalls) {
-      result.push(...recalls)
-    }
-
-    // Insert any compact boundary that precedes this message
-    const boundary = boundaryBeforeUuid.get(entry.uuid)
-    if (boundary) {
-      result.push(boundary)
-    }
-
-    // Insert any informational banners that precede this message
-    const infos = informationalBeforeUuid.get(entry.uuid)
-    if (infos) {
-      result.push(...infos)
-    }
+    for (const run of runsBeforeUuid.get(entry.uuid) ?? []) pushRun(run, false)
 
     // Skip user messages that only contain tool results
     if (isToolResultOnlyMessage(entry)) continue
@@ -700,9 +695,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   }
 
   // Append any system items that appear after all messages
-  result.push(...trailingRecalls)
-  result.push(...trailingBoundaries)
-  result.push(...trailingInformationals)
+  for (const { run, everyBoundary } of runsAfterMessages) pushRun(run, everyBoundary)
 
   return result
 }

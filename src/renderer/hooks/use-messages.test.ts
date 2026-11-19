@@ -26,11 +26,14 @@ import {
   useWorkflowAgentMessages,
   MESSAGES_FULL_REFETCH_INTERVAL_MS,
 } from './use-messages'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 
 interface InflightRequest {
   url: string
   init?: RequestInit
   resolve: (body: unknown) => void
+  /** Answer with a server error. */
+  fail: () => void
 }
 
 // apiFetch stub with real abort semantics: each call parks until the test
@@ -46,6 +49,7 @@ function installHangingFetch() {
           url,
           init,
           resolve: (body: unknown) => resolve({ ok: true, status: 200, json: async () => body }),
+          fail: () => resolve({ ok: false, status: 500, json: async () => ({}) }),
         })
         init?.signal?.addEventListener('abort', () =>
           reject(new DOMException('The operation was aborted.', 'AbortError'))
@@ -402,6 +406,190 @@ describe('useMessages forward delta', () => {
     })
     await waitFor(() => expect(inflight).toHaveLength(5))
     expect(inflight[4].url).toContain('cursor=c2')
+  })
+
+  it('walks past an older page that adds only items already on screen', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    // A replayed transcript serves copies of what is already shown first.
+    inflight[1].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: 'c2' })
+    // The same call goes on to the next page instead of returning nothing.
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=c2')
+    inflight[2].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
+
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u3', 'a3'])
+    expect(result.current.hasOlder).toBe(false)
+  })
+
+  it('starts after the repeated pages when a later page of the walk fails', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: 'c2' })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    inflight[2].fail()
+    await act(async () => {
+      expect(await olderDone).toBe(false)
+    })
+    expect(result.current.hasOlder).toBe(true)
+
+    // The repeated page is not fetched again.
+    act(() => {
+      void result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(4))
+    expect(inflight[3].url).toContain('cursor=c2')
+    warn.mockRestore()
+  })
+
+  it('reports more to load when the walk stops at its page cap', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    // Every page of the walk repeats what is on screen.
+    for (let hop = 1; hop <= 25; hop++) {
+      await waitFor(() => expect(inflight).toHaveLength(hop + 1))
+      inflight[hop].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: `c${hop}` })
+    }
+
+    // Nothing was added, but a caller loading toward a target must go on.
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(inflight).toHaveLength(26)
+    expect(result.current.hasOlder).toBe(true)
+    act(() => {
+      void result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(27))
+    expect(inflight[26].url).toContain('cursor=c25')
+  })
+
+  it('ends the walk when the server hands back a cursor it already paged from', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    vi.mocked(captureRendererException).mockClear()
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    // Two pages that hand each other's cursor back: without the check the
+    // walk would fetch them 25 times a call, on every call.
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toContain('cursor=older-cursor')
+    inflight[1].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: 'c1' })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=c1')
+    inflight[2].resolve({ messages: [user('u2'), assistant('a2')], nextCursor: 'older-cursor' })
+
+    // The page that closed the circle still shows.
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u2', 'a2', 'u3', 'a3'])
+    expect(result.current.hasOlder).toBe(false)
+    expect(captureRendererException).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      expect(await result.current.fetchOlder()).toBe(false)
+    })
+    expect(inflight).toHaveLength(3)
+  })
+
+  it('runs one older walk at a time when called twice from one render', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    vi.mocked(captureRendererException).mockClear()
+
+    // Both calls read the same render's isFetchingOlder (false).
+    let first: Promise<boolean>
+    let second: Promise<boolean>
+    act(() => {
+      first = result.current.fetchOlder()
+      second = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].resolve({ messages: [user('u2'), assistant('a2')], nextCursor: 'c1' })
+    await act(async () => {
+      expect(await first).toBe(true)
+      expect(await second).toBe(false)
+    })
+    expect(inflight).toHaveLength(2)
+
+    // A second walk from `older-cursor`, answering after the next page, would
+    // hand back `c1` as a cursor already paged from and end history.
+    let next: Promise<boolean>
+    act(() => {
+      next = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=c1')
+    inflight[2].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: 'c2' })
+    await act(async () => {
+      expect(await next).toBe(true)
+    })
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3'])
+    expect(result.current.hasOlder).toBe(true)
+    expect(captureRendererException).not.toHaveBeenCalled()
+  })
+
+  it('pages from a cursor again after the request for it failed', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(captureRendererException).mockClear()
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].fail()
+    await act(async () => {
+      expect(await olderDone).toBe(false)
+    })
+    vi.mocked(captureRendererException).mockClear()
+
+    // The same cursor, asked for a second time, is not a circle.
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=older-cursor')
+    inflight[2].resolve({ messages: [user('u2'), assistant('a2')], nextCursor: 'c1' })
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(result.current.hasOlder).toBe(true)
+    expect(captureRendererException).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 
   it('drops an item deleted remotely from within the covered range on a periodic full fetch', async () => {
