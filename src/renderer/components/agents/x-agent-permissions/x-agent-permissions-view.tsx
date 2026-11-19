@@ -76,8 +76,9 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const queryClient = useQueryClient()
-  const { isAuthMode, rolesReady, canUseAgent } = useUser()
+  const { isAuthMode, rolesReady, canUseAgent, canAccessAgent } = useUser()
   const canManage = !isAuthMode || (rolesReady && canUseAgent(agentSlug))
+  const canView = canManage || (rolesReady && canAccessAgent(agentSlug))
   const [filter, setFilter] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -110,7 +111,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       if (!res.ok) throw new Error('Failed to fetch policies')
       return res.json()
     },
-    enabled: canManage,
+    enabled: canView,
   })
 
   // Fetch all agents in workspace (for the per-target rows)
@@ -387,11 +388,11 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
 
       {isAuthMode && !rolesReady ? (
         <p className="text-sm text-muted-foreground">Checking permissions...</p>
-      ) : !canManage ? (
+      ) : !canView ? (
         <div className="rounded-card border bg-background px-6 py-10 text-center" data-testid="x-agent-permissions-no-permission">
-          <p className="text-sm font-medium">User access required</p>
+          <p className="text-sm font-medium">Agent access required</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-            Only people who use this agent can view and manage its connections.
+            This agent must be shared with you to view its permissions.
           </p>
         </div>
       ) : policiesQuery.isLoading || agentsQuery.isLoading ? (
@@ -420,7 +421,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                   {...globalDefault}
                   className="w-60"
                   onChange={handleChange('list', null)}
-                  disabled={pendingKeys.has(policyKey('list', null))}
+                  disabled={!canManage || pendingKeys.has(policyKey('list', null))}
                 />
               </div>
             </div>
@@ -434,7 +435,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                   {...globalDefault}
                   className="w-60"
                   onChange={handleChange('read', null)}
-                  disabled={pendingKeys.has(policyKey('read', null))}
+                  disabled={!canManage || pendingKeys.has(policyKey('read', null))}
                 />
               </div>
             </div>
@@ -448,14 +449,14 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                   {...globalDefault}
                   className="w-60"
                   onChange={handleChange('invoke', null)}
-                  disabled={pendingKeys.has(policyKey('invoke', null))}
+                  disabled={!canManage || pendingKeys.has(policyKey('invoke', null))}
                 />
               </div>
             </div>
           </div>
 
           {/* Per-agent connections */}
-          {agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
+          {canManage && (agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
             <p className="text-sm text-muted-foreground">No other agents in this workspace yet.</p>
           ) : (
             <>
@@ -518,7 +519,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 </div>
               )}
             </>
-          )}
+          ))}
 
         </div>
       )}

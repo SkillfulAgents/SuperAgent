@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
-import { agentAcl, agentConnectedAccounts, agentRemoteMcps, auditLog, authAccount, connectedAccounts, remoteMcpServers, userSettings } from '../db/schema'
+import { agentAcl, agentConnectedAccounts, agentRemoteMcps, auditLog, authAccount, connectedAccounts, remoteMcpServers, userSettings, volumeDefinitions, volumeAcl } from '../db/schema'
 import { attribution } from '../platform-attribution'
 
 let handle: TestDatabase
@@ -109,6 +109,40 @@ afterEach(async () => {
 })
 
 describe('removing a user', () => {
+  it('transfers sole-owned drives to the removing admin and leaves co-owned drives with their other owners', async () => {
+    const admin = await signUp('admin@example.org')
+    const owner = await signUp('owner@example.org')
+    const now = new Date()
+    await testDb.insert(volumeDefinitions).values({ id: 'v', name: 'Notes', type: 'local', config: '{}', createdBy: owner.id, visibility: 'private', createdAt: now, updatedAt: now }).run()
+    const coOwner = await signUp('co-owner@example.org')
+    await testDb.insert(volumeDefinitions).values({ id: 'shared', name: 'Shared', type: 'local', config: '{}', createdBy: owner.id, visibility: 'private', createdAt: now, updatedAt: now }).run()
+    await testDb.insert(volumeAcl).values({ id: 'second-owner', volumeId: 'shared', userId: coOwner.id, role: 'owner', createdAt: now }).run()
+    const remove = (cookie: string) => request('admin/remove-user', { userId: owner.id }, { cookie })
+    expect((await remove(coOwner.cookie)).status).toBe(403)
+    expect(await testDb.select().from(authAccount).where(eq(authAccount.userId, owner.id)).all()).toHaveLength(1)
+    expect((await remove(admin.cookie)).status).toBe(200)
+    expect(await testDb.select().from(volumeDefinitions).where(eq(volumeDefinitions.id, 'v')).get()).toMatchObject({ createdBy: null, visibility: 'private' })
+    expect(await testDb.select().from(volumeAcl).orderBy(volumeAcl.volumeId).all()).toMatchObject([
+      { volumeId: 'shared', userId: coOwner.id }, { volumeId: 'v', userId: admin.id },
+    ])
+    expect(await testDb.select().from(auditLog).where(eq(auditLog.object, 'volume')).all()).toMatchObject([
+      { objectId: 'v', userId: admin.id, action: 'granted' },
+    ])
+  })
+
+  it('transfers the drive once when both co-owners are removed concurrently', async () => {
+    const admin = await signUp('admin@example.org')
+    const emails = ['alice@example.org', 'bob@example.org']
+    const owners = [await signUp(emails[0]), await signUp(emails[1])]
+    const now = new Date()
+    await testDb.insert(volumeDefinitions).values({ id: 'v', name: 'Notes', type: 'local', config: '{}', createdBy: owners[0].id, visibility: 'private', createdAt: now, updatedAt: now }).run()
+    await testDb.insert(volumeAcl).values({ id: 'co-owner', volumeId: 'v', userId: owners[1].id, role: 'owner', createdAt: now }).run()
+    const results = await Promise.all(owners.map(owner => request('admin/remove-user', { userId: owner.id }, { cookie: admin.cookie })))
+    expect(results.map(r => r.status)).toEqual([200, 200])
+    expect(await testDb.select().from(volumeAcl).all()).toMatchObject([{ userId: admin.id }])
+    expect(await testDb.select().from(auditLog).where(eq(auditLog.object, 'volume')).all()).toHaveLength(1)
+  })
+
   it('revokes their connections before the cascade, then removes, audits and refreshes only what was theirs', async () => {
     const admin = await signUp('admin@example.com')
     const ada = await signUp('ada@example.com')

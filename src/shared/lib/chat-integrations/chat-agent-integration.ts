@@ -7,7 +7,7 @@
 
 import { AgentIntegration } from '../agent-integrations/agent-integration'
 import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
-import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationAccessCheck, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
 import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, deliverMarkdown, UndeliveredMessageError, type ManagedConnector } from './chat-delivery'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
@@ -364,8 +364,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     return false
   }
 
-  isAllowed(context: IntegrationSessionContext): Promise<boolean> {
-    return chatIntegrationPolicy.isAllowed(context)
+  isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean> {
+    return chatIntegrationPolicy.isAllowed(context, check)
   }
 
   sessionPolicy(integration: AgentIntegrationRecord, route: Partial<IntegrationRoute>): IntegrationSessionPolicy {

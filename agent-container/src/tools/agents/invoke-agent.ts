@@ -21,6 +21,9 @@ Note: sessions started by invoke_agent cannot themselves invoke agents — invoc
       session_id: z.string().optional().describe('Optional existing session ID to continue. Omit to start a new session.'),
       sync: z.boolean().optional().describe('If true, wait for the target agent to finish its turn and return its final message. Default false.'),
       attachments: z.array(z.string()).max(10).optional().describe('Up to 10 regular files under the caller\'s /workspace to send with the prompt. Paths may be absolute /workspace/... paths or workspace-relative paths.'),
+      model: z.string().optional().describe('Optional model for a new session: a model id or a family name such as "sonnet", checked against the target agent\'s models. An unknown model is rejected with the list of valid ids. If not specified, uses the target agent\'s default. Leave out model, effort and speed unless the user asked for a specific one. Not allowed with session_id.'),
+      effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Optional effort level for a new session. If not specified, uses the target agent\'s default. Not allowed with session_id.'),
+      speed: z.enum(['slow', 'normal', 'fast']).optional().describe('Optional processing-speed tier for a new session. If not specified, uses the target agent\'s default. Not allowed with session_id.'),
     },
     async (args) => {
       try {
@@ -31,6 +34,9 @@ Note: sessions started by invoke_agent cannot themselves invoke agents — invoc
         if (args.session_id) body.sessionId = args.session_id
         if (args.sync) body.sync = true
         if (args.attachments !== undefined) body.attachments = args.attachments
+        if (args.model) body.model = args.model
+        if (args.effort) body.effort = args.effort
+        if (args.speed) body.speed = args.speed
 
         const data = await callHost('invoke', body, invokeResultSchema, { callerSessionId: getCallerSessionId() })
         const lines = [`session_id: ${data.sessionId}`, `status: ${data.status}`]

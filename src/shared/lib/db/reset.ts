@@ -28,6 +28,7 @@ import {
   agentAcl,
   agentVolumes,
   volumeDefinitions,
+  volumeAcl,
   agents,
   messageAuthor,
   xAgentPolicies,
@@ -75,6 +76,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   // attachments precede both their saved source and their agent
   agentVolumes,
   volumeDefinitions,
+  // Removing the drive releases its last owner and cascades its grants.
+  volumeAcl,
   // the agent catalog itself, once the per-agent rows above are gone
   agents,
   notifications,

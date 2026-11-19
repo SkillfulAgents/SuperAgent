@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   track: vi.fn(),
   apiFetch: vi.fn(),
+  viewer: false,
   usesOnly: null as string[] | null,
 }))
 
@@ -24,6 +25,7 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     isAuthMode: true,
     rolesReady: true,
+    canAccessAgent: () => mocks.viewer,
     canUseAgent: (slug: string) => mocks.usesOnly === null || mocks.usesOnly.includes(slug),
   }),
 }))
@@ -302,13 +304,26 @@ describe('XAgentPermissionsView', () => {
     })
   })
 
-  it('shows the User gate and does not fetch for someone who does not use the agent', () => {
+  it('shows the access gate without fetching for someone without a role', () => {
     mocks.usesOnly = []
     renderView()
 
     expect(screen.getByTestId('x-agent-permissions-no-permission')).toBeInTheDocument()
-    expect(screen.getByText('User access required')).toBeInTheDocument()
+    expect(screen.getByText('Agent access required')).toBeInTheDocument()
     expect(mocks.apiFetch).not.toHaveBeenCalled()
+  })
+
+  it('lets a Viewer open the global permissions in read-only mode', async () => {
+    mocks.usesOnly = []
+    mocks.viewer = true
+    try {
+      renderView()
+      const global = await screen.findByTestId('x-agent-policy-global-read')
+      expect(within(global).getByRole('button')).toBeDisabled()
+      expect(screen.queryByTestId('x-agent-connect-switch-helper')).toBeNull()
+    } finally {
+      mocks.viewer = false
+    }
   })
 
   it('disables a row whose agent the person does not use, and says why', async () => {

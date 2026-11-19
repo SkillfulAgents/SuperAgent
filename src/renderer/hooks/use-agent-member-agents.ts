@@ -1,33 +1,37 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import {
-  agentMemberAgentsByAgentSchema,
-  type AgentMemberAgent,
-  type AgentMemberAgentsByAgent,
-} from '@shared/lib/types/inbound-x-agent-schema'
+import { agentShareRosterSchema, directMemberAgentsSchema, type MemberAgent } from '@shared/lib/types/agent-sharing'
 
-/** Under the home graph's key, so whatever refreshes the graph after a link change refreshes the stacks too. */
+// Graph edits and member notifications refresh both the stacks and any open roster.
 export const AGENT_MEMBER_AGENTS_QUERY_KEY = ['home-graph', 'member-agents'] as const
+const NONE: MemberAgent[] = []
 
-const NONE: AgentMemberAgent[] = []
+async function loadAgentShareRoster(agentSlug: string, signal: AbortSignal) {
+  const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/member-agents`, { signal })
+  if (res.status === 404) return { direct: [], global: [] }
+  if (!res.ok) throw new Error('Could not load agent members')
+  return agentShareRosterSchema.parse(await res.json())
+}
 
-/**
- * The other agents that have a role on this one, for its member stack. Every
- * stack shares one request for all agents, and `select` hands each its own
- * list, so a change to one agent's members re-renders that agent's stack only.
- */
-export function useAgentMemberAgents(agentSlug: string): AgentMemberAgent[] {
-  const { data } = useQuery<AgentMemberAgentsByAgent, Error, AgentMemberAgent[]>({
-    queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY,
-    queryFn: async () => {
-      const response = await apiFetch('/api/agents/member-agents')
-      // An older cloud deployment has no such read: its stacks show people only.
-      if (response.status === 404) return {}
-      if (!response.ok) throw new Error('Failed to fetch member agents')
-      return agentMemberAgentsByAgentSchema.parse(await response.json())
+export function useAgentMemberAgents(agentSlug: string, unlisted = false) {
+  const { data } = useQuery({
+    queryKey: unlisted ? [...AGENT_MEMBER_AGENTS_QUERY_KEY, agentSlug, 'stack'] : AGENT_MEMBER_AGENTS_QUERY_KEY,
+    queryFn: async ({ signal }) => {
+      if (unlisted) return { [agentSlug]: (await loadAgentShareRoster(agentSlug, signal)).direct }
+      const res = await apiFetch('/api/agents/member-agents', { signal })
+      if (res.status === 404) return {} as Record<string, MemberAgent[]>
+      if (!res.ok) throw new Error('Could not load agent members')
+      return directMemberAgentsSchema.parse(await res.json())
     },
-    select: (byAgent) => byAgent[agentSlug] ?? NONE,
+    select: byAgent => byAgent[agentSlug] ?? NONE,
     staleTime: 30_000,
   })
   return data ?? NONE
+}
+
+export function useAgentShareRoster(agentSlug: string) {
+  return useQuery({
+    queryKey: [...AGENT_MEMBER_AGENTS_QUERY_KEY, agentSlug],
+    queryFn: ({ signal }) => loadAgentShareRoster(agentSlug, signal),
+  })
 }

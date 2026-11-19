@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
+import { resetModelCatalog } from '@renderer/lib/model-catalog-query'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import { signsInWithAuthSession } from '@renderer/lib/capabilities'
@@ -105,6 +106,7 @@ function usePlatformAuthCallbackListener(
       queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
       queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
       queryClient.resetQueries({ queryKey: ['settings', 'models'] })
+      void resetModelCatalog(queryClient)
       // A changed token marks running agents stale; nothing else refetches the agent list for it.
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
@@ -191,6 +193,7 @@ export function useRedeemDownloadNonce() {
       queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
       queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
       queryClient.resetQueries({ queryKey: ['settings', 'models'] })
+      void resetModelCatalog(queryClient)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
@@ -251,6 +254,7 @@ export function useSavePlatformAccessKey() {
       queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
       queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
       queryClient.resetQueries({ queryKey: ['settings', 'models'] })
+      void resetModelCatalog(queryClient)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data

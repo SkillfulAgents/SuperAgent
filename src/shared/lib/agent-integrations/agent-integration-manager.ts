@@ -92,6 +92,8 @@ interface ManagedSession {
   recoveryReported?: boolean
   /** The job of a recovery retry that is scheduled. */
   recoveryWake?: string
+  /** The last output check `sessionId` passed, for the text deltas right behind it (see streamAccess). */
+  outputAccess?: { sessionId: string; integration: AgentIntegrationRecord; checkedAt: number }
 }
 
 /** A context's routing fields, with `update` applied: what a connector delivers by. */
@@ -228,6 +230,9 @@ export class AgentIntegrationManager implements Service {
   private resumeQueued = false
   // Follow-up delays after the resume force pass, while anything is still down.
   private static readonly RESUME_RETRY_DELAYS_MS = [15_000, 30_000, 60_000]
+  // How long an output check a session passed stands for the text deltas behind it.
+  // A chat shows streamed text at most once in this long (STREAM_UPDATE_MS).
+  private static readonly DELTA_ACCESS_REUSE_MS = 1_000
   // Upper bound on waiting for an old connector to tear down before rebuilding.
   private static readonly DISCONNECT_TIMEOUT_MS = 5_000
   // Per-(integration,chat) serialized tail promise. Entries self-evict once their
@@ -247,6 +252,42 @@ export class AgentIntegrationManager implements Service {
   private async isAllowed(integrationId: string, externalId: string): Promise<boolean> {
     const context = await this.context(integrationId, externalId)
     return !!context && !!(await this.connections.get(integrationId)?.connector.isAllowed(context))
+  }
+
+  /**
+   * The installation as stored now, if `externalId` may still receive its
+   * session's output; nothing otherwise. One read of the row: the connector's
+   * policy decides from it instead of reading it again.
+   */
+  private async outputAccess(integrationId: string, externalId: string): Promise<AgentIntegrationRecord | undefined> {
+    const connector = this.connections.get(integrationId)?.connector
+    if (!connector) return
+    const integration = await getIntegration(integrationId)
+    if (!integration || !(await connector.isAllowed({ integration, externalId }, { current: true }))) return
+    return integration
+  }
+
+  /**
+   * `outputAccess` for one event of the session a chat follows. Text deltas
+   * arrive tens a second, so one that follows a check its session passed less
+   * than DELTA_ACCESS_REUSE_MS ago is delivered on that check, with what it
+   * read; every other event reads, and so does the first delta after the
+   * bound. Access that ends in the database alone (a write from another
+   * process, or the moment before this one's teardown) therefore stops a
+   * streaming reply within the bound, and everything else at the next event.
+   * The check lives on the live session and no longer than it: a chat that is
+   * torn down or re-pointed starts from a read.
+   */
+  private async streamAccess(session: ManagedSession, sessionId: string, event: unknown): Promise<AgentIntegrationRecord | undefined> {
+    const held = session.outputAccess
+    const now = Date.now()
+    if ((event as { type?: string } | null)?.type === 'stream_delta' && held?.sessionId === sessionId
+      && now >= held.checkedAt && now - held.checkedAt < AgentIntegrationManager.DELTA_ACCESS_REUSE_MS) return held.integration
+    session.outputAccess = undefined
+    const integration = await this.outputAccess(session.integration.id, session.chatId)
+    // Dated from before the read, so the bound holds however long the read took.
+    if (integration) session.outputAccess = { sessionId, integration, checkedAt: now }
+    return integration
   }
 
   private async deliver(integrationId: string, externalId: string, output: IntegrationOutput, sessionId?: string): Promise<void> {
@@ -974,18 +1015,24 @@ export class AgentIntegrationManager implements Service {
   }
 
   // `observe` is the chat session to mark live before the event is handled.
-  // The access check behind it is a database read, so it runs on the queue:
+  // The access check behind both is a database read, so it runs on the queue:
   // events keep the order they arrived in, and a failed check lands in the
-  // error boundary below instead of escaping as an unhandled rejection.
+  // error boundary below instead of escaping as an unhandled rejection. It is
+  // made at most once per event (see streamAccess for text deltas), and what
+  // it read is what the event is delivered with.
   private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, observe?: ManagedSession): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(async () => {
       try {
-        if (observe && (await this.isAllowed(integrationId, chatId)) && this.isCurrentSession(integrationId, chatId, observe, sessionId)) {
+        // No live session, or output queued before a rotation: there is nothing
+        // to observe or deliver, so nothing to read either.
+        const live = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+        const integration = live && live.sessionId === sessionId ? await this.streamAccess(live, sessionId, event) : undefined
+        if (observe && integration && this.isCurrentSession(integrationId, chatId, observe, sessionId)) {
           await this.observe(observe)
         }
-        await this.handleSSEEvent(integrationId, chatId, event, sessionId)
+        await this.handleSSEEvent(integrationId, chatId, event, sessionId, integration)
       } catch (err) {
         console.error(`[AgentIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
@@ -1595,22 +1642,22 @@ export class AgentIntegrationManager implements Service {
 
   // ── SSE event handling ────────────────────────────────────────────
 
-  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): Promise<void> {
+  /**
+   * `integration` is the installation as this event's access check read it
+   * (see enqueueSSEEvent); none means the chat may not receive the event.
+   */
+  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, integration: AgentIntegrationRecord | undefined): Promise<void> {
     const key = this.getChatSessionKey(integrationId, chatId)
+    // Read here, after the check's awaits: the chat can be cleared during them.
     const session = this.chatSessions.get(key)
     if (!session) return
 
     // Fail closed: never forward agent output to a chat that is no longer allowed.
     // Teardown normally unsubscribes on revoke/deny, but this guards the window
     // where an event is already in flight when access is revoked.
-    if (!(await this.isAllowed(integrationId, chatId))) return
+    if (!integration) return
 
     if (session.sessionId !== sessionId) return // discard output queued before rotation
-    const integration = await getIntegration(integrationId)
-    if (!integration) return
-    // Both awaits above are windows in which the chat can be cleared; the
-    // session captured before them must still be the live one.
-    if (!this.isCurrentSession(integrationId, chatId, session, sessionId)) return
     const eventType = (event as { type?: string } | null)?.type
     if (eventType === 'session_active' || eventType === 'session_idle' || eventType === 'session_error') session.recovered = true
     const context = routing(session.context, { integration })

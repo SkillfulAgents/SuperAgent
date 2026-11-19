@@ -18,8 +18,6 @@ vi.mock('../db', async () => {
 })
 
 import {
-  decisionFrom,
-  setAgentAccess,
   evaluate,
   setPolicy,
   getPolicy,
@@ -387,47 +385,6 @@ describe('x-agent-policy-service', () => {
       // Spot-check a few random new rows landed.
       expect((await getPolicy('alice', 'invoke', 'bulk-0'))?.decision).toBe('allow')
       expect((await getPolicy('alice', 'invoke', 'bulk-249'))?.decision).toBe('allow')
-    })
-  })
-
-  describe('decisionFrom', () => {
-    const row = (targetAgentSlug: string | null, decision: 'allow' | 'review' | 'block', at: number) =>
-      ({ callerAgentSlug: 'alice', targetAgentSlug, operation: 'invoke' as const, decision, updatedAt: new Date(at) })
-
-    it('takes the row for the target over the one for every agent, the latest of duplicates, and Review with neither', () => {
-      const decide = decisionFrom([row(null, 'allow', 1), row('bob', 'block', 1), row('bob', 'review', 2), row('carol', 'review', 2), row('carol', 'allow', 1)])
-      expect([
-        decide('alice', 'invoke', 'bob'),
-        decide('alice', 'invoke', 'carol'),
-        decide('alice', 'invoke', 'dave'),
-        decide('alice', 'read', 'bob'),
-        decide('zed', 'invoke', 'bob'),
-      ]).toEqual(['review', 'review', 'allow', 'review', 'review'])
-    })
-  })
-
-  describe('setAgentAccess', () => {
-    it('writes both permissions, lifts the target\'s blocks on the caller, and reports whether anything changed', async () => {
-      await setPolicy('support', 'invoke', 'triage', 'block')
-      expect(await setAgentAccess('triage', 'support', 'viewer')).toBe(true)
-      expect([await evaluate('triage', 'invoke', 'support'), await evaluate('triage', 'read', 'support'), await evaluate('support', 'invoke', 'triage')])
-        .toEqual(['review', 'allow', 'review'])
-      expect(await setAgentAccess('triage', 'support', 'viewer')).toBe(false)
-      expect(await setAgentAccess('triage', 'support', 'user')).toBe(true)
-      expect(await evaluate('triage', 'invoke', 'support')).toBe('allow')
-    })
-
-    it('keeps a Viewer, and a removed agent, set under a block for every agent as they were once that block becomes Allow', async () => {
-      await setPolicy('triage', 'invoke', null, 'block')
-      await setAgentAccess('triage', 'support', 'viewer')
-      await setPolicy('triage', 'invoke', null, 'allow')
-
-      expect([await evaluate('triage', 'invoke', 'support'), await evaluate('triage', 'read', 'support')]).toEqual(['review', 'allow'])
-
-      await setPolicy('triage', 'read', null, 'block')
-      await setAgentAccess('triage', 'support', 'remove')
-      await setPolicy('triage', 'read', null, 'allow')
-      expect([await evaluate('triage', 'invoke', 'support'), await evaluate('triage', 'read', 'support')]).toEqual(['review', 'review'])
     })
   })
 })

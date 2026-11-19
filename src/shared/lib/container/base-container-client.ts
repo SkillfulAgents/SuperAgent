@@ -1367,12 +1367,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // provider's concrete wire id before the container ever sees them.
       const selected = await resolveSelectionHierarchyFrom(settings, await storedSelection(options.model, options.llmProviderId, settings))
       const llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId, settings)
-      const warmSelection = options.prewarmDefaults
-        ? await resolveSelectionHierarchyFrom(settings, await storedSelection(options.prewarmDefaults.model, options.prewarmDefaults.llmProviderId, settings))
-        : null
-      const warmRuntime = warmSelection
-        ? await prewarmConnectionRuntime(warmSelection, this.config.agentId, settings)
-        : undefined
+      // The prewarm is for the agent's default session. A session on that same
+      // model and connection is the default one: its runtime is the prewarm's,
+      // and nothing is resolved or built a second time.
+      const warm = options.prewarmDefaults
+      const warmRuntime = !warm ? undefined
+        : warm.model === options.model && warm.llmProviderId === options.llmProviderId ? llmRuntime
+        : await prewarmConnectionRuntime(
+            await resolveSelectionHierarchyFrom(settings, await storedSelection(warm.model, warm.llmProviderId, settings)),
+            this.config.agentId,
+            settings,
+          )
       const resolvedModel = llmRuntime.model
       const resolvedBrowserModel = llmRuntime.browserModel
       const resolvedDashboardBuilderModel = llmRuntime.dashboardBuilderModel

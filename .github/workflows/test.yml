@@ -399,6 +399,10 @@ jobs:
   # each retry would give a probabilistic failure another chance to pass.)
   # The three repeats run on three Macs at once, one pass of the suite each;
   # run back to back on one Mac they took ~6 min.
+  # WebKit traces record no screenshots (webkitTrace in the Playwright configs),
+  # and no --trace flag here, which would override that and turn them back on:
+  # every trace screenshot holds a WindowServer surface until the screen redraws,
+  # and on these VMs that filled up mid-suite and took the runner down.
   e2e-webkit-macos:
     runs-on: blacksmith-6vcpu-macos-latest
     strategy:
@@ -452,7 +456,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p test-results
-          E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit.log
+          E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 2>&1 | tee test-results/webkit.log
 
       - name: Run WebKit navigation contracts
         if: ${{ matrix.repeat == 1 && !cancelled() && steps.webkit_setup.outcome == 'success' }}
@@ -465,7 +469,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p test-results
-          E2E_MOCK=true npx playwright test --project=web-webkit-navigation --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit-navigation.log
+          E2E_MOCK=true npx playwright test --project=web-webkit-navigation --retries=0 2>&1 | tee test-results/webkit-navigation.log
 
       # Exercise the same real app controls on Apple's WebKit, including the
       # touch project. These deterministic interaction tests need one pass;
@@ -517,8 +521,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The auth suite boots eleven dev servers (API + Vite each) up front. On a
+  # 4-core, 16 GB GitHub runner that got the runner shut down or lost mid-boot in
+  # about four jobs in ten, and a lost runner hung the job for ~50 min before it
+  # failed. Same box as e2e-tests; the timeout bounds a hang.
   e2e-auth-tests:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -635,7 +644,19 @@ jobs:
         if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
         run: |
           set -o pipefail
-          xvfb-run --auto-servernum npx tsx e2e/live/pdf-preview/run.ts 2>&1 | tee /tmp/electron-pdf-results.txt
+          mkdir -p test-results
+          xvfb-run --auto-servernum npx tsx e2e/live/pdf-preview/run.ts 2>&1 | tee test-results/electron-pdf.log
+
+      - name: Upload Electron PDF artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-pdf-artifacts
+          path: |
+            test-results/electron-pdf/
+            test-results/electron-pdf.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Validate built Electron navigation and unsaved drafts
         if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}

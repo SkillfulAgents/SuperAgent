@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 // Writer has the drive; taking it off takes as long as the agent's container needs.
 const { removing, adding, drive } = vi.hoisted(() => ({ removing: { done: () => {}, calls: 0 }, adding: vi.fn(), drive: { canManage: true } }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: true }) }))
 vi.mock('@renderer/hooks/use-mounts', () => ({
   useAddMount: () => ({ mutateAsync: adding }),
   useRemoveMount: () => ({
@@ -18,7 +19,7 @@ vi.mock('@renderer/hooks/use-mounts', () => ({
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useVolumeAgents: () => ({ data: { attachments: [{ agentSlug: 'writer', mountId: 'm1' }] } }),
-  useVolumeDefinitions: () => ({ data: [{ id: 'vol', userId: null, canManage: drive.canManage, globalAccess: null }] }),
+  useVolumeDefinitions: () => ({ data: [{ id: 'vol', visibility: 'public', canManage: drive.canManage, globalAccess: null }] }),
   useSaveVolumeDefinition: () => ({ mutateAsync: vi.fn(async () => {}) }),
 }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn(async () => new Response(null, { status: 204 })) }))

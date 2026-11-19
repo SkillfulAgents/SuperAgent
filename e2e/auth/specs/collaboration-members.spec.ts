@@ -56,7 +56,7 @@ test('members share one live roster while invitation and revocation follow permi
     const sharing = page.getByTestId('agent-share-popover')
     await expect(sharing.getByRole('tab', { name: 'Publish', exact: true })).toBeVisible()
     await expect(sharing.getByRole('tab', { name: 'Export', exact: true })).toBeVisible()
-    await sharing.getByPlaceholder('Invite people or agents...').fill(users[1].email)
+    await sharing.getByPlaceholder('Invite by name or email...').fill(users[1].email)
     await sharing.getByTestId(`invite-user-result-${users[1].id}`).click()
     await sharing.getByRole('combobox').first().click()
     await page.getByRole('option', { name: 'Viewer Can view sessions only' }).click()

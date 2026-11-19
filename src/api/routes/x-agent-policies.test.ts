@@ -117,11 +117,6 @@ vi.mock('@shared/lib/services/x-agent-policy-service', async (importOriginal) =>
   return { ...actual, evaluate: vi.fn(actual.evaluate) }
 })
 
-const mockNotifyAgentMembersChanged = vi.hoisted(() => vi.fn())
-vi.mock('@shared/lib/services/agent-members-service', async (importOriginal) => ({
-  ...await importOriginal<typeof import('@shared/lib/services/agent-members-service')>(),
-  notifyAgentMembersChanged: mockNotifyAgentMembersChanged,
-}))
 vi.mock('@shared/lib/proxy/token-store', () => ({
   revokeProxyToken: vi.fn(),
   validateProxyToken: vi.fn(),
@@ -138,8 +133,6 @@ import {
   getPolicy,
   listPoliciesForCaller,
 } from '@shared/lib/services/x-agent-policy-service'
-import { getAgentMemberAgents } from '@shared/lib/services/inbound-x-agent-service'
-import { listAgentsWithStatus } from '@shared/lib/services/agent-service'
 
 // ----------------------------------------------------------------------------
 // Test app
@@ -272,27 +265,6 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
     expect(res.status).toBe(200)
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('review')
     expect((await getPolicy(CALLER, 'read', TARGET_B))?.decision).toBe('block')
-  })
-
-  it("tells the people of the agent whose members changed, and only on a change", async () => {
-    mockNotifyAgentMembersChanged.mockClear()
-    await patchPolicy({ operation: 'read', targetSlug: TARGET_A, decision: 'allow' })
-    await patchPolicy({ operation: 'read', targetSlug: TARGET_A, decision: 'allow' })
-    await patchPolicy({ operation: 'read', targetSlug: null, decision: 'allow' })
-    await app.request(`/api/agents/${CALLER}/x-agent-policies/invoke/${TARGET_B}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-    await app.request(`/api/agents/${CALLER}/x-agent-policies/invoke/${TARGET_B}`, { method: 'DELETE' })
-    await app.request(`/api/agents/${CALLER}/x-agent-policies/invoke/${TARGET_B}`, { method: 'DELETE' })
-
-    // The setting for every agent changes the caller's place in every agent's members.
-    expect(mockNotifyAgentMembersChanged.mock.calls).toEqual([[TARGET_A], [CALLER], [TARGET_B], [TARGET_B]])
-  })
-
-  it('tells both agents when a block between them is set or lifted', async () => {
-    mockNotifyAgentMembersChanged.mockClear()
-    await patchPolicy({ operation: 'invoke', targetSlug: TARGET_A, decision: 'block' })
-    await patchPolicy({ operation: 'invoke', targetSlug: TARGET_A, decision: 'review' })
-
-    expect(mockNotifyAgentMembersChanged.mock.calls).toEqual([[TARGET_A], [CALLER], [TARGET_A], [CALLER]])
   })
 
   it('clears only the selected row when decision is default', async () => {
@@ -694,6 +666,47 @@ describe('"Always allow" never overwrites a Block', () => {
   })
 })
 
+describe('"Always allow" with a model picked on the card', () => {
+  const invokeCard = { targetAgentSlug: TARGET_A, targetAgentName: 'Target A', operation: 'invoke', runtime: { model: 'claude-sonnet-5-5', llmProviderId: 'platform', label: 'Sonnet 5.5' } }
+  const always = (pick: object) => app.request(`/api/agents/${CALLER}/proxy-review/review-1/always`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision: 'allow', scope: `invoke:${TARGET_A}`, accountId: TARGET_A, reviewType: 'xagent', xAgent: { operation: 'invoke', targetSlug: TARGET_A }, pick }),
+  })
+
+  const spies: { mockRestore(): void }[] = []
+  beforeEach(async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    spies.push(
+      vi.spyOn(connections, 'getConnection').mockImplementation(async (id) => (id === 'platform' ? { id, provider: 'platform', modelOverrides: '[]' } : null) as never),
+      vi.spyOn(preferences, 'readAgentPreferences').mockImplementation(async () => ({ defaultLlmProviderId: 'platform' }) as never),
+    )
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(((slug: string) => slug === CALLER ? [{ id: 'review-1', agentSlug: CALLER, xAgent: invokeCard }] : []) as never)
+    Object.assign(reviewManager, { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() })
+  })
+  afterEach(async () => {
+    spies.splice(0).forEach((spy) => spy.mockRestore())
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(() => [])
+  })
+
+  it('saves the grant and applies the pick to this call', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    expect((await always({ model: 'claude-opus-5-5', effort: 'max', speed: 'fast' })).status).toBe(200)
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'allow', { pick: { model: 'claude-opus-5-5', effort: 'max', speed: 'fast', llmProviderId: 'platform' } })
+  })
+
+  it('saves no grant when the pick is refused', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    expect((await always({ model: 'not-a-model' })).status).toBe(409)
+    expect(await getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+  })
+})
+
 describe('allowing an agent request needs someone who uses both agents', () => {
   const readCard = { targetAgentSlug: TARGET_A, targetAgentName: 'Target A', operation: 'read' }
   let xAgent: object = readCard
@@ -730,7 +743,7 @@ describe('allowing an agent request needs someone who uses both agents', () => {
     expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can allow this request.' })
     expect(reviewManager.submitDecision).not.toHaveBeenCalled()
     expect((await once('deny')).status).toBe(200)
-    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'deny', undefined)
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'deny', { reason: undefined })
   })
 
   it.each([
@@ -809,94 +822,5 @@ describe('allowing an agent request needs someone who uses both agents', () => {
     expect((await always('allow')).status).toBe(200)
     expect((await always('deny')).status).toBe(200)
     expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('block')
-  })
-})
-
-describe('getAgentMemberAgents', () => {
-  it('counts an agent whose setting for every agent allows it, even when no stack of its own is in view', async () => {
-    vi.mocked(listAgentsWithStatus).mockImplementation(async ({ slugs = [] } = {}) =>
-      slugs.map((slug) => ({ slug, displaySlug: slug, name: slug, createdAt: new Date(0), status: 'stopped' as const, containerPort: null })))
-    await setPolicy(CALLER, 'invoke', null, 'allow')
-    await setPolicy(CALLER, 'read', null, 'allow')
-
-    const byAgent = await getAgentMemberAgents([TARGET_A, TARGET_B], false)
-
-    expect(Object.fromEntries(Object.entries(byAgent).map(([slug, members]) => [slug, members.map((m) => [m.slug, m.role])])))
-      .toEqual({ [TARGET_A]: [[CALLER, 'user']], [TARGET_B]: [[CALLER, 'user']] })
-  })
-
-  it('lets a setting for one agent override the setting for every agent', async () => {
-    vi.mocked(listAgentsWithStatus).mockImplementation(async ({ slugs = [] } = {}) =>
-      slugs.map((slug) => ({ slug, displaySlug: slug, name: slug, createdAt: new Date(0), status: 'stopped' as const, containerPort: null })))
-    await setPolicy(CALLER, 'invoke', null, 'allow')
-    await setPolicy(CALLER, 'invoke', TARGET_A, 'review')
-    await setPolicy(CALLER, 'read', TARGET_A, 'allow')
-
-    const byAgent = await getAgentMemberAgents([TARGET_A, TARGET_B], false)
-
-    expect(Object.fromEntries(Object.entries(byAgent).map(([slug, members]) => [slug, members.map((m) => [m.slug, m.role])])))
-      .toEqual({ [TARGET_A]: [[CALLER, 'viewer']], [TARGET_B]: [[CALLER, 'user']] })
-  })
-})
-
-describe('PUT /api/agents/:id/inbound-x-agent/:caller', () => {
-  const setRole = (change: string, target = TARGET_A, caller = CALLER) => app.request(`/api/agents/${target}/inbound-x-agent/${caller}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ change }),
-  })
-  const effective = async (caller = CALLER, target = TARGET_A) => [await evaluate(caller, 'invoke', target), await evaluate(caller, 'read', target)]
-
-  it('removes messaging another window allowed after this one loaded a Viewer', async () => {
-    await setPolicy(CALLER, 'read', TARGET_A, 'allow')
-    // Another window lets it message, after this one read it as a Viewer.
-    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
-
-    expect((await setRole('remove')).status).toBe(200)
-    expect(await effective()).toEqual(['review', 'review'])
-  })
-
-  it('pins messaging on a new Viewer, so a later setting for every agent cannot make it a User', async () => {
-    await setRole('viewer')
-    await setPolicy(CALLER, 'invoke', null, 'allow')
-
-    expect(await effective()).toEqual(['review', 'allow'])
-  })
-
-  it('makes an agent a User, lifting this agent\'s blocks on it to Review', async () => {
-    await setPolicy(TARGET_A, 'invoke', CALLER, 'block')
-    await setPolicy(TARGET_A, 'read', CALLER, 'allow')
-
-    await setRole('user')
-
-    expect(await effective()).toEqual(['allow', 'allow'])
-    expect(await effective(TARGET_A, CALLER)).toEqual(['review', 'allow'])
-    expect(mockNotifyAgentMembersChanged.mock.calls.map(([slug]) => slug).sort()).toEqual([CALLER, TARGET_A])
-  })
-
-  it('blocks reading and messaging in both directions', async () => {
-    await setRole('block')
-    expect([...await effective(), ...await effective(TARGET_A, CALLER)]).toEqual(['block', 'block', 'block', 'block'])
-  })
-
-  it('tells no one when nothing changed', async () => {
-    await setRole('viewer')
-    mockNotifyAgentMembersChanged.mockClear()
-    await setRole('viewer')
-    expect(mockNotifyAgentMembersChanged).not.toHaveBeenCalled()
-  })
-
-  it('refuses someone who does not use the other agent, and writes nothing', async () => {
-    authModeEnabled = true
-    currentUserId = 'ana'
-    await testDb.insert(schema.user).values({ id: 'ana', name: 'Ana', email: 'ana@t', emailVerified: false })
-    await testDb.insert(schema.agentAcl).values([
-      { id: 'ana-a', userId: 'ana', agentSlug: TARGET_A, role: 'user', createdAt: new Date() },
-      { id: 'ana-c', userId: 'ana', agentSlug: CALLER, role: 'viewer', createdAt: new Date() },
-    ])
-
-    const res = await setRole('user')
-
-    expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can change this connection.' })
-    expect(await listPoliciesForCaller(CALLER)).toEqual([])
   })
 })

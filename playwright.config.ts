@@ -89,6 +89,14 @@ function buildWebServerCommand() {
 // tests that are only slow, so give these projects 3x that budget.
 const webkitTestTimeout = 90_000
 
+// A WebKit trace without screenshots: each one is a window capture whose surface
+// macOS's WindowServer holds until the screen redraws, and a macOS VM can hold
+// 8,192. On Blacksmith's Macs, which rarely redraw, a suite full of composited
+// layers filled that in about two minutes, crashed WindowServer and took the
+// runner down. Actions, DOM snapshots, network and console are still recorded.
+// https://github.com/microsoft/playwright/issues/43066
+const webkitTrace = { mode: 'retain-on-failure', screenshots: false } as const
+
 export default defineConfig({
   testDir: './e2e',
   // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
@@ -121,7 +129,7 @@ export default defineConfig({
       name: 'web-webkit',
       testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts', '**/pdf-preview.spec.ts'],
       timeout: webkitTestTimeout,
-      use: { ...devices['Desktop Safari'] },
+      use: { ...devices['Desktop Safari'], trace: webkitTrace },
     },
     // Deterministic navigation contracts run once on macOS per PR. Keep the
     // compositor regressions above in their three independent serial runs.
@@ -130,7 +138,7 @@ export default defineConfig({
       testMatch: ['**/navigation.spec.ts', '**/router-upgrade.spec.ts', '**/memory-history.spec.ts', '**/router-response-guard.spec.ts'],
       fullyParallel: false,
       timeout: webkitTestTimeout,
-      use: { ...devices['Desktop Safari'] },
+      use: { ...devices['Desktop Safari'], trace: webkitTrace },
     },
     // Section drag-and-drop and persistence, on their own server/data dir.
     {

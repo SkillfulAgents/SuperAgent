@@ -119,7 +119,7 @@ describe('Dropbox volume access and transport', () => {
     expect(await (await browse('alice')).json()).toEqual({ folders: [{ name: 'Team', id: '/Team' }] })
     expect((await create()).status).toBe(201)
     const rows = await handle.db.select().from(volumeDefinitions).all()
-    expect(rows).toMatchObject([{ userId: 'alice', type: 'dropbox' }])
+    expect(rows).toMatchObject([{ createdBy: 'alice', type: 'dropbox' }])
     expect(JSON.parse(rows[0].config)).toEqual(config)
   })
 
@@ -153,7 +153,7 @@ describe('Dropbox volume access and transport', () => {
     expect(trackServerEvent).not.toHaveBeenCalled()
     expect(audit.every(row => row.agentSlug === 'agent-a' && row.accountId === 'dropbox' && row.policyDecision === 'allow')).toBe(true)
     expect(forward.mock.calls.every(([call]) => ['api.dropboxapi.com', 'content.dropboxapi.com'].includes(new URL(call.targetUrl).hostname))).toBe(true)
-    await removeMount('agent-a', mount.id)
+    await removeMount('agent-a', mount.id, { userId: 'alice', admin: false })
     expect((await dav(mount.id)).status).toBe(403)
   })
 

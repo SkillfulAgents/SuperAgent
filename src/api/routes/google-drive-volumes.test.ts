@@ -156,7 +156,7 @@ describe('Google Drive volume access and transport', () => {
     expect(created.status).toBe(201)
     const { id } = await created.json()
     const rows = await handle.db.select().from(volumeDefinitions).all()
-    expect(rows).toMatchObject([{ userId: 'alice', type: 'googledrive', name: 'Team' }])
+    expect(rows).toMatchObject([{ createdBy: 'alice', type: 'googledrive', name: 'Team' }])
     expect(JSON.parse(rows[0].config)).toEqual({ ...config, folderName: 'Team', driveName: 'My Drive' })
     const mount = await attachMount('agent-a', id, { userId: 'alice', admin: false })
     expect((await listVolumes('agent-a')).volumes).toEqual([{ volumeId: mount.id, name: mount.name, volumeName: mount.volumeName, cacheMode: 'remote', ignoreSize: true, dirCacheSeconds: 30, sourceLabel: 'Google Drive · My Drive / Team', agentNote: expect.stringContaining('Saving one updates the original Google file') }])

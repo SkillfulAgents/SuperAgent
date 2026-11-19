@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto'
-import { and, count, eq, exists, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, count, eq, exists, getTableColumns, isNull, lt, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf, insertWhere } from '@shared/lib/db/batch'
-import { pushSubscriptions } from '@shared/lib/db/schema'
+import { agentAcl, pushSubscriptions, user } from '@shared/lib/db/schema'
 
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect
 
@@ -74,6 +74,39 @@ export async function upsertPushSubscription(params: {
 
 export async function listPushSubscriptions(): Promise<PushSubscriptionRow[]> {
   return db.select().from(pushSubscriptions).all()
+}
+
+/**
+ * The subscriptions a notification about `agentSlug` may be pushed to when
+ * people sign in: those whose owner is on the agent's access list and has
+ * joined. Someone invited who hasn't joined hears nothing (they can't have
+ * signed in on a device, and a row whose status somehow lags must still hear
+ * nothing), and neither does a row with no owner or whose owner is gone.
+ * With `recipientUserId` (a mention), only that person's devices, and only if
+ * they are such a member.
+ *
+ * One statement, whatever the size of the workspace: the access check is the
+ * join, not a query per owner.
+ */
+export async function listPushSubscriptionsForAgentMembers(
+  agentSlug: string,
+  recipientUserId?: string
+): Promise<PushSubscriptionRow[]> {
+  return db
+    .select(getTableColumns(pushSubscriptions))
+    .from(pushSubscriptions)
+    .innerJoin(
+      agentAcl,
+      and(eq(agentAcl.userId, pushSubscriptions.userId), eq(agentAcl.agentSlug, agentSlug))
+    )
+    .innerJoin(user, eq(user.id, pushSubscriptions.userId))
+    .where(
+      and(
+        eq(user.status, 'active'),
+        recipientUserId === undefined ? undefined : eq(pushSubscriptions.userId, recipientUserId)
+      )
+    )
+    .all()
 }
 
 export async function deletePushSubscriptionById(id: string): Promise<void> {

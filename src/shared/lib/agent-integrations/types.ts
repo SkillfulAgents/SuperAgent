@@ -104,6 +104,16 @@ export interface IntegrationSessionContext {
   replyTarget?: Readonly<Record<string, string>>
 }
 
+/** How an access check was reached, for a policy that can do less with it. */
+export interface IntegrationAccessCheck {
+  /**
+   * The caller read `context.integration` from storage for this very check,
+   * so the policy decides from it instead of reading the row again. Without
+   * it a context's record may be as old as its session.
+   */
+  current?: boolean
+}
+
 export interface IntegrationInputContext extends IntegrationSessionContext {
   actor: AgentActor
   /** The delivery handing this input to the agent; a turn names the deliveries it answered. */

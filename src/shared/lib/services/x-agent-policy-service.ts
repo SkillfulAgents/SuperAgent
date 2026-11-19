@@ -14,11 +14,10 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
-import type { AgentAccessChange } from '@shared/lib/types/inbound-x-agent-schema'
 import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // ============================================================================
@@ -182,34 +181,14 @@ export async function deletePolicy(
   return changesOf(result)
 }
 
-/**
- * Delete the specific-target policy rows for (caller, operation, target).
- * With `preserveBlock`, 'block' rows survive: revoking a granted edge must
- * not silently lift an explicit block (that would ESCALATE access — the
- * effective decision would fall back to a global allow, if one exists).
- * Returns the number of rows removed.
- */
-export async function deleteTargetPolicy(
-  callerSlug: string,
-  operation: XAgentOperation,
-  targetSlug: string,
-  options?: { preserveBlock?: boolean },
-): Promise<number> {
-  if (!options?.preserveBlock) {
-    return deletePolicy(callerSlug, operation, targetSlug)
-  }
-  const conditions = [
+/** Remove a granted graph edge. Revoking an edge must preserve any review or block override. */
+export async function deleteTargetGrant(callerSlug: string, operation: XAgentOperation, targetSlug: string): Promise<number> {
+  const result = await db.delete(xAgentPolicies).where(and(
     eq(xAgentPolicies.callerAgentSlug, callerSlug),
     eq(xAgentPolicies.operation, operation),
     eq(xAgentPolicies.targetAgentSlug, targetSlug),
-  ]
-  if (options?.preserveBlock) {
-    conditions.push(ne(xAgentPolicies.decision, 'block'))
-  }
-  const result = await db
-    .delete(xAgentPolicies)
-    .where(and(...conditions))
-    .run()
+    eq(xAgentPolicies.decision, 'allow'),
+  )).run()
   return changesOf(result)
 }
 
@@ -232,8 +211,9 @@ export async function deleteTargetPolicy(
  * part of the invoke contract and does not require 'read' — 'read' only gates
  * browsing existing sessions via get_agent_sessions / get_agent_session_transcript.
  *
- * One statement either way: both candidate rows are read together and
- * decisionFrom() picks between them.
+ * One statement either way: both candidate rows are read together and the
+ * specific-target one sorts first, so the row that comes back is the one the
+ * precedence above picks.
  */
 export async function evaluate(
   callerSlug: string,
@@ -244,7 +224,7 @@ export async function evaluate(
     return (await getPolicy(callerSlug, operation, null))?.decision ?? 'review'
   }
   const rows = await db
-    .select({ callerAgentSlug: xAgentPolicies.callerAgentSlug, targetAgentSlug: xAgentPolicies.targetAgentSlug, operation: xAgentPolicies.operation, decision: xAgentPolicies.decision, updatedAt: xAgentPolicies.updatedAt })
+    .select({ decision: xAgentPolicies.decision })
     .from(xAgentPolicies)
     .where(
       and(
@@ -253,27 +233,12 @@ export async function evaluate(
         or(eq(xAgentPolicies.targetAgentSlug, targetSlug), isNull(xAgentPolicies.targetAgentSlug)),
       ),
     )
+    // The specific-target row before the global one; among duplicates of
+    // either (see getPolicy), the latest write.
+    .orderBy(sql`${xAgentPolicies.targetAgentSlug} is null`, desc(xAgentPolicies.updatedAt))
+    .limit(1)
     .all()
-  return decisionFrom(rows)(callerSlug, operation, targetSlug)
-}
-
-type PolicyDecisionRow = Pick<XAgentPolicy, 'callerAgentSlug' | 'targetAgentSlug' | 'operation' | 'decision' | 'updatedAt'>
-
-/**
- * evaluate()'s precedence over rows already read: the caller's row for this
- * target, else its row for every agent, else Review. Among duplicates of a key
- * (see getPolicy), the latest write.
- */
-export function decisionFrom(rows: PolicyDecisionRow[]): (callerSlug: string, operation: XAgentOperation, targetSlug: string) => XAgentDecision {
-  const key = (caller: string, operation: string, target: string | null) => `${caller}\u0000${operation}\u0000${target ?? ''}`
-  const latest = new Map<string, PolicyDecisionRow>()
-  for (const row of rows) {
-    const k = key(row.callerAgentSlug, row.operation, row.targetAgentSlug)
-    const seen = latest.get(k)
-    if (!seen || row.updatedAt > seen.updatedAt) latest.set(k, row)
-  }
-  return (callerSlug, operation, targetSlug) =>
-    (latest.get(key(callerSlug, operation, targetSlug)) ?? latest.get(key(callerSlug, operation, null)))?.decision ?? 'review'
+  return rows[0]?.decision ?? 'review'
 }
 
 /**
@@ -367,38 +332,4 @@ export async function replacePoliciesForCaller(
       }),
     ),
   ])
-}
-
-/**
- * Give `callerSlug` a role on `targetSlug`, take it away, or block it, in one
- * batch. A User messages and reads, a Viewer only reads, Remove asks first for
- * both. Each writes both of the caller's rows for this target, so its setting
- * for every agent can't change the role later. Block blocks reading and
- * messaging both ways; any other change lifts the target's blocks on the
- * caller to Review. Reports whether any row changed.
- */
-export async function setAgentAccess(callerSlug: string, targetSlug: string, change: AgentAccessChange): Promise<boolean> {
-  const now = new Date()
-  // Only a row whose decision differs is rewritten, so the change counts say whether anything changed.
-  const put = (caller: string, target: string, operation: 'invoke' | 'read', decision: XAgentDecision) => db
-    .insert(xAgentPolicies)
-    .values({ id: randomUUID(), callerAgentSlug: caller, targetAgentSlug: target, operation, decision, createdAt: now, updatedAt: now })
-    .onConflictDoUpdate({
-      target: [xAgentPolicies.callerAgentSlug, xAgentPolicies.targetAgentSlug, xAgentPolicies.operation],
-      set: { decision, updatedAt: now },
-      setWhere: ne(xAgentPolicies.decision, decision),
-    })
-
-  const results = await batch(change === 'block'
-    ? [put(callerSlug, targetSlug, 'invoke', 'block'), put(callerSlug, targetSlug, 'read', 'block'), put(targetSlug, callerSlug, 'invoke', 'block'), put(targetSlug, callerSlug, 'read', 'block')]
-    : [
-        put(callerSlug, targetSlug, 'invoke', change === 'user' ? 'allow' : 'review'),
-        put(callerSlug, targetSlug, 'read', change === 'remove' ? 'review' : 'allow'),
-        db.update(xAgentPolicies).set({ decision: 'review', updatedAt: now }).where(and(
-          eq(xAgentPolicies.callerAgentSlug, targetSlug),
-          eq(xAgentPolicies.targetAgentSlug, callerSlug),
-          eq(xAgentPolicies.decision, 'block'),
-        )),
-      ])
-  return results.some((result) => changesOf(result) > 0)
 }

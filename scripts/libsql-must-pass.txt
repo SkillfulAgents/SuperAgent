@@ -19,6 +19,7 @@ src/api/routes/llm-connections.test.ts
 src/api/routes/llm-runtime.test.ts
 src/shared/lib/notifications/push/apns-device-service.test.ts
 src/shared/lib/notifications/push/push-subscription-service.test.ts
+src/shared/lib/notifications/channels/push-recipients.integration.test.ts
 src/shared/lib/agent-actor/agent-catalog.test.ts
 src/api/middleware/auth.agent-role.integration.test.ts
 src/api/middleware/is-agent.integration.test.ts
@@ -65,6 +66,7 @@ src/shared/lib/services/mount-service.test.ts
 src/shared/lib/services/mount-service.atomic.test.ts
 src/shared/lib/services/volume-service.test.ts
 src/shared/lib/db/data-migrations/0006-import-volume-definitions.test.ts
+src/shared/lib/db/migrations/drive-acl.test.ts
 src/api/routes/volumes.test.ts
 src/api/routes/volumes.access.integration.test.ts
 src/api/routes/volume-definitions.test.ts
@@ -108,6 +110,7 @@ src/shared/lib/container/host-token-store.test.ts
 src/main/host-browser/context-map-store.test.ts
 src/shared/lib/browser-vault/vault-key-probe.test.ts
 src/shared/lib/agent-integrations/integration-row-version.test.ts
+src/shared/lib/agent-integrations/agent-integration-manager-stream-access.test.ts
 src/shared/lib/services/notification-service-changes.test.ts
 src/api/routes/meeting-participant.test.ts
 src/shared/lib/meeting-integrations/meeting-agent-integration.test.ts
@@ -133,3 +136,5 @@ src/shared/lib/services/session-deletion.test.ts
 src/shared/lib/config/settings-request-memo.test.ts
 src/shared/lib/services/audit-log-service.test.ts
 src/shared/lib/db/migrations/todos-connection-fk.test.ts
+src/shared/lib/services/message-author-annotation-service.test.ts
+src/shared/lib/services/agent-sharing-service.test.ts

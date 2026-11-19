@@ -1,13 +1,16 @@
-import { xAgentAllowState, xAgentReviewAttachments, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { xAgentAllowState, xAgentReviewAttachments, xAgentReviewNamesTarget, type XAgentPickInput, type XAgentReview, type XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type MutableRefObject, type ReactNode } from 'react'
 import { ShieldCheck, ShieldX, MessageSquare, Paperclip } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { ApprovalActions, type ExpandedGrant } from '../requests/approval-actions'
 import { DeclineButton } from '../requests/decline-button'
+import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
+import { SPEED_LABELS } from '@renderer/components/messages/speed-section'
+import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 
 interface XAgentReviewRequestItemProps {
   reviewId: string
@@ -82,19 +85,29 @@ export function XAgentReviewRequestItem({
     completeTimerRef.current = setTimeout(() => onComplete(), delayMs)
   }
 
-  const postDecision = (decision: 'allow' | 'deny', reason?: string) =>
+  // The model the person picked on the card, sent only once they changed it.
+  const pickRef = useRef<XAgentPickInput | undefined>(undefined)
+  // A refused pick resets the picker, so the next Allow runs the card's own model.
+  const [pickerKey, setPickerKey] = useState(0)
+  const dropRefusedPick = (status: number) => {
+    if (status !== 409) return
+    pickRef.current = undefined
+    setPickerKey((key) => key + 1)
+  }
+  const postDecision = (decision: 'allow' | 'deny', reason?: string, pick?: XAgentPickInput) =>
     apiFetch(`/api/agents/${agentSlug}/proxy-review/${reviewId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision, reason }),
+      body: JSON.stringify({ decision, reason, pick }),
     })
 
   const handleDecision = async (decision: 'allow' | 'deny', reason?: string) => {
     setStatus('submitting')
     setError(null)
     try {
-      const response = await postDecision(decision, reason)
+      const response = await postDecision(decision, reason, pickRef.current)
       if (!response.ok && response.status !== 404) {
+        dropRefusedPick(response.status)
         const data = await response.json()
         throw new Error(data.error || 'Failed to submit decision')
       }
@@ -140,10 +153,12 @@ export function XAgentReviewRequestItem({
             accountId: targetSlug,
             reviewType: 'xagent',
             xAgent: { operation, targetSlug },
+            pick: pickRef.current,
           }),
         },
       )
       if (!response.ok && response.status !== 404) {
+        dropRefusedPick(response.status)
         const data = await response.json()
         // An Owner blocked this link while the card was open: say so here, then end the request
         // with Allow Once, which the Block refuses. Leaving the card before then ends it too.
@@ -275,12 +290,21 @@ export function XAgentReviewRequestItem({
       )}
     </>
   ) : null
+  const modelText = xAgent.runtime
+    ? `Model: ${xAgent.runtime.label}${xAgent.runtime.effort ? ` · ${EFFORT_LABELS[xAgent.runtime.effort]}` : ''}${xAgent.runtime.speed && xAgent.runtime.speed !== 'normal' ? ` · ${SPEED_LABELS[xAgent.runtime.speed]}` : ''}`
+    : null
+  // Truncates down to a width that still names the model; below it the button group wraps under it as one row.
+  const modelLine = modelText ? (
+    <p className="min-w-28 flex-1 self-center truncate text-xs text-muted-foreground" title={modelText} data-testid="xagent-review-model">
+      {modelText}
+    </p>
+  ) : null
   const downloadDetails = xAgent.fileTransfer?.kind === 'download' ? (
     <div className="mt-3 rounded-item border border-border bg-background px-3 py-2 text-xs text-foreground/85">
       {xAgent.fileTransfer.filename}
     </div>
   ) : null
-  const readOnlyConfig = readOnly ? { extraContent: <>{invokeDetails}{downloadDetails}</> } : false as const
+  const readOnlyConfig = readOnly ? { extraContent: <>{invokeDetails}{downloadDetails}{modelLine && <div className="mt-3">{modelLine}</div>}</> } : false as const
 
   return (
     <RequestItemShell
@@ -302,26 +326,61 @@ export function XAgentReviewRequestItem({
       {downloadDetails}
 
       <RequestItemActions>
-        {canAllow ? (
-          <ApprovalActions
-            testIdPrefix="xagent-review"
-            disabled={status === 'submitting'}
-            onDeny={(reason) => handleDecision('deny', reason)}
-            onAllow={() => handleDecision('allow')}
-            allowLabel={expanded ? 'Allow Once' : 'Allow'}
-            expanded={expanded}
-          />
-        ) : (
-          <DeclineButton
-            onDecline={(reason) => handleDecision('deny', reason)}
-            disabled={status === 'submitting'}
-            label="Deny"
-            showIcon={false}
-            className="border-border text-foreground hover:bg-muted"
-            data-testid="xagent-review-deny-btn"
-          />
-        )}
+        {canAllow && xAgent.operation === 'invoke' && xAgent.runtime
+          ? <CardModelPicker key={pickerKey} targetAgentSlug={xAgent.targetAgentSlug} runtime={xAgent.runtime} disabled={status === 'submitting'} pickRef={pickRef} fallback={modelLine} />
+          : modelLine}
+        <div className="ml-auto flex flex-wrap justify-end gap-2">
+          {canAllow ? (
+            <ApprovalActions
+              testIdPrefix="xagent-review"
+              disabled={status === 'submitting'}
+              onDeny={(reason) => handleDecision('deny', reason)}
+              onAllow={() => handleDecision('allow')}
+              allowLabel={expanded ? 'Allow Once' : 'Allow'}
+              expanded={expanded}
+            />
+          ) : (
+            <DeclineButton
+              onDecline={(reason) => handleDecision('deny', reason)}
+              disabled={status === 'submitting'}
+              label="Deny"
+              showIcon={false}
+              className="border-border text-foreground hover:bg-muted"
+              data-testid="xagent-review-deny-btn"
+            />
+          )}
+        </div>
       </RequestItemActions>
     </RequestItemShell>
+  )
+}
+
+/** The composer's model picker on the target agent's current connection, seeded with what the card shows. */
+function CardModelPicker({ targetAgentSlug, runtime, disabled, pickRef, fallback }: {
+  targetAgentSlug: string
+  runtime: XAgentRuntime
+  disabled: boolean
+  pickRef: MutableRefObject<XAgentPickInput | undefined>
+  /** The read-only line, shown while the picker could not show what runs. */
+  fallback: ReactNode
+}) {
+  const options = useComposerOptions({
+    initial: { model: runtime.model, llmProviderId: runtime.llmProviderId, effort: runtime.effort, speed: runtime.speed },
+    agentKey: targetAgentSlug,
+    // The session runs as whoever asked, so the pick stays on the connection the card showed.
+    onlyLlmProviderId: runtime.llmProviderId,
+  })
+  const [picked, setPicked] = useState(false)
+  useEffect(() => {
+    if (picked && options.model) pickRef.current = { model: options.model, effort: options.effort, speed: options.speed }
+  }, [picked, options.model, options.effort, options.speed, pickRef])
+  // Until the card's connection loads, or when this viewer's plan swaps the model for another, the picker would show something else than what runs.
+  const ready = !!options.connections?.some((connection) => connection.id === runtime.llmProviderId)
+  if (!ready) pickRef.current = undefined
+  if (!ready || (!picked && options.model !== runtime.model)) return <>{fallback}</>
+  return (
+    <div className="mr-auto self-center" data-testid="xagent-review-model-picker">
+      <ComposerOptions state={options} disabled={disabled} includeEffort size="sm" onUserChange={() => setPicked(true)} />
+    </div>
   )
 }

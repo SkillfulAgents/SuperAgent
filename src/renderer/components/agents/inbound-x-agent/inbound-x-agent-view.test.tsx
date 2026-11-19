@@ -105,22 +105,6 @@ describe('InboundXAgentView', () => {
     expect(screen.getByText(`You need User access to ${lacking} to change this.`)).toBeInTheDocument()
   })
 
-  it('leaves out an agent that can only read here, since it has no calls to switch', () => {
-    const { data } = mocks.useDetails()
-    mocks.useDetails.mockReturnValue({ data: { ...data, callers: [...data.callers, { slug: 'reader', displaySlug: 'reader', name: 'Reader', decision: 'allow', canAccess: true, canMessage: false }] }, isLoading: false, error: null })
-    renderWithProviders(<InboundXAgentView agentSlug="target" />)
-
-    expect(screen.getByTestId('inbound-x-agent-toggle-caller-a')).toBeInTheDocument()
-    expect(screen.queryByTestId('inbound-x-agent-toggle-reader')).toBeNull()
-  })
-
-  it('says no agent can call it when every listed agent can only read', () => {
-    mocks.useDetails.mockReturnValue({ data: { sessions: [], callers: [{ slug: 'reader', displaySlug: 'reader', name: 'Reader', decision: 'review', canAccess: true, canMessage: false }] }, isLoading: false, error: null })
-    renderWithProviders(<InboundXAgentView agentSlug="target" />)
-
-    expect(screen.getByText('No other agents can currently trigger this agent.')).toBeInTheDocument()
-  })
-
   it('lets someone who uses both agents change a caller', async () => {
     mocks.usesOnly = ['target', 'caller-a']
     renderWithProviders(<InboundXAgentView agentSlug="target" />)

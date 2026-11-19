@@ -878,6 +878,22 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryData(['webhook-relay'])).toEqual(status)
   })
 
+  it('llm_connections_changed refreshes every list of connections and the model catalog, not the rest of settings', () => {
+    const lists = [
+      ['model-catalog'],
+      ['settings', 'llm-connections', undefined, undefined, undefined],
+      ['settings', 'models', 'agent-a', null],
+    ]
+    for (const key of lists) queryClient.setQueryData(key, { connections: [] })
+    queryClient.setQueryData(['settings'], { app: { theme: 'dark' } })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'llm_connections_changed' })
+
+    for (const key of lists) expect(queryClient.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(true)
+    expect(queryClient.getQueryState(['settings'])?.isInvalidated).toBe(false)
+  })
+
   it('platform_notification pops an OS notification whose click opens the detail route', async () => {
     const { showOSNotification } = await import('@renderer/lib/os-notifications')
     vi.mocked(showOSNotification).mockClear()
@@ -1359,15 +1375,27 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
-  it("volume_attention_changed refreshes every agent's drives and the drive list, so a status pill follows sync", () => {
+  it("volume_attention_changed refreshes every agent's drives, the drive list and each drive's agents", () => {
     queryClient.setQueryData(['mounts', 'agent-a'], [])
     queryClient.setQueryData(['mounts', 'agent-b'], [])
     queryClient.setQueryData(['volume-definitions'], [])
+    queryClient.setQueryData(['volume-agents', 'v1'], [])
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
     simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
-    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
+    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions'], ['volume-agents', 'v1']]) {
       expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
     }
+  })
+
+  it.each([
+    { type: 'volume_access_changed' },
+    { type: 'volume_attention_changed', accessChanged: true },
+  ])('rechecks cached drive files and invite candidates after $type changes access', (event) => {
+    const keys = [['volume-files', 'v1'], ['volume-owner-candidates', 'v1']]
+    for (const key of keys) queryClient.setQueryData(key, [])
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), event)
+    for (const key of keys) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
   })
 
   it('agent_created invalidates visible agents and personal roles together', () => {

@@ -21,7 +21,11 @@ export default defineConfig({
       rollupOptions: {
         external: ['better-sqlite3', 'ws', 'electron-updater'],
         input: {
-          index: path.resolve(__dirname, 'src/main/index.ts'),
+          // `index` is the stub Electron starts (package.json `main`): it turns
+          // V8's compile cache on, then requires `main`, the app itself. Two
+          // files, because the cache only covers modules loaded after it is on.
+          index: path.resolve(__dirname, 'src/main/entry.ts'),
+          main: path.resolve(__dirname, 'src/main/index.ts'),
           'heic-preview-worker': path.resolve(__dirname, 'src/api/routes/heic-preview-worker.mjs'),
         },
         output: {

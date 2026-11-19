@@ -1,10 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Bot } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { useInviteCandidates } from '@renderer/hooks/use-invite-candidates'
 import type { AgentAvatar as AgentAvatarData } from '@shared/lib/types/agent-avatar'
 import { cn } from '@shared/lib/utils/cn'
 import { apiFetch } from '@renderer/lib/api'
-import type { InviteCandidate } from '@shared/lib/team-directory/candidate-schema'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
 import { toast } from 'sonner'
 import { NotOnGamutBadge } from '@renderer/components/agents/not-on-gamut-badge'
@@ -50,23 +49,8 @@ function useMentionCandidates({ agentSlug = '', members, agents }: ChipContext, 
   const { user, isAuthMode, isAdmin, canAdminAgent } = useUser()
   const canShare = isAuthMode && (isAdmin || canAdminAgent(agentSlug))
 
-  const [searched, setSearched] = useState(query)
-  useEffect(() => {
-    const timer = setTimeout(() => setSearched(query.trim()), 150)
-    return () => clearTimeout(timer)
-  }, [query])
-  // The share popover's own search: people the agent could be shared with.
-  const { data: outsiders } = useQuery<InviteCandidate[]>({
-    queryKey: ['agent-invite-candidates', agentSlug, searched],
-    queryFn: async () => {
-      const qs = searched ? `?q=${encodeURIComponent(searched)}` : ''
-      const res = await apiFetch(`/api/agents/${agentSlug}/access/search-users${qs}`)
-      if (!res.ok) return []
-      return res.json()
-    },
-    enabled: canShare,
-    placeholderData: (previous) => previous,
-  })
+  const search = useInviteCandidates({ kind: 'agent', id: agentSlug }, query, canShare)
+  const outsiders = canShare ? search.data : undefined
 
   return useMemo(() => {
     const lowerQuery = query.toLowerCase()

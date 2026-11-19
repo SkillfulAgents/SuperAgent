@@ -9,7 +9,7 @@
  * the app, upload API, PDF.js worker and rendered PDF are real.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -21,6 +21,7 @@ import { CreatedAgentSchema } from './schemas'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appRoot = resolve(process.env.PDF_E2E_APP_ROOT || repoRoot)
+const artifacts = resolve(repoRoot, 'test-results/electron-pdf')
 const title = 'Quarterly revenue review'
 
 async function expectPage(page: Page, number: number) {
@@ -53,6 +54,8 @@ async function main() {
     ELECTRON_RENDERER_URL: '',
   }
   let app: ElectronApplication | undefined
+  // The window, for a screenshot when anything below fails.
+  let failurePage: Page | undefined
   const logs: string[] = []
   try {
     // Existing setup uses the Docker mock and opts out of analytics. In
@@ -68,6 +71,7 @@ async function main() {
     app.process().stderr?.on('data', chunk => logs.push(String(chunk)))
     await expect.poll(() => app!.windows().find(window => window.url().includes('/renderer/index.html'))?.url(), { timeout: 60_000 }).toBeTruthy()
     const page = app.windows().find(window => window.url().includes('/renderer/index.html'))!
+    failurePage = page
     page.setDefaultTimeout(30_000)
     expect(page.url()).toMatch(/^file:\/\//)
     expect(fileURLToPath(new URL(page.url()).href.split('#')[0])).toBe(join(appRoot, 'dist/renderer/index.html'))
@@ -104,7 +108,9 @@ async function main() {
     // A named agent avoids the unrelated AI naming flow. Model execution is
     // mocked; this test needs the real upload/file-preview path, not naming.
     await page.goto(`${pathToFileURL(join(appRoot, 'dist/renderer/index.html')).href}#/agents/${encodeURIComponent(slug)}`)
-    await expect(page.getByTestId('agent-settings-button')).toBeVisible()
+    // expect() keeps its own 5 s default, not the page's 30 s: a freshly launched app on a busy
+    // CI runner missed it here in about one run in eleven.
+    await expect(page.getByTestId('agent-settings-button')).toBeVisible({ timeout: 30_000 })
     const session = new SessionPage(page)
     await session.sendMessage('hello')
     await session.waitForResponse(30_000)
@@ -163,6 +169,12 @@ async function main() {
     console.log('PASS page navigation and pane reopen preserve the page and render again')
   } catch (error) {
     console.error(logs.join('').slice(-8_000))
+    if (failurePage && !failurePage.isClosed()) {
+      mkdirSync(artifacts, { recursive: true })
+      await failurePage.screenshot({ path: join(artifacts, 'failed.png'), fullPage: true }).catch(screenshotError => {
+        console.error('Could not capture Electron failure screenshot:', screenshotError)
+      })
+    }
     throw error
   } finally {
     try {

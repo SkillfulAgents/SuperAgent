@@ -1,4 +1,5 @@
-import { Fragment, type CSSProperties, type ReactNode } from 'react'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import type { MemberAgent } from '@shared/lib/types/agent-sharing'
 import { cn } from '@shared/lib/utils/cn'
 import type { UserSummary } from '@shared/lib/user-profile-schema'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
@@ -14,22 +15,15 @@ function cutout(face: number, overlap: number, next: number, gap: number) {
   return { maskImage: `radial-gradient(circle at ${face - overlap + next / 2}px 50%, transparent ${radius}px, #000 ${radius + 0.5}px)` }
 }
 
-/** A face that is not a person's (an agent's orb): drawn by the caller at the stack's size, overlap and cut-out. */
-export interface StackFace {
-  key: string
-  render: (face: { size: number; className: string; style?: CSSProperties }) => ReactNode
-}
-
 /**
  * Overlapping faces, cut out rather than ringed so any row fill shows
  * between them. Decorative: the caller names the people.
  */
-export function UserAvatarStack({ users, others = [], count = users.length + others.length, maxFaces = 4, size = 'sm', className, overflowClassName, overflowTestId }: {
+export function UserAvatarStack({ users, agents = [], count = users.length + agents.length, maxFaces = 4, size = 'sm', className, overflowClassName, overflowTestId }: {
   /** At least the faces to show; more are ignored. */
   users: readonly UserSummary[]
-  /** Faces that alternate with the people. */
-  others?: readonly StackFace[]
-  /** Everyone the stack stands for, when that is more than `users` and `others`. */
+  agents?: readonly MemberAgent[]
+  /** Everyone the stack stands for, when that is more than the supplied faces. */
   count?: number
   /** Total circle limit, including the overflow circle when needed. */
   maxFaces?: number
@@ -41,24 +35,23 @@ export function UserAvatarStack({ users, others = [], count = users.length + oth
 }) {
   const circleLimit = Math.max(1, maxFaces)
   const v = SIZES[size]
-  const people = users.map((user): StackFace => ({ key: `user:${user.id}`, render: (face) => <UserAvatar user={user} {...face} /> }))
-  // People and the other faces alternate, so an agent member reads like a person.
-  const faces: StackFace[] = Array.from({ length: Math.max(people.length, others.length) }, (_, i) => [people[i], others[i]])
-    .flat()
-    .filter((face): face is StackFace => face !== undefined)
-    .slice(0, count > circleLimit ? circleLimit - 1 : circleLimit)
+  const limit = count > circleLimit ? circleLimit - 1 : circleLimit
+  const faces: (UserSummary | MemberAgent)[] = []
+  for (let i = 0; faces.length < limit && i < Math.max(users.length, agents.length); i++) {
+    if (users[i]) faces.push(users[i])
+    if (agents[i] && faces.length < limit) faces.push(agents[i])
+  }
   const remaining = count - faces.length
   return (
     <span aria-hidden="true" className={cn('pointer-events-none flex items-center', className)}>
-      {faces.map((face, i) => (
-        <Fragment key={face.key}>
-          {face.render({
-            size: v.face,
-            className: i > 0 ? v.overlapClass : '',
-            style: i < faces.length - 1 ? cutout(v.face, v.overlap, v.face, v.gap) : remaining > 0 ? cutout(v.face, v.overlap, v.count, v.gap) : undefined,
-          })}
-        </Fragment>
-      ))}
+      {faces.map((face, i) => {
+        const overlap = cn(v.overlapClass, 'first:ml-0')
+        const next = i < faces.length - 1 ? v.face : remaining > 0 ? v.count : 0
+        const style = next ? cutout(v.face, v.overlap, next, v.gap) : undefined
+        return 'slug' in face
+          ? <span key={`agent:${face.slug}`} className={overlap} style={style}><AgentAvatar agent={face} size={v.face} still /></span>
+          : <UserAvatar key={face.id} user={face} size={v.face} className={overlap} style={style} />
+      })}
       {/* When the faces don't fit, the last circle gives the whole count
           rather than how many are hidden. It stretches into a pill past two
           digits, keeping its round left end under the cut-out. */}

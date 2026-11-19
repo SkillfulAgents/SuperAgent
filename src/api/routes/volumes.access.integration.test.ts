@@ -71,7 +71,7 @@ describe('/api/volumes: whose volume an id is', () => {
     // A drive no agent has attached, given to every agent read-only.
     const shared = await addMount('agent-b', 'local', { path: folder('shared') }, viewer)
     globalVolumeId = shared.volumeId
-    expect(await removeMount('agent-b', shared.id)).toBe(true)
+    expect(await removeMount('agent-b', shared.id, viewer)).toBe(true)
     await updateVolumeDefinition(globalVolumeId, { global: 'read' }, viewer)
   })
 

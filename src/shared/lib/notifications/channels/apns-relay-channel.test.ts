@@ -3,6 +3,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
   listDeliverableApnsDevices: vi.fn((): unknown[] => []),
+  // The auth-mode read: who is an active member is decided in its SQL, which
+  // push-recipients.integration.test.ts covers against a real database.
+  listDeliverableApnsDevicesForAgentMembers: vi.fn(
+    (_agentSlug: string, _recipientUserId?: string): unknown[] => []
+  ),
   deleteApnsDeviceById: vi.fn(),
   getApnsRelayConfig: vi.fn(
     (): { url: string | null; enabled: boolean } => ({
@@ -11,7 +16,7 @@ const mocks = vi.hoisted(() => ({
     })
   ),
   isAuthMode: vi.fn(() => false),
-  getUserSettings: vi.fn(() => ({
+  getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
       enabled: true,
       sessionComplete: true,
@@ -21,12 +26,14 @@ const mocks = vi.hoisted(() => ({
       notifyWhenUnfocused: false,
     },
   })),
-  getPushableAgentSlugs: vi.fn(async (_userId: string): Promise<string[]> => []),
+  // The batched read answers from the same per-user mock, so a test sets one.
+  getUserSettingsForUsers: vi.fn(async (_userIds: readonly string[]) => new Map<string, unknown>()),
   getSessionMetadata: vi.fn(async (): Promise<Record<string, unknown> | null> => null),
 }))
 
 vi.mock('../push/apns-device-service', () => ({
   listDeliverableApnsDevices: mocks.listDeliverableApnsDevices,
+  listDeliverableApnsDevicesForAgentMembers: mocks.listDeliverableApnsDevicesForAgentMembers,
   deleteApnsDeviceById: mocks.deleteApnsDeviceById,
 }))
 vi.mock('@shared/lib/config/settings', () => ({
@@ -37,9 +44,7 @@ vi.mock('@shared/lib/auth/mode', () => ({
 }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
-}))
-vi.mock('@shared/lib/services/notification-service', () => ({
-  getPushableAgentSlugs: mocks.getPushableAgentSlugs,
+  getUserSettingsForUsers: mocks.getUserSettingsForUsers,
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: mocks.getSessionMetadata,
@@ -105,7 +110,10 @@ beforeEach(() => {
   mocks.getApnsRelayConfig.mockReturnValue({ url: 'https://relay.example', enabled: true })
   mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice()])
   mocks.getSessionMetadata.mockResolvedValue(null)
-  mocks.getPushableAgentSlugs.mockResolvedValue([])
+  mocks.listDeliverableApnsDevicesForAgentMembers.mockReturnValue([])
+  mocks.getUserSettingsForUsers.mockImplementation(
+    async (userIds) => new Map(userIds.map((userId) => [userId, mocks.getUserSettings(userId)]))
+  )
   mocks.getUserSettings.mockReturnValue({
     notifications: {
       enabled: true,
@@ -293,10 +301,26 @@ describe('owner settings gate', () => {
     expect(mocks.getUserSettings).toHaveBeenCalledWith('local')
 
     mocks.isAuthMode.mockReturnValue(true)
-    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
-    mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice({ userId: 'user-a' })])
+    mocks.listDeliverableApnsDevicesForAgentMembers.mockReturnValue([makeDevice({ userId: 'user-a' })])
     await channel.deliver(makeEvent())
-    expect(mocks.getUserSettings).toHaveBeenCalledWith('user-a')
+    expect(mocks.getUserSettingsForUsers).toHaveBeenCalledWith(['user-a'])
+  })
+
+  it('reads settings only for owners whose device may show the alert, and not at all for a silent fan-out', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mocks.listDeliverableApnsDevicesForAgentMembers.mockReturnValue([
+      makeDevice({ userId: 'user-a' }),
+      makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
+    ])
+
+    await channel.deliver(makeEvent())
+    expect(sentPushes().map((p) => p.kind)).toEqual(['background', 'background'])
+    expect(mocks.getUserSettingsForUsers).not.toHaveBeenCalled()
+
+    mocks.getSessionMetadata.mockResolvedValue({ createdByDeviceId: 'family-2' })
+    await channel.deliver(makeEvent())
+    expect(mocks.getUserSettingsForUsers).toHaveBeenCalledTimes(1)
+    expect(mocks.getUserSettingsForUsers).toHaveBeenCalledWith(['user-b'])
   })
 })
 
@@ -305,41 +329,45 @@ describe('auth-mode agent access gate', () => {
     mocks.isAuthMode.mockReturnValue(true)
   })
 
-  it('skips owners without access to the event agent — silent pushes too', async () => {
+  it('sends only to the devices of the event agent’s members, never to the whole table — silent pushes too', async () => {
+    // Everyone's rows are in the table; only user-a is a member of agent-x.
     mocks.listDeliverableApnsDevices.mockReturnValue([
       makeDevice({ userId: 'user-a' }),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
+      makeDevice({ id: 'dev-row-3', token: 'c'.repeat(64), userId: null, mobileDeviceId: null }),
     ])
-    mocks.getPushableAgentSlugs.mockImplementation(async (userId: string) =>
-      userId === 'user-a' ? ['agent-x'] : ['agent-other']
-    )
+    mocks.listDeliverableApnsDevicesForAgentMembers.mockReturnValue([makeDevice({ userId: 'user-a' })])
 
     await channel.deliver(makeEvent())
 
+    expect(mocks.listDeliverableApnsDevicesForAgentMembers).toHaveBeenCalledWith('agent-x', undefined)
+    expect(mocks.listDeliverableApnsDevices).not.toHaveBeenCalled()
     const pushes = sentPushes()
     expect(pushes).toHaveLength(1)
     expect(pushes[0].deviceToken).toBe(TOKEN_A)
   })
 
-  it('never delivers to ownerless device rows in auth mode', async () => {
-    mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice({ userId: null })])
-
+  it('reads nothing more and sends nothing when no member has a device', async () => {
     await channel.deliver(makeEvent())
 
+    expect(mocks.getSessionMetadata).not.toHaveBeenCalled()
+    expect(mocks.getUserSettingsForUsers).not.toHaveBeenCalled()
     expect(mocks.fetch).not.toHaveBeenCalled()
   })
 
   it('a mention alerts every device of its recipient, and nobody else hears of it', async () => {
-    mocks.listDeliverableApnsDevices.mockReturnValue([
-      makeDevice({ userId: 'user-a' }),
-      makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
-    ])
-    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.listDeliverableApnsDevicesForAgentMembers.mockImplementation((_agentSlug, recipientUserId) =>
+      [
+        makeDevice({ userId: 'user-a' }),
+        makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
+      ].filter((device) => recipientUserId === undefined || device.userId === recipientUserId)
+    )
     // user-a's phone started the session; the mention is for user-b.
     mocks.getSessionMetadata.mockResolvedValue({ createdByDeviceId: 'family-1' })
 
     await channel.deliver(makeEvent({ type: 'session_mention', title: 'Dana mentioned you', recipientUserId: 'user-b' }))
 
+    expect(mocks.listDeliverableApnsDevicesForAgentMembers).toHaveBeenCalledWith('agent-x', 'user-b')
     const pushes = sentPushes()
     expect(pushes.every((p) => p.deviceToken === TOKEN_B)).toBe(true)
     expect(pushes.map((p) => p.kind).sort()).toEqual(['alert', 'background'])

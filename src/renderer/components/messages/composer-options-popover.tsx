@@ -21,9 +21,11 @@ interface ComposerOptionsPopoverProps {
   footer?: ReactNode
   /** The trigger's size: 34px tall with 8px padding ('default'), or 28px with 6px ('sm'). */
   size?: 'default' | 'sm'
+  /** Called when the person picks a model, effort or speed; never for the picker's own snaps. */
+  onUserChange?: () => void
 }
 
-function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer, size = 'default' }: ComposerOptionsPopoverProps) {
+function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer, size = 'default', onUserChange }: ComposerOptionsPopoverProps) {
   const { effort, setEffort, speed, setSpeed, model, setModel, catalog, defaultModel, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
@@ -114,7 +116,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
             <ModelFamilyList
               catalog={catalog}
               value={model}
-              onPick={setModel}
+              onPick={(picked) => { onUserChange?.(); setModel(picked) }}
               webProvider={webProvider}
               modelLock={state.modelLock}
             />
@@ -122,7 +124,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
           </>
         )}
         {includeEffort && (
-          <EffortSection levels={visibleEfforts} value={effort} onChange={setEffort} />
+          <EffortSection levels={visibleEfforts} value={effort} onChange={(picked) => { onUserChange?.(); setEffort(picked) }} />
         )}
         {/* Speed rides the same gate as Effort: model-only pickers (summarizer)
             show neither. Hidden entirely for models whose serving path offers
@@ -131,7 +133,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
         {includeEffort && visibleSpeeds.length > 1 && (
           <>
             <Separator className="my-2 bg-border/50" />
-            <SpeedSection speeds={visibleSpeeds} value={speed} onChange={setSpeed} />
+            <SpeedSection speeds={visibleSpeeds} value={speed} onChange={(picked) => { onUserChange?.(); setSpeed(picked) }} />
           </>
         )}
         {footer}
