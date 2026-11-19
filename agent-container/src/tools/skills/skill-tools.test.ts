@@ -4,7 +4,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   tool: (name: string, description: string, _schema: unknown, execute: (args: unknown) => Promise<unknown>) => ({ name, description, execute }),
 }))
 
-import { installSkillTool, searchSkillsTool } from './skillset-skills'
+import { installSkillTool, searchSkillsTool } from './skill-tools'
 
 type ToolResult = { content: Array<{ text: string }>; isError?: boolean }
 const run = (toolDef: unknown, args: Record<string, unknown>) =>

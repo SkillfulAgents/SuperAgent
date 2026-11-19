@@ -14,7 +14,7 @@ import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
 import { createRequestRemoteMcpTool, type RemoteMcpInjectionTarget } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
-import { installSkillTool, searchSkillsTool } from './tools/skills/skillset-skills'
+import { installSkillTool, searchSkillsTool } from './tools/skills/skill-tools'
 import {
   scheduleTaskTool,
   listScheduledTasksTool,
