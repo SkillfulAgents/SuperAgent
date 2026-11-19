@@ -1827,6 +1827,8 @@ describe('MessageInput', () => {
       const { rerender } = renderWithProviders(
         <MessageInput key="new-1" sessionId={null} agentSlug="agent-1" onSessionCreated={onSessionCreated} />
       )
+      // A new session's editor takes the focus a frame after it mounts, which would close a picker opened before then.
+      await waitFor(() => expect(screen.getByTestId('message-input')).toHaveFocus())
       await user.click(screen.getByTestId('composer-options-trigger'))
       await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
 

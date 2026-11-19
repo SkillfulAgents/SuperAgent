@@ -63,6 +63,20 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const updateDraft = useCallback((patch: ComposerDraft) => {
     if (draftKey && !releasedRef.current) draftsStore.update(draftKey, patch)
   }, [draftKey, draftsStore])
+  // The key can change under a mounted composer: the session view adopts the
+  // session a new session's first message created. The draft goes with the
+  // composer. The effects below keep it under the new key as they keep any
+  // change; this takes it from the old one, where it would otherwise stay
+  // whenever the session was created without sending it (entering voice mode
+  // with a file attached) and come back in the next new session.
+  const keptUnderRef = useRef(draftKey)
+  useEffect(() => {
+    const previous = keptUnderRef.current
+    keptUnderRef.current = draftKey
+    if (previous && previous !== draftKey && !releasedRef.current) {
+      draftsStore.update(previous, { text: undefined, attachments: undefined })
+    }
+  }, [draftKey, draftsStore])
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
   const chips = useComposerChips(agentSlug)
@@ -192,13 +206,32 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
   const removeAttachment = queue.remove
   const clearQueue = queue.clear
-  // The kept chips go at once, not with the effect above: a send that navigates
-  // away unmounts this composer before that effect could write the empty list.
+  // Every chip, for a caller that resets the composer. From the store too, at
+  // once: the effect above only runs while this composer is mounted.
   const clearAttachments = useCallback(() => {
     updateDraft({ attachments: undefined })
     clearQueue()
   }, [clearQueue, updateDraft])
   const retryAttachment = queue.retry
+  // What a send takes out of the draft: the chips that went with it, and the
+  // text if it is still the text that went. The store is asked what it holds
+  // now, not assumed to hold what this composer last wrote. A home composer's
+  // send finishes when the session exists, and by then the person can have
+  // left the page, come back to another composer on the same draft, and added
+  // to it; that is theirs to send next. The kept chips go here, at once, and
+  // not with the effect above: a send that navigates away unmounts this
+  // composer before that effect could write the shorter list.
+  const clearSent = useCallback((sentText: string, sentIds: ReadonlySet<string>) => {
+    setMessage('')
+    if (draftKey && !releasedRef.current) {
+      const kept = draftsStore.get(draftKey)
+      draftsStore.update(draftKey, {
+        ...(kept?.text === sentText ? { text: undefined } : {}),
+        attachments: kept?.attachments?.filter((a) => !sentIds.has(a.id)),
+      })
+    }
+    clearQueue()
+  }, [clearQueue, draftKey, draftsStore])
 
   useEffect(() => {
     // The chips the draft came back with. An upload cut short by the unmount
@@ -341,12 +374,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       return [done.path]
     })
     content = appendAttachedFiles(content, [...references.map((r) => r.path), ...paths])
+    const sentIds = new Set(attachmentsRef.current.map((a) => a.id))
 
     if (!keepMessageUntilComplete) {
       // Clear input immediately so the message doesn't linger while the network request is in flight
-      setMessage('')
-      updateDraft({ text: undefined })
-      clearAttachments()
+      clearSent(message, sentIds)
     }
 
     const editableContent = content
@@ -367,11 +399,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     dictatedRef.current = false
-    if (keepMessageUntilComplete) {
-      setMessage('')
-      updateDraft({ text: undefined })
-      clearAttachments()
-    }
+    if (keepMessageUntilComplete) clearSent(message, sentIds)
     return true
   }
 

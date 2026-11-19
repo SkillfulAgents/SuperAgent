@@ -323,11 +323,12 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [connections, keepPicks])
 
   // What goes on the wire as the connection. Until the connections have loaded
-  // nothing can be checked against them, so a connection the person picked (it
-  // can only be one that came back with the draft) is sent as picked, with its
-  // model, rather than left out for the server to pair that model with the
-  // session's connection. The server checks it either way.
-  const sentLlmProviderId = effectiveLlmProviderId ?? (connectionData === undefined && connectionDirty.current ? llmProviderId : undefined)
+  // nothing can be checked against them, so the one this composer holds goes
+  // with its model as it is: a pick that came back with the draft, or the
+  // connection of the session a draft was moved out of (Start Fresh). Left
+  // out, the server would run that model on whichever connection is the
+  // default where the message lands. The server checks it either way.
+  const sentLlmProviderId = effectiveLlmProviderId ?? (connectionData === undefined ? llmProviderId : undefined)
 
   const markSubmitted = useCallback(
     (options: RuntimeOptions) => {
@@ -338,12 +339,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       if (stored) {
         const held: RuntimeOptions = { model, llmProviderId, effort, speed }
         const sent = (key: keyof RuntimeOptions) => options[key] !== undefined && stored[key] === held[key]
+        // A model and its connection are one pick: both go or neither does, so
+        // a connection picked since is not left without the model picked with
+        // it (two connections can offer the same model id). A model kept with
+        // no connection went out on the one this composer held. And a model
+        // that could not run went out as another: it has been sent all the same.
+        const sentModel = sent('model') && (stored.llmProviderId === undefined || stored.llmProviderId === held.llmProviderId)
         keepPicks({
           ...(sent('effort') ? { effort: undefined } : {}),
           ...(sent('speed') ? { speed: undefined } : {}),
-          // A model and its connection are one pick, and a model that could not
-          // run went out as another: either way it has been sent.
-          ...(sent('model') ? { model: undefined, ...(stored.llmProviderId === held.llmProviderId ? { llmProviderId: undefined } : {}) } : {}),
+          ...(sentModel ? { model: undefined, llmProviderId: undefined } : {}),
         })
       }
       if (options.llmProviderId === sentLlmProviderId) connectionDirty.current = false

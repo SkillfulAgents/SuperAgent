@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { renderHook, act, waitFor } from '@testing-library/react'
+import { render, renderHook, act, waitFor } from '@testing-library/react'
 import { createElement, StrictMode, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DraftsProvider, useDraftsStore, type ComposerDraft } from '@renderer/context/drafts-context'
@@ -182,6 +182,99 @@ describe('useMessageComposer drafted attachments (real queue)', () => {
 
     expect(onSubmit).toHaveBeenCalledOnce()
     expect(store.get(KEY)).toBeUndefined()
+  })
+
+  it('takes its draft along when its key changes under it', async () => {
+    // The session view adopts the session a new session's first message created, and its composer stays mounted.
+    // Entering voice mode creates that session without sending what is drafted, so the draft is still owed.
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/a.txt' })
+    const { result, rerender } = renderHook(({ draftKey }: { draftKey: string }) => ({
+      store: useDraftsStore(),
+      composer: useMessageComposer({ agentSlug: 'agent-a', uploadFile, uploadFolder: vi.fn(), onSubmit: vi.fn(), draftKey }),
+    }), { wrapper: createWrapper(), initialProps: { draftKey: 'new-session:agent-a' } })
+    act(() => {
+      result.current.composer.setMessage('still to send')
+      result.current.composer.addFiles([{ file: text('a.txt') }])
+    })
+    await waitFor(() => expect(upload(result.current.store.get('new-session:agent-a')?.attachments?.[0])).toMatchObject({ status: 'done' }))
+
+    rerender({ draftKey: 'session:s-1' })
+
+    expect(result.current.store.get('session:s-1')).toMatchObject({ text: 'still to send', attachments: [{ upload: { status: 'done' } }] })
+    // Moved, not copied: the next new session does not start with it.
+    expect(result.current.store.get('new-session:agent-a')).toBeUndefined()
+    expect(uploadFile).toHaveBeenCalledTimes(1)
+  })
+
+  describe('a send that finishes after its composer was left', () => {
+    // One store, and a composer on KEY that can be unmounted and mounted again: leaving the page and coming back.
+    function renderLeavable(draft: ComposerDraft, options: Omit<Parameters<typeof useMessageComposer>[0], 'draftKey'>) {
+      const latest: { store?: ReturnType<typeof useDraftsStore>; composer?: ReturnType<typeof useMessageComposer> } = {}
+      function Seed({ children }: { children: React.ReactNode }) {
+        const store = useDraftsStore()
+        useState(() => store.set(KEY, draft))
+        return children
+      }
+      function Composer() {
+        latest.store = useDraftsStore()
+        latest.composer = useMessageComposer({ ...options, draftKey: KEY })
+        return null
+      }
+      const Wrapper = createWrapper()
+      let mount = 0
+      const tree = () => createElement(Wrapper, null, createElement(Seed, null, createElement(Composer, { key: mount })))
+      const view = render(tree())
+      return {
+        latest: latest as Required<typeof latest>,
+        leaveAndComeBack: () => {
+          mount += 1
+          view.rerender(tree())
+        },
+      }
+    }
+
+    const sentChip: Attachment = { type: 'file', id: 'sent', file: text('sent.txt'), upload: { status: 'done', path: '/workspace/sent.txt', agentSlug: 'agent-a' } }
+
+    async function sendThenComeBack() {
+      let finish!: () => void
+      const onSubmit = vi.fn(() => new Promise<void>((resolve) => { finish = resolve }))
+      const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/later.txt' })
+      const view = renderLeavable({ text: 'first message', attachments: [sentChip] }, {
+        agentSlug: 'agent-a',
+        uploadFile,
+        uploadFolder: vi.fn(),
+        onSubmit,
+        // Agent Home: the draft stays until the session exists.
+        keepMessageUntilComplete: true,
+      })
+      let sending!: Promise<boolean>
+      await act(async () => { sending = view.latest.composer.submitMessage('first message') })
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce())
+      view.leaveAndComeBack()
+      return { view, finishSend: () => act(async () => { finish(); await sending }) }
+    }
+
+    it('leaves a file attached since, and the text as edited since', async () => {
+      const { view, finishSend } = await sendThenComeBack()
+      act(() => {
+        view.latest.composer.setMessage('first message, and one more thing')
+        view.latest.composer.addFiles([{ file: text('later.txt') }])
+      })
+      await waitFor(() => expect(upload(view.latest.store.get(KEY)?.attachments?.[1])).toMatchObject({ status: 'done' }))
+
+      await finishSend()
+
+      const kept = view.latest.store.get(KEY)
+      expect(kept?.text).toBe('first message, and one more thing')
+      expect(kept?.attachments).toHaveLength(1)
+      expect(kept?.attachments?.[0]).toMatchObject({ file: { name: 'later.txt' }, upload: { status: 'done' } })
+    })
+
+    it('takes what it sent when nothing was added since', async () => {
+      const { view, finishSend } = await sendThenComeBack()
+      await finishSend()
+      expect(view.latest.store.get(KEY)).toBeUndefined()
+    })
   })
 
   it('stops keeping the draft once it has been released to another composer', async () => {

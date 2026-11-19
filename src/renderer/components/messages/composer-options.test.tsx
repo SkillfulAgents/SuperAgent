@@ -555,11 +555,33 @@ describe('picks kept with the composer draft', () => {
     const sentFrom = latest.options
     const sent = sentFrom.toRuntimeOptions()
 
+    // The connection picked since has the same model id: the pick is the pair, and the pair is not the one sent.
     remount()
-    act(() => latest.options.setModel('global-default'))
     act(() => latest.options.setConnection?.('global'))
+    expect(latest.store.get(KEY)?.options).toEqual({ llmProviderId: 'global', model: 'same' })
     act(() => sentFrom.markSubmitted(sent))
 
-    expect(latest.store.get(KEY)?.options).toMatchObject({ llmProviderId: 'global' })
+    expect(latest.store.get(KEY)?.options).toEqual({ llmProviderId: 'global', model: 'same' })
+    remount()
+    expect(latest.options.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+  })
+
+  it('lets go of a model picked before any connection was known, once it is sent on the session’s connection', () => {
+    const { latest, rerender } = renderDrafted(accountArgs)
+    act(() => latest.options.setModel('global-default'))
+    // No connection to pair it with yet, so only the model is kept.
+    expect(latest.store.get(KEY)).toEqual({ options: { model: 'global-default' } })
+
+    state.connections = bothConnections
+    rerender(accountArgs)
+    act(() => latest.options.markSubmitted(latest.options.toRuntimeOptions()))
+    expect(latest.store.get(KEY)).toBeUndefined()
+  })
+
+  it('sends the connection a session runs on with its model while the connections are still loading', () => {
+    // Start Fresh hands the home composer the session's model and connection; a send before the connections query
+    // answers must not go out as the model alone, for the server to run on whichever connection is the default.
+    const { result } = render({ initial: { llmProviderId: 'personal', model: 'same' } })
+    expect(result.current.toRuntimeOptions()).toEqual({ llmProviderId: 'personal', model: 'same' })
   })
 })
