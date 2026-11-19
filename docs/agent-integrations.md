@@ -205,6 +205,15 @@ those over by default. A provider whose setup is quicker for a person in their
 own browser says so in its `agentGuide` (Linear, GitHub): the agent hands those
 over unless asked to do them or its browser is already logged in.
 
+Before any of this, the agent finds a provider through `search_connection_options`
+(`/api/x-agent/connections/search`, `src/shared/lib/connection-catalog/`), which
+puts it in one entry with the user's connected-account toolkit and remote MCP
+server for the same service, marks what the agent already has, and carries the
+service's guidance on which to use. Members with one slug group themselves;
+`service-definitions.ts` groups the rest (one provider can serve several
+services, as the meeting bot does) and holds the guidance. `agentGuide` stays
+how to set a provider up; which way to choose belongs in the definition.
+
 Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
 credential panel, fields, feedback and actions. Providers supply their content and
 connection flow. An optional read-only `setup.describe` hook supplies app-creation

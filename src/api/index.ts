@@ -6,6 +6,7 @@ import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
 import xAgentRules from './routes/x-agent-rules'
 import xAgentIntegrations from './routes/x-agent-integrations'
+import xAgentConnections from './routes/x-agent-connections'
 import xAgentMeetings from './routes/x-agent-meetings'
 import xAgentSessions from './routes/x-agent-sessions'
 import webSearch from './routes/web-search'
@@ -230,6 +231,7 @@ app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/x-agent/integrations', xAgentIntegrations)
+app.route('/api/x-agent/connections', xAgentConnections)
 app.route('/api/x-agent/meetings', xAgentMeetings)
 app.route('/api/x-agent/rules', xAgentRules)
 app.route('/api/x-agent/sessions', xAgentSessions)

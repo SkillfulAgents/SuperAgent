@@ -130,7 +130,7 @@ describe('shouldHideToolStatusInChat', () => {
     expect(shouldHideToolStatusInChat('')).toBe(false)
   })
 
-  it.each(['schedule_task', 'schedule_resume', 'deliver_session', 'search_remote_mcp_services'])(
+  it.each(['schedule_task', 'schedule_resume', 'deliver_session', 'search_connection_options'])(
     'keeps status lines for the non-request tool %s', (tool) => {
       expect(shouldHideToolStatusInChat(`mcp__user-input__${tool}`)).toBe(false)
     },

@@ -11,7 +11,7 @@ Managed OAuth with proxied, policy-controlled API access: tokens stay outside th
 
 Coverage spans Google Workspace, Microsoft, communication tools, developer tools, project management, CRM and support, storage and data, social, finance, and marketing/design/scheduling.
 
-**As the agent:** use `search_connected_account_services` for the available catalog with descriptions. Use it to answer "do you support X?" or to pick a slug for `request_connected_account`; examples in the system prompt are not an exhaustive list.
+**As the agent:** use `search_connection_options` for the available catalog with descriptions. It shows a service's connected account, remote MCP server and agent integration side by side, with guidance on which to use where a service has it. Use it to answer "do you support X?" or to pick a slug for `request_connected_account`; examples in the system prompt are not an exhaustive list.
 
 Some services ask for an account ID, tenant, or region on Composio's hosted connection page. These details do not require asking the user for an OAuth client ID or secret. Product editions matter: `notebook_lm` connects NotebookLM Enterprise in a Google Cloud project, `whatsapp` connects WhatsApp Business, and `facebook` connects Facebook Pages. Available API operations also depend on the permissions granted by the provider. Connecting an account does not automatically add a chat integration or a mounted storage volume.
 

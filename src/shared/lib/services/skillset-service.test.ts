@@ -144,6 +144,7 @@ import {
   getAgentSkillsWithStatus,
   refreshSkillset,
   refreshAgentSkills,
+  updateSkillFromSkillset,
   removeSkillsetCache,
   publishSkillToSkillset,
   getSkillPublishInfo,
@@ -1130,6 +1131,30 @@ Instructions here`
       // catches per-skillset so the overall call still resolves.
       await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
       expect(mockCaptureException).toHaveBeenCalled()
+    })
+  })
+
+  describe('updateSkillFromSkillset', () => {
+    beforeEach(() => {
+      mockExecFileAsNoOp()
+    })
+
+    it('copies nothing from outside the skillset cache when the install record and the skillset index name the same path that leaves it', async () => {
+      const outsidePath = '../../agents/other-agent/workspace/private/SKILL.md'
+      const otherAgentFolder = path.join(testDir, 'agents', 'other-agent', 'workspace', 'private')
+      await fs.promises.mkdir(otherAgentFolder, { recursive: true })
+      await fs.promises.writeFile(path.join(otherAgentFolder, 'SKILL.md'), '# Private', 'utf-8')
+      await fs.promises.writeFile(path.join(otherAgentFolder, 'notes.txt'), 'private notes', 'utf-8')
+      await createSkillsetCache('x', buildIndex({
+        skills: [{ name: 'x', path: outsidePath, description: '', version: '2.0.0' }],
+      }))
+      await createSkillDir('test-agent', 'x', '# x', buildMetadata({ skillsetId: 'x', skillPath: outsidePath }))
+
+      const result = await updateSkillFromSkillset('test-agent', 'x')
+
+      expect(result).toEqual({ updated: false })
+      const skillsDir = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills')
+      expect(fs.existsSync(path.join(skillsDir, 'private'))).toBe(false)
     })
   })
 

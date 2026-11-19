@@ -18,14 +18,16 @@ Adds support for a new connected-account service backed by Composio's managed OA
 
 The list below is exhaustive — every place where an existing peer toolkit (e.g. `googlecalendar`) appears, the new slug must appear too. Use it as a checklist.
 
-### 1. `src/shared/lib/composio/providers.ts`
-Add an entry to `SUPPORTED_PROVIDERS` (the master list shown in the Connections settings UI):
+### 1. `src/shared/lib/account-providers/service-catalog.ts`
+Add an entry to `SUPPORTED_PROVIDERS` (the master list shown in the Connections settings UI and searched by the agent):
 ```ts
 {
   slug: 'googleslides',
   displayName: 'Google Slides',
   icon: 'presentation',     // Lucide icon name; only a hint — actual rendering uses the SVG below
   description: 'Google presentations',
+  category: 'Google Workspace', // an existing category, so the agent's category search finds it
+  composioSlug: 'googleslides',
 },
 ```
 
@@ -72,8 +74,8 @@ Add an entry to `SCOPE_DESCRIPTIONS` with end-user-friendly text for **every** s
 },
 ```
 
-### 7. `agent-container/src/tools/search-connected-account-services.ts`
-Add the slug to the `SERVICES` array so the agent's `search_connected_account_services` tool can discover it.
+### 7. Agent discovery (no file)
+The agent's `search_connection_options` tool reads `SUPPORTED_PROVIDERS` from the host, so the entry from step 1 (with its `category`) is all it needs. If the service also has a remote MCP server or an agent integration under a different slug, or one way in should be preferred over another, add it to `src/shared/lib/connection-catalog/service-definitions.ts`.
 
 ### 8. `agent-container/src/system-prompt.md`
 Add the slug to the appropriate category in the "Supported services include" line in the Requesting Connected Accounts section. This is what the agent reads to know what's available without calling the search tool first.
