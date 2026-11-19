@@ -24,9 +24,9 @@ export { AgentDurableObject } from './objects/cloudflare-agent'
  * AgentDurableObject routes here (ctx.exports, by this name). The work they leave running keeps
  * the invocation alive.
  */
-export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string }> {
+export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string; agentName?: string }> {
   fetch(request: Request): Promise<Response> {
-    return runWithBackground(this.ctx, () => serveContainerCall(withoutClientAddress(request), nearStorage(this.env), this.ctx.props.containerId))
+    return runWithBackground(this.ctx, () => serveContainerCall(withoutClientAddress(request), nearStorage(this.env), this.ctx.props.containerId, this.ctx.props.agentName))
   }
 }
 

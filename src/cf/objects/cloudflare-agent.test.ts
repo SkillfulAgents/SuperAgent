@@ -45,7 +45,7 @@ function env(r2: ReturnType<typeof bucket>) {
   const agent = { workspaceRequest: vi.fn(async () => new Response(null, { status: 202 })) }
   const value = {
     WORKSPACES: r2,
-    AGENT: { idFromString: (id: string) => id, get: () => agent },
+    AGENT: { idFromString: (id: string) => id, get: vi.fn(() => agent), getByName: vi.fn(() => agent) },
   } as unknown as Env
   return { value, agent }
 }
@@ -99,6 +99,16 @@ describe('serveWorkspaceRequest', () => {
 
     expect(response.status).toBe(202)
     expect(agent.workspaceRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it("reaches the agent's object by its name when the container's route names it, so the object knows its agent", async () => {
+    const { value } = env(bucket(() => HASH))
+    const namespace = value.AGENT as unknown as { get: ReturnType<typeof vi.fn>; getByName: ReturnType<typeof vi.fn> }
+
+    await serveWorkspaceRequest(new Request('http://workspace.internal/changes', { method: 'POST', body: '{"entries":[],"removed":[]}' }), value, OBJECT, 'sales')
+
+    expect(namespace.getByName).toHaveBeenCalledWith('sales')
+    expect(namespace.get).not.toHaveBeenCalled()
   })
 })
 

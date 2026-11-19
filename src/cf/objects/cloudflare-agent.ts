@@ -92,7 +92,7 @@ const IDLE_CHECK_RETRY_MAX_MS = 15 * 60_000
  * never through this object: it keeps only the file list, so a large save neither fills its
  * memory nor holds its one thread.
  */
-export async function serveWorkspaceRequest(request: Request, env: Env, objectId: string): Promise<Response> {
+export async function serveWorkspaceRequest(request: Request, env: Env, objectId: string, agentName?: string): Promise<Response> {
   const { pathname } = new URL(request.url)
   if (pathname === '/warm' && request.method === 'GET') return new Response(null, { status: 204 })
   const hash = BLOB.exec(pathname)?.[1]
@@ -115,7 +115,9 @@ export async function serveWorkspaceRequest(request: Request, env: Env, objectId
       return new Response('the file changed since it was scanned', { status: 409 })
     }
   }
-  return env.AGENT.get(env.AGENT.idFromString(objectId)).workspaceRequest(request)
+  // By name, so the object knows its agent: one reached by id has no name. A container routed before names were passed has only the id.
+  const agent = agentName ? env.AGENT.getByName(agentName) : env.AGENT.get(env.AGENT.idFromString(objectId))
+  return agent.workspaceRequest(request)
 }
 
 /** The container's calls to the host (proxy, host tools, bootstrap): the API, in the Worker. */
@@ -127,10 +129,10 @@ async function serveHostRequest(request: Request, env: Env): Promise<Response> {
 }
 
 /** A container's call to one of this deploy's hosts (AgentContainerOutbound, in the Worker). */
-export function serveContainerCall(request: Request, env: Env, containerId: string): Promise<Response> {
+export function serveContainerCall(request: Request, env: Env, containerId: string, agentName?: string): Promise<Response> {
   const { hostname } = new URL(request.url)
   if (hostname === HOST) return serveHostRequest(request, env)
-  if (hostname === WORKSPACE) return serveWorkspaceRequest(request, env, containerId)
+  if (hostname === WORKSPACE) return serveWorkspaceRequest(request, env, containerId, agentName)
   return Promise.resolve(new Response(null, { status: 404 }))
 }
 
@@ -635,7 +637,7 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   private async routeContainerCalls(): Promise<void> {
-    const outbound = this.ctx.exports.AgentContainerOutbound({ props: { containerId: this.ctx.id.toString() } })
+    const outbound = this.ctx.exports.AgentContainerOutbound({ props: { containerId: this.ctx.id.toString(), agentName: this.agentSlug() } })
     for (const host of [HOST, WORKSPACE]) await this.container.interceptOutboundHttp(host, outbound)
   }
 
