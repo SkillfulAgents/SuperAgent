@@ -57,7 +57,7 @@ describe('x-agent-policy-service', () => {
       const time = new Date()
       await testDb.insert(volumeDefinitions).values({
         id: 'team-drive', name: 'Team Brain', type: 'local', config: '{}',
-        globalAccess: 'read', createdAt: time, updatedAt: time,
+        visibility: 'public', globalAccess: 'read', createdAt: time, updatedAt: time,
       }).run()
       expect(await evaluate('new-agent', 'invoke', 'brain')).toBe('allow')
       expect(await evaluate('new-agent', 'read', 'brain')).toBe('review')
