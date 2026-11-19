@@ -5,6 +5,8 @@ import { useRef, useState } from 'react'
 import { useUploadQueue, type UploadQueueOptions } from './use-upload-queue'
 import type { Attachment, FileAttachment, FolderAttachment } from '@renderer/components/messages/attachment-preview'
 import { zipFolderFiles } from '@renderer/lib/file-utils'
+import { HttpError } from '@renderer/lib/http-error'
+import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
 
 vi.mock('@renderer/lib/error-reporting', () => ({ captureRendererException: vi.fn() }))
 vi.mock('@renderer/lib/file-utils', () => ({
@@ -28,7 +30,7 @@ function folderAttachment(id: string, extras: Partial<FolderAttachment> = {}): F
 
 // Mount chips have no `upload`; narrow before reading it so the assertions typecheck.
 function uploadOf(a: Attachment | undefined) {
-  return a && a.type !== 'mount' ? a.upload : undefined
+  return a && (a.type === 'file' || a.type === 'folder') ? a.upload : undefined
 }
 
 // Drives real attachment state so the queue's ref reads what the UI would.
@@ -79,6 +81,34 @@ describe('useUploadQueue', () => {
     expect(uploadOf(result.current.attachments[1])?.status).toBe('done')
   })
 
+  it('uses the uploaded inline URL to preview a HEIC attachment', async () => {
+    const attachment: FileAttachment = {
+      type: 'file',
+      id: 'photo',
+      file: new File(['heic'], 'photo.heic', { type: 'image/heic' }),
+    }
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/uploads/photo-1.heic' })
+    const { result } = renderHook(() => useHarness(uploadFile, [attachment]))
+
+    await act(async () => { result.current.queue.enqueue(attachment) })
+
+    expect(result.current.attachments[0]).toMatchObject({
+      preview: expect.stringContaining('/api/agents/agent-a/files/uploads/photo-1.heic?inline=true'),
+    })
+  })
+
+  it('keeps an oversized HEIC attachment as a file chip after upload', async () => {
+    const file = new File(['heic'], 'photo.heic', { type: 'image/heic' })
+    Object.defineProperty(file, 'size', { value: HEIC_PREVIEW_MAX_SOURCE_BYTES + 1 })
+    const attachment: FileAttachment = { type: 'file', id: 'photo', file }
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/uploads/photo-1.heic' })
+    const { result } = renderHook(() => useHarness(uploadFile, [attachment]))
+
+    await act(async () => { result.current.queue.enqueue(attachment) })
+
+    expect(result.current.attachments[0]).toHaveProperty('preview', undefined)
+  })
+
   it('a rejection sets error, clears upload, and the next chip still starts', async () => {
     const uploadFile = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({ path: '/b' })
     const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a'), fileAttachment('b')]))
@@ -94,6 +124,17 @@ describe('useUploadQueue', () => {
     const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')]))
     await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
     await act(async () => { result.current.queue.remove('a') })
+    expect(result.current.attachments).toEqual([])
+  })
+
+  it('drops an upload that finishes after its chip was removed', async () => {
+    const d = deferred<{ path: string }>()
+    const uploadFile = vi.fn().mockReturnValueOnce(d.promise)
+    const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')]))
+    await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
+    await act(async () => { result.current.queue.remove('a') })
+    await act(async () => { d.resolve({ path: '/a' }) })
+    expect(result.current.queue.pathFor('a')).toBeUndefined()
     expect(result.current.attachments).toEqual([])
   })
 
@@ -127,6 +168,44 @@ describe('useUploadQueue', () => {
     await act(async () => { outcome = await result.current.queue.retryAndWait() })
     expect(outcome).toEqual({ ok: false })
     expect(result.current.attachments[0].error).toBe('boom')
+  })
+
+  it('waitIdle reports a failure that arrives while the caller is waiting without retrying it', async () => {
+    const d = deferred<{ path: string }>()
+    const uploadFile = vi.fn().mockReturnValueOnce(d.promise)
+    const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')]))
+    await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
+    await act(async () => {
+      const waiting = result.current.queue.waitIdle()
+      d.reject(new Error('offline'))
+      expect(await waiting).toEqual({ ok: false })
+    })
+    expect(uploadFile).toHaveBeenCalledTimes(1)
+    expect(result.current.attachments[0]).toMatchObject({ error: 'offline', errorRetryable: true })
+    await act(async () => { result.current.queue.remove('a') })
+    expect(await result.current.queue.waitIdle()).toEqual({ ok: true })
+  })
+
+  it.each([409, 413])('keeps an HTTP %i failure for removal without retrying on submit or a retry callback', async (status) => {
+    const uploadFile = vi.fn().mockRejectedValue(new HttpError(status, 'Upload rejected'))
+    const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')]))
+    await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
+    await act(async () => {
+      result.current.queue.retry('a')
+      expect(await result.current.queue.retryAndWait()).toEqual({ ok: false })
+    })
+    expect(uploadFile).toHaveBeenCalledTimes(1)
+    expect(result.current.attachments[0]).toMatchObject({ error: 'Upload rejected', errorRetryable: false })
+  })
+
+  it.each([408, 429, 503])('allows retrying an HTTP %i upload failure', async (status) => {
+    const uploadFile = vi.fn().mockRejectedValueOnce(new HttpError(status)).mockResolvedValueOnce({ path: '/a' })
+    const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')]))
+    await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
+    expect(result.current.attachments[0]).toMatchObject({ errorRetryable: true })
+    await act(async () => { expect(await result.current.queue.retryAndWait()).toEqual({ ok: true }) })
+    expect(uploadFile).toHaveBeenCalledTimes(2)
+    expect(uploadOf(result.current.attachments[0])?.path).toBe('/a')
   })
 
   it('clear aborts the in-flight upload', async () => {

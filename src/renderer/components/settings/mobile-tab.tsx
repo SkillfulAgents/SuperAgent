@@ -5,6 +5,7 @@ import { ExternalLink, Loader2, QrCode, RefreshCw, Smartphone, Trash2 } from 'lu
 import { apiFetch } from '@renderer/lib/api'
 import { getRemoteDeploymentUrl, targetIsRemote } from '@renderer/lib/api-target'
 import { openExternalUrl } from '@renderer/lib/open-external'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils'
 import { Label } from '@renderer/components/ui/label'
@@ -28,6 +29,8 @@ interface MobileDevice {
 /** Mint interval headroom: re-mint while the QR is visible ~60s before expiry. */
 const REMINT_BEFORE_EXPIRY_MS = 60 * 1000
 
+const APP_STORE_URL = 'https://apps.apple.com/app/id6801340586'
+
 function buildDeepLink(pairing: PairingToken): string {
   return `gamut://connect?v=1&url=${encodeURIComponent(pairing.deploymentUrl)}&token=${pairing.token}`
 }
@@ -39,6 +42,23 @@ async function mintPairingToken(): Promise<PairingToken> {
     throw new Error(body?.error || 'Failed to create pairing code')
   }
   return res.json()
+}
+
+function AppStoreButton() {
+  const { track } = useAnalyticsTracking()
+  return (
+    <Button
+      variant="outline"
+      onClick={() => {
+        track('app_store_link_clicked', { surface: 'settings_mobile' })
+        void openExternalUrl(APP_STORE_URL)
+      }}
+      data-testid="mobile-app-store-link"
+    >
+      <ExternalLink className="h-4 w-4 mr-2" />
+      Get the iOS app
+    </Button>
+  )
 }
 
 // --- QR pairing card ---
@@ -101,17 +121,20 @@ function PairingQrCard() {
       )}
 
       {!pairing ? (
-        <Button onClick={() => void mint()} disabled={minting} data-testid="mobile-pairing-mint">
-          {minting ? (
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <QrCode className="h-4 w-4 mr-2" />
-          )}
-          Show pairing code
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => void mint()} disabled={minting} data-testid="mobile-pairing-mint">
+            {minting ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <QrCode className="h-4 w-4 mr-2" />
+            )}
+            Show pairing code
+          </Button>
+          <AppStoreButton />
+        </div>
       ) : (
         <div className="space-y-3">
-          <div className="inline-flex flex-col items-center gap-2 rounded-lg border p-4 bg-white">
+          <div className="inline-flex flex-col items-center gap-2 rounded-card border p-4 bg-white">
             {deepLink && <QRCode value={deepLink} size={192} />}
           </div>
           <p className="text-xs text-muted-foreground">
@@ -201,15 +224,18 @@ function PairInBrowserCard() {
         Pairing a phone needs you to sign in to the cloud workspace directly. Open it in your
         browser and pair from Settings → Mobile there.
       </p>
-      {deploymentUrl && (
-        <Button
-          onClick={() => void openExternalUrl(`${deploymentUrl}/settings/mobile`)}
-          data-testid="mobile-pairing-open-browser"
-        >
-          <ExternalLink className="h-4 w-4 mr-2" />
-          Open in browser
-        </Button>
-      )}
+      <div className="flex flex-wrap gap-2">
+        {deploymentUrl && (
+          <Button
+            onClick={() => void openExternalUrl(`${deploymentUrl}/settings/mobile`)}
+            data-testid="mobile-pairing-open-browser"
+          >
+            <ExternalLink className="h-4 w-4 mr-2" />
+            Open in browser
+          </Button>
+        )}
+        <AppStoreButton />
+      </div>
     </div>
   )
 }
@@ -285,7 +311,7 @@ function PairedDevicesList() {
           <AlertDescription>{revokeError}</AlertDescription>
         </Alert>
       )}
-      <div className="rounded-md border overflow-x-auto">
+      <div className="rounded-card border overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
@@ -304,7 +330,7 @@ function PairedDevicesList() {
                     <Smartphone className="h-4 w-4 text-muted-foreground" />
                     {device.deviceName || 'Mobile device'}
                     {device.isCurrent && (
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      <span className="rounded-item bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                         current
                       </span>
                     )}

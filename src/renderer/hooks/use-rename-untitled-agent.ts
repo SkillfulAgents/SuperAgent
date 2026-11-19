@@ -17,12 +17,12 @@ export function useRenameUntitledAgent() {
   return useMutation<ApiAgent | null, Error, { slug: string; prompt: string }>({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ slug, prompt }) => {
-      const name = await deriveAgentName(prompt)
+      const { name, description } = await deriveAgentName(prompt)
       if (!name) return null
       const res = await apiFetch(`/api/agents/${slug}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, description }),
       })
       if (!res.ok) throw new Error('Failed to rename agent')
       return res.json() as Promise<ApiAgent>

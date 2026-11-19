@@ -7,7 +7,7 @@ import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, Age
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { globalInstructionsSchema } from './global-instructions';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
-import { SessionPersistence } from './session-persistence';
+import { SessionPersistence, type SessionUpdate } from './session-persistence';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
@@ -21,6 +21,9 @@ import {
   type WarmProfile,
 } from './warm-profile';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
+import { knownPreloadToolsets } from './preload-toolsets';
+import { restoreSourceTimestamps } from './fork-timestamps';
+import { writeFileAtomic } from './atomic-file';
 
 interface SessionData {
   session: Session;
@@ -30,6 +33,9 @@ interface SessionData {
   // completion-wake window) — the only state a subprocess may be stopped in.
   settlement: SessionSettlementTracker;
   eviction: Promise<void> | null;
+  // Speculative typing keeps even threshold-0 sessions alive briefly, without
+  // promoting an automated session or marking it busy. Never persisted.
+  warmUntil?: number;
   // Identity of the CLI process currently backing this session, re-minted on
   // every replacement. The host mirrors our background-task bookkeeping and
   // needs to know when its copy belongs to a process that no longer exists;
@@ -71,6 +77,9 @@ const DEFAULT_UNDELIVERED_TURN_GRACE_MS = 60_000;
 const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
 const DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES = 0;
 const IDLE_EVICTION_POLL_MS = 30_000;
+// Covers the composer's 60s repeat interval, with room for a pause in typing.
+// No further warm request means the ordinary idle policy resumes after this.
+const DEFAULT_SESSION_WARM_GRACE_MS = 2 * 60_000;
 
 // Minutes → ms. < 0 disables that class; 0 = evict as soon as idle.
 // Parsed once at startup so misconfiguration is loud.
@@ -98,14 +107,6 @@ function formatIdleThreshold(ms: number): string {
   return `${Math.round(ms / 60_000)}m`;
 }
 
-/** Thrown by forkSession when the source is mid-turn. The route maps it to 409. */
-export class SessionBusyError extends Error {
-  constructor(sessionId: string) {
-    super(`Session ${sessionId} is currently running`);
-    this.name = 'SessionBusyError';
-  }
-}
-
 /** Reaped or missing transcript. The fork route maps this to the same JSON 404 as an unknown source. */
 export function isSdkSessionNotFound(error: unknown): boolean {
   if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
@@ -117,10 +118,12 @@ export class SessionManager extends EventEmitter {
   private sessions: Map<string, SessionData> = new Map();
   // In-flight resumes, keyed by session id — see resumeSession().
   private resuming: Map<string, Promise<SessionData | undefined>> = new Map();
+  private releasing = new Map<string, Promise<boolean>>();
   private baseWorkingDirectory: string;
   private persistence: SessionPersistence;
   private readonly idleEvictionMs: number;
   private readonly automatedIdleEvictionMs: number;
+  private readonly warmGraceMs: number;
   private readonly wakeGraceMs: number | undefined;
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // A CLI subprocess spawned ahead of demand, parked past its initialize
@@ -149,6 +152,7 @@ export class SessionManager extends EventEmitter {
     options?: {
       idleEvictionMs?: number;
       automatedIdleEvictionMs?: number;
+      warmGraceMs?: number;
       wakeGraceMs?: number;
       evictionPollMs?: number;
       prewarmEnabled?: boolean;
@@ -162,6 +166,7 @@ export class SessionManager extends EventEmitter {
     this.prewarmEnabled =
       options?.prewarmEnabled ?? !['0', 'false'].includes((process.env.SESSION_PREWARM ?? '').trim().toLowerCase());
     this.wakeGraceMs = options?.wakeGraceMs;
+    this.warmGraceMs = options?.warmGraceMs ?? DEFAULT_SESSION_WARM_GRACE_MS;
     this.undeliveredTurnGraceMs = options?.undeliveredTurnGraceMs ?? DEFAULT_UNDELIVERED_TURN_GRACE_MS;
     this.idleEvictionMs =
       options?.idleEvictionMs ??
@@ -208,8 +213,7 @@ export class SessionManager extends EventEmitter {
    * CLAUDE_CONFIG_DIR (`/workspace/.claude`), NOT from `~/.claude`, so the
    * image-baked settings.json under /home/claude/.claude is never consulted.
    * Without this, the CLI's default ~30-day cleanup deletes old session JSONL
-   * files on startup — they then linger in session-metadata.json (so they show
-   * in the nav) but fail to load because the transcript is gone.
+   * files on startup, and the sessions go from the app's list with them.
    *
    * Merges into any existing settings.json rather than clobbering it, so other
    * settings written by the CLI or a skill are preserved.
@@ -324,6 +328,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows,
         webSearchProvider: request.webSearchProvider,
         webFetchProvider: request.webFetchProvider,
+        availableIntegrationFamilies: request.availableIntegrationFamilies,
         maxOutputTokens: request.maxOutputTokens,
         maxThinkingTokens: request.maxThinkingTokens,
         maxTurns: request.maxTurns,
@@ -331,6 +336,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: request.customEnvVars,
         effort: request.effort,
         speed,
+        preloadToolsets: request.preloadToolsets,
         capabilityPolicies,
         globalInstructions,
       });
@@ -477,6 +483,7 @@ export class SessionManager extends EventEmitter {
       modelContextWindows,
       webSearchProvider: request.webSearchProvider,
       webFetchProvider: request.webFetchProvider,
+      availableIntegrationFamilies: request.availableIntegrationFamilies,
       maxOutputTokens: request.maxOutputTokens,
       maxThinkingTokens: request.maxThinkingTokens,
       maxTurns: request.maxTurns,
@@ -484,6 +491,7 @@ export class SessionManager extends EventEmitter {
       customEnvVars: request.customEnvVars,
       effort: request.effort,
       speed,
+      preloadToolsets: knownPreloadToolsets(request.preloadToolsets),
       capabilityPolicies,
       globalInstructions,
       metadata: request.metadata,
@@ -577,6 +585,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows: profile.modelContextWindows,
         webSearchProvider: profile.webSearchProvider,
         webFetchProvider: profile.webFetchProvider,
+        availableIntegrationFamilies: profile.availableIntegrationFamilies,
         maxOutputTokens: profile.maxOutputTokens,
         maxThinkingTokens: profile.maxThinkingTokens,
         maxTurns: profile.maxTurns,
@@ -584,6 +593,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: profile.customEnvVars,
         effort: profile.effort,
         speed: profile.speed,
+        preloadToolsets: profile.preloadToolsets,
         capabilityPolicies: profile.capabilityPolicies,
         globalInstructions: profile.globalInstructions,
       });
@@ -687,6 +697,9 @@ export class SessionManager extends EventEmitter {
     if (!persisted) {
       return undefined;
     }
+    // A successful host delete may outlive its final cleanup request. Never
+    // recreate its transcript from a retained resume record.
+    if (!this.retainedTranscriptExists(sessionId)) return undefined;
 
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
@@ -712,6 +725,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows: persisted.modelContextWindows,
         webSearchProvider: persisted.webSearchProvider,
         webFetchProvider: persisted.webFetchProvider,
+        availableIntegrationFamilies: persisted.availableIntegrationFamilies,
         maxOutputTokens: persisted.maxOutputTokens,
         maxThinkingTokens: persisted.maxThinkingTokens,
         maxTurns: persisted.maxTurns,
@@ -719,6 +733,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: persisted.customEnvVars,
         effort: persisted.effort,
         speed: persisted.speed,
+        preloadToolsets: persisted.preloadToolsets,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
         globalInstructions: persisted.globalInstructions,
@@ -784,7 +799,9 @@ export class SessionManager extends EventEmitter {
 
       // Start the process (which will resume the Claude session)
       // Note: slash commands are captured later when init event fires via WebSocket
-      if (!requiresConnectionRuntime) await process.start();
+      // A read/reconnect after release can attach, but only an explicit send
+      // may restart the CLI. Otherwise a viewer could race the host's unlink.
+      if (!requiresConnectionRuntime && !persisted.releasedForDeletion) await process.start();
 
       // Publish only once fully started — concurrent callers wait on the
       // resuming promise, never on a half-initialized entry. A failed start
@@ -809,6 +826,9 @@ export class SessionManager extends EventEmitter {
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
+    const releasing = this.releasing.get(sessionId);
+    if (releasing) await releasing;
+    if (!this.retainedTranscriptExists(sessionId)) return null;
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -823,16 +843,32 @@ export class SessionManager extends EventEmitter {
     return sessionData.session;
   }
 
-  async deleteSession(sessionId: string): Promise<boolean> {
+  /** Stop terminally, but preserve the resume record until the host removes its files. */
+  releaseSession(sessionId: string): Promise<boolean> {
+    return this.stopSession(sessionId, true);
+  }
+
+  private stopSession(sessionId: string, preserveResume: boolean): Promise<boolean> {
+    const pending = this.releasing.get(sessionId);
+    if (pending) return pending;
+    const released = this.performRelease(sessionId, preserveResume).finally(() => {
+      if (this.releasing.get(sessionId) === released) this.releasing.delete(sessionId);
+    });
+    this.releasing.set(sessionId, released);
+    return released;
+  }
+
+  private async performRelease(sessionId: string, preserveResume: boolean): Promise<boolean> {
+    // A resume that started before the release must be published and stopped
+    // too. Later readers/senders wait on `releasing` instead of reviving it.
+    await this.resuming.get(sessionId);
     const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) {
-      // A never-opened (cold) session lives only in the listing. Forget it
-      // there too — otherwise a rollback leaves a record pointing at a
-      // deleted transcript, with no GC path.
-      if (!this.persistence.getSession(sessionId)) return false;
-      this.persistence.deleteSession(sessionId);
-      return true;
-    }
+    const persisted = this.persistence.getSession(sessionId);
+    if (!sessionData && !persisted) return false;
+    // Checked and durable before disposal: a container restart must not warm
+    // this record into a file the host has since removed.
+    if (persisted && preserveResume) this.persistence.saveSessionChecked({ ...persisted, releasedForDeletion: true });
+    if (!sessionData) return true;
 
     // Release browser lock if this session owns it
     const released = releaseBrowserLock(sessionId);
@@ -843,6 +879,7 @@ export class SessionManager extends EventEmitter {
     // Stop the process terminally — dispose (not stop) so a straggler
     // interrupt/continuation can't revive a subprocess for a session that no
     // longer exists in this map (the reaper would never see it).
+    if (sessionData.eviction) await sessionData.eviction;
     await sessionData.process.dispose();
 
     // Clean up subscribers
@@ -851,11 +888,23 @@ export class SessionManager extends EventEmitter {
     // Remove from map
     this.sessions.delete(sessionId);
 
-    // Remove from persistence
+    return true;
+  }
+
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const existed = await this.stopSession(sessionId, false);
+    this.sessions.delete(sessionId);
     this.persistence.deleteSession(sessionId);
 
     console.log(`Deleted session ${sessionId}`);
-    return true;
+    return existed;
+  }
+
+  private retainedTranscriptExists(sessionId: string): boolean {
+    const persisted = this.persistence.getSession(sessionId);
+    if (!persisted?.releasedForDeletion) return true;
+    const project = persisted.workingDirectory.replace(/[/\\]+/g, '-');
+    return fs.existsSync(`${this.baseWorkingDirectory}/.claude/projects/${project}/${persisted.claudeSessionId}.jsonl`);
   }
 
   /**
@@ -867,16 +916,6 @@ export class SessionManager extends EventEmitter {
   async forkSession(sourceId: string): Promise<string | null> {
     const source = this.persistence.getSession(sourceId);
     if (!source) return null;
-
-    // A live process mid-turn is still appending to the transcript; refuse
-    // rather than copy a half-written turn. (The host checks its own view too;
-    // the residual window between this check and the SDK's read is accepted —
-    // the SDK drops a partial final line, so the fork is at worst one message
-    // short, never corrupt.)
-    const live = this.sessions.get(sourceId);
-    if (live && !live.settlement.isSettled()) {
-      throw new SessionBusyError(sourceId);
-    }
 
     // CLAUDE_CONFIG_DIR=/workspace/.claude + dir '/workspace' resolves to the
     // same projects dir the source lives in; the fork lands beside it.
@@ -892,6 +931,9 @@ export class SessionManager extends EventEmitter {
       if (isSdkSessionNotFound(error)) return null;
       throw error;
     }
+    await this.restoreForkTimestamps(source.workingDirectory, source.claudeSessionId, newId).catch((error) =>
+      console.error(`forkSession: timestamp restore for ${newId} failed (non-fatal)`, error),
+    );
 
     const now = new Date().toISOString();
     try {
@@ -930,9 +972,25 @@ export class SessionManager extends EventEmitter {
    * (tests never plant one; a first-run workspace has no projects dir yet).
    */
   private sourceTranscriptReaped(cwd: string, claudeSessionId: string): boolean {
-    const projectDir = `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+    const projectDir = this.projectDir(cwd);
     if (!fs.existsSync(projectDir)) return false;
     return !fs.existsSync(`${projectDir}/${claudeSessionId}.jsonl`);
+  }
+
+  private projectDir(cwd: string): string {
+    return `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+  }
+
+  /** The SDK writes the fork beside its source; see restoreSourceTimestamps. */
+  private async restoreForkTimestamps(cwd: string, sourceId: string, forkId: string): Promise<void> {
+    const dir = this.projectDir(cwd);
+    const forkPath = `${dir}/${forkId}.jsonl`;
+    const [source, original] = await Promise.all([
+      fs.promises.readFile(`${dir}/${sourceId}.jsonl`, 'utf-8'),
+      fs.promises.readFile(forkPath, 'utf-8'),
+    ]);
+    const updated = restoreSourceTimestamps(source, original);
+    if (updated !== original) await writeFileAtomic(forkPath, updated);
   }
 
   async sendMessage(
@@ -941,6 +999,9 @@ export class SessionManager extends EventEmitter {
     uuid?: UUID,
     options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
   ): Promise<void> {
+    const releasing = this.releasing.get(sessionId);
+    if (releasing) await releasing;
+    if (!this.retainedTranscriptExists(sessionId)) throw new Error(`Session ${sessionId} not found`);
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -965,39 +1026,78 @@ export class SessionManager extends EventEmitter {
     // host explicitly marks it as another automated turn (x-agent follow-up).
     // Human input promotes the session to the interactive eviction class so
     // the conversation doesn't pay a cold restart after every turn.
+    const persisted: SessionUpdate = {};
+    if (this.persistence.getSession(sessionId)?.releasedForDeletion) persisted.releasedForDeletion = false;
     if (expectsResponse && !options?.isAutomated && sessionData.session.metadata?.isAutomated) {
       console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
       sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
-      this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
+      persisted.metadata = sessionData.session.metadata;
     }
 
     // Update last activity
     sessionData.session.lastActivity = new Date();
-    this.persistence.updateLastActivity(sessionId);
+    persisted.lastActivity = sessionData.session.lastActivity.toISOString();
 
     if (options?.llmRuntime) {
       rememberConnectionRuntime(options.llmRuntime);
-      this.persistence.updateConnection(sessionId, options.llmRuntime.llmProviderId);
+      persisted.llmProviderId = options.llmRuntime.llmProviderId;
     }
     // Persist runtime-options changes so resume after eviction uses the latest values
-    if (options?.effort !== undefined) {
-      this.persistence.updateEffort(sessionId, options.effort);
-    }
-    if (options?.speed !== undefined) {
-      this.persistence.updateSpeed(sessionId, options.speed);
-    }
-    if (options?.model !== undefined) {
-      this.persistence.updateModel(sessionId, options.model);
-    }
-    if (options?.capabilityPolicies !== undefined) {
-      this.persistence.updateCapabilityPolicies(sessionId, options.capabilityPolicies);
-    }
-    if (options?.globalInstructions !== undefined) {
-      this.persistence.updateGlobalInstructions(sessionId, options.globalInstructions);
-    }
+    if (options?.effort !== undefined) persisted.effort = options.effort;
+    if (options?.speed !== undefined) persisted.speed = options.speed;
+    if (options?.model !== undefined) persisted.model = options.model;
+    if (options?.capabilityPolicies !== undefined) persisted.capabilityPolicies = options.capabilityPolicies;
+    if (options?.globalInstructions !== undefined) persisted.globalInstructions = options.globalInstructions;
+    this.persistence.updateSession(sessionId, persisted);
 
     // Send to Claude Code process (messages are stored via handleMessage)
     await sessionData.process.sendMessage(content, uuid, options);
+  }
+
+  /** Whether this container knows the session: live in memory, or persisted and resumable. */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId) || this.persistence.getSession(sessionId) !== null;
+  }
+
+  /**
+   * Pre-resume a session's CLI ahead of its next message: the host asks for
+   * this when a person starts typing into the session. A session that is not
+   * in memory is resumed from persistence; a cold process (idle-evicted, or a
+   * resume whose start waits for the first send) is restarted the way a cold
+   * send restarts it, but with no message queued, so that send skips the CLI
+   * spawn and `--resume`.
+   *
+   * Never marks the session busy or promotes an automated session. It
+   * restarts the idle clock and grants a bounded eviction grace period, even
+   * for threshold-0 sessions. If no message comes, normal idle eviction
+   * reclaims the process after the grace expires.
+   *
+   * - 'unknown': no such session
+   * - 'busy': a turn (or background work) is in flight; left alone
+   * - 'running': the process was already live (idle clock and grace renewed)
+   * - 'resumed': the process was cold and has been restarted
+   * - 'skipped': deleted or shutting down meanwhile, or a send took over
+   */
+  async warmSession(sessionId: string): Promise<'unknown' | 'busy' | 'running' | 'resumed' | 'skipped'> {
+    if (this.shuttingDown) return 'skipped';
+    if (this.releasing.has(sessionId) || this.persistence.getSession(sessionId)?.releasedForDeletion) return 'skipped';
+    let data = this.sessions.get(sessionId);
+    // Shared with a racing send through the resume dedup, like every resume.
+    const fromDisk = !data;
+    data ??= await this.resumeSession(sessionId);
+    if (!data) return 'unknown';
+    // A racing idle eviction may be closing the process: let it finish, then
+    // resume — the order a send into the same session takes.
+    if (data.eviction) await data.eviction;
+    if (this.shuttingDown || this.releasing.has(sessionId) || this.sessions.get(sessionId) !== data || this.persistence.getSession(sessionId)?.releasedForDeletion) return 'skipped';
+    if (!data.settlement.isSettled()) return 'busy';
+    // In memory only: the reaper reads this clock. The persisted timestamp is
+    // conversation activity, and a keystroke is not that.
+    data.session.lastActivity = new Date();
+    data.warmUntil = data.session.lastActivity.getTime() + this.warmGraceMs;
+    // A resume that needs no host credentials starts its process right away.
+    if (data.process.isRunning()) return fromDisk ? 'resumed' : 'running';
+    return (await data.process.warm()) ? 'resumed' : 'skipped';
   }
 
   /**
@@ -1162,6 +1262,7 @@ export class SessionManager extends EventEmitter {
       if (data.eviction) continue; // already evicting
       if (!data.settlement.isSettled(now)) continue;
       if (!data.process.isRunning()) continue; // already cold
+      if (data.warmUntil !== undefined && now < data.warmUntil) continue;
       const thresholdMs = this.idleThresholdMs(data);
       if (thresholdMs < 0) continue; // disabled for this class
       if (now - data.session.lastActivity.getTime() < thresholdMs) continue;

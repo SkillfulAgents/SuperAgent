@@ -4,7 +4,9 @@
  * Type definitions for file-based agent storage
  */
 
-import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
+import type { RuntimeOptions } from '../container/runtime-options'
+import type { SlashCommandInfo } from '../container/types'
+import type { LlmProviderId } from '../llm-provider/provider-types'
 
 // ============================================================================
 // Agent Roles
@@ -64,18 +66,14 @@ export interface UpdateAgentInput {
 // Session Types
 // ============================================================================
 
-/**
- * Session metadata stored in session-metadata.json
- */
+/** The context's size as the CLI counts it, against the window it auto-compacts at. */
 export interface SessionUsage {
-  inputTokens: number
-  outputTokens: number
-  cacheCreationInputTokens: number
-  cacheReadInputTokens: number
+  totalTokens: number
   contextWindow: number
 }
 
-export interface SessionMetadata {
+/** What the app keeps about a session, in the agent's session index. */
+export interface SessionMetadata extends RuntimeOptions {
   name?: string
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
@@ -119,14 +117,12 @@ export interface SessionMetadata {
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
-  // Last effort level used by the user on this session (seeds the composer on reload)
-  effort?: EffortLevel
-  // Last processing speed used by the user on this session (seeds the composer on reload)
-  speed?: SpeedLevel
-  // Last model used by the user on this session (seeds the composer on reload).
-  // Stored as the provider's pinned ID, not the family.
-  model?: string
-  llmProviderId?: string | null
+  // The inherited RuntimeOptions are the last ones the user used on this
+  // session; they seed the composer on reload. The model is the provider's
+  // pinned ID, not the family.
+  // Provider that produced each API-error message, keyed by transcript uuid,
+  // so the error keeps its own provider's copy after the session switches.
+  errorProviders?: Record<string, LlmProviderId>
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
@@ -152,6 +148,8 @@ export interface SessionMetadataMap {
   [sessionId: string]: SessionMetadata
 }
 
+export type SessionOrigin = 'user' | 'scheduled' | 'webhook' | 'integration' | 'agent' | 'widget-repair'
+
 /**
  * Session info derived from JSONL file + metadata
  */
@@ -161,8 +159,9 @@ export interface SessionInfo {
   name: string
   createdAt: Date
   lastActivityAt: Date
-  messageCount: number
   isActive?: boolean
+  /** Original source, preserved when an automated session becomes interactive. */
+  origin?: SessionOrigin
 }
 
 /**
@@ -197,6 +196,15 @@ export interface JsonlMessageEntry {
     interrupted: boolean
     isImage: boolean
     backgroundTaskId?: string
+    // Monitor's result: the id of the watch it started
+    taskId?: string
+    // TaskCreate's result: the task as saved. `description` is there from
+    // CLI 2.1.317 and can differ from the tool_use input when the CLI
+    // corrected the call or a PreToolUse hook changed it.
+    task?: { id?: string; subject?: string; description?: string }
+    // AskUserQuestion's result: per-question annotations (notes, preview, and
+    // from CLI 2.1.312 `unanswered` when the person didn't answer).
+    annotations?: Record<string, { unanswered?: string; notes?: string; preview?: string } | null>
     // Subagent-specific (present only on Task tool results)
     agentId?: string
     status?: string
@@ -290,6 +298,12 @@ export interface JsonlFileHistoryEntry {
  * Union type for all JSONL entry types
  */
 export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
+
+/** The CLI persists a mid-turn user prompt as a queued command attachment. */
+export function isQueuedUserPrompt(entry: JsonlEntry): entry is JsonlAttachmentEntry & { attachment: { prompt: string | ContentBlock[] } } {
+  return entry.type === 'attachment' && entry.attachment?.type === 'queued_command' &&
+    entry.attachment.commandMode === 'prompt' && !entry.attachment.isMeta && entry.attachment.prompt !== undefined
+}
 
 // ============================================================================
 // Session activity (working-indicator projection)

@@ -1,7 +1,8 @@
 import { z } from 'zod'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
+import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
@@ -86,6 +87,11 @@ const lenientBooleanRecord = z
  * stored map is lenient instead: it keeps a switch for an experiment that has
  * since been retired, and readers ignore it (see `experimentEnabled`).
  */
+/** The Team Brain page's saved Views are read leniently, so a malformed write would erase them; refuse it instead. */
+export const teamBrainViewsWriteSchema = z.object({
+  teamBrainViews: z.array(z.string()).optional(),
+})
+
 export const experimentSettingsWriteSchema = z.object({
   experiments: z
     .record(z.string().refine(isKnownExperiment, 'Unknown experiment'), z.boolean())
@@ -197,6 +203,13 @@ export const userSettingsSchema = z.object({
   // Home graph view: the "Details" toggle (pin every resource's detail card
   // + count chips open). Absent = off.
   graphShowDetails: z.boolean().optional(),
+  // Agent Home: which of its side panel's sections (Triggers, Connections, …) are
+  // open, keyed by section id, as the user last left them; the same on every
+  // agent. Absent = the section's default (closed, bar Hooks with a blocking hook).
+  agentHomeSectionsOpen: z.record(z.string(), z.boolean()).optional(),
+  // Team Brain home page: which groups of the brain's own files its tree shows
+  // ('about', 'archive'). Absent = none.
+  teamBrainViews: lenientArray(z.string()),
   // Home page widget grid: per-card position + footprint in grid cells,
   // keyed by card id (agent slug or dashboard key). Absent = never customized
   // (the board auto-packs responsively until the user drags/resizes).
@@ -208,6 +221,10 @@ export const userSettingsSchema = z.object({
   // Agent slugs whose associated app/dashboard card is hidden from the home grid
   // (toggled from the agent card). Absent/empty = all app cards shown.
   hiddenAppCards: z.array(z.string()).optional(),
+  // Individual home grid cards the user hid, keyed like homeGridLayout (agent
+  // slug or dashboard key). Unhidden from the home options menu beside New Agent.
+  // Absent/empty = every card shown.
+  hiddenHomeCards: z.array(z.string()).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
@@ -241,11 +258,11 @@ export function getDefaultUserSettings(): UserSettingsData {
 }
 
 /**
- * Seed initial user settings for the 'local' user from existing settings.json.
+ * Seed initial user settings for the 'local' user from the app settings.
  * This ensures backward compatibility when migrating from app-level to user-level settings.
  */
-function seedFromAppSettings(): UserSettingsData {
-  const appSettings = getSettings()
+async function seedFromAppSettings(): Promise<UserSettingsData> {
+  const appSettings = await getSettings()
   const appPrefs = appSettings.app ?? {}
 
   return userSettingsSchema.parse({
@@ -271,7 +288,7 @@ function seedFromAppSettings(): UserSettingsData {
 
 /**
  * Get user settings for a given user ID.
- * Returns defaults if no row exists. For the 'local' sentinel, seeds from settings.json on first access.
+ * Returns defaults if no row exists. For the 'local' sentinel, seeds from the app settings on first access.
  */
 export async function getUserSettings(userId: string): Promise<UserSettingsData> {
   const rows = await db
@@ -287,7 +304,7 @@ export async function getUserSettings(userId: string): Promise<UserSettingsData>
   }
 
   // No row found — seed from app settings for 'local' user, otherwise use defaults
-  const initial = initialUserSettings(userId)
+  const initial = await initialUserSettings(userId)
 
   // Persist the initial settings so future reads come from DB
   await db.insert(userSettings)
@@ -302,6 +319,44 @@ export async function getUserSettings(userId: string): Promise<UserSettingsData>
   return initial
 }
 
+/** User ids per statement at most, on a driver with SQLite's own bound-parameter limit. */
+const MAX_USER_IDS_PER_STATEMENT = 500
+
+/**
+ * The settings of several users in one statement, for a caller that would
+ * otherwise read them one user at a time (a notification's fan-out). Every id
+ * asked for is in the result: a user with no stored row, or an invalid one,
+ * has the defaults, as {@link getUserSettings} would answer.
+ *
+ * Read only: nothing is persisted for a user with no row, and the 'local'
+ * sentinel is not seeded from the app settings, so local mode keeps calling
+ * {@link getUserSettings}.
+ */
+export async function getUserSettingsForUsers(
+  userIds: readonly string[]
+): Promise<Map<string, UserSettingsData>> {
+  const ids = [...new Set(userIds)]
+  const stored = new Map<string, string>()
+  const perStatement = Math.min(MAX_USER_IDS_PER_STATEMENT, maxBoundParameters())
+  for (let i = 0; i < ids.length; i += perStatement) {
+    const rows = await db
+      .select({ userId: userSettings.userId, settings: userSettings.settings })
+      .from(userSettings)
+      .where(inArray(userSettings.userId, ids.slice(i, i + perStatement)))
+      .all()
+    for (const row of rows) stored.set(row.userId, row.settings)
+  }
+
+  let defaults: UserSettingsData | undefined
+  const result = new Map<string, UserSettingsData>()
+  for (const id of ids) {
+    const document = stored.get(id)
+    const parsed = document === undefined ? null : parseStoredSettings(document)
+    result.set(id, parsed ?? (defaults ??= getDefaultUserSettings()))
+  }
+  return result
+}
+
 /** The stored document, or null when it is not valid (corrupted JSON falls back to defaults). */
 function parseStoredSettings(stored: string): UserSettingsData | null {
   try {
@@ -311,8 +366,8 @@ function parseStoredSettings(stored: string): UserSettingsData | null {
   }
 }
 
-/** What a user starts from: the 'local' sentinel seeds from settings.json, everyone else from the defaults. */
-function initialUserSettings(userId: string): UserSettingsData {
+/** What a user starts from: the 'local' sentinel seeds from the app settings, everyone else from the defaults. */
+async function initialUserSettings(userId: string): Promise<UserSettingsData> {
   return userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
 }
 
@@ -375,7 +430,7 @@ async function compareAndSetUserSettings(
       .from(userSettings)
       .where(eq(userSettings.userId, userId))
       .get()
-    const current = (row && parseStoredSettings(row.settings)) ?? initialUserSettings(userId)
+    const current = (row && parseStoredSettings(row.settings)) ?? (await initialUserSettings(userId))
     const validated = mergeSettings(current, partial)
     const json = JSON.stringify(validated)
     const now = new Date()

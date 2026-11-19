@@ -1,6 +1,7 @@
 import { lazyRouteComponent, Outlet, useRouterState } from '@tanstack/react-router'
 import { Suspense, useCallback, useState, useEffect, useRef } from 'react'
 import { DialogProvider } from '@renderer/context/dialog-context'
+import { ModelAvailabilityActionProvider } from '@renderer/context/model-availability-action-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
 import { AppSidebar } from '@renderer/components/layout/app-sidebar'
@@ -12,6 +13,7 @@ import { MenuCommandHandler } from '@renderer/components/menu-command-handler'
 import { PackageImportHandler } from '@renderer/components/package-import-handler'
 import { HistoryNavigationHandler } from '@renderer/components/history-navigation-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
+import { AgentStatusPush } from '@renderer/components/notifications/agent-status-push'
 import { SignupHandoffConsumer } from '@renderer/components/signup-handoff-consumer'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
 import { useSearch } from '@renderer/context/search-context'
@@ -26,6 +28,7 @@ import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
 import { homeSearchSchema } from '@renderer/router/search-schemas'
 import { lenient } from '@renderer/router/zod-search'
+import { AuthRouteBoundary } from '@renderer/router/auth-boundary'
 
 const SearchDialog = lazyRouteComponent(
   () => import('@renderer/components/search/search-dialog'),
@@ -42,6 +45,10 @@ const GettingStartedWizard = lazyRouteComponent(
  * shell.
  */
 export function RootLayout() {
+  return <AuthRouteBoundary><RootLayoutContent /></AuthRouteBoundary>
+}
+
+function RootLayoutContent() {
   useTheme()
   useInsetRadius()
   useDocumentTitle()
@@ -139,44 +146,47 @@ export function RootLayout() {
 
   return (
     <DialogProvider onOpenWizard={openWizard}>
-      <UpdateStatusProvider>
-        <OnboardingProvider>
-          {/* Real-time + native-nav handlers live HERE (root, above the
-              shell⇄settings switch) so they stay mounted while /settings is open.
-              The /settings route replaces the whole shell, so handlers mounted
-              inside the shell would unmount on open — dropping the notification
-              SSE + OS popups, the container-setup stream, and any native
-              menu/tray command fired while in settings. MenuCommandHandler also
-              drains the window-closed menu-command queue (SUP-264). All only need
-              useNavigate / useDialogs / useUser / useUserSettings — available at
-              the root route. */}
-          <MenuCommandHandler />
-          <PackageImportHandler />
-          <HistoryNavigationHandler />
-          <GlobalNotificationHandler />
-          <ContainerSetupHandler />
-          <WindowControls />
-          <UpdateToastNotifier />
-          {/* Rendered here (inside the router) so it can use useNavigate. The
-              dialog stays off the boot graph until first opened, then stays
-              mounted (closed) so Radix can play its exit animation. */}
-          {searchOpen || searchEverOpened ? (
-            <Suspense fallback={null}>
-              <SearchDialog />
-            </Suspense>
-          ) : null}
-          {/* Above the wizard ternary: the wizard replaces the outlet, so a
-              consumer inside the outlet may never commit an effect. */}
-          <SignupHandoffConsumer />
-          {wizardOpen ? (
-            <Suspense fallback={null}>
-              <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
-            </Suspense>
-          ) : (
-            <Outlet />
-          )}
-        </OnboardingProvider>
-      </UpdateStatusProvider>
+      <ModelAvailabilityActionProvider>
+        <UpdateStatusProvider>
+          <OnboardingProvider>
+            {/* Real-time + native-nav handlers live HERE (root, above the
+                shell⇄settings switch) so they stay mounted while /settings is open.
+                The /settings route replaces the whole shell, so handlers mounted
+                inside the shell would unmount on open — dropping the notification
+                SSE + OS popups, the container-setup stream, and any native
+                menu/tray command fired while in settings. MenuCommandHandler also
+                drains the window-closed menu-command queue (SUP-264). All only need
+                useNavigate / useDialogs / useUser / useUserSettings — available at
+                the root route. */}
+            <MenuCommandHandler />
+            <PackageImportHandler />
+            <HistoryNavigationHandler />
+            <GlobalNotificationHandler />
+            <AgentStatusPush />
+            <ContainerSetupHandler />
+            <WindowControls />
+            <UpdateToastNotifier />
+            {/* Rendered here (inside the router) so it can use useNavigate. The
+                dialog stays off the boot graph until first opened, then stays
+                mounted (closed) so Radix can play its exit animation. */}
+            {searchOpen || searchEverOpened ? (
+              <Suspense fallback={null}>
+                <SearchDialog />
+              </Suspense>
+            ) : null}
+            {/* Above the wizard ternary: the wizard replaces the outlet, so a
+                consumer inside the outlet may never commit an effect. */}
+            <SignupHandoffConsumer />
+            {wizardOpen ? (
+              <Suspense fallback={null}>
+                <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
+              </Suspense>
+            ) : (
+              <Outlet />
+            )}
+          </OnboardingProvider>
+        </UpdateStatusProvider>
+      </ModelAvailabilityActionProvider>
     </DialogProvider>
   )
 }

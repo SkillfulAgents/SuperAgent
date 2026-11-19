@@ -1,4 +1,6 @@
-import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
+import { background } from '@shared/lib/background'
+import { PassTask, taskManager } from '@shared/lib/background-work'
 import { z } from 'zod'
 import { captureException } from '../error-reporting'
 import { InvalidDeliveryEnvelope, parseDeliveryEnvelope } from './delivery-schema'
@@ -38,16 +40,20 @@ function permanent(error: unknown): boolean {
 export class IntegrationDeliveryQueue {
   private running = false
   private epoch = 0
-  private timer?: ReturnType<typeof setTimeout>
   private timerAt = Infinity
   private pumping = false
   private repump = false
   private lastPrune = 0
   private active = new Map<string, Promise<void>>()
+  private readonly pumpTask = new PassTask('agent-integrations.delivery-pump', () => {
+    this.timerAt = Infinity
+    return this.pump().catch(error => { this.report(error, 'schedule'); this.wake(5_000) })
+  })
+  readonly tasks = [this.pumpTask]
   constructor(private readonly host: DeliveryHost, private readonly store = deliveryStore) {}
 
   async start() { await this.store.recover(); this.running = true; this.epoch++; this.wake() }
-  stop() { this.running = false; this.epoch++; clearTimeout(this.timer); this.timer = undefined; this.timerAt = Infinity; this.active.clear() }
+  stop() { this.running = false; this.epoch++; background(taskManager().cancel(this.pumpTask.type), { name: 'delivery-queue.cancel-pump' }); this.timerAt = Infinity; this.active.clear() }
   async accept(integrationId: string, event: IntegrationInputEvent, route: IntegrationRoute) {
     const accepted = await this.store.accept(integrationId, event, route)
     this.wake()
@@ -57,13 +63,8 @@ export class IntegrationDeliveryQueue {
   cancel(integrationId: string, externalId?: string, exceptId?: string) { return this.store.cancel(integrationId, externalId, exceptId) }
   wake(delay = 0) {
     if (!this.running || this.timerAt <= Date.now() + delay) return
-    clearTimeout(this.timer)
     this.timerAt = Date.now() + delay
-    this.timer = setTimeout(() => {
-      this.timerAt = Infinity
-      void this.pump().catch(error => { this.report(error, 'schedule'); this.wake(5_000) })
-    }, delay)
-    this.timer.unref?.()
+    background(taskManager().at(this.timerAt, this.pumpTask.type, this.pumpTask.spec), { name: 'delivery-queue.schedule-pump' })
   }
   private async pump() {
     if (!this.running) return
@@ -165,7 +166,7 @@ export class IntegrationDeliveryQueue {
         return result
       }
       catch (error) {
-        if (error instanceof MessageNotAcceptedError) {
+        if (deliveryFailure(error)?.accepted === false) {
           handedOff = false
           if (!(await this.store.change(row.id, owner, { state: 'preparing' }))) throw new DeliveryCancelled()
         }

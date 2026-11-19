@@ -3,6 +3,7 @@
  */
 
 import type { AppLinkContext } from '../agent-integrations/app-link'
+import { formatProviderName } from '../agent-integrations/presentation'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 
 // Event types that need the desktop app (OAuth callbacks, browser input, script approval, etc.).
@@ -13,11 +14,15 @@ const UNSUPPORTED_IN_CHAT: ReadonlySet<UserRequestEvent['type']> = new Set([
   'connected_account_request',
   'remote_mcp_request',
   'browser_input_request',
+  // Credentials typed into a chat thread would sit in the provider's cloud
+  // and the transcript; the sign-in form only exists in the app.
+  'login_request',
   'script_run_request',
   'computer_use_request',
   'capability_review_request',
   'secret_request',
   'file_request',
+  'integration_setup_request',
 ])
 
 export function isUnsupportedInChat(event: UserRequestEvent): boolean {
@@ -67,6 +72,8 @@ export function describeUnsupportedRequest(event: UserRequestEvent, appLink?: Ap
       return `The agent wants to connect to a remote MCP server${event.name ? ` (${event.name})` : ''}, which isn't supported in chat.${tail}`
     case 'browser_input_request':
       return `The agent needs input in a browser session, which isn't supported in chat.${tail}`
+    case 'login_request':
+      return `The agent needs you to sign in to a website, which isn't safe to do in chat.${tail}`
     case 'script_run_request':
       return `The agent wants to run a script, which needs your approval.${tail}`
     case 'capability_review_request':
@@ -77,6 +84,8 @@ export function describeUnsupportedRequest(event: UserRequestEvent, appLink?: Ap
       return `The agent needs the secret ${event.secretName}, which isn't safe to provide in chat.${tail}`
     case 'file_request':
       return `The agent wants you to upload a file${event.description ? ` (${event.description})` : ''}, which isn't supported in chat.${tail}`
+    case 'integration_setup_request':
+      return `The agent asked you to set up ${event.provider ? formatProviderName(event.provider) : 'an integration'} for it, which isn't supported in chat.${tail}`
     default:
       return `The agent sent a "${event.type}" request that isn't supported in chat.${tail}`
   }

@@ -102,12 +102,12 @@ export function WidgetCard({
           event.stopPropagation()
           refresh.mutate({ agentSlug, widgetSlug: widget.slug })
         }}
-        className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-input bg-background text-muted-foreground shadow-sm hover:text-foreground disabled:opacity-50 [&_svg]:size-3.5"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-control border border-input bg-background text-muted-foreground shadow-sm hover:text-foreground disabled:opacity-50 [&_svg]:size-3.5"
       >
         <RefreshCw className={cn(refreshing && 'animate-spin')} />
       </button>
       {widget.hasDashboard && (
-        <span className="inline-flex h-6 items-center gap-1 rounded-md border border-input bg-background px-2 text-xs font-medium shadow-sm [&_svg]:size-3.5">
+        <span className="inline-flex h-6 items-center gap-1 rounded-control border border-input bg-background px-2 text-xs font-medium shadow-sm [&_svg]:size-3.5">
           Open app
           <ArrowUpRight />
         </span>
@@ -116,7 +116,7 @@ export function WidgetCard({
   )
 
   const frameClass = cn(
-    'group/card relative block h-full w-full overflow-hidden rounded-lg border bg-card text-left shadow-sm transition-[box-shadow,border-color] duration-150 hover:border-accent-foreground/20',
+    'group/card relative block h-full w-full overflow-hidden rounded-card border bg-card text-left shadow-sm transition-[box-shadow,border-color] duration-150 hover:border-accent-foreground/20',
     className,
   )
   const testId = `widget-card-${widget.slug}`

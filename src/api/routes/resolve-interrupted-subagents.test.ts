@@ -61,7 +61,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
   return { containerHost: hostFromManagerMock({}) }
 })
-vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: {} }))
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(),

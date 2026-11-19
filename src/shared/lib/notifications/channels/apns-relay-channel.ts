@@ -1,10 +1,14 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getApnsRelayConfig } from '@shared/lib/config/settings'
-import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
+import {
+  getUserSettings,
+  getUserSettingsForUsers,
+  type UserSettingsData,
+} from '@shared/lib/services/user-settings-service'
 import {
   listDeliverableApnsDevices,
+  listDeliverableApnsDevicesForAgentMembers,
   deleteApnsDeviceById,
   type ApnsDeviceRow,
 } from '../push/apns-device-service'
@@ -27,12 +31,13 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
 const SILENT_TYPES = new Set<NotificationType>([
   'session_complete',
   'session_waiting',
   'session_scheduled',
   'session_webhook',
+  'session_mention',
 ])
 
 /** Relay wire contract: 1..50 pushes per request. */
@@ -95,24 +100,59 @@ export class ApnsRelayChannel implements NotificationChannel {
       return
     }
 
-    const { url } = getApnsRelayConfig()
+    const { url } = await getApnsRelayConfig()
     if (!url) {
       return
     }
 
-    const devices = await listDeliverableApnsDevices()
+    // The statements below are a fixed number however many people and devices
+    // the deployment has: every finished or blocked turn comes through here.
+    const authMode = isAuthMode()
+    // With sign-in the access gate is part of the read: only devices of
+    // people who have joined and are on the agent's access list come back
+    // (never an ownerless row, e.g. one registered before auth was enabled),
+    // and for a mention only those of the person tagged — nobody else's
+    // device hears of it. No access to the agent means no push at all: a
+    // silent push still leaks that the agent ran.
+    const devices = authMode
+      ? await listDeliverableApnsDevicesForAgentMembers(event.agentSlug, event.recipientUserId)
+      : await listDeliverableApnsDevices()
     if (devices.length === 0) {
       return
     }
 
     const originDeviceId = await this.getOriginDeviceId(event)
 
-    // Several devices can share an owner — resolve agent access once per user.
-    const accessCache = new Map<string, Promise<string[]>>()
+    // Only a device that may show the alert needs its owner's settings; the
+    // rest get the background push whatever those say. In local mode the
+    // single local user's settings govern every device — including rows that
+    // retain a userId from a previous auth-mode life of this database (that
+    // user's old per-user settings row is stale there). Several devices can
+    // share an owner: each owner is read once, and all of them together.
+    const ownerOf = (device: ApnsDeviceRow): string =>
+      authMode ? (device.userId as string) : 'local'
+    const alertCandidates = devices.filter((device) => this.mayAlert(event, device, originDeviceId))
+    const settingsByOwner =
+      alertCandidates.length === 0
+        ? new Map<string, UserSettingsData>()
+        : authMode
+          ? await getUserSettingsForUsers(alertCandidates.map(ownerOf))
+          : new Map([['local', await getUserSettings('local')]])
 
     const batch: Array<{ device: ApnsDeviceRow; push: ApnsRelayPush }> = []
     for (const device of devices) {
-      const pushes = await this.buildPushesForDevice(event, device, originDeviceId, accessCache)
+      const settings = settingsByOwner.get(ownerOf(device))
+      const alert =
+        this.mayAlert(event, device, originDeviceId) &&
+        settings !== undefined &&
+        isNotificationTypeEnabled(settings.notifications, event.type)
+      // Alert AND background: the alert draws the banner but wakes no app
+      // code on iOS, so the paired silent push is what refreshes the origin
+      // device's widget snapshots. Prefs disabled: degrade to background so
+      // the widget still refreshes.
+      const pushes = alert
+        ? [buildApnsAlertPush(event, device), buildApnsBackgroundPush(event, device)]
+        : [buildApnsBackgroundPush(event, device)]
       for (const push of pushes) {
         batch.push({ device, push })
       }
@@ -145,47 +185,19 @@ export class ApnsRelayChannel implements NotificationChannel {
     }
   }
 
-  /** Per-device gating + payload choice; empty = skip this device entirely. */
-  private async buildPushesForDevice(
+  /**
+   * Whether this device is one that shows the visible alert, its owner's
+   * settings permitting: the device that started the session, or — a mention
+   * alerts every device of its recipient, who did not start the session — any
+   * device a mention reaches.
+   */
+  private mayAlert(
     event: NotificationEvent,
     device: ApnsDeviceRow,
-    originDeviceId: string | null,
-    accessCache: Map<string, Promise<string[]>>
-  ): Promise<ApnsRelayPush[]> {
-    if (isAuthMode()) {
-      // An ownerless row in auth mode (e.g. registered before auth was
-      // enabled) has no user to gate on — never deliver to it.
-      if (!device.userId) {
-        return []
-      }
-      let access = accessCache.get(device.userId)
-      if (!access) {
-        access = getAccessibleAgentSlugs(device.userId)
-        accessCache.set(device.userId, access)
-      }
-      // No access to the agent means no push at all — a silent push still
-      // leaks that the agent ran.
-      if (!(await access).includes(event.agentSlug)) {
-        return []
-      }
-    }
-
+    originDeviceId: string | null
+  ): boolean {
     const isOrigin = device.mobileDeviceId != null && device.mobileDeviceId === originDeviceId
-    if (isOrigin && VISIBLE_TYPES.has(event.type)) {
-      // In local mode the single local user's settings govern every device —
-      // including rows that retain a userId from a previous auth-mode life of
-      // this database (that user's old per-user settings row is stale there).
-      const ownerId = isAuthMode() ? (device.userId as string) : 'local'
-      const settings = await getUserSettings(ownerId)
-      if (isNotificationTypeEnabled(settings.notifications, event.type)) {
-        // Alert AND background: the alert draws the banner but wakes no app
-        // code on iOS, so the paired silent push is what refreshes the
-        // origin device's widget snapshots.
-        return [buildApnsAlertPush(event, device), buildApnsBackgroundPush(event, device)]
-      }
-      // Prefs disabled: degrade to background so the widget still refreshes.
-    }
-    return [buildApnsBackgroundPush(event, device)]
+    return (isOrigin || event.recipientUserId !== undefined) && VISIBLE_TYPES.has(event.type)
   }
 
   private async sendChunk(

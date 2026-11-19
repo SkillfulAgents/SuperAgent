@@ -1,0 +1,38 @@
+{
+  "sessionId": "4cdc71f9-f573-4b25-86a2-d01eb347bfe8",
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.303",
+  "cliVersion": "2.1.303",
+  "capturedAt": "2026-10-19",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [],
+  "source": "capture-fixtures.mjs (.claude/skills/update-claude-deps): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; host capture wrapper (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (SDK 0.3.303 / CLI 2.1.303). A background subagent starts its OWN background Bash (`sleep 10`) and ends its turn without waiting, so the subagent reports completed while work it launched is still live. Probes parent_task_id and whether nested tasks appear in the lead snapshot.",
+  "backgroundTasks": [
+    {
+      "taskId": "a78400d2fd191de11",
+      "taskType": "local_agent",
+      "startedT": 3089,
+      "prematureIdleT": null,
+      "realCompletionT": 5192
+    },
+    {
+      "taskId": "b31k5knkh",
+      "taskType": "local_bash",
+      "startedT": 4453,
+      "prematureIdleT": 6700,
+      "realCompletionT": 14457,
+      "parentTaskId": "a78400d2fd191de11"
+    },
+    {
+      "taskId": "a78400d2fd191de11",
+      "taskType": "local_agent",
+      "startedT": 14462,
+      "prematureIdleT": null,
+      "realCompletionT": 15898
+    }
+  ],
+  "settledT": 18499,
+  "totalEntries": 145
+}

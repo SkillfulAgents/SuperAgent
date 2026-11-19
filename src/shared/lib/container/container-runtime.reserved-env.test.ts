@@ -15,6 +15,10 @@ const mockStopSync = vi.fn()
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
 const mockIsHealthy = vi.fn()
+const accountProviderState = vi.hoisted(() => ({ name: 'composio' as 'composio' | 'nango' }))
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: accountProviderState.name }),
+}))
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -110,29 +114,12 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }))
 
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
-}))
-
-vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  copyChromeProfileData: vi.fn().mockReturnValue(false),
 }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
@@ -148,7 +135,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => false,
+  isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 const relayState = vi.hoisted(() => ({ available: false }))
@@ -161,12 +148,19 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: () => 'America/New_York',
 }))
 
+const drives = vi.hoisted(() => ({ onList: null as null | (() => void) }))
 vi.mock('@shared/lib/services/mount-service', () => ({
-  listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  listVolumes: async (_slug: string, beforeRead?: () => void) => { beforeRead?.(); drives.onList?.(); return { volumes: [], notMounted: [] } },
+  remounted: async () => {},
+}))
+
+const serverFacts = vi.hoisted(() => ({ distribution: 'direct' as 'direct' | 'mac-app-store' }))
+vi.mock('@shared/lib/facts/server-facts', () => ({
+  getServerFacts: () => ({ os: 'darwin', distribution: serverFacts.distribution }),
 }))
 
 import { containerHost } from './container-host'
-import { messagePersister } from './message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { createFakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 
 describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reserved runtime env vars', () => {
@@ -180,6 +174,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
 
     containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
     relayState.available = false
+    accountProviderState.name = 'composio'
     mockStart.mockResolvedValue(undefined)
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
 
@@ -201,6 +196,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
         SUPERAGENT_HOST_API_URL: 'http://evil.example/api',
         SUPERAGENT_HOST_TOKEN: 'attacker-host-token',
         CONNECTED_ACCOUNTS: '{"gmail":[{"name":"spoof","id":"x"}]}',
+        CONNECTED_ACCOUNT_TOOLKITS: 'attacker-toolkit',
         TZ: 'Antarctica/Troll',
         HOST_PLATFORM: 'spoofed-os',
         CLAUDE_CODE_ATTRIBUTION_HEADER: '1',
@@ -228,6 +224,20 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
     expect(envVars.SUPERAGENT_HOST_TOKEN).toBe('real-host-token')
     // No active accounts -> empty object, not the spoofed metadata.
     expect(envVars.CONNECTED_ACCOUNTS).toBe('{}')
+    expect(envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')).toContain('todoist')
+    expect(envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')).not.toContain('attacker-toolkit')
+  })
+
+  it('only injects services supported by the selected account provider', async () => {
+    accountProviderState.name = 'nango'
+    await containerHost.runtime('test-agent').ensureRunning()
+    const toolkits = mockStart.mock.calls[0][0].envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')
+    expect(toolkits).toContain('gmail')
+    expect(toolkits).toContain('github')
+    expect(toolkits).not.toContain('todoist')
+    expect(toolkits).not.toContain('excel')
+    expect(toolkits).not.toContain('twitter')
+    expect(toolkits).not.toContain('attacker-toolkit')
   })
 
   it('keeps computed TZ / HOST_PLATFORM / CLAUDE_CODE_ATTRIBUTION_HEADER', async () => {
@@ -237,6 +247,18 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
     expect(envVars.TZ).toBe('America/New_York')
     expect(envVars.HOST_PLATFORM).toBe(process.platform)
     expect(envVars.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
+  })
+
+  it('tells the container whether agents get computer use, and whether the app is sandboxed', async () => {
+    serverFacts.distribution = 'direct'
+    await containerHost.runtime('test-agent').ensureRunning()
+    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'true', HOST_APP_SANDBOX: 'false' })
+  })
+
+  it('withholds computer use from a Mac App Store build’s agents', async () => {
+    serverFacts.distribution = 'mac-app-store'
+    await containerHost.runtime('test-agent').ensureRunning()
+    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'false', HOST_APP_SANDBOX: 'true' })
   })
 
   it('still passes non-reserved custom env vars through unchanged', async () => {
@@ -250,6 +272,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
 describe('ContainerRuntime webhook relay env', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    accountProviderState.name = 'composio'
     containerHost.dropRuntime('test-agent')
     mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
@@ -325,6 +348,73 @@ describe('ContainerRuntime webhook relay env', () => {
   })
 })
 
+describe('ContainerRuntime drives during a start', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerHost.dropRuntime('test-agent')
+    mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
+    mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
+    mockGetAppPort.mockReturnValue(3000)
+    mockStart.mockResolvedValue(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+    mockGetSettings.mockReturnValue({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} })
+    containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
+  })
+
+  it('holds its drives from just before the start reads them, and a stale mark then survives the start', async () => {
+    const seen: string[][] = []
+    mockGetSettings.mockImplementationOnce(() => {
+      seen.push(containerHost.getAgentIdsHoldingDrives())
+      return { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }
+    })
+    drives.onList = () => { seen.push(containerHost.getAgentIdsHoldingDrives()) }
+    mockStart.mockImplementationOnce(async () => { containerHost.runtime('test-agent').markStale() })
+    try {
+      await containerHost.runtime('test-agent').ensureRunning()
+    } finally {
+      drives.onList = null
+    }
+    expect(seen).toEqual([[], ['test-agent']])
+    expect(containerHost.runtime('test-agent').isStale()).toBe(true)
+  })
+
+  it('drops a stale mark from a start that failed, since the next start reads everything again', async () => {
+    mockStart.mockImplementationOnce(async () => {
+      containerHost.runtime('test-agent').markStale()
+      throw new Error('start failed')
+    })
+    await expect(containerHost.runtime('test-agent').ensureRunning()).rejects.toThrow('start failed')
+    expect(containerHost.getAgentIdsHoldingDrives()).toEqual([])
+    expect(containerHost.runtime('test-agent').isStale()).toBe(false)
+    await containerHost.runtime('test-agent').ensureRunning()
+    expect(containerHost.runtime('test-agent').isStale()).toBe(false)
+  })
+
+  it('keeps holding the drives of a start that replaced a stopped one, when the stopped one resumes', async () => {
+    const runtime = containerHost.runtime('test-agent')
+    let resumeFirst!: () => void
+    mockGetOrCreateProxyToken.mockImplementationOnce(() => new Promise((resolve) => { resumeFirst = () => resolve('real-proxy-token') }))
+    const first = runtime.ensureRunning()
+    await vi.waitFor(() => expect(resumeFirst).toBeDefined())
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+    await runtime.stopContainer()
+    let finishSecond!: () => void
+    mockStart.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve }))
+    const second = runtime.ensureRunning()
+    await vi.waitFor(() => expect(finishSecond).toBeDefined())
+
+    resumeFirst()
+    await expect(first).rejects.toThrow('overtook')
+    expect(containerHost.getAgentIdsHoldingDrives()).toEqual(['test-agent'])
+    finishSecond()
+    await second
+  })
+})
+
 describe('ContainerHost.watchWebhookRelay', () => {
   it('publishes status changes and marks agents whose webhook tools went out of date', () => {
     containerHost.dropRuntime('test-agent')
@@ -336,7 +426,7 @@ describe('ContainerHost.watchWebhookRelay', () => {
     relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
     stop()
 
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'webhook_relay_changed',
       status: { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null },
     })

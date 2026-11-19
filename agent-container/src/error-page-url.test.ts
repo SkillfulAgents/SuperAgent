@@ -47,6 +47,17 @@ describe('activeTabAddress', () => {
     expect(targets).toHaveLength(2)
   })
 
+  it('pairs the error tab with its own target by id — even with two error tabs', async () => {
+    const tabs = [
+      { url: err, active: false, targetId: 'T1' },
+      { url: err, active: true, targetId: 'T2' },
+    ]
+    const targets = async () => [{ id: 'T1', url: 'http://localhost:1/other' }, { id: 'T2', url: callback }]
+    expect(await activeTabAddress(tabs, targets, match)).toBe(callback)
+    // Chrome reporting the error document for that target is no answer.
+    expect(await activeTabAddress(tabs, async () => [{ id: 'T2', url: err }], match)).toBeNull()
+  })
+
   it('gives no answer when the pairing is not unique', async () => {
     const two = [{ url: err, active: true }, { url: err, active: false }]
     expect(await activeTabAddress(two, noTargets, match)).toBeNull()

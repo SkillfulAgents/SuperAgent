@@ -14,8 +14,11 @@
 import { Hono, type Context } from 'hono'
 import type { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import {
@@ -39,6 +42,7 @@ import {
   addSessionTodoSchema,
   createTodoSchema,
   moveTodoSchema,
+  parseTodoAttachments,
   releaseStartSchema,
   renameTodoSchema,
   startTodoSchema,
@@ -46,9 +50,11 @@ import {
   todoColumn,
   todoStatusChangeSchema,
   updateTodoSchema,
+  type TodoAttachment,
   type TodoView,
 } from '@shared/lib/todos/todo-schema'
-import { Authenticated, getReadableAgentIds } from '../middleware/auth'
+import type { SessionMetadataMap } from '@shared/lib/types/agent'
+import { Authenticated, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 
 const todosRouter = new Hono()
 
@@ -73,19 +79,37 @@ async function pendingWakesFor(rows: TodoRow[], readableAgents: ReadonlySet<stri
   return new Map(wakes.map((w) => [wakeKey(w.agentSlug, w.resumeSessionId!), w.nextExecutionAt.getTime()]))
 }
 
-function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: PendingWakes): TodoView {
+/** The session metadata of each readable agent that runs some of the started work among `rows`, read once per agent. */
+async function sessionMetadataFor(rows: TodoRow[], readableAgents: ReadonlySet<string>): Promise<ReadonlyMap<string, SessionMetadataMap>> {
+  const slugs = [...new Set(rows.flatMap((row) =>
+    row.sessionId && row.agentSlug && readableAgents.has(row.agentSlug) ? [row.agentSlug] : []))]
+  return new Map(await Promise.all(slugs.map(async (slug) => [slug, await agentRegistry.get(slug).sessions.readMetadata()] as const)))
+}
+
+async function toView(
+  row: TodoRow,
+  readableAgents: ReadonlySet<string>,
+  wakes: PendingWakes,
+  metadata: ReadonlyMap<string, SessionMetadataMap>,
+): Promise<TodoView> {
   // Session state is live, not stored. An agent the person can no longer
   // read tells them nothing about its session.
   const actor = row.agentSlug && row.sessionId && readableAgents.has(row.agentSlug)
     ? agentRegistry.get(row.agentSlug)
     : null
-  const session = actor && row.sessionId
-    ? { isActive: actor.sessions.isActive(row.sessionId), isAwaitingInput: actor.sessions.isAwaitingInput(row.sessionId) }
-    : null
+  const live = actor && row.sessionId ? await actor.sessions.live(row.sessionId) : null
+  // A deleted session can leave its name in metadata: use the name only while
+  // the session is known, the same check the rename fallback makes.
+  const sessionName = actor && row.sessionId && (await actor.sessions.isKnown(row.sessionId))
+    ? metadata.get(actor.slug)?.[row.sessionId]?.name
+    : undefined
+  const session = live ? { isActive: live.isActive, isAwaitingInput: live.isAwaitingInput } : null
   const column = todoColumn(row.status, session)
   return {
     id: row.id,
-    title: row.title,
+    // Started work is named by its session. The stored title is the draft's
+    // own, or the name the work had when it joined the board.
+    title: sessionName || row.title,
     description: row.description,
     agentSlug: row.agentSlug,
     newAgent: row.newAgent,
@@ -100,11 +124,12 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: Pendin
     starting: row.status === 'draft' && startClaimHeld(row),
     // The same open requests that make the session await input (its own,
     // plus the agent-scoped ones that block every session of the agent).
-    ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
+    ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(await actor.inputs.snapshot(row.sessionId)) : null,
     // Only work that is idle can be sleeping until its wake.
     pendingWakeAt: column === 'has_updates' && row.agentSlug && row.sessionId
       ? wakes.get(wakeKey(row.agentSlug, row.sessionId)) ?? null
       : null,
+    attachments: parseTodoAttachments(row.attachments),
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     startedAt: row.startedAt?.getTime() ?? null,
@@ -114,7 +139,7 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: Pendin
 
 async function viewOf(c: Context, row: TodoRow): Promise<TodoView> {
   const readable = await getReadableAgentIds(c, row.agentSlug ? [row.agentSlug] : [])
-  return toView(row, readable, await pendingWakesFor([row], readable))
+  return await toView(row, readable, await pendingWakesFor([row], readable), await sessionMetadataFor([row], readable))
 }
 
 async function respond(c: Context, result: TodoWriteResult) {
@@ -135,13 +160,30 @@ async function canAssign(c: Context, agentSlug: string): Promise<boolean> {
   return (await agentExists(agentSlug)) && (await getReadableAgentIds(c, [agentSlug])).has(agentSlug)
 }
 
+/**
+ * The refusal for a connection this person may not pick for a draft: one that
+ * is gone, or someone else's own. Checked as every other model picker's is,
+ * so a draft does not take a pick its start would be refused for. `currentId`
+ * is the connection the draft already has, which it may keep.
+ */
+async function connectionRefusal(llmProviderId: string | null | undefined, currentId?: string | null): Promise<Response | null> {
+  try {
+    await assertConnectionSelectionAccess(llmProviderId, currentId)
+    return null
+  } catch (error) {
+    const refused = findAgentRuntimeError(error)
+    if (!refused) throw error
+    return refused.toHttpResponse()
+  }
+}
+
 // GET /api/todos — the person's board, in board order.
 todosRouter.get('/', async (c) => {
   const rows = await listTodos(getCurrentUserId(c))
   const agentSlugs = [...new Set(rows.flatMap((row) => (row.agentSlug ? [row.agentSlug] : [])))]
   const readable = await getReadableAgentIds(c, agentSlugs)
-  const wakes = await pendingWakesFor(rows, readable)
-  return c.json({ todos: rows.map((row) => toView(row, readable, wakes)) })
+  const [wakes, metadata] = await Promise.all([pendingWakesFor(rows, readable), sessionMetadataFor(rows, readable)])
+  return c.json({ todos: await Promise.all(rows.map((row) => toView(row, readable, wakes, metadata))) })
 })
 
 // POST /api/todos — a new draft.
@@ -151,6 +193,8 @@ todosRouter.post('/', async (c) => {
   if (input.agentSlug && !(await canAssign(c, input.agentSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
+  const refusal = await connectionRefusal(input.llmProviderId)
+  if (refusal) return refusal
   const row = await createTodo(getCurrentUserId(c), input)
   return c.json(await viewOf(c, row), 201)
 })
@@ -167,7 +211,7 @@ todosRouter.post('/sessions', async (c) => {
   }
   const result = await addSessionTodo(getCurrentUserId(c), input)
   if (!result) return c.json({ error: 'The todo has changed; reload and try again' }, 409)
-  return c.json(toView(result.todo, readable, await pendingWakesFor([result.todo], readable)), result.created ? 201 : 200)
+  return c.json(await toView(result.todo, readable, await pendingWakesFor([result.todo], readable), await sessionMetadataFor([result.todo], readable)), result.created ? 201 : 200)
 })
 
 // PATCH /api/todos/:id — edit a draft.
@@ -177,7 +221,29 @@ todosRouter.patch('/:id', async (c) => {
   if (patch.agentSlug && !(await canAssign(c, patch.agentSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
-  return respond(c, await updateDraft(getCurrentUserId(c), c.req.param('id'), patch))
+  const userId = getCurrentUserId(c)
+  const id = c.req.param('id')
+  const before = await getTodo(userId, id)
+  if (!before) return c.json({ error: 'Todo not found' }, 404)
+  const refusal = await connectionRefusal(patch.llmProviderId, before.llmProviderId)
+  if (refusal) return refusal
+  // Attachments live in the agent's workspace, so the agent is fixed while there are any.
+  const agent = patch.newAgent ? null : patch.agentSlug !== undefined ? patch.agentSlug : before.agentSlug
+  const stored = parseTodoAttachments(before.attachments)
+  if (agent !== before.agentSlug && stored.length > 0) {
+    return c.json({ error: 'Remove attached files to change the agent' }, 409)
+  }
+  // Only what is new is checked: a stored file that has since gone must not block removing it or typing.
+  const added = (patch.attachments ?? []).filter((att) => !stored.some((s) => JSON.stringify(s) === JSON.stringify(att)))
+  // The list applies only over the stored list it was checked against.
+  const checked = patch.attachments ? before.attachments : undefined
+  if (added.length > 0) {
+    if (!agent || !(await canAssign(c, agent))) return c.json({ error: 'Pick an agent to attach files' }, 400)
+    if (!(await allUploaded(agent, added))) return c.json({ error: 'Invalid attachment' }, 400)
+    // Sent with the list, the agent is part of the write's condition: the list cannot land on another agent.
+    return respond(c, await updateDraft(userId, id, { ...patch, agentSlug: agent }, checked))
+  }
+  return respond(c, await updateDraft(userId, id, patch, checked))
 })
 
 // Starting is three steps, because the session is created through the
@@ -235,10 +301,22 @@ todosRouter.post('/:id/status', async (c) => {
 })
 
 // POST /api/todos/:id/title — rename started work. Drafts are edited with PATCH.
+// Work with a session renames the session, for everyone on the agent, under
+// the same role check as PATCH /api/agents/:id/sessions/:sessionId.
 todosRouter.post('/:id/title', async (c) => {
   const input = await parseBody(c, renameTodoSchema)
   if (!input) return c.json({ error: 'Invalid title' }, 400)
-  return respond(c, await renameTodo(getCurrentUserId(c), c.req.param('id'), input.title))
+  const userId = getCurrentUserId(c)
+  const todo = await getTodo(userId, c.req.param('id'))
+  if (todo && todo.status !== 'draft' && todo.agentSlug && todo.sessionId) {
+    if (!(await canUseAgent(c, todo.agentSlug))) return c.json({ error: 'Forbidden' }, 403)
+    const sessions = agentRegistry.get(todo.agentSlug).sessions
+    if (await sessions.isKnown(todo.sessionId)) {
+      await sessions.rename(todo.sessionId, input.title)
+      return c.json(await viewOf(c, todo))
+    }
+  }
+  return respond(c, await renameTodo(userId, c.req.param('id'), input.title))
 })
 
 // POST /api/todos/:id/position — reorder within its column.
@@ -247,6 +325,26 @@ todosRouter.post('/:id/position', async (c) => {
   if (!input) return c.json({ error: 'Invalid position' }, 400)
   return respond(c, await moveTodo(getCurrentUserId(c), c.req.param('id'), input.position))
 })
+
+function uploadRelative(raw: string): string | null {
+  try {
+    const rel = normalizeWorkspacePath(raw)
+    return rel.startsWith('uploads/') ? rel : null
+  } catch {
+    return null
+  }
+}
+
+/** Every file and folder is an upload in the agent's workspace. A mount is bound at Start. */
+async function allUploaded(agentSlug: string, list: TodoAttachment[]): Promise<boolean> {
+  const files = agentRegistry.get(agentSlug).files
+  for (const att of list) {
+    if (att.kind === 'mount') continue
+    const rel = uploadRelative(att.path)
+    if (!rel || !(await files.stat(rel))) return false
+  }
+  return true
+}
 
 // DELETE /api/todos/:id — take it off the board. Its session, if any, stays.
 todosRouter.delete('/:id', async (c) => {

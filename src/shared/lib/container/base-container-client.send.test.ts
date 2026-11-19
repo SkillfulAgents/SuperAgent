@@ -4,18 +4,22 @@ import { MessageNotAcceptedError } from './message-dispatch-error'
 import * as settings from '../config/settings'
 import * as providerRuntime from '../llm-provider/connection-runtime'
 import type { ContainerInfo } from './types'
-vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'test-host-token' }))
+const hostToken = vi.hoisted(() => ({ reads: 0 }))
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => { hostToken.reads++; return 'test-host-token' } }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}), getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }), getGlobalInstructions: () => '' }))
 // These tests isolate HTTP acceptance evidence; provider persistence has its
 // own database-backed coverage in base-container-client.llm-provider.test.ts.
 vi.mock('../llm-provider/connections', () => ({
   storedSelection: () => null,
-  resolveExecutionSelection: async () => ({ llmProviderId: 'provider', model: 'test-model' }),
+  resolveSelectionHierarchyFrom: async () => ({ llmProviderId: 'provider', model: 'test-model' }),
 }))
 vi.mock('../llm-provider/connection-runtime', () => ({
   connectionRuntime: async () => ({ llmProviderId: 'provider', model: 'test-model', modelPromptHints: [], subagentModels: [], modelContextWindows: {}, env: {} }),
   rememberSessionRuntime: () => {},
 }))
+// The integration families each check their own availability (some through
+// the platform token); the reads counted below are the client's own.
+vi.mock('@shared/lib/agent-integrations/registry', () => ({ agentIntegrationRegistry: { listAvailableDefinitions: async () => [] } }))
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   sessions: { metadata: async () => ({}), updateMetadata: async () => {} },
   config: { get: async () => ({}) },
@@ -62,9 +66,29 @@ describe('runtime handoff rejection evidence', () => {
   })
   it('retries local request preparation failures without issuing HTTP', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
-    vi.spyOn(settings, 'getAgentCapabilitySettings').mockImplementationOnce(() => { throw new Error('settings temporarily unavailable') })
+    vi.spyOn(settings, 'getSettings').mockImplementationOnce(() => { throw new Error('settings temporarily unavailable') })
     await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'unavailable' })
+    vi.spyOn(settings, 'getSettings').mockImplementationOnce(() => { throw new Error('settings temporarily unavailable') })
+    await expect(new Client().sendMessage('session', 'follow-up')).rejects.toMatchObject({ reason: 'unavailable' })
     expect(fetch).not.toHaveBeenCalled()
+  })
+  it('prepares a session and each message from one read of the settings, and reads the host token once per client', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/sessions')
+      ? Response.json({ id: 'created-session' }, { status: 201 })
+      : Response.json({ ok: true })))
+    const reads = vi.spyOn(settings, 'getSettings')
+    hostToken.reads = 0
+    const client = new Client()
+    await client.createSession({ initialMessage: 'first input', prewarmDefaults: { model: 'test-model' } })
+    expect(reads).toHaveBeenCalledTimes(1)
+    for (let i = 0; i < 3; i++) await client.sendMessage('session', `message ${i}`)
+    // One per message, never one kept for the conversation.
+    expect(reads).toHaveBeenCalledTimes(4)
+    // A queued follow-up keeps the running turn's runtime but still reads its policies.
+    await client.sendMessage('session', 'queued', undefined, { preserveRuntime: true })
+    expect(reads).toHaveBeenCalledTimes(5)
+    for (let i = 0; i < 3; i++) await client.fetch('/inputs/pending')
+    expect(hostToken.reads).toBe(1)
   })
   it.each(['create', 'send'] as const)('retries %s provider resolution failures before input dispatch', async operation => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
@@ -111,5 +135,26 @@ describe('runtime handoff rejection evidence', () => {
     const failure = await new Client().sendMessage('session', 'message').catch(error => error)
     expect(failure).toBeInstanceOf(Error)
     expect(failure).not.toBeInstanceOf(MessageNotAcceptedError)
+  })
+})
+describe('deleteSession', () => {
+  it.each([
+    ['the container has no such session', Response.json({ error: 'Session not found' }, { status: 404 }), true],
+    ['something else answered 404', new Response('Not Found', { status: 404 }), false],
+    ['the container failed', Response.json({ error: 'boom' }, { status: 500 }), false],
+  ])('when %s, reports dropped = %s', async (_case, response, dropped) => {
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    await expect(new Client().deleteSession('s1')).resolves.toBe(dropped)
+  })
+})
+
+describe('releaseSession', () => {
+  it.each([200, 404, 500])('requires the release endpoint to acknowledge HTTP %s', async (status) => {
+    const fetch = vi.fn(async () => Response.json({ success: status === 200 }, { status }))
+    vi.stubGlobal('fetch', fetch)
+    expect(await new Client().releaseSession('s1')).toBe(status === 200)
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:1234/sessions/s1/release', expect.objectContaining({
+      method: 'POST', signal: expect.any(AbortSignal),
+    }))
   })
 })

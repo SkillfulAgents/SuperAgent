@@ -1,18 +1,26 @@
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { ConnectionsList, NewIntegrationButton } from '@renderer/components/connections/connections-list'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { useRenderTracker } from '@renderer/lib/perf'
 
+/** A detail's Back label: the agent's name when Back goes to its own page, whatever that page carried in its URL. */
+export function detailBackLabel(detail: ConnectionsViewProps['detail'], slugs: readonly (string | undefined)[], agentName: string): string {
+  const toOwnPage = !!detail?.from && slugs.some((slug) => slug && detail.from!.split('?')[0] === `/agents/${encodeURIComponent(slug)}`)
+  if (detail?.from && !toOwnPage) return 'Back'
+  return detail?.source === 'home' ? agentName : `${agentName} Connections`
+}
+
 interface ConnectionsViewProps {
   agentSlug: string
-  /** Open detail overlay, decoded from the route's `?detail&source` search. */
-  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs' } | null
+  /** Open detail overlay, decoded from the route's `?detail&source&from` search. */
+  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs'; from?: string } | null
 }
 
 export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
   useRenderTracker('ConnectionsView')
   const navigate = useNavigate()
+  const router = useRouter()
   const { data: agent } = useAgent(agentSlug)
 
   const agentName = agent?.name ?? 'Agent'
@@ -43,13 +51,16 @@ export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
         detail: detail.rowKey,
         source: detail.source,
         connectionView: view === 'logs' ? 'logs' : undefined,
+        from: detail.from,
       },
     })
   }
-  // Back returns to wherever the detail view was opened from: the agent home for
-  // a home-card deep link, otherwise the connections list.
+  // Back returns to wherever the detail view was opened from: the `from` page
+  // (e.g. a review card), the agent home for a home-card deep link, otherwise the
+  // connections list.
   const closeDetail = () => {
-    if (detail?.source === 'home') goAgentHome()
+    if (detail?.from) router.history.push(detail.from)
+    else if (detail?.source === 'home') goAgentHome()
     else openList()
   }
 
@@ -69,7 +80,7 @@ export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
         agentSlug={agentSlug}
         detailRowKey={detail?.rowKey ?? null}
         detailView={detail?.view ?? 'details'}
-        detailBackLabel={detail?.source === 'home' ? agentName : `${agentName} Connections`}
+        detailBackLabel={detailBackLabel(detail, [agentSlug, agent?.slug, agent?.displaySlug], agentName)}
         onDetailViewChange={setDetailView}
         onDetailRowKeyChange={(key) => {
           if (key) openDetail(key)

@@ -163,3 +163,35 @@ describe('GET /api/platform-auth workspace icon contract (SUP-625)', () => {
     expect(body).not.toHaveProperty('orgIconUrl')
   })
 })
+
+describe('GET /api/platform-auth/billing plan wording (SUP-1143)', () => {
+  const BILLING = {
+    configured: true,
+    subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: null, creditScope: 'seat' as const },
+    seat: null,
+    orgPool: { poolBalanceCents: 0 },
+    pendingPlanChange: null,
+  }
+
+  it('words what the plan excludes, from the workspace denylist, so the client never reads it', async () => {
+    const { platformService } = await import('@shared/lib/services/platform-service')
+    vi.mocked(platformService.refreshBilling).mockResolvedValue({
+      ...BILLING,
+      plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] },
+      deniedModels: ['claude-fable-', 'gpt-6-astra'],
+    })
+
+    const body = await (await makeApp().request('/api/platform-auth/billing')).json()
+
+    expect(body).toMatchObject({ connected: true, excludedModels: 'Claude Fable and GPT Astra' })
+  })
+
+  it('reports nothing excluded for a proxy that predates plans', async () => {
+    const { platformService } = await import('@shared/lib/services/platform-service')
+    vi.mocked(platformService.refreshBilling).mockResolvedValue({ ...BILLING, plan: null, deniedModels: null })
+
+    const body = await (await makeApp().request('/api/platform-auth/billing')).json()
+
+    expect(body).toMatchObject({ connected: true, excludedModels: null })
+  })
+})

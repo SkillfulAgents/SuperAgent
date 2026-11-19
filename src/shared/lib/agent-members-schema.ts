@@ -7,6 +7,8 @@ export const agentMemberSchema = z.object({
   email: z.string(),
   image: z.union([avatarOverrideSchema, providerImageSchema]).nullable(),
   role: z.enum(['owner', 'user', 'viewer']),
+  /** Invited from a team directory and not joined yet. */
+  invited: z.literal(true).optional(),
 })
 export const agentMembersSchema = z.array(agentMemberSchema)
 export type AgentMember = z.infer<typeof agentMemberSchema>

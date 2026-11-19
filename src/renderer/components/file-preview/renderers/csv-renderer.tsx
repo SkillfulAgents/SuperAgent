@@ -6,7 +6,6 @@ import { TextRenderer } from './text-renderer'
 import { useFileContent } from './use-file-content'
 import { useCommentBox } from '../comments/use-comment-box'
 import type { CellRef } from '../comments/kinds'
-import { useFilePreview } from '@renderer/context/file-preview-context'
 
 interface CsvRendererProps {
   url: string
@@ -76,7 +75,6 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
   const [view, setView] = useState<'table' | 'raw'>('table')
   const containerRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
-  const { commentsEnabled } = useFilePreview()
 
   const { data, isLoading, error } = useFileContent(url)
   const sizeTruncated = data?.truncated ?? false
@@ -142,11 +140,11 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
           {parsed.columnCount} {parsed.columnCount === 1 ? 'column' : 'columns'} ·{' '}
           {rowCount.toLocaleString()} {rowCount === 1 ? 'row' : 'rows'}
         </span>
-        <div className="flex items-center gap-0.5 rounded-md border border-border/60 p-0.5">
+        <div className="flex items-center gap-0.5 rounded-item border border-border/60 p-0.5">
           <button
             onClick={() => setView('table')}
             className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
+              'flex items-center gap-1 rounded-icon px-1.5 py-0.5 transition-colors',
               view === 'table' ? 'bg-muted text-foreground' : 'hover:bg-muted/50',
             )}
             title="Table view"
@@ -157,7 +155,7 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
           <button
             onClick={() => setView('raw')}
             className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
+              'flex items-center gap-1 rounded-icon px-1.5 py-0.5 transition-colors',
               view === 'raw' ? 'bg-muted text-foreground' : 'hover:bg-muted/50',
             )}
             title="Raw text view"
@@ -169,7 +167,7 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
       </div>
 
       {view === 'raw' ? (
-        <TextRenderer url={url} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+        <TextRenderer url={url} filePath={filePath} agentSlug={agentSlug} />
       ) : (
         <>
           <div ref={gridRef}>

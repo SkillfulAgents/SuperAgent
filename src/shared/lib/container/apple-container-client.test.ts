@@ -62,6 +62,22 @@ const CLI_VERSION_1_1 = 'container CLI version 1.1.0 (build: release, commit: 59
 const cliAbsentError = () => Object.assign(new Error('sh: container: command not found'), { code: 127 })
 
 describe('AppleContainerClient.getInfoFromRuntime', () => {
+  it.each(['running', 'stopping', 'starting', 'unknown', 'stopped'])('requires an explicit stopped state (%s)', async (state) => {
+    mockExecWithPath.mockResolvedValue({ stdout: JSON.stringify({ status: { state } }) })
+    expect(await new AppleContainerClient({ agentId: 'abc123' }).isDefinitelyStopped()).toBe(state === 'stopped')
+  })
+
+  it('does not turn an unreachable container service into proof of exit', async () => {
+    mockExecWithPath.mockRejectedValue(new Error('service unavailable'))
+    expect(await new AppleContainerClient({ agentId: 'abc123' }).isDefinitelyStopped()).toBe(false)
+  })
+
+  it('confirms absence with a successful inventory including stopped containers', async () => {
+    mockExecWithPath.mockRejectedValueOnce(new Error('not found')).mockResolvedValueOnce({ stdout: 'another-agent\n' })
+    expect(await new AppleContainerClient({ agentId: 'abc123' }).isDefinitelyStopped()).toBe(true)
+    expect(mockExecWithPath).toHaveBeenLastCalledWith('container list --all --quiet', { timeoutMs: 5000 })
+  })
+
   it('treats status.state=running as running (Apple Container 1.x inspect shape)', async () => {
     mockExecWithPath.mockResolvedValue({
       stdout: JSON.stringify({

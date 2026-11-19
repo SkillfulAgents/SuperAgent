@@ -1,4 +1,4 @@
-import { xAgentFileTransferSchema } from '@shared/lib/proxy/x-agent-review'
+import { xAgentFileTransferSchema, xAgentRuntimeSchema } from '@shared/lib/proxy/x-agent-review'
 import { z } from 'zod'
 
 /**
@@ -16,6 +16,7 @@ export const USER_INPUT_REQUEST_KINDS = [
   'file',
   'remote_mcp',
   'browser_input',
+  'login',
   'script_run',
   'capability_review',
   'computer_use',
@@ -23,6 +24,7 @@ export const USER_INPUT_REQUEST_KINDS = [
   'x_agent_review',
   'account_reauth_required',
   'mcp_reauth_required',
+  'integration_setup',
 ] as const
 
 export const userInputRequestKindSchema = z.enum(USER_INPUT_REQUEST_KINDS)
@@ -110,6 +112,18 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
     }),
   }),
   baseRequest.extend({
+    kind: z.literal('login'),
+    payload: z.looseObject({
+      message: lenientString,
+      // Model input: each mapped field's kind and label (refs stay in the
+      // container). Normalized by the card, which never trusts its shape.
+      fields: z.unknown().optional(),
+      // Host context, read from the container once it located the fields:
+      // the frame origin the values may go to. Never model input.
+      login: z.unknown().optional(),
+    }),
+  }),
+  baseRequest.extend({
     kind: z.literal('script_run'),
     payload: z.looseObject({
       script: lenientString,
@@ -144,7 +158,27 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       targetPath: lenientString,
       matchedScopes: z.array(z.string()).optional().catch(undefined),
       scopeDescriptions: z.record(z.string(), z.string()).optional().catch(undefined),
+      scopeMetadata: z.array(z.object({
+        scope: z.string(),
+        description: z.string(),
+        label: z.enum(['read', 'write', 'destructive', 'other']),
+      })).optional().catch(undefined),
       endpointDescription: lenientString,
+      endpointAmbiguous: z.boolean().optional().catch(undefined),
+      requestBody: lenientString,
+      ruleOutcomes: z
+        .array(z.looseObject({
+          ruleId: z.string(),
+          version: z.number(),
+          effect: lenientString,
+          name: lenientString,
+          restatement: z.string(),
+          result: z.string(),
+          detail: lenientString,
+        }))
+        .optional()
+        .catch(undefined),
+      ruleProposal: z.looseObject({}).optional().catch(undefined),
     }),
   }),
   baseRequest.extend({
@@ -162,6 +196,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
           operation: lenientString,
           preview: lenientString,
           fileTransfer: xAgentFileTransferSchema.optional().catch(undefined),
+          runtime: xAgentRuntimeSchema.optional().catch(undefined),
           attachments: z.array(z.string()).optional().catch(undefined),
         })
         .optional()
@@ -178,6 +213,15 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
     }),
   }),
   baseRequest.extend({
+    kind: z.literal('integration_setup'),
+    payload: z.looseObject({
+      provider: lenientString,
+      reason: lenientString,
+      // Starting values for the setup form; never credentials.
+      prefill: z.record(z.string(), z.string()).optional().catch(undefined),
+    }),
+  }),
+  baseRequest.extend({
     kind: z.literal('mcp_reauth_required'),
     payload: z.looseObject({
       mcpId: lenientString,
@@ -190,6 +234,17 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
 
 export type PendingUserInputRequest = z.infer<typeof pendingUserInputRequestSchema>
 export type PendingUserInputRequestInput = z.input<typeof pendingUserInputRequestSchema>
+
+/**
+ * Kinds that hold a parked proxied call. One scoped to a session stays open
+ * after its turn ends, because a background script can still be waiting on it.
+ */
+export const PARKED_CALL_KINDS: ReadonlySet<PendingUserInputRequest['kind']> = new Set([
+  'proxy_review',
+  'x_agent_review',
+  'account_reauth_required',
+  'mcp_reauth_required',
+])
 
 /**
  * The lifecycle class of a kind. The names come from the pre-registry stores,

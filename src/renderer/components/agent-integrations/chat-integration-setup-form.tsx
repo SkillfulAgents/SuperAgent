@@ -7,11 +7,12 @@
  * inner form is keyed by provider so state resets when the provider changes.
  */
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { SessionTimeoutSelect } from './integration-settings-controls'
+import { DEFAULT_SESSION_TIMEOUT_HOURS } from '@shared/lib/agent-integrations/public'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 import {
   useCreateAgentIntegration,
@@ -20,48 +21,13 @@ import {
 } from '@renderer/hooks/use-agent-integrations'
 import { Loader2, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { slackAppManifest, type SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
+import { useAgent } from '@renderer/hooks/use-agents'
+import { SlackAppIconStep } from './slack-app-appearance'
+import { slackAppIdentity } from './slack-app-identity'
 
-function generateSlackManifest(botName: string): string {
-  return JSON.stringify({
-    display_information: { name: botName },
-    features: {
-      bot_user: { display_name: botName, always_online: true },
-      app_home: {
-        home_tab_enabled: false,
-        messages_tab_enabled: true,
-        messages_tab_read_only_enabled: false,
-      },
-    },
-    oauth_config: {
-      scopes: {
-        bot: [
-          'users:read',
-          'chat:write',
-          'files:read',
-          'files:write',
-          'im:history',
-          'im:read',
-          'im:write',
-          'channels:history',
-          'channels:read',
-          'groups:history',
-          'groups:read',
-          'mpim:history',
-          'mpim:read',
-          'reactions:write',
-        ],
-      },
-    },
-    settings: {
-      event_subscriptions: {
-        bot_events: ['message.im', 'message.channels', 'message.groups', 'message.mpim'],
-      },
-      interactivity: { is_enabled: true },
-      org_deploy_enabled: false,
-      socket_mode_enabled: true,
-      token_rotation_enabled: false,
-    },
-  }, null, 2)
+function generateSlackManifest(app: SlackAppIdentity): string {
+  return JSON.stringify(slackAppManifest(app), null, 2)
 }
 
 const IMESSAGE_SETUP_NUMBER_DISPLAY = '+1 (205) 396-7934'
@@ -144,29 +110,123 @@ const PROVIDER_INFO: Record<ChatProvider, {
   },
 }
 
+/** How a new chat integration behaves, chosen during setup. */
+export interface ChatSetupBehaviorValue {
+  showToolCalls: boolean
+  sessionTimeout: number | null
+  onlyMentioned: boolean
+  answerInThread: boolean
+  newSessionPerThread: boolean
+}
+
+export const DEFAULT_CHAT_SETUP_BEHAVIOR: ChatSetupBehaviorValue = {
+  showToolCalls: false, sessionTimeout: DEFAULT_SESSION_TIMEOUT_HOURS, onlyMentioned: true, answerInThread: true, newSessionPerThread: true,
+}
+
+/** Slack's channel behavior, as its stored config spells it. */
+export function slackBehaviorConfig(value: ChatSetupBehaviorValue): Record<string, boolean> {
+  return {
+    ...(value.onlyMentioned ? { onlyMentioned: true } : {}),
+    answerInThread: value.answerInThread,
+    newSessionPerThread: value.answerInThread && value.newSessionPerThread,
+  }
+}
+
+export function ChatSetupBehavior({ provider, value, onChange }: {
+  provider: ChatProvider
+  value: ChatSetupBehaviorValue
+  onChange: (value: ChatSetupBehaviorValue) => void
+}) {
+  const set = (change: Partial<ChatSetupBehaviorValue>) => onChange({ ...value, ...change })
+  return (
+    <div className={`${provider === 'slack' ? 'pt-6' : 'pt-4'} space-y-3`}>
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor="setup-show-tool-calls" className="text-xs font-normal cursor-pointer">
+          Show tool calls in chat
+        </Label>
+        <Switch
+          id="setup-show-tool-calls"
+          checked={value.showToolCalls}
+          onCheckedChange={showToolCalls => set({ showToolCalls })}
+        />
+      </div>
+
+      <SessionTimeoutSelect
+        id="setup-session-timeout"
+        value={value.sessionTimeout}
+        onCommit={sessionTimeout => set({ sessionTimeout })}
+        wrapperClassName=""
+      />
+
+      {provider === 'slack' && (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="setup-only-mentioned" className="text-xs font-normal cursor-pointer">
+              Only trigger on @mention
+            </Label>
+            <Switch
+              id="setup-only-mentioned"
+              checked={value.onlyMentioned}
+              onCheckedChange={onlyMentioned => set({ onlyMentioned })}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
+              Reply in thread (recommended)
+              <span className="block text-muted-foreground">Without it, the agent answers a top-level message at the top of the channel, in one conversation shared by the whole channel.</span>
+            </Label>
+            <Switch
+              id="setup-answer-thread"
+              checked={value.answerInThread}
+              onCheckedChange={(checked) => set({ answerInThread: checked, ...(!checked ? { newSessionPerThread: false } : {}) })}
+            />
+          </div>
+          {value.answerInThread && (
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
+                Separate conversation per thread (recommended)
+                <span className="block text-muted-foreground">Without it, every thread shares one conversation, and a reply can land in another request&apos;s thread.</span>
+              </Label>
+              <Switch
+                id="setup-session-per-thread"
+                checked={value.newSessionPerThread}
+                onCheckedChange={newSessionPerThread => set({ newSessionPerThread })}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 export function ChatIntegrationSetupForm({
   agentSlug,
   provider,
   onClose,
+  leading,
+  initial,
 }: {
   agentSlug: string
   provider: ChatProvider
   onClose: () => void
+  /** Starting values an agent suggested when it handed the setup over. */
+  initial?: Record<string, string>
+  /** Shown above the fields, e.g. Slack's choice of webhooks. */
+  leading?: ReactNode
 }) {
   const createIntegration = useCreateAgentIntegration()
   const testCredentials = useTestAgentIntegrationCredentials()
 
   const [formData, setFormData] = useState<Record<string, string>>({})
-  const [integrationName, setIntegrationName] = useState('')
-  const [showToolCalls, setShowToolCalls] = useState(false)
-  const [sessionTimeout, setSessionTimeout] = useState<number | null>(null)
-  const [onlyMentioned, setOnlyMentioned] = useState(true)
-  const [answerInThread, setAnswerInThread] = useState(false)
-  const [newSessionPerThread, setNewSessionPerThread] = useState(false)
+  const [integrationName, setIntegrationName] = useState(initial?.name ?? '')
+  const [behavior, setBehavior] = useState(DEFAULT_CHAT_SETUP_BEHAVIOR)
   const [testResult, setTestResult] = useState<{ valid: boolean; info?: string } | null>(null)
   const [slackSetupMode, setSlackSetupMode] = useState<'manifest' | 'manual'>('manifest')
   const [manifestCopied, setManifestCopied] = useState(false)
   const [manifestPreview, setManifestPreview] = useState(false)
+  const { data: agent } = useAgent(provider === 'slack' ? agentSlug : null)
+  const slackApp = slackAppIdentity(agent, integrationName)
 
   const info = PROVIDER_INFO[provider]
 
@@ -206,12 +266,7 @@ export function ChatIntegrationSetupForm({
       return
     }
     try {
-      const config: Record<string, unknown> = { ...formData }
-      if (provider === 'slack') {
-        if (onlyMentioned) config.onlyMentioned = true
-        if (answerInThread) config.answerInThread = true
-        if (answerInThread && newSessionPerThread) config.newSessionPerThread = true
-      }
+      const config: Record<string, unknown> = { ...formData, ...(provider === 'slack' ? slackBehaviorConfig(behavior) : {}) }
       if (provider === 'imessage') {
         config.gatewayUrl = 'https://imsgw.com'
       }
@@ -220,8 +275,8 @@ export function ChatIntegrationSetupForm({
         provider,
         name: integrationName.trim() || undefined,
         config,
-        showToolCalls,
-        sessionTimeout,
+        showToolCalls: behavior.showToolCalls,
+        sessionTimeout: behavior.sessionTimeout,
       })
       onClose()
     } catch {
@@ -251,7 +306,7 @@ export function ChatIntegrationSetupForm({
                     size="sm"
                     className="h-7 px-2 text-xs"
                     onClick={async () => {
-                      await navigator.clipboard.writeText(generateSlackManifest(integrationName.trim() || 'Gamut Bot'))
+                      await navigator.clipboard.writeText(generateSlackManifest(slackApp))
                       setManifestCopied(true)
                       setTimeout(() => setManifestCopied(false), 2000)
                     }}
@@ -268,11 +323,12 @@ export function ChatIntegrationSetupForm({
                   </Button>
                 </div>
                 {manifestPreview && (
-                  <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
-                    {generateSlackManifest(integrationName.trim() || 'Gamut Bot')}
+                  <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-card p-2 overflow-x-auto max-h-40 select-all">
+                    {generateSlackManifest(slackApp)}
                   </pre>
                 )}
               </li>
+              {agent?.avatar && <li className="text-sm font-normal text-foreground"><SlackAppIconStep agent={agent} /></li>}
               <li className="text-sm font-normal text-foreground">In Basic Information section → Scroll to App-Level Tokens → Click Generate Tokens and Scopes</li>
               <li className="text-sm font-normal text-foreground">Name your token → Click Add Scope → Select connections:write → Click Generate</li>
               <li className="text-sm font-normal text-foreground">Copy the token → Paste in the App-Level Token field in the setup form</li>
@@ -296,6 +352,7 @@ export function ChatIntegrationSetupForm({
               {info.steps.map((step, i) => (
                 <li key={i} className="text-sm font-normal text-foreground">{step}</li>
               ))}
+              {agent?.avatar && <li className="text-sm font-normal text-foreground"><SlackAppIconStep agent={agent} withColor /></li>}
             </ol>
             <p className="pt-4 text-xs text-muted-foreground">
               <button
@@ -317,7 +374,7 @@ export function ChatIntegrationSetupForm({
           </div>
         )}
         {info.note && (
-          <div className="rounded-md border border-amber-300/60 bg-amber-100/70 dark:border-amber-700/50 dark:bg-amber-950/40 p-3">
+          <div className="rounded-card border border-amber-300/60 bg-amber-100/70 dark:border-amber-700/50 dark:bg-amber-950/40 p-3">
             <p className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">{info.note}</p>
           </div>
         )}
@@ -363,10 +420,11 @@ export function ChatIntegrationSetupForm({
         </Button>
       </>}
     >
+      {leading}
       <IntegrationSetupField
         id="setup-integration-name" label="Integration name"
         value={integrationName} onChange={e => setIntegrationName(e.target.value)}
-        placeholder={`My ${info.label} integration`}
+        placeholder={agent?.name || `My ${info.label} integration`}
       />
 
       {info.fields.map(field => (
@@ -378,65 +436,7 @@ export function ChatIntegrationSetupForm({
         />
       ))}
 
-      <div className={`${provider === 'slack' ? 'pt-6' : 'pt-4'} space-y-3`}>
-        <div className="flex items-center justify-between gap-2">
-          <Label htmlFor="setup-show-tool-calls" className="text-xs font-normal cursor-pointer">
-            Show tool calls in chat
-          </Label>
-          <Switch
-            id="setup-show-tool-calls"
-            checked={showToolCalls}
-            onCheckedChange={setShowToolCalls}
-          />
-        </div>
-
-        <SessionTimeoutSelect
-          id="setup-session-timeout"
-          value={sessionTimeout}
-          onCommit={setSessionTimeout}
-          wrapperClassName=""
-        />
-
-        {provider === 'slack' && (
-          <>
-            <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="setup-only-mentioned" className="text-xs font-normal cursor-pointer">
-                Only trigger on @mention
-              </Label>
-              <Switch
-                id="setup-only-mentioned"
-                checked={onlyMentioned}
-                onCheckedChange={setOnlyMentioned}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
-                Reply in thread
-              </Label>
-              <Switch
-                id="setup-answer-thread"
-                checked={answerInThread}
-                onCheckedChange={(checked) => {
-                  setAnswerInThread(checked)
-                  if (!checked) setNewSessionPerThread(false)
-                }}
-              />
-            </div>
-            {answerInThread && (
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
-                  New session per thread
-                </Label>
-                <Switch
-                  id="setup-session-per-thread"
-                  checked={newSessionPerThread}
-                  onCheckedChange={setNewSessionPerThread}
-                />
-              </div>
-            )}
-          </>
-        )}
-      </div>
+      <ChatSetupBehavior provider={provider} value={behavior} onChange={setBehavior} />
     </IntegrationSetupLayout>
   )
 }

@@ -14,6 +14,10 @@ export const providerErrorPresentationSchema = z.object({
   component: z.string().optional(),
   /** Final CTA URL for the component, resolved by the provider. Unset = no link to offer. */
   href: z.string().optional(),
+  /** The catalog model the error is about, resolved by the provider (e.g. the one a plan refused). */
+  model: z.object({ id: z.string(), label: z.string() }).optional(),
+  /** Plain-text notice for chat integrations. Unset = their generic message for the error code. */
+  chatText: z.string().optional(),
 })
 
 export type ProviderErrorPresentation = z.infer<typeof providerErrorPresentationSchema>
@@ -47,6 +51,36 @@ export function extractErrorMessage(body: unknown): string {
     if (typeof record.error === 'string' && record.error.trim()) return record.error
   }
   return body == null ? '' : String(body)
+}
+
+// Balanced-brace scan: survives prose after the JSON blob, which a greedy
+// first-{ to last-} regex would not.
+export function parseFirstJsonObject(raw: string): unknown {
+  for (let start = raw.indexOf('{'); start !== -1; start = raw.indexOf('{', start + 1)) {
+    let depth = 0
+    let inString = false
+    for (let i = start; i < raw.length; i++) {
+      const ch = raw[i]
+      if (inString) {
+        if (ch === '\\') i++
+        else if (ch === '"') inString = false
+        continue
+      }
+      if (ch === '"') inString = true
+      else if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          try {
+            return JSON.parse(raw.slice(start, i + 1))
+          } catch {
+            break
+          }
+        }
+      }
+    }
+  }
+  return undefined
 }
 
 export function inferErrorStatus(raw: string): number | undefined {

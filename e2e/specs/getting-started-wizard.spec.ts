@@ -1,23 +1,8 @@
 import { test, expect } from '@playwright/test'
-import fs from 'fs'
-import path from 'path'
 import { AppPage } from '../pages/app.page'
 import { WizardPage } from '../pages/wizard.page'
 
 test.describe.configure({ mode: 'serial' })
-
-const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
-
-function readSettingsJson(settingsJsonPath: string) {
-  try {
-    return JSON.parse(fs.readFileSync(settingsJsonPath, 'utf-8')) as {
-      app?: { hostBrowserProvider?: string }
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Failed to read ${settingsJsonPath}: ${message}`)
-  }
-}
 
 /**
  * Manual wizard steps (0-indexed):
@@ -164,6 +149,44 @@ test.describe('Getting Started Wizard', () => {
     // Skip on last step finishes
     await wizardPage.clickSkip()
     await wizardPage.expectNotVisible()
+  })
+
+  test('Steel, an advanced browser, needs its API key before Next', async ({ page, request }) => {
+    await request.put('/api/user-settings', { data: { setupCompleted: false } })
+    await appPage.goto()
+    await appPage.waitForAppLoaded()
+    await wizardPage.expectVisible()
+    await wizardPage.chooseManualSetup()
+    await wizardPage.clickNext() // LLM -> Model
+    await wizardPage.expectStep(1)
+    await wizardPage.clickNext() // Model -> Browser
+    await wizardPage.expectStep(2)
+
+    await page.getByText('Show advanced options').click()
+    await page.getByRole('button', { name: /^Steel/ }).click()
+    await expect(page.locator('#steel-api-key')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-next"]')).toBeDisabled()
+
+    await page.getByRole('button', { name: /^Tab Tender/ }).click()
+    await expect(page.locator('#tabtender-url')).toBeVisible()
+    await expect(page.locator('#tabtender-api-key')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-next"]')).toBeDisabled()
+
+    await page.getByRole('button', { name: /^Built-in Browser/ }).click()
+    await expect(page.locator('[data-testid="wizard-next"]')).toBeEnabled()
+
+    // Finish the wizard so the next test starts from its welcome screen.
+    await wizardPage.clickNext() // Browser -> Composio
+    await wizardPage.expectStep(3)
+    await wizardPage.clickSkip() // Composio -> Runtime
+    await wizardPage.expectStep(4)
+    await wizardPage.clickNext() // Runtime -> Privacy
+    await wizardPage.expectStep(5)
+    await wizardPage.clickNext() // Privacy -> Agent
+    await wizardPage.expectStep(6)
+    await wizardPage.clickSkip() // Agent (skip = finish)
+    await wizardPage.expectNotVisible()
+    await request.put('/api/settings', { data: { app: { hostBrowserProvider: null } } })
   })
 
   test('skip buttons work on optional steps', async ({ request }) => {
@@ -342,15 +365,11 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickSkip()  // Agent -> finish
     await wizardPage.expectNotVisible()
 
-    // Assert via API that hostBrowserProvider was persisted as 'chrome'
+    // Assert via API that hostBrowserProvider was persisted as 'chrome'. The
+    // server keeps no settings in memory: GET reads what the database holds.
     const postRes = await request.get('/api/settings')
     const postSettings = await postRes.json()
     expect(postSettings.app?.hostBrowserProvider).toBe('chrome')
-
-    // Also validate on-disk settings.json to rule out an API-only illusion
-    const settingsJsonPath = path.join(e2eDataDir, 'settings.json')
-    const onDisk = readSettingsJson(settingsJsonPath)
-    expect(onDisk.app?.hostBrowserProvider).toBe('chrome')
   })
 
   test('re-run wizard button opens wizard from settings', async ({ request }) => {

@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { getAllProviders } from '@shared/lib/account-providers'
+import { getDefaultAccountProvider } from '@shared/lib/account-providers/provider-factory'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { Authenticated } from '../middleware/auth'
 
@@ -9,8 +10,9 @@ providers.use('*', Authenticated())
 
 // GET /api/providers - List the OAuth providers this host can connect
 providers.get('/', async (c) => {
-  const platformComposio = isPlatformComposioActive()
-  const providerList = getAllProviders().filter((p) => !p.unlisted && (!p.platformOnly || platformComposio))
+  const platformComposio = await isPlatformComposioActive()
+  const providerList = getAllProviders((await getDefaultAccountProvider()).name)
+    .filter((p) => !p.unlisted && (!p.platformOnly || platformComposio))
   return c.json({ providers: providerList })
 })
 

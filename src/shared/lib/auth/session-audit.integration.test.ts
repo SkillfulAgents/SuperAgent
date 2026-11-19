@@ -102,11 +102,13 @@ beforeAll(async () => {
   const { _setOidcJwksResolverForTest } = await import('./oidc-jwt')
   _setOidcJwksResolverForTest(createLocalJWKSet({ keys: [jwk] }) as never)
 
-  const { getAppBaseUrl } = await import('./config')
-  audience = getAppBaseUrl()
-
+  // Settings live in the app database, so it opens before anything reads them.
   dbModule = await import('@shared/lib/db')
   await dbModule.openDatabase()
+
+  const { getAppBaseUrl } = await import('./config')
+  audience = await getAppBaseUrl()
+
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(tmpDir, 'superagent.db'))
   authModule = await import('./index')
@@ -135,17 +137,15 @@ beforeEach(async () => {
   // Approval defaults to on, which bans every user after the first and would
   // make "two users, two methods" fail for a reason that has nothing to do
   // with auditing.
-  fs.writeFileSync(
-    path.join(tmpDir, 'settings.json'),
-    JSON.stringify({ auth: { requireAdminApproval: false } }),
-  )
-  const { clearSettingsCache } = await import('@shared/lib/config/settings')
-  clearSettingsCache()
+  const { mutateSettings } = await import('@shared/lib/config/settings')
+  await mutateSettings((settings) => {
+    settings.auth = { requireAdminApproval: false }
+  })
 })
 
 describe('browser password login', () => {
   it('writes one session:created row per sign-up and sign-in', async () => {
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     const email = 'browser-user@example.com'
 
     // Registration auto-signs-in, so this is itself a session-creation path.
@@ -163,7 +163,7 @@ describe('browser password login', () => {
   })
 
   it('attributes the row to the signed-in user and the session it created', async () => {
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     const email = 'attributed@example.com'
     await auth.api.signUpEmail({ body: { email, password: PASSWORD, name: 'Attributed' } })
 
@@ -177,7 +177,7 @@ describe('browser password login', () => {
   })
 
   it('writes no session row for a failed password attempt', async () => {
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     const email = 'wrong-password@example.com'
     await auth.api.signUpEmail({ body: { email, password: PASSWORD, name: 'Wrong Password' } })
 
@@ -193,7 +193,7 @@ describe('browser password login', () => {
 describe('admin impersonation', () => {
   /** Sign a user in and return a bearer usable as that user's credentials. */
   async function signInAs(email: string): Promise<string> {
-    const res = await authModule.getAuth().api.signInEmail({
+    const res = await (await authModule.getAuth()).api.signInEmail({
       body: { email, password: PASSWORD },
       asResponse: true,
     })
@@ -203,11 +203,12 @@ describe('admin impersonation', () => {
   }
 
   async function seedAdminAndTarget(): Promise<{ adminId: string; targetId: string }> {
-    const auth = authModule.getAuth()
-    // First user is promoted to admin by the user.create.after hook.
+    const auth = await authModule.getAuth()
+    // A platform-controlled deployment promotes nobody for signing up first.
     await auth.api.signUpEmail({
       body: { email: 'admin@example.com', password: PASSWORD, name: 'Admin' },
     })
+    sqlite.prepare(`UPDATE user SET role = 'admin' WHERE email = ?`).run('admin@example.com')
     await auth.api.signUpEmail({
       body: { email: 'target@example.com', password: PASSWORD, name: 'Target' },
     })
@@ -222,7 +223,7 @@ describe('admin impersonation', () => {
     const adminToken = await signInAs('admin@example.com')
     sqlite.prepare(`DELETE FROM audit_log`).run()
 
-    await authModule.getAuth().api.impersonateUser({
+    await (await authModule.getAuth()).api.impersonateUser({
       body: { userId: targetId },
       headers: new Headers({ authorization: `Bearer ${adminToken}` }),
     })
@@ -241,7 +242,7 @@ describe('admin impersonation', () => {
     const adminToken = await signInAs('admin@example.com')
     sqlite.prepare(`DELETE FROM audit_log`).run()
 
-    await authModule.getAuth().api.impersonateUser({
+    await (await authModule.getAuth()).api.impersonateUser({
       body: { userId: targetId },
       headers: new Headers({ authorization: `Bearer ${adminToken}` }),
     })
@@ -341,7 +342,7 @@ describe('persisted creation method', () => {
   }
 
   it('stamps a password login onto the session row', async () => {
-    await authModule.getAuth().api.signUpEmail({
+    await (await authModule.getAuth()).api.signUpEmail({
       body: { email: 'stamp@example.com', password: PASSWORD, name: 'Stamp' },
     })
 
@@ -355,10 +356,11 @@ describe('persisted creation method', () => {
   })
 
   it('stamps an impersonation onto the session row', async () => {
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     await auth.api.signUpEmail({
       body: { email: 'admin2@example.com', password: PASSWORD, name: 'Admin' },
     })
+    sqlite.prepare(`UPDATE user SET role = 'admin' WHERE email = ?`).run('admin2@example.com')
     await auth.api.signUpEmail({
       body: { email: 'target2@example.com', password: PASSWORD, name: 'Target' },
     })
@@ -403,14 +405,12 @@ describe('concurrent-session cap', () => {
   }
 
   async function seedUserAtCap(): Promise<string> {
-    fs.writeFileSync(
-      path.join(tmpDir, 'settings.json'),
-      JSON.stringify({ auth: { requireAdminApproval: false, maxConcurrentSessions: CAP } }),
-    )
-    const { clearSettingsCache } = await import('@shared/lib/config/settings')
-    clearSettingsCache()
+    const { mutateSettings } = await import('@shared/lib/config/settings')
+    await mutateSettings((settings) => {
+      settings.auth = { requireAdminApproval: false, maxConcurrentSessions: CAP }
+    })
 
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     // The exchange provisions this same identity from the grant's email, so
     // the desktop session and the browser logins land on one user.
     await auth.api.signUpEmail({
@@ -431,7 +431,7 @@ describe('concurrent-session cap', () => {
     expect((await exchange(await signGrant())).status).toBe(200)
     const exchanged = liveSessions(userId).find((s) => s.creation_method === 'token-exchange')!
 
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     for (let i = 0; i < CAP + 2; i++) {
       await auth.api.signInEmail({ body: { email: 'member@example.com', password: PASSWORD } })
     }
@@ -459,7 +459,7 @@ describe('concurrent-session cap', () => {
   it('does not spend a slot on the exchanged session', async () => {
     // Installing the app must not cost the user a browser session.
     const userId = await seedUserAtCap()
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     for (let i = 0; i < CAP - 1; i++) {
       await auth.api.signInEmail({ body: { email: 'member@example.com', password: PASSWORD } })
     }
@@ -476,7 +476,7 @@ describe('concurrent-session cap', () => {
 
 describe('symmetry', () => {
   it('makes both credential sources visible in one filterable object', async () => {
-    const auth = authModule.getAuth()
+    const auth = await authModule.getAuth()
     await auth.api.signUpEmail({
       body: { email: 'both@example.com', password: PASSWORD, name: 'Both' },
     })

@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,7 +44,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 }))
 
 vi.mock('@shared/lib/container/host-token-store', () => ({
-  getOrCreateHostToken: vi.fn(() => 'test-host-token'),
+  getOrCreateHostToken: vi.fn(async () => 'test-host-token'),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -68,12 +71,12 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
 }))
 
-// The timeout is read at every arm, so the tests change it in place.
+// The timeout is read at every arm and every fire, so the tests change it in place.
 const settings = { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: { autoSleepTimeoutMinutes: 30 } }
 
+const readSettings = vi.fn(async () => settings)
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => settings,
-  updateSettings: vi.fn(),
+  getSettings: () => readSettings(),
 }))
 
 vi.mock('@shared/lib/config/data-dir', () => ({
@@ -83,41 +86,26 @@ vi.mock('@shared/lib/config/data-dir', () => ({
 const mockHasActive = vi.fn(() => false)
 const mockHasAwaiting = vi.fn(() => false)
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    hasActiveSessionsForAgent: () => mockHasActive(),
-    hasSessionsAwaitingInputForAgent: () => mockHasAwaiting(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
 
-vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  copyChromeProfileData: vi.fn().mockReturnValue(false),
-}))
-
-vi.mock('@shared/lib/computer-use/executor', () => ({ ungrabAC: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('@shared/lib/computer-use/executor', () => ({ endComputerUseSessions: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
-  computerUsePermissionManager: { getGrabbedApp: () => null, clearGrabbedApp: vi.fn() },
+  computerUsePermissionManager: { getActiveApp: () => null, clearActiveApp: vi.fn() },
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({}))
-vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false }))
+vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAgent: () => 'UTC' }))
-vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }) }))
+vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }), remounted: async () => {} }))
 
 import { containerHost } from './container-host'
+import { NO_LIVE_SESSIONS } from './agent-sessions-access'
+
+// The agent's live sessions, as the runtime asks them whether it is busy.
+containerHost.attachAgentSessions({
+  peek: () => ({ ...NO_LIVE_SESSIONS, hasActive: () => mockHasActive(), hasAwaitingInput: () => mockHasAwaiting() }),
+})
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE
@@ -151,10 +139,14 @@ describe('ContainerRuntime idle alarm', () => {
     vi.restoreAllMocks()
   })
 
+  /** Let the alarm's timeout read land (it is a settings read), without moving the clock. */
+  const settle = () => vi.advanceTimersByTimeAsync(0)
+
   async function startRuntime() {
     const runtime = containerHost.runtime(SLUG)
     await runtime.ensureRunning()
     expect(runtime.getCachedInfo().status).toBe('running')
+    await settle()
     return runtime
   }
 
@@ -222,6 +214,75 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).toHaveBeenCalledTimes(1)
   })
 
+  it('re-arms every running agent from one read of the timeout', async () => {
+    const slugs = ['alarm-a', 'alarm-b', 'alarm-c', 'alarm-d']
+    for (const slug of slugs) await containerHost.runtime(slug).ensureRunning()
+    await settle()
+    await vi.advanceTimersByTimeAsync(10 * MINUTE)
+    settings.app.autoSleepTimeoutMinutes = 15
+    readSettings.mockClear()
+    containerHost.rearmIdleAlarms()
+    await settle()
+    expect(readSettings).toHaveBeenCalledTimes(1)
+    // Every one of them now sleeps 15 minutes after its start, not 30.
+    await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(slugs.length)
+    for (const slug of slugs) containerHost.dropRuntime(slug)
+  })
+
+  it('a re-arm after a write uses a read made after it, not a mark\'s read already in flight', async () => {
+    const runtime = await startRuntime()
+    // A session write starts a timeout read that lands late, with the old value.
+    let landOldRead!: () => void
+    readSettings.mockImplementationOnce(() => new Promise((resolve) => {
+      landOldRead = () => resolve({ ...settings, app: { autoSleepTimeoutMinutes: 30 } })
+    }))
+    runtime.noteSessionActivity()
+    // The write commits 5 minutes; the route re-arms after it.
+    settings.app.autoSleepTimeoutMinutes = 5
+    containerHost.rearmIdleAlarms()
+    await settle()
+    landOldRead()
+    await settle()
+    await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a re-arm given the committed timeout reads nothing', async () => {
+    await startRuntime()
+    settings.app.autoSleepTimeoutMinutes = 5
+    readSettings.mockClear()
+    containerHost.rearmIdleAlarms(5 * MINUTE)
+    await settle()
+    expect(readSettings).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a burst of session writes reads the timeout once', async () => {
+    const runtime = await startRuntime()
+    readSettings.mockClear()
+    for (let i = 0; i < 10; i++) runtime.noteSessionActivity()
+    await settle()
+    expect(readSettings).toHaveBeenCalledTimes(1)
+    // The fire reads it again before deciding (busy then: it waits another window).
+    mockHasActive.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(readSettings).toHaveBeenCalledTimes(2)
+    expect(mockStop).not.toHaveBeenCalled()
+  })
+
+  it('a timeout changed elsewhere, with nothing here re-arming, applies when the alarm fires', async () => {
+    await startRuntime()
+    // Another process lengthened it: the alarm fires on the old deadline,
+    // reads the new timeout, and waits out the rest.
+    settings.app.autoSleepTimeoutMinutes = 60
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(mockStop).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(TIMEOUT)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
   it('retries when the stop did not complete, and gives up once the container is gone', async () => {
     mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false })
     const runtime = await startRuntime()
@@ -248,6 +309,7 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).not.toHaveBeenCalled()
 
     await runtime.ensureRunning()
+    await settle()
     expect(runtime.idleAlarm.isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
     expect(mockStop).toHaveBeenCalledTimes(1)
@@ -268,6 +330,7 @@ describe('ContainerRuntime idle alarm', () => {
 
     finishStart({ status: 'running', port: 4001 })
     await starting
+    await settle()
     expect(runtime.getCachedInfo().status).toBe('running')
     // The start is the newest mark: a full window from now, not the stale one.
     expect(runtime.idleAlarm.isArmed()).toBe(true)
@@ -290,10 +353,10 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).not.toHaveBeenCalled()
 
     // The next sync sees it running: the clock was never reset, so the alarm
-    // arms from the original start mark, which is already past the timeout.
+    // arms from the original start mark, which is already past the timeout,
+    // and fires as soon as its timeout read lands.
     await runtime.syncAgentStatus()
     expect(runtime.getCachedInfo().status).toBe('running')
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(0)
     expect(mockStop).toHaveBeenCalledTimes(1)
     expect(runtime.getCachedInfo().status).toBe('stopped')

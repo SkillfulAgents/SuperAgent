@@ -7,6 +7,11 @@ export interface AddChatIntegrationInput {
   name?: string
 }
 
+export interface AuthorizeAgentIntegrationInput {
+  integration_id?: string
+  config?: Record<string, unknown>
+}
+
 export interface SendChatMessageInput {
   integration_id?: string
   message?: string
@@ -24,9 +29,9 @@ function truncate(s: string | undefined, max = 80): string | null {
 }
 
 export const listAvailableChatProvidersDef = {
-  displayName: 'List Chat Providers',
+  displayName: 'List Integration Providers',
   parseInput: (i: unknown) => asObj<ListAvailableChatProvidersInput>(i),
-  getSummary: () => 'List supported chat providers',
+  getSummary: () => 'List supported integration providers',
 } as const
 
 export const listAgentIntegrationsDef = {
@@ -36,13 +41,19 @@ export const listAgentIntegrationsDef = {
 } as const
 
 export const addChatIntegrationDef = {
-  displayName: 'Add Chat Integration',
+  displayName: 'Add Agent Integration',
   parseInput: (i: unknown) => asObj<AddChatIntegrationInput>(i),
   getSummary: (i: unknown) => {
     const { provider, name } = asObj<AddChatIntegrationInput>(i)
-    if (name) return `Add ${provider || 'chat'}: ${name}`
-    return provider ? `Add ${provider} integration` : 'Add chat integration'
+    if (name) return `Add ${provider || 'integration'}: ${name}`
+    return provider ? `Add ${provider} integration` : 'Add agent integration'
   },
+} as const
+
+export const authorizeAgentIntegrationDef = {
+  displayName: 'Authorize Agent Integration',
+  parseInput: (i: unknown) => asObj<AuthorizeAgentIntegrationInput>(i),
+  getSummary: () => 'Authorize the integration',
 } as const
 
 export const sendChatMessageDef = {

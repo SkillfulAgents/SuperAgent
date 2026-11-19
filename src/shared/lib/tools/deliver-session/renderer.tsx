@@ -62,7 +62,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
       )}
       {result && (
         <div
-          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'}`}
+          className={`bg-background text-xs rounded-item p-2 ${isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'}`}
         >
           {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
         </div>
@@ -105,7 +105,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
         e.stopPropagation()
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: targetSlug, sessionId: session_id } })
       }}
-      className="inline-flex min-w-0 max-w-full items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted whitespace-nowrap"
+      className="inline-flex min-w-0 max-w-full items-center gap-1 px-2 py-0.5 rounded-icon border text-xs text-muted-foreground hover:text-foreground hover:bg-muted whitespace-nowrap"
     >
       <MessageSquare className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">{label}</span>

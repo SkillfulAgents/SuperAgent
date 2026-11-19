@@ -1,6 +1,10 @@
 import type { AgentIntegrationRecord } from './types'
+import type { PublicProvisionedApp } from './provisioned-app'
 
 export type IntegrationCapability = 'reset_conversation' | 'session_timeout' | 'tool_activity'
+
+/** Inactivity before a new conversation starts, for a new integration that supports `session_timeout`. */
+export const DEFAULT_SESSION_TIMEOUT_HOURS = 6
 
 /** Credential-free fields shared by every integration family. */
 export type PublicAgentIntegration<Settings extends object = object> = Pick<AgentIntegrationRecord,
@@ -19,6 +23,8 @@ export type PublicAgentIntegration<Settings extends object = object> = Pick<Agen
   reconnectRequired?: boolean
   capabilities?: readonly IntegrationCapability[]
   managementAccess?: 'user' | 'owner'
+  /** The app a team directory created for this installation; absent for one set up by hand. */
+  provisionedApp?: PublicProvisionedApp
 }
 
 /** Missing capabilities only occurs with legacy chat API responses. */

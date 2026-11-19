@@ -67,7 +67,7 @@ function ProviderCard({
 }: ProviderCardProps) {
   return (
     <div
-      className={`rounded-xl border bg-background transition-colors ${
+      className={`rounded-card border bg-background transition-colors ${
         selected ? 'border-primary' : disabled ? 'opacity-60' : 'hover:border-muted-foreground/40'
       }`}
       data-testid={`web-provider-card-${id}`}

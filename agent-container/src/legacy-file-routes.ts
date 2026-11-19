@@ -41,14 +41,22 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
           const file = await resolveWorkspaceRegularFile(sourcePath, workspaceRoot)
           c.header('Content-Type', 'application/octet-stream')
           c.header('Content-Length', String(file.size))
+          c.header('Accept-Ranges', 'bytes')
           c.header('Cache-Control', 'private, no-store')
           return c.body(null)
         }
-        const file = await openWorkspaceFile(sourcePath, workspaceRoot)
+        const file = await openWorkspaceFile(sourcePath, workspaceRoot, c.req.header('range'))
         c.header('Content-Type', 'application/octet-stream')
-        c.header('Content-Length', String(file.size))
+        c.header('Accept-Ranges', 'bytes')
         c.header('Cache-Control', 'private, no-store')
-        return c.body(Readable.toWeb(file.stream) as ReadableStream<Uint8Array>)
+        const body = Readable.toWeb(file.stream) as ReadableStream<Uint8Array>
+        if (!file.range) {
+          c.header('Content-Length', String(file.size))
+          return c.body(body)
+        }
+        c.header('Content-Range', `bytes ${file.range.start}-${file.range.end}/${file.size}`)
+        c.header('Content-Length', String(file.range.end - file.range.start + 1))
+        return c.body(body, 206)
       }
       if (!stats) throw new WorkspaceFileError('File or directory not found', 404)
       if (stats.isDirectory()) {
@@ -61,7 +69,7 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
       }
       return c.json({ name: path.posix.basename(filePath), path: filePath, type: 'file', size: stats.size, modifiedAt: stats.mtime })
     } catch (error) {
-      if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
+      if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status, error.headers)
       console.error('Error accessing file:', error)
       return c.json({ error: 'Failed to access file' }, 500)
     }
@@ -70,6 +78,13 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
   app.post('/files/*', async (c, next) => {
     try {
       const filePath = routePath(c.req.url)
+      // Matched here by suffix: a `*` in the middle of a route pattern takes one path segment only,
+      // so a pattern like /files/*/mkdir never saw a nested folder.
+      if (filePath.endsWith('/mkdir')) {
+        const folder = normalizeWorkspaceFilePath(filePath.slice(0, -'/mkdir'.length), workspaceRoot)
+        await fs.promises.mkdir(folder.localPath, { recursive: true })
+        return c.json({ success: true, path: folder.relativePath })
+      }
       if (!filePath.endsWith('/upload')) return next()
       const file = await writeWorkspaceFile(filePath.slice(0, -'/upload'.length), c.req.raw.body, { workspaceRoot })
       return c.json({ success: true, path: file.relativePath })

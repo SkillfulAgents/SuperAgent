@@ -7,6 +7,20 @@ import { useAttachments } from './use-attachments'
 describe('useAttachments initial attachments', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('waits for the uploaded inline URL instead of creating an unusable HEIC blob preview', () => {
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:broken-heic')
+    const attachment: Attachment = {
+      type: 'file',
+      id: 'image-1',
+      file: new File(['heic'], 'image.heic', { type: 'image/heic' }),
+    }
+
+    const { result } = renderHook(() => useAttachments({ initialAttachments: [attachment] }))
+
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(result.current.attachments[0]).toEqual(attachment)
+  })
+
   it('recreates and later revokes a carried image preview', () => {
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:new-preview')
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})

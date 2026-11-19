@@ -81,6 +81,31 @@ describe('BrowserCredentialPicker', () => {
     })
   })
 
+  it('sends a sign-in form\'s save choice with the opaque id', async () => {
+    const user = userEvent.setup()
+    mockApiFetch
+      .mockResolvedValueOnce(response({
+        provider: 'apple-passwords',
+        providerLabel: 'Apple Passwords',
+        status: 'ready',
+        installable: true,
+        origin: 'https://example.com',
+        suggestions: [{ id: 'opaque-1', username: 'person@example.com', domain: 'example.com' }],
+      }))
+      .mockResolvedValueOnce(response({ success: true, filled: 2, failed: 0, submitted: true, problems: [] }))
+
+    render(<BrowserCredentialPicker {...props} kind="login" loginOptions={{ save: true, sharedAgentAcknowledged: true }} />)
+    await user.click(await screen.findByTestId('credential-suggestion-opaque-1'))
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledTimes(2))
+    expect(mockApiFetch.mock.calls[1][0]).toBe('/api/agents/agent%20a/sessions/session%2F1/fill-login-credential')
+    expect(JSON.parse(mockApiFetch.mock.calls[1][1].body)).toEqual({
+      toolUseId: 'tool?1',
+      credentialId: 'opaque-1',
+      save: true,
+      sharedAgentAcknowledged: true,
+    })
+  })
+
   it('shows reveal and copy controls when the browser fields cannot be reached', async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)

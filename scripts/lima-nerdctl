@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs nerdctl inside the app's Lima VM. scripts/download-lima.sh copies this
+# next to the bundled limactl, so it ships inside the signed app bundle and the
+# app never has to write an executable at runtime.
+#
+# The app exports the Lima home and VM name before it spawns this script; fail
+# loudly without them rather than fall back to ~/.lima, which may hold the
+# user's own VMs.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export LIMA_HOME="${SUPERAGENT_LIMA_HOME:?SUPERAGENT_LIMA_HOME is not set}"
+exec "$(dirname "$0")/limactl" shell "${SUPERAGENT_LIMA_VM:?SUPERAGENT_LIMA_VM is not set}" -- sudo nerdctl "$@"

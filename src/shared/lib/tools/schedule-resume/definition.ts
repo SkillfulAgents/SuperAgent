@@ -1,12 +1,7 @@
-export interface ScheduleResumeInput {
-  wakeTime?: string
-  summary?: string
-  note?: string
-  timezone?: string
-}
+import { scheduleResumeInputSchema, type ScheduleResumeInput } from './schema'
 
 function parseInput(input: unknown): ScheduleResumeInput {
-  return typeof input === 'object' && input !== null ? (input as ScheduleResumeInput) : {}
+  return scheduleResumeInputSchema.safeParse(input).data ?? {}
 }
 
 function getSummary(input: unknown): string | null {

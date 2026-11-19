@@ -1,0 +1,110 @@
+import { useCallback } from 'react'
+import { useComposerOptions } from '@renderer/components/messages/composer-options'
+import { agentDefaultRuntimeOptions, type RuntimeOptions } from '@shared/lib/container/runtime-options'
+import type { Attachment, ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
+import { apiFetch } from '@renderer/lib/api'
+import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
+import { useAgentPreferences } from './use-agent-preferences'
+import { useMessageComposer } from './use-message-composer'
+import { useCreateSession } from './use-sessions'
+
+type CreatedSession = Awaited<ReturnType<ReturnType<typeof useCreateSession>['mutateAsync']>>
+
+interface NewSessionComposerOptions {
+  /** Empty until a surface with an agent picker has selected one. */
+  agentSlug: string
+  draftKey: string
+  initialAttachments?: Attachment[]
+  references?: readonly ReferenceAttachment[]
+  /** Runtime options to start the picker from, e.g. the ones carried over from a stale session. */
+  initialOptions?: RuntimeOptions
+  followDefaults?: boolean
+  /** Dispatch waits for each selected agent's preferences before locking its defaults. */
+  waitForAgentDefaults?: boolean
+  /** Surface-specific guards, such as runtime readiness. */
+  submitDisabled?: boolean
+  /**
+   * Start the session with computer use on (the launcher's toggle): it may use
+   * any app without asking, and the agent is told so, and which attachment is
+   * the screenshot of the screen.
+   */
+  computerUse?: { screenshotName?: string }
+  /** Analytics-only: names the launcher when it is not an agent's composer. */
+  surface?: 'quick_dispatch'
+  agentRuntimeErrorsShownInline?: boolean
+  onSessionCreated: (result: { agentSlug: string; session: CreatedSession; content: string }) => void | Promise<void>
+  onError?: (error: unknown) => void
+}
+
+/**
+ * Start a conversation from Agent Home, Team Brain or the dispatch launcher.
+ * Owns agent uploads, model defaults and submission; the caller owns its UI,
+ * runtime policy and navigation (the launcher has no router).
+ */
+export function useNewSessionComposer({
+  agentSlug,
+  draftKey,
+  initialAttachments,
+  references,
+  initialOptions,
+  followDefaults,
+  waitForAgentDefaults = false,
+  submitDisabled = false,
+  computerUse,
+  surface,
+  agentRuntimeErrorsShownInline,
+  onSessionCreated,
+  onError,
+}: NewSessionComposerOptions) {
+  const { data: agentPrefs, isFetched } = useAgentPreferences(agentSlug)
+  const composerOptions = useComposerOptions({
+    initial: initialOptions,
+    agentDefault: agentDefaultRuntimeOptions(agentPrefs),
+    agentKey: agentSlug,
+    agentDefaultsReady: waitForAgentDefaults ? isFetched : undefined,
+    followDefaults,
+  })
+  const createSession = useCreateSession({ agentRuntimeErrorsShownInline })
+  const disabled = submitDisabled || createSession.isPending || !agentSlug
+  const composer = useMessageComposer({
+    agentSlug,
+    uploadFile: useCallback(({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
+      if (!agentSlug) return Promise.reject(new Error('No agent selected'))
+      return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file, onProgress, signal, stallMs })
+    }, [agentSlug]),
+    uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
+      if (!agentSlug) throw new Error('No agent selected')
+      const res = await apiFetch(`/api/agents/${agentSlug}/upload-folder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourcePath }),
+      })
+      if (!res.ok) throw new Error('Failed to upload folder')
+      return res.json() as Promise<{ path: string }>
+    }, [agentSlug]),
+    onSubmit: useCallback(async (content: string) => {
+      if (!agentSlug) throw new Error('No agent selected')
+      try {
+        const session = await createSession.mutateAsync({
+          agentSlug,
+          message: computerUse ? appendComputerUseNote(content, computerUse.screenshotName) : content,
+          ...composerOptions.toRuntimeOptions(),
+          ...(computerUse ? { computerUse: true } : {}),
+          ...(surface ? { surface } : {}),
+        })
+        await onSessionCreated({ agentSlug, session, content })
+      } catch (error) {
+        onError?.(error)
+        throw error // useMessageComposer preserves the draft on failure.
+      }
+    }, [agentSlug, createSession, composerOptions, computerUse, surface, onSessionCreated, onError]),
+    submitDisabled: disabled,
+    keepMessageUntilComplete: true,
+    draftKey,
+    initialAttachments,
+    references,
+  })
+
+  return { composer, composerOptions, createSession, isDisabled: disabled || composer.isUploading }
+}

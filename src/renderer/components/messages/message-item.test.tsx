@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
+import type { ApiMessage } from '@shared/lib/types/api'
+import { appendMentions } from '@shared/lib/utils/mentions'
+import * as orbVisibility from '@renderer/components/agents/agent-avatar/orb-visibility'
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
 vi.mock('./subagent-block', () => ({
@@ -122,6 +125,17 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUpdateUserSettings: () => ({ mutate: vi.fn() }),
 }))
 
+// Mention chips look their people and agents up for avatars.
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: () => ({ data: [{ id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com', image: null, role: 'user' }] }),
+}))
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgents: (options?: { select?: (agents: unknown[]) => unknown }) => {
+    const agents = [{ slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent', avatar: null }]
+    return { data: options?.select ? options.select(agents) : agents }
+  },
+}))
+
 describe('MessageItem', () => {
   beforeEach(() => {
     platformAuth.connected = false
@@ -132,6 +146,62 @@ describe('MessageItem', () => {
     readAloudState.toggle.mockReset()
     readAloudState.pause.mockReset()
     readAloudState.resume.mockReset()
+  })
+
+  describe('mentions', () => {
+    const mike = { kind: 'user' as const, id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }
+    const billing = { kind: 'agent' as const, slug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }
+
+    it('draws each mention as a chip where its name stands, without the list the agent reads', () => {
+      const text = appendMentions('Ask @Billing Agent, then ping @Mike Smith', [billing, mike])
+      render(<MessageItem message={createUserMessage({ content: { text } })} agentSlug="support01x" />)
+
+      const bubble = screen.getByTestId('message-user')
+      expect(bubble).not.toHaveTextContent('Mentioned')
+      expect(screen.getByTestId('agent-mention')).toHaveTextContent('@Billing Agent')
+      // A teammate's chip is just their name, with no avatar.
+      expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
+      expect(screen.getByTestId('user-mention').previousSibling?.textContent).toBe(', then ping ')
+      expect(screen.getByTestId('message-user').querySelector('[data-notify-only]')).toBeNull()
+      expect(screen.queryByTestId('mention-notified')).toBeNull()
+    })
+
+    it("draws an agent's [@Name](user:<id>) tag as a person's chip", () => {
+      render(<MessageItem message={createAssistantMessage({ content: { text: '[@Mike Smith](user:mike-id), please decide' } })} agentSlug="support01x" />)
+      expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
+      expect(screen.getByTestId('message-assistant')).not.toHaveTextContent('user:')
+    })
+
+    it('draws no chip for a user: link the server would not read as a tag, or in a person\'s message', () => {
+      for (const text of ['see [Mike](user:mike-id)', '[@](user:mike-id)', '[**@Mike**](user:mike-id)', '[@Mike](user:mike-id "title")']) {
+        const { unmount } = render(<MessageItem message={createAssistantMessage({ content: { text } })} />)
+        expect(screen.queryByTestId('user-mention')).toBeNull()
+        unmount()
+      }
+      render(<MessageItem message={createUserMessage({ content: { text: '[@Mike](user:mike-id)' } })} />)
+      expect(screen.queryByTestId('user-mention')).toBeNull()
+    })
+
+    it('leaves a name inside code as typed', () => {
+      const text = appendMentions('run `@Mike Smith` as is', [mike])
+      render(<MessageItem message={createUserMessage({ content: { text } })} />)
+
+      expect(screen.queryByTestId('user-mention')).toBeNull()
+      expect(screen.getByText('@Mike Smith').tagName).toBe('CODE')
+    })
+
+    it('marks a message that only notified the teammates it tags', () => {
+      const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
+      render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
+
+      // The bubble is drawn like any other; the line under it says the agent
+      // did not run, with who was notified as its tooltip.
+      const bubble = screen.getByTestId('user-mention').closest('[data-notify-only]')
+      expect(bubble).not.toBeNull()
+      expect(bubble).not.toHaveClass('border-dashed')
+      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Message ignored by agent')
+      expect(screen.getByTitle('Only notifies Mike Smith')).toBeInTheDocument()
+    })
   })
 
   describe('user messages', () => {
@@ -209,6 +279,37 @@ describe('MessageItem', () => {
       const link = screen.getByText('Click here')
       expect(link).toHaveAttribute('target', '_blank')
       expect(link).toHaveAttribute('href', 'https://example.com')
+    })
+
+    it('resolves the agent\'s files in agent and user text, never in a message an integration relayed', () => {
+      const text = '![chart](/workspace/out/chart.png) [Report](/workspace/out/report.md)'
+      for (const message of [createAssistantMessage({ content: { text } }), createUserMessage({ content: { text } })]) {
+        const { container, unmount } = render(<MessageItem message={message} agentSlug="a1" />)
+        expect(container.querySelector('img')?.getAttribute('src')).toMatch(/\/api\/agents\/a1\/files\/out\/chart\.png/)
+        expect(screen.getByRole('link', { name: 'Report' })).toHaveAttribute('href', expect.stringMatching(/\/api\/agents\/a1\/files\/out\/report\.md$/))
+        unmount()
+      }
+
+      // Someone outside the app wrote it, so rendering it reads nothing.
+      const integration: NonNullable<ApiMessage['integration']> = {
+        version: 1,
+        integration: { id: 'i-1', name: 'Slack', provider: 'slack', family: 'chat' },
+        event: { type: 'message', label: 'New message' },
+        request: { text },
+        source: { kind: 'channel', identifier: 'C1' },
+      }
+      const shot = 'file:///home/claude/shot.png'
+      render(
+        <MessageItem
+          message={createUserMessage({ content: { text: `${text} ![shot](${shot})` }, integration: { ...integration, request: { text: `${text} ![shot](${shot})` } } })}
+          agentSlug="a1"
+          embeddedImageAliases={new Map([[shot, '/api/agents/a1/sessions/s/media/ref']])}
+        />,
+      )
+      for (const name of ['chart', 'shot']) {
+        expect(screen.getByRole('img', { name }).getAttribute('src') ?? '').not.toContain('/api/agents/')
+      }
+      expect(screen.queryByRole('link', { name: 'Report' })).toBeNull()
     })
 
     it('renders a container screenshot through its verified tool-result alias', () => {
@@ -652,7 +753,54 @@ describe('MessageItem', () => {
       expect(screen.getByText('Alice Baker')).toBeInTheDocument()
     })
 
-    it('draws the sender avatar beside the name, from their profile image', () => {
+    it('puts when it was sent beside the sender, shown on hover only', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} />)
+      const meta = screen.getByTestId('message-meta')
+      expect(meta).toHaveTextContent(/^Alice Bakerjust now$/)
+      expect(meta).toHaveClass('opacity-0', 'group-hover/message:opacity-100')
+    })
+
+    it('keeps the time current as minutes pass', () => {
+      vi.useFakeTimers()
+      try {
+        const msg = createUserMessage({
+          content: { text: 'Hello' },
+          createdAt: new Date(),
+          sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+        })
+        render(<MessageItem message={msg} />)
+        expect(screen.getByTestId('message-meta')).toHaveTextContent('just now')
+        act(() => { vi.advanceTimersByTime(2 * 60_000) })
+        expect(screen.getByTestId('message-meta')).toHaveTextContent('2m ago')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('holds no time row without a sender (non-auth mode)', () => {
+      const msg = createUserMessage({ content: { text: 'Hello' }, createdAt: new Date() })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('message-meta')).not.toBeInTheDocument()
+      expect(screen.queryByText('just now')).not.toBeInTheDocument()
+    })
+
+    it('names the sender of a message that only carried files', () => {
+      const msg = createUserMessage({
+        content: { text: '[Attached files:]\n- /workspace/uploads/1-b.pdf' },
+        createdAt: new Date(),
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} agentSlug="a1" />)
+      expect(screen.getByTestId('sent-files')).toBeInTheDocument()
+      expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Alice Bakerjust now$/)
+    })
+
+    it('draws the sender avatar beside the bubble, from their profile image', () => {
       const msg = createUserMessage({
         content: { text: 'Hello' },
         sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com', image: 'https://example.com/alice.png' },
@@ -660,6 +808,21 @@ describe('MessageItem', () => {
       render(<MessageItem message={msg} />)
       const avatar = screen.getByRole('img', { name: 'Alice Baker' })
       expect(avatar.querySelector('img')).toHaveAttribute('src', 'https://example.com/alice.png')
+    })
+
+    it('draws the agent sender and holds its orb still', ({ onTestFinished }) => {
+      const observe = vi.spyOn(orbVisibility, 'observeOrbVisibility')
+      onTestFinished(() => observe.mockRestore())
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        agentSender: { slug: 'research-agent', name: 'Research Agent', avatar: { color: 'tonal-blue', shape: 'triangle' } },
+      })
+      render(<MessageItem message={msg} />)
+      expect(document.querySelector('[data-avatar-orb]')).toBeInTheDocument()
+      expect(observe).not.toHaveBeenCalled()
+      expect(screen.queryByRole('img', { name: 'Research Agent' })).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Research Agentjust now$/)
     })
 
     it('falls back to initials for a sender lifted from a mirror prefix', () => {
@@ -827,6 +990,12 @@ describe('MessageItem', () => {
   describe('mermaid code fences', () => {
     const fence = (source: string) => '```mermaid\n' + source + '\n```'
     const FLOW = fence('graph LR\n  Request --> Response')
+
+    // The diagram is a lazy chunk. Load it up front so the first test's
+    // findBy (1s) isn't racing a cold import on a busy CI worker.
+    beforeAll(async () => {
+      await import('./mermaid-diagram')
+    })
 
     it('renders a settled mermaid fence as a themed diagram', async () => {
       const msg = createAssistantMessage({ content: { text: `Here is the flow:\n\n${FLOW}` } })
@@ -1011,6 +1180,11 @@ describe('MessageItem', () => {
   describe('math code fences', () => {
     const fence = (source: string) => '```math\n' + source + '\n```'
     const EULER = fence('e^{i\\pi} + 1 = 0')
+
+    // Same as the mermaid fences: preload the lazy chunk.
+    beforeAll(async () => {
+      await import('./math-block')
+    })
 
     it('renders a settled math fence as a display equation', async () => {
       const msg = createAssistantMessage({ content: { text: `Euler's identity:\n\n${EULER}` } })

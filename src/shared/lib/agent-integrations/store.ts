@@ -33,7 +33,7 @@ export async function getIntegrationSessionBySessionId(agentSlug: string, sessio
 }
 export async function listIntegrationSessions(id: string) { return (await sessions.listAgentIntegrationSessions(id)).map(sessionRecord) }
 export async function listActiveIntegrationSessions(id: string) { return (await sessions.listActiveAgentIntegrationSessions(id)).map(sessionRecord) }
-export async function resolveActiveSession(id: string, externalId: string, timeoutHours: number | null | undefined, onArchive: (id: string) => void) {
+export async function resolveActiveSession(id: string, externalId: string, timeoutHours: number | null | undefined, onArchive: (rowId: string, sessionId: string) => void) {
   const row = await sessions.resolveActiveSession(id, externalId, timeoutHours, onArchive)
   return row ? sessionRecord(row) : null
 }

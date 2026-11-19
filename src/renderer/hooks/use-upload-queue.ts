@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 import { captureRendererException } from '@renderer/lib/error-reporting'
+import { isRetryableRequestError } from '@renderer/lib/http-error'
 import { zipFolderFiles } from '@renderer/lib/file-utils'
 import { UPLOAD_STALL_MS, type UploadProgress } from '@renderer/lib/upload'
+import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
+import { requiresImagePreviewConversion } from '@renderer/lib/file-types'
+import { getAgentFileUrl } from '@renderer/lib/workspace-file-url'
 import type { Attachment, FileAttachment, FolderAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadPatch } from './use-attachments'
 
@@ -20,7 +24,7 @@ export interface UploadQueueOptions {
 }
 
 function isUploadable(a: Attachment): a is Uploadable {
-  return a.type !== 'mount'
+  return a.type === 'file' || a.type === 'folder'
 }
 
 /**
@@ -80,7 +84,12 @@ export function useUploadQueue(options: UploadQueueOptions) {
       }
       if (!live()) return
       pathsRef.current.set(id, { path: result.path, agentSlug })
-      opts.updateAttachment(id, { upload: { status: 'done', path: result.path, agentSlug } })
+      opts.updateAttachment(id, {
+        upload: { status: 'done', path: result.path, agentSlug },
+        ...(attachment.type === 'file' && attachment.file.size <= HEIC_PREVIEW_MAX_SOURCE_BYTES && requiresImagePreviewConversion(attachment.file.name)
+          ? { preview: getAgentFileUrl(agentSlug, result.path, { inline: true }) }
+          : {}),
+      })
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return
       if (!live()) return
@@ -88,7 +97,11 @@ export function useUploadQueue(options: UploadQueueOptions) {
       captureRendererException(error, { tags: { source: 'attachment-upload' }, extra: { agentSlug } })
       failedRef.current.add(id)
       pathsRef.current.delete(id)
-      opts.updateAttachment(id, { upload: undefined, error: error instanceof Error ? error.message : 'Upload failed. Please try again.' })
+      opts.updateAttachment(id, {
+        upload: undefined,
+        error: error instanceof Error ? error.message : 'Upload failed. Please try again.',
+        errorRetryable: isRetryableRequestError(error),
+      })
     } finally {
       controllersRef.current.delete(id)
     }
@@ -99,7 +112,12 @@ export function useUploadQueue(options: UploadQueueOptions) {
     failedRef.current.delete(attachment.id)
     pathsRef.current.delete(attachment.id)
     const slug = optionsRef.current.agentSlug
-    optionsRef.current.updateAttachment(attachment.id, { upload: { status: 'queued', agentSlug: slug }, error: undefined })
+    optionsRef.current.updateAttachment(attachment.id, {
+      upload: { status: 'queued', agentSlug: slug },
+      error: undefined,
+      errorRetryable: undefined,
+      ...(attachment.type === 'file' && requiresImagePreviewConversion(attachment.file.name) ? { preview: undefined } : {}),
+    })
     // No agent yet (Quick Dispatch before the list loads): keep the chip waiting.
     // requeueAll runs when the slug arrives.
     if (!slug) return
@@ -110,22 +128,26 @@ export function useUploadQueue(options: UploadQueueOptions) {
   // Retry is user-driven, so the rendered list is current.
   const retry = useCallback((id: string) => {
     const a = optionsRef.current.attachmentsRef.current.find((x) => x.id === id)
-    if (a && isUploadable(a)) enqueue(a)
+    if (a && isUploadable(a) && a.errorRetryable !== false) enqueue(a)
   }, [enqueue])
 
-  // Waits until the chain is idle, re-uploading errored chips first. A chip
-  // enqueued during the wait extends the chain and is included.
-  const retryAndWait = useCallback(async (): Promise<{ ok: boolean }> => {
-    for (const a of optionsRef.current.attachmentsRef.current) {
-      if (isUploadable(a) && a.error) enqueue(a)
-    }
+  const waitIdle = useCallback(async () => {
     let tail: Promise<void>
     do {
       tail = chainRef.current
       await tail
     } while (tail !== chainRef.current)
     return { ok: failedRef.current.size === 0 }
-  }, [enqueue])
+  }, [])
+
+  // Waits until the chain is idle, re-uploading errored chips first. A chip
+  // enqueued during the wait extends the chain and is included.
+  const retryAndWait = useCallback(async (): Promise<{ ok: boolean }> => {
+    for (const a of optionsRef.current.attachmentsRef.current) {
+      if (isUploadable(a) && a.error && a.errorRetryable !== false) enqueue(a)
+    }
+    return waitIdle()
+  }, [enqueue, waitIdle])
 
   const abortAll = useCallback(() => {
     generationRef.current += 1
@@ -163,5 +185,5 @@ export function useUploadQueue(options: UploadQueueOptions) {
 
   useEffect(() => abortAll, [abortAll])
 
-  return { enqueue, retry, retryAndWait, pathFor, remove, clear, requeueAll }
+  return { enqueue, retry, retryAndWait, waitIdle, pathFor, remove, clear, requeueAll }
 }

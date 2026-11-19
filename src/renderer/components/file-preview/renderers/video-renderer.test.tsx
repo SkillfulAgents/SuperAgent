@@ -15,7 +15,11 @@ vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({ commentsFor: () => [], addComment: vi.fn(), commentsEnabled: true }),
 }))
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  Reflect.deleteProperty(document, 'fullscreenElement')
+  Reflect.deleteProperty(HTMLVideoElement.prototype, 'requestFullscreen')
+})
 
 describe('VideoRenderer keys', () => {
   it('opens a comment with C at the mouse position over the frame', () => {
@@ -105,6 +109,66 @@ describe('VideoRenderer keys', () => {
 
     fireEvent.keyDown(window, { key: '.' })
     expect(video.currentTime).toBeCloseTo(1 + 1 / 30, 6)
+  })
+})
+
+describe('VideoRenderer fullscreen', () => {
+  it('uses native video controls while the browser presents the video fullscreen', () => {
+    let fullscreenElement: Element | null = null
+    const requestFullscreen = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(document, 'fullscreenElement', {
+      configurable: true,
+      get: () => fullscreenElement,
+    })
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestFullscreen', {
+      configurable: true,
+      value: requestFullscreen,
+    })
+
+    render(<VideoRenderer url="/clip.mp4" filePath="/workspace/clip.mp4" agentSlug="test-agent" />)
+    const video = screen.getByTestId('video-element') as HTMLVideoElement
+
+    expect(video.controls).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen' }))
+    expect(video.controls).toBe(true)
+    expect(requestFullscreen).toHaveBeenCalledOnce()
+
+    fullscreenElement = video
+    fireEvent(document, new Event('fullscreenchange'))
+    expect(video.controls).toBe(true)
+
+    fullscreenElement = null
+    fireEvent(document, new Event('fullscreenchange'))
+    expect(video.controls).toBe(false)
+  })
+
+  it('returns to custom controls when the fullscreen request is rejected', async () => {
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestFullscreen', {
+      configurable: true,
+      value: vi.fn().mockRejectedValue(new DOMException('Fullscreen denied')),
+    })
+    render(<VideoRenderer url="/clip.mp4" filePath="/workspace/clip.mp4" agentSlug="test-agent" />)
+    const video = screen.getByTestId('video-element') as HTMLVideoElement
+
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen' }))
+    expect(video.controls).toBe(true)
+    await waitFor(() => expect(video.controls).toBe(false))
+  })
+
+  it('hides the fullscreen action when the Fullscreen API is unavailable', () => {
+    render(<VideoRenderer url="/clip.mp4" filePath="/workspace/clip.mp4" agentSlug="test-agent" />)
+
+    expect(screen.queryByRole('button', { name: 'Full screen' })).not.toBeInTheDocument()
+  })
+
+  it('allows the controls to wrap in a narrow preview', () => {
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestFullscreen', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(undefined),
+    })
+    render(<VideoRenderer url="/clip.mp4" filePath="/workspace/clip.mp4" agentSlug="test-agent" />)
+
+    expect(screen.getByTestId('video-controls')).toHaveClass('flex-wrap')
   })
 })
 

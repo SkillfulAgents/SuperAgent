@@ -137,6 +137,23 @@ describe('LLM (Anthropic) polyfill — lazy-loading shim', () => {
       expect(client._real._opts.defaultHeaders['X-Custom']).toBe('test')
     })
 
+    // The SDK sends an apiKey as a bearer, which the auth layer would read as
+    // a session token, and it refuses a second credential.
+    it('sends the placeholder as X-Api-Key with no bearer, whatever credentials the dashboard passes', async () => {
+      const Anthropic = getAnthropic()
+      const client = new Anthropic({ apiKey: 'sk-dashboard', authToken: 'dashboard-token', defaultHeaders: { Authorization: 'Bearer x' } })
+      await client.messages.create({
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+
+      const opts = client._real._opts
+      expect(opts.apiKey).toBe('placeholder')
+      expect(opts.authToken).toBeNull()
+      expect(opts.defaultHeaders['X-Api-Key']).toBe('placeholder')
+      expect(opts.defaultHeaders.Authorization).toBeNull()
+    })
+
     it('reuses SDK instance across multiple calls', async () => {
       const Anthropic = getAnthropic()
       const client = new Anthropic()

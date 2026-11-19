@@ -103,6 +103,25 @@ describe('runDataMigrations', () => {
     expect(await agentSlugs()).toEqual(['from-first', 'from-flaky', 'from-third'])
   })
 
+  it('leaves a migration that answers incomplete unrecorded, applies the later ones, and runs it again on the next boot', async () => {
+    const log: string[] = []
+    let attempts = 0
+    const waiting: DataMigration = {
+      id: 2,
+      name: 'waiting',
+      run: () => (++attempts === 1 ? 'incomplete' : undefined),
+    }
+    const migrations = [migration(1, 'first', log), waiting, migration(3, 'third', log)]
+
+    expect(await runDataMigrations(handle.db, migrations)).toEqual([1, 3])
+    expect(await ledger()).toEqual([[1, 'first'], [3, 'third']])
+
+    expect(await runDataMigrations(handle.db, migrations)).toEqual([2])
+    expect(attempts).toBe(2)
+    expect(await runDataMigrations(handle.db, migrations)).toEqual([])
+    expect(log).toEqual(['first', 'third'])
+  })
+
   it('refuses a list that reuses an id', async () => {
     const log: string[] = []
     await expect(runDataMigrations(handle.db, [migration(1, 'a', log), migration(1, 'b', log)])).rejects.toThrow('used twice')

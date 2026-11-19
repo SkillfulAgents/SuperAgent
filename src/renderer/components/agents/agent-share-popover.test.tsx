@@ -1,0 +1,163 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+const state = vi.hoisted(() => ({
+  members: [] as Array<Record<string, unknown>>,
+  candidates: [] as Array<Record<string, unknown>>,
+  posts: [] as Array<{ url: string; body: unknown }>,
+  failNextInvite: false,
+  fullExport: { mutate: vi.fn(), isPending: false },
+}))
+
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ user: { id: 'ada' }, isAuthMode: true }) }))
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: () => ({ data: state.members, isLoading: false, isError: false, refetch: vi.fn() }),
+}))
+vi.mock('@renderer/hooks/use-agent-templates', () => ({
+  useAgentTemplateStatus: () => ({ data: undefined, isPending: true, isError: false }),
+  useExportAgentTemplate: () => ({ mutate: vi.fn(), isPending: false }),
+  useExportAgentFull: () => state.fullExport,
+  useHostExportStatus: () => ({ data: undefined }),
+}))
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/member-agents')) return Response.json({ direct: [], global: [] })
+    if (init?.method === 'POST') {
+      state.posts.push({ url, body: JSON.parse(String(init.body)) })
+      if (state.failNextInvite) {
+        state.failNextInvite = false
+        throw new Error('Connection lost')
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 201 })
+    }
+    return new Response(JSON.stringify(state.candidates))
+  }),
+}))
+
+import { AgentSharePopover } from './agent-share-popover'
+
+function renderPopover() {
+  return render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <AgentSharePopover agentSlug="support" agentName="Support" />
+    </QueryClientProvider>,
+  )
+}
+
+beforeEach(() => {
+  state.posts = []
+  state.failNextInvite = false
+  state.fullExport = { mutate: vi.fn(), isPending: false }
+  state.members = [
+    { id: 'ada', name: 'Ada Admin', email: 'ada@acme.test', image: null, role: 'owner' },
+    { id: 'lee', name: 'Lee Park', email: 'lee@acme.test', image: null, role: 'user', invited: true },
+  ]
+  state.candidates = [
+    { kind: 'user', id: 'dan-id', name: 'Dan Ortiz', email: 'dan@acme.test', image: null, notOnGamut: false },
+    { kind: 'directory', directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, name: 'Dana Whitfield', email: 'dana@acme.test', image: null, notOnGamut: true, source: 'Slack · Acme' },
+  ]
+})
+afterEach(cleanup)
+
+describe('sharing an agent with people not on Gamut yet', () => {
+  it('marks members who have not joined as invite pending', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    const lee = await screen.findByTestId('access-entry-lee')
+    expect(within(lee).getByTestId('not-on-gamut-badge')).toHaveTextContent('Invite pending')
+    expect(within(screen.getByTestId('access-entry-ada')).queryByTestId('not-on-gamut-badge')).toBeNull()
+  })
+
+  it('finds directory people, marked as not on Gamut, and invites them by their directory reference', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    await userEvent.type(screen.getByTestId('invite-search-input'), 'dan')
+
+    const dana = await screen.findByTestId('invite-user-result-directory:dir-1:U7')
+    expect(dana).toHaveTextContent('Not on Gamut')
+    expect(dana).toHaveTextContent('dana@acme.test · Slack · Acme')
+    expect(within(screen.getByTestId('invite-user-result-dan-id')).queryByTestId('not-on-gamut-badge')).toBeNull()
+
+    await userEvent.click(dana)
+    await userEvent.type(screen.getByTestId('invite-search-input'), 'dan')
+    await userEvent.click(await screen.findByTestId('invite-user-result-dan-id'))
+    await userEvent.click(screen.getByTestId('invite-add-button'))
+
+    await waitFor(() => expect(state.posts).toEqual([
+      { url: '/api/agents/support/access', body: { directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, role: 'user' } },
+      { url: '/api/agents/support/access', body: { userId: 'dan-id', role: 'user' } },
+    ]))
+  })
+
+  it('keeps only unsuccessful invites selected for a retry', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    const search = screen.getByRole('textbox', { name: 'Invite by name or email' })
+    for (const name of ['Dan Ortiz', 'Dana Whitfield']) {
+      await userEvent.type(search, name)
+      await userEvent.click(await screen.findByRole('checkbox', { name: new RegExp(name) }))
+    }
+    state.failNextInvite = true
+    const invite = screen.getByTestId('invite-add-button')
+    await userEvent.click(invite)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Dan Ortiz: Connection lost')
+    expect(screen.queryByRole('button', { name: 'Remove Dana Whitfield from invite' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Remove Dan Ortiz from invite' })).toBeInTheDocument()
+    await userEvent.click(invite)
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(state.posts.map(post => post.body)).toEqual([
+      { userId: 'dan-id', role: 'user' },
+      { directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, role: 'user' },
+      { userId: 'dan-id', role: 'user' },
+    ])
+  })
+})
+
+describe('full agent export confirmation', () => {
+  async function openConfirm() {
+    const view = renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    await userEvent.click(screen.getByRole('tab', { name: 'Export' }))
+    await userEvent.click(screen.getByTestId('export-option-full'))
+    await userEvent.click(screen.getByTestId('export-submit-button'))
+    return view
+  }
+
+  it('keeps the dialog open after Export and closes it once the export settles', async () => {
+    await openConfirm()
+    await userEvent.click(screen.getByTestId('confirm-full-export-button'))
+
+    expect(screen.getByText('Export Full Agent')).toBeInTheDocument()
+    expect(state.fullExport.mutate).toHaveBeenCalledOnce()
+    const [vars, callbacks] = state.fullExport.mutate.mock.calls[0]
+    expect(vars).toMatchObject({ agentSlug: 'support', agentName: 'Support' })
+
+    act(() => callbacks.onSettled())
+    await waitFor(() => expect(screen.queryByText('Export Full Agent')).toBeNull())
+  })
+
+  it('shows progress and blocks dismissal while the export runs', async () => {
+    const view = await openConfirm()
+    await userEvent.click(screen.getByTestId('confirm-full-export-button'))
+    const { onProgress } = state.fullExport.mutate.mock.calls[0][0]
+
+    state.fullExport = { ...state.fullExport, isPending: true }
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentSharePopover agentSlug="support" agentName="Support" />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByTestId('full-export-progress')).toHaveTextContent('Preparing export…')
+    expect(screen.getByTestId('confirm-full-export-button')).toHaveTextContent('Exporting…')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+
+    act(() => onProgress(3 * 1024 * 1024))
+    expect(screen.getByTestId('full-export-progress')).toHaveTextContent('3.0 MB downloaded')
+
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByText('Export Full Agent')).toBeInTheDocument()
+  })
+})

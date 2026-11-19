@@ -16,6 +16,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readInstallSettings } from '../lib/install-settings.mjs'
 import {
   attachmentProbeAgentsSchema,
   attachmentProbeProofSchema,
@@ -47,14 +48,16 @@ function log(message: string) {
 }
 
 function seed() {
-  const settingsPath = path.join(source, 'settings.json')
-  if (!existsSync(settingsPath)) throw new Error(`No settings.json in ${source}`)
+  // The source's settings are in its database once it has imported its
+  // settings.json; the fresh target imports the file written below on its
+  // first boot.
   let parsedSettings: unknown
   try {
-    parsedSettings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    parsedSettings = readInstallSettings(source)
   } catch (error) {
-    throw new Error(`Invalid JSON in ${settingsPath}`, { cause: error })
+    throw new Error(`Could not read the settings of ${source}`, { cause: error })
   }
+  if (!parsedSettings) throw new Error(`No settings in ${source}`)
   const settings = probeSourceSettingsSchema.parse(parsedSettings)
   const seeded = seededProbeSettingsSchema.parse({
     apiKeys: settings.apiKeys,

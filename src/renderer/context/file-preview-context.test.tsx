@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { createElement, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, useFilePreview, type FileTab } from './file-preview-context'
+import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
+import { noteTurnStarted } from '@renderer/lib/session-turns'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -12,7 +14,7 @@ vi.mock('@renderer/router/use-route-location', () => ({
 }))
 
 function wrapper({ children }: { children: ReactNode }) {
-  return createElement(FilePreviewProvider, null, children)
+  return <FilePreviewProvider commentsEnabled>{children}</FilePreviewProvider>
 }
 
 function readOnlyWrapper({ children }: { children: ReactNode }) {
@@ -86,6 +88,43 @@ describe('FilePreviewContext', () => {
 
       expect(result.current.openTabs).toHaveLength(2)
       expect(result.current.activeTabIndex).toBe(0)
+    })
+
+    it('opens one tab for a workspace-relative and an absolute spelling of a file', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('out/a.md', 'agent-1'))
+      act(() => result.current.openFile('/workspace/out/a.md', 'agent-1'))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/out/a.md' })
+      act(() => result.current.openFile('out/a%20b.md', 'agent-1'))
+      expect(result.current.openTabs[1]).toMatchObject({ filePath: '/workspace/out/a%20b.md' })
+    })
+
+    it('reaches a tab and its comments through either spelling of its path', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFolder('out/', 'agent-1'))
+      act(() => result.current.removeDirectoryPath('/workspace/out', 'agent-1'))
+      expect(result.current.openTabs).toHaveLength(0)
+
+      act(() => result.current.openFile('/workspace/out/a.md', 'agent-1'))
+      act(() => result.current.renameFilePath('out/a.md', 'out/b.md', 'agent-1'))
+      expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/out/b.md' })
+      act(() => result.current.setPdfPage('out/b.md', 'agent-1', 3))
+      expect(result.current.openTabs[0]).toMatchObject({ pdfPage: 3 })
+      act(() => result.current.removeFilePath('out/b.md', 'agent-1'))
+      expect(result.current.openTabs).toHaveLength(0)
+
+      act(() => result.current.openFolder('/workspace/out', 'agent-1'))
+      act(() => result.current.setFolderQuery('out/', 'agent-1', 'q'))
+      expect(result.current.openTabs[0]).toMatchObject({ rootPath: '/workspace/out', query: 'q' })
+      act(() => result.current.removeDirectoryPath('out/', 'agent-1'))
+      expect(result.current.openTabs).toHaveLength(0)
+
+      act(() => result.current.addComment({ filePath: 'out/c.md', agentSlug: 'agent-1', text: 'note', anchor: { kind: 'file' } }))
+      expect(result.current.commentsFor('/workspace/out/c.md', 'agent-1')).toHaveLength(1)
+      act(() => result.current.clearComments('out/c.md', 'agent-1'))
+      expect(result.current.commentsFor('/workspace/out/c.md', 'agent-1')).toHaveLength(0)
     })
 
     it('bumps version on re-delivery of same file', () => {
@@ -429,6 +468,13 @@ describe('FilePreviewContext', () => {
         .toMatchObject({ agentSlug: 'agent-2', text: 'theirs', anchor: { kind: 'file' } })
     })
 
+    it('keeps comments off unless the view turns them on', () => {
+      const { result } = renderHook(() => useFilePreview(), {
+        wrapper: ({ children }: { children: ReactNode }) => <FilePreviewProvider>{children}</FilePreviewProvider>,
+      })
+      expect(result.current.commentsEnabled).toBe(false)
+    })
+
     it('ignores comments when the preview is read-only', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper: readOnlyWrapper })
 
@@ -482,5 +528,119 @@ describe('FilePreviewContext', () => {
 
   it('throws when used outside provider', () => {
     expect(() => renderHook(() => useFilePreview())).toThrow(/FilePreviewProvider/)
+  })
+})
+
+describe('reopening a file after a stale tab reloads itself', () => {
+  beforeEach(() => sessionStorage.clear())
+
+  it('opens the file again after the reload', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const after = renderHook(() => useFilePreview(), { wrapper })
+    expect(after.result.current.isOpen).toBe(true)
+    expect(after.result.current.openTabs).toHaveLength(1)
+    expect(after.result.current.openTabs[0]).toMatchObject({ kind: 'file', filePath: '/workspace/report.pdf', agentSlug: 'agent-1' })
+    after.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('opens a tab that brought its own source from that source again', () => {
+    const source = { inlineUrl: '/api/volume-definitions/v1/file?path=README.md&inline=true', downloadUrl: '/api/volume-definitions/v1/file?path=README.md' }
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/Team Brain/README.md', 'agent-1', undefined, source))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const after = renderHook(() => useFilePreview(), { wrapper })
+    expect(after.result.current.openTabs[0]).toMatchObject({ kind: 'file', filePath: '/Team Brain/README.md', source })
+  })
+
+  it('discards the file when a different preview mounts first', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    mockView = { kind: 'session', id: 'session-2' }
+    const other = renderHook(() => useFilePreview(), { wrapper })
+    expect(other.result.current.isOpen).toBe(false)
+    other.unmount()
+
+    mockView = { kind: 'session', id: 'session-1' }
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('does not reopen a preview that was closed before the reload', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => before.result.current.close())
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('does not reopen anything after an ordinary remount', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    before.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+    expect(result.current.openTabs).toHaveLength(0)
+  })
+})
+
+describe('reloading a tab whose file changed', () => {
+  it('reloads a tab only when its file moves off the revision it loaded', () => {
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    act(() => result.current.openFile('/workspace/notes.md', 'agent-1'))
+    const tab = () => result.current.openTabs[0] as FileTab
+    const opened = tab().version
+
+    // The first answer describes what the tab already shows.
+    act(() => result.current.reloadIfChanged('/workspace/notes.md', 'agent-1', 'r1'))
+    expect(tab()).toMatchObject({ revision: 'r1', version: opened })
+
+    const tabs = result.current.openTabs
+    act(() => result.current.reloadIfChanged('/workspace/notes.md', 'agent-1', 'r1'))
+    act(() => result.current.reloadIfChanged('/workspace/notes.md', 'agent-2', 'r2'))
+    act(() => result.current.reloadIfChanged('/workspace/other.md', 'agent-1', 'r2'))
+    expect(result.current.openTabs).toBe(tabs)
+
+    act(() => result.current.reloadIfChanged('/workspace/notes.md', 'agent-1', 'r2'))
+    expect(tab().revision).toBe('r2')
+    expect(tab().version).toBeGreaterThan(opened)
+  })
+})
+
+describe('edits since the last turn that changed the file', () => {
+  const agentWrapper = ({ children }: { children: ReactNode }) => <FilePreviewProvider sessionAgentSlug="agent-1">{children}</FilePreviewProvider>
+
+  it('grows one highlight per turn and starts a new one at the first change after a new turn', () => {
+    const { result } = renderHook(() => useFilePreview(), { wrapper: agentWrapper })
+    act(() => result.current.openFile('/workspace/notes.md', 'agent-1'))
+    const turnStarts = () => noteTurnStarted('session-1')
+    const shownAs = (text: string) => act(() => result.current.recordShownText('/workspace/notes.md', 'agent-1', text))
+    const before = () => result.current.editsFor('/workspace/notes.md', 'agent-1')?.before
+
+    shownAs('a')
+    act(() => turnStarts())
+    shownAs('b')
+    shownAs('c')
+    expect(before()).toBe('a')
+
+    act(() => turnStarts())
+    expect(before()).toBe('a')
+    shownAs('d')
+    expect(before()).toBe('c')
   })
 })

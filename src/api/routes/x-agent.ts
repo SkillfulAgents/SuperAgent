@@ -1,29 +1,31 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
  * Container-to-host endpoints for cross-agent operations (create / list /
  * invoke / read sessions). Mounted under /api/x-agent (separate from /api/agents
  * to avoid the /:id middleware that requires an existing agent slug in the URL).
+ * Also serves the caller's own members.
  *
  * Auth: every request must carry the calling agent's proxy token via Authorization:
- * Bearer <token>. The route resolves the caller's agent slug from that token and
- * applies xAgentPolicies + ACLs accordingly.
+ * Bearer <token>. The route resolves the caller's agent slug from that token, and
+ * the cross-agent routes apply xAgentPolicies + ACLs accordingly.
  */
-import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentPick, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, isNotNull, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/sqlite-core'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
-import { insertMessageAuthorBestEffort } from './message-author'
+import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
+import { userExists } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import {
   createAgent,
   listAgents,
@@ -31,17 +33,24 @@ import {
 } from '@shared/lib/services/agent-service'
 import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
+import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-errors'
 import type { FileOps } from '@shared/lib/agent-actor/types'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { EFFORT_LEVELS, SPEED_LEVELS, type ContainerSession, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
+import { clampEffortForDisplay, clampSpeedForDisplay } from '@shared/lib/container/runtime-options'
+import { bindAgentModelChoice } from '@shared/lib/llm-provider/connection-runtime'
+import { connectionCatalogFrom } from '@shared/lib/llm-provider/connections'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
+import { listAgentMembers } from '@shared/lib/services/agent-members-service'
 import {
   evaluate as evaluatePolicy,
+  type XAgentDecision,
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { resolveSessionDefaults, type SessionRuntimePick } from '@shared/lib/services/session-defaults'
 import { captureException } from '@shared/lib/error-reporting'
-import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import {
   removeTransferredAttachments,
@@ -55,15 +64,11 @@ import {
   xAgentAttachmentsSchema,
   xAgentDownloadFileBodySchema,
 } from '@shared/lib/services/x-agent-attachment-schema'
-import {
-  collectDeliveredFiles,
-  compactMessage,
-  findDeliveredFile,
-  pageTranscript,
-} from './x-agent-transcript-view'
+import { compactMessage } from '@shared/lib/services/x-agent-transcript-view'
+import { awaitReview } from '@shared/lib/proxy/review-request'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
-const invokingSessions = new Set<string>()
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -75,18 +80,7 @@ const xAgent = new Hono<{ Variables: XAgentVariables }>()
 // Auth: resolve caller agent slug from Bearer token (proxy token)
 // ----------------------------------------------------------------------------
 
-xAgent.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const callerSlug = await validateProxyToken(token)
-  if (!callerSlug) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgent.use('*', requireAgentCaller)
 
 function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')
@@ -119,14 +113,15 @@ async function getLatestMessageAuthorUserId(
   sessionId: string,
 ): Promise<string | undefined> {
   try {
+    // An incoming agent call carries the payer forward into the next call.
+    const payer = sql<string | null>`coalesce(${messageAuthor.userId}, ${messageAuthor.billedUserId})`
     const rows = await db
-      .select({ userId: messageAuthor.userId })
+      .select({ userId: payer })
       .from(messageAuthor)
       .where(and(
         eq(messageAuthor.agentSlug, agentSlug),
         eq(messageAuthor.sessionId, sessionId),
-        // An integration-delivered message has no user author.
-        isNotNull(messageAuthor.userId),
+        isNotNull(payer),
       ))
       .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
       .limit(1)
@@ -139,17 +134,6 @@ async function getLatestMessageAuthorUserId(
       error: error instanceof Error ? error.message : String(error),
     })
     return undefined
-  }
-}
-
-async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
-  try {
-    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
-  } catch (error) {
-    console.warn('[x-agent] failed to clean up invoked message attribution', {
-      messageUuid,
-      error: error instanceof Error ? error.message : String(error),
-    })
   }
 }
 
@@ -177,18 +161,32 @@ async function callerOwnerHasRoleOnTarget(
   minRole: AgentRole,
 ): Promise<boolean> {
   if (!isAuthMode()) return true
-  const callerOwners = await getOwnersOfAgent(callerSlug)
-  if (callerOwners.length === 0) return false
-  const aclRows = await db
-    .select({ userId: agentAcl.userId, role: agentAcl.role })
-    .from(agentAcl)
-    .where(eq(agentAcl.agentSlug, targetSlug))
-  for (const row of aclRows) {
-    if (callerOwners.includes(row.userId) && hasMinRole(row.role as AgentRole, minRole)) {
-      return true
-    }
-  }
-  return false
+  // One statement: the roles the caller's owners hold on the target. No owner
+  // on the caller, or no owner with a row on the target, is no rows.
+  const callerOwner = alias(agentAcl, 'caller_owner')
+  const roles = await db
+    .select({ role: agentAcl.role })
+    .from(callerOwner)
+    .innerJoin(agentAcl, eq(agentAcl.userId, callerOwner.userId))
+    .where(and(
+      eq(callerOwner.agentSlug, callerSlug),
+      eq(callerOwner.role, 'owner'),
+      eq(agentAcl.agentSlug, targetSlug),
+    ))
+  return roles.some((row) => hasMinRole(row.role as AgentRole, minRole))
+}
+
+/**
+ * Start a read whose answer is looked at later. The reads a route starts
+ * together do not depend on each other, and each is still awaited at the point
+ * the route used to make it, so refusals (and a read that fails) are reported
+ * in the same order as when they ran one after another. One that is never
+ * awaited, because an earlier check refused the request, must not surface as an
+ * unhandled rejection.
+ */
+function startRead<T>(read: Promise<T>): Promise<T> {
+  read.catch(() => {})
+  return read
 }
 
 /**
@@ -231,26 +229,43 @@ async function checkAgentPolicy(
   targetName: string,
   preview?: string,
   fileTransfer?: XAgentFileTransfer,
-): Promise<{ allowed: boolean; reason?: string }> {
+  callerSessionId?: string,
+  // The saved decision, when the route already started reading it (startRead).
+  // Only the first read: a card's re-evaluations below always read again.
+  savedDecision?: Promise<XAgentDecision>,
+  runtime?: XAgentRuntime,
+): Promise<{ allowed: boolean; reason?: string; pick?: XAgentPick }> {
+  // An agent acting on its own sessions crosses no agent boundary: no policy
+  // applies and nobody is asked.
+  if (targetSlug === callerSlug) return { allowed: true }
   if (operation !== 'create') {
-    const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
+    const decision = await (savedDecision ?? evaluatePolicy(callerSlug, operation, targetSlug))
+    if (decision === 'allow') return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
 
   try {
-    const userDecision = await agentRegistry.get(callerSlug).inputs.reviews.requestXAgent(
-      targetSlug ?? '',
-      targetName,
-      operation,
-      preview,
-      fileTransfer,
-    )
-    if (userDecision === 'deny') {
-      return { allowed: false, reason: 'Denied by user' }
+    const reviews = agentRegistry.get(callerSlug).inputs.reviews
+    const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, runtime, callerSessionId },
+      raise,
+    ), operation === 'create' ? {} : {
+      // When an "always" decision on another card changes the policy, this
+      // request is decided again rather than released.
+      reevaluate: async () => {
+        const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+        return decision === 'block' ? 'deny' : decision
+      },
+    })
+    if (review.decision === 'deny') {
+      return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }
-    return { allowed: true }
+    // A Block set while the card was open beats the approval.
+    if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
+      return { allowed: false, reason: 'Blocked by policy' }
+    }
+    return { allowed: true, pick: review.pick }
   } catch (error) {
     return {
       allowed: false,
@@ -286,6 +301,23 @@ xAgent.post('/list', async (c) => {
 })
 
 // ----------------------------------------------------------------------------
+// POST /api/x-agent/members - the caller's own members. Not reviewed: every
+// member of the agent can already read this roster.
+// ----------------------------------------------------------------------------
+
+// Bounds the agent's context, as chat directory listings do.
+const MAX_LISTED_MEMBERS = 500
+
+xAgent.post('/members', async (c) => {
+  if (!isAuthMode()) return c.json({ truncated: false, members: [] })
+  const members = await listAgentMembers(getCallerSlug(c))
+  return c.json({
+    truncated: members.length > MAX_LISTED_MEMBERS,
+    members: members.slice(0, MAX_LISTED_MEMBERS).map(({ id, name, email, role, invited }) => ({ id, name, email, role, invited })),
+  })
+})
+
+// ----------------------------------------------------------------------------
 // POST /api/x-agent/create - create a new agent (always reviewed, never remembered)
 // ----------------------------------------------------------------------------
 
@@ -309,25 +341,21 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
   })
 
   // In auth mode, copy ACL from caller's owners so the new agent inherits them
-  if (isAuthMode()) {
-    const owners = await getOwnersOfAgent(callerSlug)
-    const now = new Date()
-    for (const userId of owners) {
-      await db.insert(agentAcl).values({
-        id: randomUUID(),
-        userId,
-        agentSlug: agent.slug,
-        role: 'owner',
-        createdAt: now,
-      })
-    }
+  const owners = isAuthMode() ? await getOwnersOfAgent(callerSlug) : []
+  const now = new Date()
+  for (const userId of owners) {
+    await db.insert(agentAcl).values({
+      id: randomUUID(),
+      userId,
+      agentSlug: agent.slug,
+      role: 'owner',
+      createdAt: now,
+    })
   }
 
-  // Announce only after ACL inheritance so live stream filters admit owners.
-  messagePersister.broadcastGlobal({
-    type: 'agent_created',
-    agentSlug: agent.slug,
-  })
+  // Announce only after ACL inheritance, to each inherited owner, so their
+  // live streams load their agents again and follow the new one.
+  announceAgentCreated(agent.slug, owners)
 
   return c.json({ slug: agent.displaySlug, name: agent.name })
 })
@@ -346,19 +374,21 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, limit = 50, offset = 0 } = c.req.valid('json')
 
-  // Resolve the model-supplied display slug to the canonical id and rebind, so
-  // every downstream ACL / policy / fs use below keys on the id, not the prefix.
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
-
-  const target = await getAgentRecord(targetSlug)
+  // Resolve the model-supplied display slug to the agent and rebind, so every
+  // downstream ACL / policy / fs use below keys on the id, not the prefix.
+  const target = await agentCatalog.resolveRecord(rawTargetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
 
-  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
+  const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))
+  const savedDecision = startRead(evaluatePolicy(callerSlug, 'read', targetSlug))
+  if (!(await access)) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
+  const policy = await checkAgentPolicy(
+    callerSlug, 'read', targetSlug, target.name, undefined, undefined, undefined, savedDecision,
+  )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
@@ -366,14 +396,14 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
   const actor = agentRegistry.get(targetSlug)
   const allSessions = await actor.sessions.list()
   const page = allSessions.slice(offset, offset + limit)
+  const active = new Set((await actor.live()).activeSessionIds)
   return c.json({
     sessions: page.map((s) => ({
       id: s.id,
       name: s.name,
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
-      messageCount: s.messageCount,
-      isRunning: actor.sessions.isActive(s.id),
+      isRunning: active.has(s.id),
     })),
     total: allSessions.length,
     offset,
@@ -482,7 +512,7 @@ async function raceDeadline<T>(promise: Promise<T>, deadline: number): Promise<T
   }
 }
 
-// Bounds the persister's stream attach — its WebSocket `ready` promise has no
+// Bounds the live sessions' stream attach — its WebSocket `ready` promise has no
 // timeout of its own, so a wedged container would otherwise hold the caller's
 // fetch open past its 300s header timeout.
 const SUBSCRIBE_TIMEOUT_MS = Number(process.env.X_AGENT_SUBSCRIBE_TIMEOUT_MS) || 30_000
@@ -497,23 +527,15 @@ async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
   }
 }
 
-// Matched by name rather than instanceof: the persister module is wholesale-
-// mocked in many test suites, and an instanceof against a possibly-undefined
-// mock export throws instead of returning false.
-function isWaitForIdleTimeout(error: unknown): boolean {
-  return error instanceof Error && error.name === 'WaitForIdleTimeoutError'
-}
-
 /**
  * Wait for the target turn to finish within what's left of the caller's sync
  * budget (deadline is stamped at handler entry). Returns 'timeout' when the
- * budget is exhausted — before or during the wait — and rethrows any other
- * waitForIdle failure.
+ * budget is exhausted, before or during the wait.
  *
- * requireActiveFirst is off: every sync caller marks the session active before
- * the prompt is delivered (invoke) or checks isSessionActive just before
- * waiting (get-transcript), so an inactive session here means the turn already
- * finished — resolving immediately is correct, not a startup race.
+ * Every sync caller marks the session active before the prompt is delivered
+ * (invoke) or checks isSessionActive just before waiting (get-transcript), so
+ * an inactive session here means the turn already finished: the wait
+ * resolving at once is correct, not a startup race.
  */
 async function waitForTurnWithinBudget(
   targetSlug: string,
@@ -525,18 +547,10 @@ async function waitForTurnWithinBudget(
     // Pre-wait work can eat the whole budget; if the turn already finished
     // during it, that's a completion — reporting 'timeout' here would label a
     // finished turn 'running' and make the caller poll for a result it has.
-    return agentRegistry.get(targetSlug).sessions.isActive(sessionId) ? 'timeout' : 'completed'
+    return (await agentRegistry.get(targetSlug).sessions.live(sessionId)).isActive ? 'timeout' : 'completed'
   }
-  try {
-    await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, {
-      timeoutMs: remainingMs,
-      requireActiveFirst: false,
-    })
-    return 'completed'
-  } catch (error) {
-    if (isWaitForIdleTimeout(error)) return 'timeout'
-    throw error
-  }
+  const outcome = await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, { timeoutMs: remainingMs })
+  return outcome === 'idle' ? 'completed' : 'timeout'
 }
 
 function syncWaitPromotedNote(timeoutMs: number): string {
@@ -545,10 +559,6 @@ function syncWaitPromotedNote(timeoutMs: number): string {
     'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
     'Poll get_agent_session_transcript with this session_id to retrieve the result.'
   )
-}
-
-function isReturnableAssistantEntry(e: JsonlMessageEntry | JsonlSystemEntry): boolean {
-  return e.type === 'assistant' && compactMessage(e) !== null
 }
 
 /**
@@ -568,7 +578,7 @@ async function readLastAssistantMessage(
     // Only the most recent assistant entry matters, so read the transcript
     // from the tail instead of full-parsing it (transcripts reach 100MB+, and
     // this runs up to READ_RETRY_ATTEMPTS times per invoke).
-    const entry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
+    const entry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
     const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
     if (entry && !isStaleBoundary) {
       const compact = compactMessage(entry)
@@ -594,35 +604,37 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, sessionId, sync, limit, fullTranscript } = c.req.valid('json')
 
-  // Resolve the model-supplied display slug to the canonical id and rebind.
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
-
-  const target = await getAgentRecord(targetSlug)
+  // Resolve the model-supplied display slug to the agent and rebind.
+  const target = await agentCatalog.resolveRecord(rawTargetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
 
-  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
+  const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))
+  const savedDecision = startRead(evaluatePolicy(callerSlug, 'read', targetSlug))
+  if (!(await access)) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
+  const policy = await checkAgentPolicy(
+    callerSlug, 'read', targetSlug, target.name, undefined, undefined, undefined, savedDecision,
+  )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
   const actor = agentRegistry.get(targetSlug)
 
-  // Status and wait state live in the process-global persister. Validate the
-  // target/session pair before consulting it, not only before reading the
+  // Status and wait state live in the target's live sessions. Validate the
+  // target/session pair before consulting them, not only before reading the
   // target-scoped transcript below.
   if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  if (sync && actor.sessions.isActive(sessionId)) {
+  if (sync && (await actor.sessions.live(sessionId)).isActive) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
-    const boundaryEntry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
+    const boundaryEntry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
     try {
       // 'timeout' falls through: return the transcript so far with status
       // 'running'. Sync get-transcript is a bounded long-poll the caller can
@@ -643,7 +655,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // poll budget on sessions that are simply idle. A session that went idle
       // just before the isSessionActive check above keeps plain read-what's-
       // flushed semantics.
-      if (outcome === 'completed' || !actor.sessions.isActive(sessionId)) {
+      if (outcome === 'completed' || !(await actor.sessions.live(sessionId)).isActive) {
         await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
       }
     } catch (error) {
@@ -653,17 +665,14 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     }
   }
 
-  const isAwaiting = actor.sessions.isAwaitingInput(sessionId)
-  const isActive = actor.sessions.isActive(sessionId)
-  const status: 'running' | 'idle' | 'awaiting_input' = isAwaiting
+  const live = await actor.sessions.live(sessionId)
+  const status: 'running' | 'idle' | 'awaiting_input' = live.isAwaitingInput
     ? 'awaiting_input'
-    : isActive
+    : live.isActive
       ? 'running'
       : 'idle'
 
-  const entries = await actor.messages.withCompact(sessionId)
-  const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
-  const deliveredFiles = collectDeliveredFiles(entries)
+  const { messages, total, deliveredFiles } = await actor.messages.transcriptView(sessionId, { fullTranscript, limit })
 
   return c.json({ status, messages, total, deliveredFiles })
 })
@@ -680,11 +689,11 @@ function attachmentDisposition(filename: string): string {
 xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, sessionId, deliveryId } = c.req.valid('json')
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
-
-  const target = await getAgentRecord(targetSlug)
+  const target = await agentCatalog.resolveRecord(rawTargetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
+  // The policy is read where it always was, after the delivery is found: that
+  // lookup parses a transcript, and a Block saved meanwhile must still apply.
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
@@ -693,8 +702,7 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  const entries = await actor.messages.withCompact(sessionId)
-  const delivery = findDeliveredFile(entries, deliveryId)
+  const delivery = await actor.messages.findDeliveredFile(sessionId, deliveryId)
   if (!delivery) return c.json({ error: 'Delivered file not found' }, 404)
   const policy = await checkAgentPolicy(
     callerSlug,
@@ -741,15 +749,63 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
 // POST /api/x-agent/invoke - send prompt to a target agent (new or existing session)
 // ----------------------------------------------------------------------------
 
+/**
+ * The model a new invoked session starts on: the caller's pick, checked
+ * against the target agent's models and the member's plan, else the target's
+ * default. Returns the pick for the start and what the card shows.
+ */
+async function invokeRuntime(
+  targetSlug: string,
+  model: string | undefined,
+  effort: EffortLevel | undefined,
+  speed: SpeedLevel | undefined,
+): Promise<{ error: string } | { pick: SessionRuntimePick; runtime?: XAgentRuntime }> {
+  const settings = await getSettings()
+  const { agentPrefs, resolve } = await resolveSessionDefaults(settings, targetSlug)
+  let bound: { model?: string; llmProviderId?: string }
+  try {
+    bound = await bindAgentModelChoice(model, agentPrefs, settings)
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+  const pick = { ...bound, effort, speed }
+  const resolved = await resolve(pick)
+  // The resolve passes over a pick the member's plan cannot run.
+  if (bound.model && (resolved.model !== bound.model || resolved.llmProviderId !== bound.llmProviderId)) {
+    return { error: `Model "${model}" is not available on this plan. Leave out model to use the agent's default.` }
+  }
+  // Only a catalog model is named to the person: without a connections setup the name is the agent's own text.
+  if (!('connection' in resolved)) return { pick }
+  const catalogModel = connectionCatalogFrom(resolved.connection, settings).find((m) => m.id === resolved.wireModel)
+  // A legacy-pinned default can run a wire id its connection's catalog does not list.
+  if (!catalogModel) return { pick }
+  const shownEffort = clampEffortForDisplay(resolved.effort, catalogModel.supportedEfforts)
+  const shownSpeed = clampSpeedForDisplay(resolved.speed, catalogModel)
+  return {
+    pick,
+    runtime: {
+      // The catalog id the picker on the card matches against, not an alias.
+      model: catalogModel.id,
+      llmProviderId: resolved.llmProviderId,
+      ...(shownEffort ? { effort: shownEffort } : {}),
+      ...(shownSpeed ? { speed: shownSpeed } : {}),
+      label: catalogModel.label,
+    },
+  }
+}
+
 const invokeBodySchema = z.object({
-  slug: z.string(),
+  slug: z.string().optional(),
   prompt: z.string().min(1),
   sessionId: z.string().optional(),
   sync: z.boolean().optional(),
   attachments: xAgentAttachmentsSchema.optional(),
+  model: z.string().min(1).optional(),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+  speed: z.enum(SPEED_LEVELS).optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
-  // can reject calls from sessions that were themselves invoked by another agent
-  // (one-hop rule — also blocks A→B→A and any deeper chain transitively).
+  // can reject calls from sessions that were themselves invoked by an agent
+  // (one-hop rule).
   _callerSessionId: z.string().optional(),
 })
 
@@ -768,57 +824,63 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     sessionId: existingSessionId,
     sync,
     attachments = [],
+    model,
+    effort,
+    speed,
     _callerSessionId,
   } = c.req.valid('json')
 
-  // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
+  // Resolve display slug → the agent, so ACL / policy / runtime all use its id.
+  // No slug means the caller's own agent.
+  const target = await agentCatalog.resolveRecord(rawTargetSlug ?? callerSlug)
+  if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
 
-  if (targetSlug === callerSlug) {
-    return c.json({ error: 'Agent cannot invoke itself' }, 400)
+  // What the checks below read depends only on the caller and the resolved
+  // target, so the reads start together; each is awaited at its own check.
+  const callerMetaRead = startRead(_callerSessionId
+    ? agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
+    : Promise.resolve(null))
+  const triggeringUserRead = startRead(isAuthMode() && _callerSessionId
+    ? getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    : Promise.resolve(undefined))
+  const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))
+  // No policy applies to the caller's own agent (checkAgentPolicy).
+  const savedDecision = targetSlug === callerSlug
+    ? undefined
+    : startRead(evaluatePolicy(callerSlug, 'invoke', targetSlug))
+  if (existingSessionId && (model || effort || speed)) {
+    return c.json({ error: 'model, effort and speed apply to new sessions only. Leave them out to continue session_id on its own model.' }, 400)
   }
 
-  // One-hop rule: sessions started by another agent cannot invoke further.
-  const callerMeta = _callerSessionId
-    ? await agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
-    : null
+  // One-hop rule: sessions started by an agent invoke cannot invoke further.
+  const callerMeta = await callerMetaRead
   if (callerMeta?.invokedByAgentSlug) {
     return c.json(
       {
         error:
-          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke other agents. ` +
+          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke agents. ` +
           'Cross-agent invocation is one hop deep.',
       },
       403,
     )
   }
 
+  // A running session takes an invoke into its turn, so a session messaging
+  // itself would read its own prompt as a follow-up, and a sync wait would wait
+  // on the turn that is waiting for it.
+  if (targetSlug === callerSlug && existingSessionId && existingSessionId === _callerSessionId) {
+    return c.json({ error: 'A session cannot send a message to itself. Omit session_id to start a worker session.' }, 400)
+  }
+
   // Capture the triggering message's author before a review prompt can pause
   // this request and newer messages can arrive in a shared caller session.
   // This remains a best-effort "latest author" heuristic until the container
   // can pass the exact driving message UUID.
-  const triggeringUserId = isAuthMode() && _callerSessionId
-    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
-    : undefined
+  const triggeringUserId = await triggeringUserRead
 
-  const target = await getAgentRecord(targetSlug)
-  if (!target) return c.json({ error: 'Target agent not found' }, 404)
-
-  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))) {
+  if (!(await access)) {
     return c.json({ error: 'Forbidden: caller has no user access to target agent' }, 403)
-  }
-
-  const policy = await checkAgentPolicy(
-    callerSlug,
-    'invoke',
-    targetSlug,
-    target.name,
-    prompt.slice(0, 200),
-    attachments.length ? { kind: 'send', paths: attachments } : undefined,
-  )
-  if (!policy.allowed) {
-    return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
   // Attribute to the triggering message author. Session creator and caller
@@ -836,29 +898,62 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     }
   }
 
+  // A new session's model is checked and shown on the card before anyone
+  // approves it. A blocked call is refused first, with no model lookup.
+  let pick: SessionRuntimePick = {}
+  let runtime: XAgentRuntime | undefined
+  if (!existingSessionId) {
+    if (await savedDecision === 'block') {
+      return c.json({ error: 'Blocked by policy' }, 403)
+    }
+    let checked: Awaited<ReturnType<typeof invokeRuntime>>
+    try {
+      checked = await runWithOptionalUser(attributedUserId, () => invokeRuntime(targetSlug, model, effort, speed))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[x-agent] invoke failed', { callerSlug, targetSlug, stage: 'resolve_model', error: message })
+      captureException(err, { tags: { ...X_AGENT_SENTRY, stage: 'resolve_model' }, extra: { callerSlug, targetSlug } })
+      return c.json({ error: `Failed to invoke agent (resolve_model): ${message}` }, 500)
+    }
+    if ('error' in checked) return c.json({ error: checked.error }, 400)
+    pick = checked.pick
+    runtime = checked.runtime
+  }
+
+  const policy = await checkAgentPolicy(
+    callerSlug,
+    'invoke',
+    targetSlug,
+    target.name,
+    prompt.slice(0, 200),
+    attachments.length ? { kind: 'send', paths: attachments } : undefined,
+    // Shows the review in the calling session, so a chat can answer it.
+    _callerSessionId,
+    savedDecision,
+    runtime,
+  )
+  if (!policy.allowed) {
+    return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
+  }
+  // The person allowing the card picked another model for the new session.
+  if (policy.pick) pick = policy.pick
+
   return runWithOptionalUser(attributedUserId, async () => {
     // Stages for runtime 500s: ensure_running → create_session / send_message.
     let stage = 'ensure_running'
     let stagedTargetDirectory: string | undefined
     let stagedTargetFiles: FileOps | undefined
     let promptDeliveryStarted = false
-    let invokingSessionKey: string | undefined
     try {
       const targetActor = agentRegistry.get(targetSlug)
       if (existingSessionId) {
         // Invoke rights on the target say nothing about the session id sent
-        // with them. The persister is keyed by session id alone, so a third
-        // agent's id would get re-pointed at the target's container here — and
-        // the target's transcript written under it.
+        // with them. The target's live sessions take any id they are handed, so
+        // a third agent's id would get attached to the target's container here —
+        // and the target's transcript written under it.
         if (!(await targetActor.sessions.isKnown(existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
-        const candidateKey = `${targetSlug}\0${existingSessionId}`
-        if (targetActor.sessions.isActive(existingSessionId) || invokingSessions.has(candidateKey)) {
-          return c.json({ error: 'Target session is currently running' }, 409)
-        }
-        invokingSessions.add(candidateKey)
-        invokingSessionKey = candidateKey
         stage = 'ensure_running'
         await targetActor.container.start()
         const files = targetActor.files
@@ -879,14 +974,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
         const replyBoundary = sync
-          ? await targetActor.messages.findLastEntry(existingSessionId, isReturnableAssistantEntry)
+          ? await targetActor.messages.findLastEntry(existingSessionId, { kind: 'assistant' })
           : null
         stage = 'subscribe'
-        if (!targetActor.sessions.isStreamSubscribed(existingSessionId)) {
-          await subscribeWithTimeout(
-            targetActor.sessions.subscribeStream(existingSessionId, existingSessionId),
-          )
-        }
+        // Attached here rather than by the delivery, so the attach is bounded
+        // and the cutoff below is checked after it.
+        await subscribeWithTimeout(targetActor.sessions.attach(existingSessionId))
         // Checked AFTER every unbounded pre-send await (container startup and
         // the stream attach above) so only fast local writes remain between
         // here and sendMessage — a check followed by a slow await could still
@@ -903,48 +996,43 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           return c.json({ error: deliveryCutoffError() }, 504)
         }
         stage = 'send_message'
-        await targetActor.messages.withSend(existingSessionId, async () => {
-          let messageUuid: string | undefined
-          if (isAuthMode() && attributedUserId) {
-            const candidateUuid = randomUUID()
-            const recorded = await insertMessageAuthorBestEffort({
-              id: candidateUuid,
-              sessionId: existingSessionId,
-              agentSlug: targetSlug,
-              userId: attributedUserId,
-            })
-            if (recorded) messageUuid = candidateUuid
+        let messageUuid: string | undefined
+        if (isAuthMode() && attributedUserId) {
+          const candidateUuid = randomUUID()
+          const recorded = await insertMessageAuthorBestEffort({
+            id: candidateUuid,
+            sessionId: existingSessionId,
+            agentSlug: targetSlug,
+            billedUserId: attributedUserId,
+            authorAgentSlug: callerSlug,
+          })
+          if (recorded) messageUuid = candidateUuid
+        }
+        // What a message that never went leaves behind is removed; a failed
+        // send that may have gone keeps both, so an accepted message never
+        // references deleted bytes or loses its author.
+        const discardUndelivered = async () => {
+          promptDeliveryStarted = false
+          if (messageUuid) await deleteMessageAuthorBestEffort(targetSlug, existingSessionId, messageUuid)
+          if (stagedTargetDirectory) {
+            await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+            stagedTargetDirectory = undefined
           }
-          try {
-            // A failed send can be ambiguous: retain files once delivery starts so
-            // a message accepted just before a transport error never references deleted bytes.
-            promptDeliveryStarted = true
-            if (messageUuid) {
-              await targetActor.messages.send(existingSessionId, deliveredPrompt, messageUuid, { isAutomated: true })
-            } else {
-              await targetActor.messages.send(existingSessionId, deliveredPrompt, undefined, { isAutomated: true })
-            }
-          } catch (sendError) {
-            if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
-            try {
-              const current = await targetActor.sessions.getLive(existingSessionId)
-              if (current?.isRunning === false) {
-                targetActor.sessions.markIdle(existingSessionId)
-                promptDeliveryStarted = false
-                if (stagedTargetDirectory) {
-                  await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-                  stagedTargetDirectory = undefined
-                }
-              }
-            } catch {
-              // Transport failures are ambiguous: stream events reconcile a send
-              // that reached the container, so retain active state and files.
-            }
-            throw sendError
-          }
-        })
-        invokingSessions.delete(invokingSessionKey)
-        invokingSessionKey = undefined
+        }
+        promptDeliveryStarted = true
+        try {
+          // A session in the middle of a turn takes the prompt into that turn,
+          // as a user's message does.
+          await targetActor.messages.deliver({
+            sessionId: existingSessionId,
+            content: deliveredPrompt,
+            uuid: messageUuid,
+            options: { isAutomated: true },
+          })
+        } catch (sendError) {
+          if (deliveryFailure(sendError)?.accepted === false) await discardUndelivered()
+          throw sendError
+        }
 
         if (sync) {
           stage = 'wait_for_idle'
@@ -1000,11 +1088,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
       }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
-      const agentLimits = getEffectiveAgentLimits()
-      const customEnvVars = getCustomEnvVars()
-      const targetPrefs = await readAgentPreferences(targetSlug)
-      const models = getEffectiveModels()
-      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
+      // One read of the settings for this invocation's session start.
+      const { agentLimits, customEnvVars, maxBrowserTabs, models, resolve } = await resolveSessionDefaults(await getSettings(), targetSlug)
+      const resolved = await resolve(pick)
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -1023,161 +1109,78 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         return c.json({ error: deliveryCutoffError() }, 504)
       }
       stage = 'create_session'
-      // createSession IS the delivery (initialMessage carries the prompt) and
-      // cannot be cancelled mid-flight, so race it against the cutoff: if it
-      // lands after the caller's fetch is already dead, revoke the session the
-      // moment it materializes instead of leaving a ghost run for the caller's
-      // retry to duplicate.
+      // Creating the session IS the delivery (initialMessage carries the
+      // prompt) and cannot be cancelled mid-flight. One that lands after the
+      // cutoff, when the caller's fetch may already be dead, is revoked by the
+      // start itself the moment it materializes, instead of leaving a ghost
+      // run for the caller's retry to duplicate. A failed registration or
+      // stream attach is revoked the same way: without the attach nothing
+      // would persist the session's transcript.
+      // Recorded as the session's creator only while that person exists (a
+      // legacy id can outlive its user); the attribution row follows the start.
+      const createdByUserId = initialMessageUuid && attributedUserId && (await userExists(attributedUserId))
+        ? attributedUserId
+        : undefined
       promptDeliveryStarted = true
-      const createPromise = targetActor.sessions.create({
-        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-        initialMessage: deliveredPrompt,
-        ...(initialMessageUuid ? { initialMessageUuid } : {}),
-        model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-        browserModel: models.browserModel,
-        dashboardBuilderModel: models.dashboardBuilderModel,
-        effort: resolved.effort,
-        speed: resolved.speed,
-        maxOutputTokens: agentLimits.maxOutputTokens,
-        maxThinkingTokens: agentLimits.maxThinkingTokens,
-        maxTurns: agentLimits.maxTurns,
-        maxBudgetUsd: agentLimits.maxBudgetUsd,
-        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-        metadata: { isAutomated: true },
-      })
-      let created: Awaited<typeof createPromise> | typeof DEADLINE
+      let containerSession: ContainerSession
       try {
-        created = await raceDeadline(createPromise, deliveryCutoff)
-      } catch (error) {
+        containerSession = await targetActor.sessions.start({
+          create: {
+          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+          initialMessage: deliveredPrompt,
+          ...(initialMessageUuid ? { initialMessageUuid } : {}),
+          model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+          browserModel: models.browserModel,
+          dashboardBuilderModel: models.dashboardBuilderModel,
+          effort: resolved.effort,
+          speed: resolved.speed,
+          maxOutputTokens: agentLimits.maxOutputTokens,
+          maxThinkingTokens: agentLimits.maxThinkingTokens,
+          maxTurns: agentLimits.maxTurns,
+          maxBudgetUsd: agentLimits.maxBudgetUsd,
+          customEnvVars,
+          maxBrowserTabs,
+          metadata: { isAutomated: true },
+        },
+          name: `Invoked by ${callerName}`,
+          metadata: { invokedByAgentSlug: callerSlug, ...(createdByUserId ? { createdByUserId } : {}) },
+          notAfter: deliveryCutoff,
+          attachTimeoutMs: SUBSCRIBE_TIMEOUT_MS,
+        })
+      } catch (startErr) {
         if (stagedTargetDirectory) {
           await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
         }
-        throw error
+        const failure = startFailure(startErr)
+        if (failure?.code === 'created-late') {
+          console.warn('[x-agent] delivery cutoff exceeded during create; the late session was revoked', { callerSlug, targetSlug })
+          return c.json({ error: lateDeliveryRevokedError() }, 504)
+        }
+        if (failure?.code !== 'register-failed' && failure?.code !== 'attach-failed') throw startErr
+        stage = failure.code === 'register-failed' ? 'register_session' : 'subscribe'
+        const message = startErr instanceof Error ? startErr.message : String(startErr)
+        console.error('[x-agent] invoke failed', { callerSlug, targetSlug, stage, error: message })
+        captureException(startErr, { tags: { ...X_AGENT_SENTRY, stage }, extra: { callerSlug, targetSlug } })
+        return c.json({
+          error: failure.code === 'register-failed'
+            ? `Failed to register invoked session: ${message}`
+            : `Failed to attach to invoked session: ${message}`,
+        }, 500)
       }
-      if (created === DEADLINE) {
-        console.warn('[x-agent] delivery cutoff exceeded during create; late session will be revoked', {
-          callerSlug,
-          targetSlug,
-        })
-        void createPromise.then(
-          async (lateSession) => {
-            await targetActor.sessions.deleteLive(lateSession.id).catch((cleanupErr) => {
-              console.error('[x-agent] failed to revoke late-created session', {
-                sessionId: lateSession.id,
-                error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-              })
-            })
-            if (stagedTargetDirectory) {
-              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-            }
-          },
-          async () => {
-            if (stagedTargetDirectory) {
-              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-            }
-          },
-        )
-        return c.json({ error: lateDeliveryRevokedError() }, 504)
-      }
-      const containerSession = created
       const newSessionId = containerSession.id
-      // Mark active before any await so waitForIdle sees state if result arrives early.
-      targetActor.sessions.markActive(newSessionId)
-
-      const authorRecorded = initialMessageUuid && attributedUserId
-        ? await insertMessageAuthorBestEffort({
-            id: initialMessageUuid,
-            sessionId: newSessionId,
-            agentSlug: targetSlug,
-            userId: attributedUserId,
-          })
-        : false
-
-      stage = 'register_session'
-      try {
-        await targetActor.sessions.register(newSessionId, `Invoked by ${callerName}`, {
-          invokedByAgentSlug: callerSlug,
-          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
-        })
-        // markSessionActive ran before registration so runtime waiters could
-        // not miss a fast result. Publish a metadata-aware update now that the
-        // x-agent provenance exists, allowing the target's trigger/history UI
-        // to appear immediately instead of waiting for its polling interval.
-        messagePersister.broadcastGlobal({
-          type: 'session_updated',
+      if (initialMessageUuid && createdByUserId) {
+        await insertMessageAuthorBestEffort({
+          id: initialMessageUuid,
           sessionId: newSessionId,
           agentSlug: targetSlug,
+          billedUserId: createdByUserId,
+          authorAgentSlug: callerSlug,
         })
-      } catch (registerErr) {
-        const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
-        console.error('[x-agent] invoke failed', {
-          callerSlug,
-          targetSlug,
-          sessionId: newSessionId,
-          stage,
-          error: message,
-        })
-        captureException(registerErr, {
-          tags: { ...X_AGENT_SENTRY, stage },
-          extra: { callerSlug, targetSlug, sessionId: newSessionId },
-        })
-        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
-          console.error('[x-agent] failed to clean up orphaned container session', {
-            sessionId: newSessionId,
-            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-          })
-        })
-        if (authorRecorded && initialMessageUuid) {
-          await deleteMessageAuthorBestEffort(initialMessageUuid)
-        }
-        targetActor.sessions.unsubscribeStream(newSessionId)
-        if (stagedTargetDirectory) {
-          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-        }
-        return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
-
-      stage = 'subscribe'
-      try {
-        await subscribeWithTimeout(
-          targetActor.sessions.subscribeStream(newSessionId, newSessionId),
-        )
-      } catch (subscribeErr) {
-        const message = subscribeErr instanceof Error ? subscribeErr.message : String(subscribeErr)
-        console.error('[x-agent] invoke failed', {
-          callerSlug,
-          targetSlug,
-          sessionId: newSessionId,
-          stage,
-          error: message,
-        })
-        captureException(subscribeErr, {
-          tags: { ...X_AGENT_SENTRY, stage },
-          extra: { callerSlug, targetSlug, sessionId: newSessionId },
-        })
-        // Without the stream attach nothing would persist this session's
-        // transcript — it would run as an invisible ghost. Revoke it, same
-        // remediation as a failed registration above.
-        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
-          console.error('[x-agent] failed to clean up orphaned container session', {
-            sessionId: newSessionId,
-            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-          })
-        })
-        if (authorRecorded && initialMessageUuid) {
-          await deleteMessageAuthorBestEffort(initialMessageUuid)
-        }
-        targetActor.sessions.unsubscribeStream(newSessionId)
-        if (stagedTargetDirectory) {
-          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-        }
-        return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
-      }
-      if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-        targetActor.sessions.setSlashCommands(newSessionId, containerSession.slashCommands)
-      }
+      // The x-agent provenance exists now: the target's trigger and history
+      // UI can show the session at once instead of at its next poll.
+      globalFeed.publish({ type: 'session_updated', sessionId: newSessionId, agentSlug: targetSlug })
 
       if (sync) {
         stage = 'wait_for_idle'
@@ -1230,8 +1233,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
       })
       return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
-    } finally {
-      if (invokingSessionKey) invokingSessions.delete(invokingSessionKey)
     }
   })
 })

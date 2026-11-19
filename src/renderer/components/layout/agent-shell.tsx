@@ -146,7 +146,7 @@ export function AgentShell() {
   // stays mounted across that navigation, so the ghost is intact when the leaf
   // reads it via getPendingMessages.
   const onSessionCreated = useCallback(
-    (newSessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => {
+    (newSessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean; replace?: boolean }) => {
       if (options?.voiceMode) {
         // A session started by voice opens with the voice-mode notice, which
         // draws as a boundary once fetched — no ghost bubble for it. The
@@ -167,6 +167,7 @@ export function AgentShell() {
         void navigate({
           to: '/agents/$slug/sessions/$sessionId',
           params: { slug, sessionId: newSessionId },
+          ...(options?.replace ? { replace: true } : {}),
         })
       }
     },
@@ -180,7 +181,7 @@ export function AgentShell() {
 
   // Holder #1 of the two-holder EventSource pattern: keeps the stream ref-counted
   // open across leaf changes (SessionChatColumn is holder #2).
-  const { contextUsage: streamContextUsage, isStreaming } = useMessageStream(activeSessionId, slug)
+  const { contextUsage: streamContextUsage } = useMessageStream(activeSessionId, slug, ['contextUsage'])
 
   const value: PendingMessagesContextValue = {
     getPendingMessages,
@@ -199,7 +200,7 @@ export function AgentShell() {
           needsTrafficLightPadding={needsTrafficLightPadding}
           headerContent={
             slug ? (
-              <AgentHeader slug={slug} isViewOnly={isViewOnly} isStreaming={isStreaming} startAgent={startAgent} stopAgent={stopAgent} />
+              <AgentHeader slug={slug} isViewOnly={isViewOnly} startAgent={startAgent} stopAgent={stopAgent} />
             ) : null
           }
         >

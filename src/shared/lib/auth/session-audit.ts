@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { logAuditEventAndWait } from '@shared/lib/services/audit-log-service'
 
 /**
  * How a session came to exist. Every path that mints a Better Auth session on
@@ -43,6 +43,8 @@ const METHOD_BY_ENDPOINT_PATH: Record<string, SessionCreationMethod> = {
   '/sign-up/email': 'password',
   '/callback/:id': 'oidc',
   '/oauth2/callback/:providerId': 'oidc',
+  // Generic providers can also authenticate a verified ID token in 1.7.
+  '/sign-in/social': 'oidc',
   // Belt and braces. Impersonation is normally recognized from the session's
   // `impersonatedBy` column, which also names the actor; this only keeps the
   // label right if that column is ever absent.
@@ -124,6 +126,9 @@ export function resolveSessionCreationMethod(
  * audit UI resolves), and the session row itself already holds the user-agent
  * for the sessions list, so copying attacker-controlled text into a durable
  * trail would add surface without adding information.
+ *
+ * Waits for the row: the session is a credential, and its trail is written
+ * before the credential is handed out.
  */
 export async function auditSessionCreated(
   session: SessionForAudit,
@@ -134,7 +139,7 @@ export async function auditSessionCreated(
   // trace of who actually did it with it.
   const impersonatedBy = readImpersonatedBy(session)
   if (impersonatedBy) {
-    await logAuditEvent({
+    await logAuditEventAndWait({
       userId: impersonatedBy,
       object: 'session',
       objectId: session.id,
@@ -145,7 +150,7 @@ export async function auditSessionCreated(
   }
 
   const { method, orgId } = resolveSessionAuditContext(endpointPath)
-  await logAuditEvent({
+  await logAuditEventAndWait({
     userId: session.userId,
     object: 'session',
     objectId: session.id,

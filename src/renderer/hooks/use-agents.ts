@@ -1,11 +1,17 @@
+import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
+import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { isRetryableRequestError } from '@renderer/lib/http-error'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
+import { useInstallingTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
+import { agentQuery, agentsListQuery, AGENTS_LIST_POLL_MS } from './query-options'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from './use-agent-member-agents'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -41,24 +47,56 @@ export function resolveRouteAgentId(
   return match?.slug ?? slug
 }
 
-/** Hook form of {@link resolveRouteAgentId}, reading the active `:slug` route param. */
+// Every sidebar row resolves the route's agent and its own sessions' key, and
+// so does each of its session and dashboard sub-items. Resolve once per agents
+// list per slug, not once per asker: each `['agents']` refetch would otherwise
+// rescan the list once per row.
+const resolvedAgentIds = new WeakMap<ApiAgent[], Map<string, string>>()
+
+function resolveCached(slug: string, agents: ApiAgent[]): string {
+  let bySlug = resolvedAgentIds.get(agents)
+  if (!bySlug) resolvedAgentIds.set(agents, (bySlug = new Map()))
+  let id = bySlug.get(slug)
+  if (id === undefined) bySlug.set(slug, (id = resolveRouteAgentId(slug, agents) ?? slug))
+  return id
+}
+
+/**
+ * Hook form of {@link resolveRouteAgentId} for any slug form.
+ *
+ * Subscribes through `select`, so a caller re-renders when the resolved id
+ * changes, not on every `['agents']` refetch. Every sidebar row calls this, and
+ * any agent's session event refetches the list: a whole-list subscription made
+ * each event re-render every row, which with hundreds of agents pinned the
+ * renderer's main thread.
+ */
+export function useResolvedAgentId(slug: string | undefined): string | undefined {
+  const select = useCallback((agents: ApiAgent[]) => (slug ? resolveCached(slug, agents) : undefined), [slug])
+  const { data } = useAgents({ select, poll: false })
+  return data ?? resolveRouteAgentId(slug, undefined)
+}
+
+/** {@link useResolvedAgentId} for the active `:slug` route param. */
 export function useRouteAgentId(): string | undefined {
   const { slug } = useParams({ strict: false }) as { slug?: string }
-  const { data: agents } = useAgents()
-  return resolveRouteAgentId(slug, agents)
+  return useResolvedAgentId(slug)
 }
 
 export function useAgents<TData = ApiAgent[]>(options?: {
   select?: (agents: ApiAgent[]) => TData
   enabled?: boolean
+  /** `[]` keeps the list fetched and cached without ever re-rendering the caller. */
+  notifyOnChangeProps?: []
+  /**
+   * `false` for narrow subscriptions mounted once per sidebar row: the list's
+   * main consumers keep the fallback poll, and an interval per observer is
+   * re-armed on every list update — hundreds of timers per agent event.
+   */
+  poll?: false
 }) {
   return useQuery<ApiAgent[], Error, TData>({
-    queryKey: ['agents'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/agents')
-      if (!res.ok) throw new Error('Failed to fetch agents')
-      return res.json()
-    },
+    // Key, fetch and staleTime are shared with the list's other observers.
+    ...agentsListQuery,
     enabled: options?.enabled,
     // React Query structurally shares the `select` result, so a narrow projection
     // (e.g. just {slug, displaySlug} for UserProvider's slug→id resolver) keeps a
@@ -66,23 +104,44 @@ export function useAgents<TData = ApiAgent[]>(options?: {
     // it, every agent-status tick would change `data` identity and re-render every
     // consumer of that projection.
     select: options?.select,
+    notifyOnChangeProps: options?.notifyOnChangeProps,
+    // Real-time updates via GlobalNotificationHandler, poll as fallback only
+    refetchInterval: options?.poll === false ? false : AGENTS_LIST_POLL_MS,
+  })
+}
+
+/** The agents the sidebar and Home list: all but the Team Brain agent, reached only through its own sidebar item, and a set-up's. */
+export function useListedAgents() {
+  const installing = useInstallingTeamBrainSlug()
+  const withoutTeamBrain = useCallback(
+    (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && !agent.teamBrainSettingUp && agent.slug !== installing),
+    [installing],
+  )
+  return useAgents({ select: withoutTeamBrain })
+}
+
+export function useAgent(slug: string | null) {
+  return useQuery({
+    ...agentQuery(slug ?? ''),
+    enabled: !!slug,
+    // A loader may join this request. Retry transport, timeout, rate-limit and
+    // server errors, but finish definitive client errors (including 401) now.
+    retry: (failureCount, error) => isRetryableRequestError(error) && failureCount < 3,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
     refetchInterval: 60000,
   })
 }
 
-export function useAgent(slug: string | null) {
-  return useQuery<ApiAgent>({
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${slug}`)
-      if (!res.ok) throw new Error('Failed to fetch agent')
-      return res.json()
-    },
-    queryKey: ['agents', slug],
-    enabled: !!slug,
-    // Real-time updates via GlobalNotificationHandler, poll as fallback only
-    refetchInterval: 60000,
-  })
+/**
+ * Whoever creates an agent owns it. Their roles are fetched again after a create, and until that
+ * answer arrives the list they hold has no entry for the new agent, which reads as view-only: on
+ * a host whose calls take hundreds of milliseconds, the new agent's page opened view-only first.
+ * So the owner role goes into the held list at once. Nothing is held outside auth mode.
+ */
+export function seedOwnerRole(queryClient: QueryClient, agentSlug: string): void {
+  queryClient.setQueryData<Record<string, { role: string; memberCount: number }>>(['my-agent-roles'], (roles) =>
+    roles && !roles[agentSlug] ? { ...roles, [agentSlug]: { role: 'owner', memberCount: 1 } } : roles,
+  )
 }
 
 export function useCreateAgent() {
@@ -110,6 +169,7 @@ export function useCreateAgent() {
       if (agent.displaySlug !== agent.slug) {
         queryClient.setQueryData(['agents', agent.displaySlug], agent)
       }
+      seedOwnerRole(queryClient, agent.slug)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -141,10 +201,16 @@ export function useDeleteAgent() {
       // entry without a blocking refetch. Defense-in-depth: the server already
       // 404s the agent, so this only removes a brief stale name/description flash.
       queryClient.removeQueries({ queryKey: ['agents', slug] })
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      invalidateNotificationCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+      // Its links go with it, and with them its place in other agents' member stacks.
+      queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
+      // Deleting the Team Brain agent takes its drive off every other agent and off global.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }
@@ -181,6 +247,7 @@ export function useUpdateAgent() {
 
 export function useUpdateAgentAvatar() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
   return useMutation({
     mutationFn: async ({ slug, avatar }: { slug: string; avatar: AgentAvatar }) => {
       const res = await apiFetch(`/api/agents/${slug}/avatar`, {
@@ -194,11 +261,23 @@ export function useUpdateAgentAvatar() {
     onSuccess: (avatar, { slug }) => {
       updateAgentAvatarCache(queryClient, slug, avatar)
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      track('agent_avatar_changed', { color: avatar.color, shape: avatar.shape })
+    },
+    onError: (_, { avatar }) => {
+      track('agent_avatar_change_failed', { color: avatar.color, shape: avatar.shape })
     },
   })
 }
 
-export type StartAgentVars = string | { slug: string; source?: 'user' | 'warm-start' }
+export type StartAgentVars = string | {
+  slug: string
+  source?: 'user' | 'warm-start'
+  /**
+   * The session the caller is typing into. The server then also resumes that
+   * session's agent process if it went idle, so the next send starts sooner.
+   */
+  sessionId?: string
+}
 
 function resolveStartAgentSlug(vars: StartAgentVars): string {
   return typeof vars === 'string' ? vars : vars.slug
@@ -212,7 +291,13 @@ export function useStartAgent() {
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (vars: StartAgentVars) => {
       const slug = resolveStartAgentSlug(vars)
-      const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
+      const sessionId = typeof vars === 'string' ? undefined : vars.sessionId
+      const res = await apiFetch(
+        `/api/agents/${slug}/start`,
+        sessionId
+          ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) }
+          : { method: 'POST' },
+      )
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || 'Failed to start agent')

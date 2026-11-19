@@ -46,13 +46,13 @@ function record(overrides: Record<string, unknown> = {}) {
     memberId: 'sub_1',
     tokenFingerprint: 'fp',
     ...overrides,
-  } as ReturnType<typeof readCloudWorkspaceRecord>
+  } as Awaited<ReturnType<typeof readCloudWorkspaceRecord>>
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   _resetCloudProxyRefreshForTest()
-  mockReadRecord.mockReturnValue(record())
+  mockReadRecord.mockResolvedValue(record())
 })
 
 afterEach(() => {
@@ -60,47 +60,47 @@ afterEach(() => {
 })
 
 describe('resolveCloudProxyTarget', () => {
-  it('returns the stored deployment and token', () => {
-    expect(resolveCloudProxyTarget()).toEqual({
+  it('returns the stored deployment and token', async () => {
+    expect(await resolveCloudProxyTarget()).toEqual({
       deploymentUrl: 'https://ws.example.com',
       token: 'deployment-token',
     })
   })
 
-  it('has nothing to forward to without a record', () => {
-    mockReadRecord.mockReturnValue(null)
-    expect(resolveCloudProxyTarget()).toBeNull()
+  it('has nothing to forward to without a record', async () => {
+    mockReadRecord.mockResolvedValue(null)
+    expect(await resolveCloudProxyTarget()).toBeNull()
   })
 
-  it('has nothing to forward to without a token', () => {
-    mockReadRecord.mockReturnValue(record({ token: '' }))
-    expect(resolveCloudProxyTarget()).toBeNull()
+  it('has nothing to forward to without a token', async () => {
+    mockReadRecord.mockResolvedValue(record({ token: '' }))
+    expect(await resolveCloudProxyTarget()).toBeNull()
   })
 
-  it('refuses a URL the deployment policy rejects', () => {
-    mockReadRecord.mockReturnValue(record({ deploymentUrl: 'http://ws.example.com' }))
-    expect(resolveCloudProxyTarget()).toBeNull()
+  it('refuses a URL the deployment policy rejects', async () => {
+    mockReadRecord.mockResolvedValue(record({ deploymentUrl: 'http://ws.example.com' }))
+    expect(await resolveCloudProxyTarget()).toBeNull()
   })
 
-  it('normalizes away a trailing slash so paths do not double up', () => {
-    mockReadRecord.mockReturnValue(record({ deploymentUrl: 'https://ws.example.com/' }))
-    expect(resolveCloudProxyTarget()?.deploymentUrl).toBe('https://ws.example.com')
+  it('normalizes away a trailing slash so paths do not double up', async () => {
+    mockReadRecord.mockResolvedValue(record({ deploymentUrl: 'https://ws.example.com/' }))
+    expect((await resolveCloudProxyTarget())?.deploymentUrl).toBe('https://ws.example.com')
   })
 
-  it('still offers a token the local clock believes is expired', () => {
+  it('still offers a token the local clock believes is expired', async () => {
     // The deployment decides whether its own token is good; a fast local clock
     // must not take a working session away from the user.
-    mockReadRecord.mockReturnValue(
+    mockReadRecord.mockResolvedValue(
       record({ expiresAt: new Date(Date.now() - 3600_000).toISOString() }),
     )
-    expect(resolveCloudProxyTarget()).not.toBeNull()
+    expect(await resolveCloudProxyTarget()).not.toBeNull()
   })
 })
 
 describe('refreshCloudProxyTarget', () => {
   it('re-mints and returns the new target', async () => {
     mockGetCloudWorkspace.mockImplementation(async () => {
-      mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
+      mockReadRecord.mockResolvedValue(record({ token: 'fresh-token' }))
       return status({ hasValidToken: true })
     })
 
@@ -147,7 +147,7 @@ describe('refreshCloudProxyTarget', () => {
 
   it('hands the fresh token to a straggler that misses the single flight', async () => {
     mockGetCloudWorkspace.mockImplementation(async () => {
-      mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
+      mockReadRecord.mockResolvedValue(record({ token: 'fresh-token' }))
       return status({ hasValidToken: true })
     })
 
@@ -162,13 +162,13 @@ describe('refreshCloudProxyTarget', () => {
 
   it('does not resurrect a token cleared while the cooldown was running', async () => {
     mockGetCloudWorkspace.mockImplementation(async () => {
-      mockReadRecord.mockReturnValue(record({ token: 'fresh-token' }))
+      mockReadRecord.mockResolvedValue(record({ token: 'fresh-token' }))
       return status({ hasValidToken: true })
     })
 
     await refreshCloudProxyTarget()
     // Account switch / disconnect between the two calls.
-    mockReadRecord.mockReturnValue(null)
+    mockReadRecord.mockResolvedValue(null)
 
     await expect(refreshCloudProxyTarget()).resolves.toBeNull()
   })
@@ -181,7 +181,7 @@ describe('refreshCloudProxyTarget', () => {
     await expect(refreshCloudProxyTarget()).resolves.toBeNull()
     // …and the rejected token is still sitting there, resolvable. That is
     // precisely why the record cannot be the signal.
-    expect(resolveCloudProxyTarget()?.token).toBe('deployment-token')
+    expect((await resolveCloudProxyTarget())?.token).toBe('deployment-token')
   })
 
   it('declines during the cooldown when the refresh itself failed', async () => {

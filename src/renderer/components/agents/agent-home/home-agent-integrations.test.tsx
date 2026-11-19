@@ -1,12 +1,6 @@
-const platformState = vi.hoisted(() => ({ connected: true }))
-vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: platformState }) }))
-const relayState = vi.hoisted(() => ({ available: true }))
-vi.mock('@renderer/hooks/use-webhook-relay', () => ({ useWebhookRelay: () => ({ data: relayState }) }))
-// A provider that only receives webhooks, alongside the real ones.
-vi.mock('@renderer/components/agent-integrations/setup-providers', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@renderer/components/agent-integrations/setup-providers')>()
-  return { ...actual, integrationSetupProviders: [...actual.integrationSetupProviders, { slug: 'hooks', label: 'Hooks', requiresRelay: true, Setup: () => null }] }
-})
+const availability = vi.hoisted(() => ({ providers: ['telegram', 'slack', 'imessage', 'linear', 'platform-email'] as string[] | undefined }))
+const section = vi.hoisted(() => ({ open: true }))
+const mockUseAvailableProviders = vi.hoisted(() => vi.fn())
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -14,6 +8,15 @@ import userEvent from '@testing-library/user-event'
 import { HomeAgentIntegrations } from './home-agent-integrations'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ChatIntegration, ChatIntegrationAccess } from '@shared/lib/db/schema'
+
+// The collapsed-by-default row itself is covered in home-collapsible.test.tsx.
+// Like the real one, a closed section does not mount its content.
+vi.mock('./home-collapsible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./home-collapsible')>()),
+  HomeCollapsible: ({ title, children }: { title: string; children: import('react').ReactNode }) => (
+    <div><span>{title}</span>{section.open ? children : null}</div>
+  ),
+}))
 
 // The list route enriches each row with the live transport state.
 type ListItem = ChatIntegration & { connected: boolean }
@@ -24,6 +27,10 @@ const mockUseChatIntegrations = vi.fn()
 const mockUseChatIntegrationAccess = vi.fn()
 
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useAvailableAgentIntegrationProviders: () => {
+    mockUseAvailableProviders()
+    return { data: availability.providers?.map(provider => ({ provider })) }
+  },
   useAgentIntegrations: (...args: unknown[]) => mockUseChatIntegrations(...args),
   useAgentIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
 }))
@@ -69,6 +76,7 @@ const INTEGRATION: ListItem = {
   createdByUserId: null,
   createdAt: NOW,
   updatedAt: NOW,
+  version: 0,
   connected: true,
 }
 
@@ -86,7 +94,7 @@ describe('HomeAgentIntegrations', () => {
   })
 
   beforeEach(() => {
-  platformState.connected = true
+  availability.providers = ['telegram', 'slack', 'imessage', 'linear', 'platform-email']
     vi.clearAllMocks()
     mockCanManage.mockReturnValue(true)
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
@@ -169,35 +177,40 @@ it('does not invite viewers to configure providers or render an empty setup grid
   mockUseChatIntegrations.mockReturnValue({ data: [] })
   const { container } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
   expect(screen.getByText('No external integrations have been configured for this agent.')).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /connect via/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /^set up /i })).not.toBeInTheDocument()
   expect(container.querySelector('.grid')).toBeNull()
 })
 
-it('only offers Email on Platform-connected deployments', async () => {
+it('offers only the providers the host makes available', () => {
   mockCanManage.mockReturnValue(true)
-  platformState.connected = false
   mockUseChatIntegrations.mockReturnValue({ data: [] })
-  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.queryByRole('button', { name: 'Connect via Email' })).not.toBeInTheDocument()
+  availability.providers = ['slack']
+  const { rerender } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Set up Slack' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Set up Email' })).not.toBeInTheDocument()
+  availability.providers = ['platform-email']
+  rerender(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Set up Email' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
 })
 
-it('offers Email to connected Platform owners', () => {
-  platformState.connected = true
-  mockCanManage.mockReturnValue(true)
-  mockUseChatIntegrations.mockReturnValue({ data: [] })
+it('offers nothing until host availability is known and preserves installed rows', () => {
+  availability.providers = undefined
+  mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
   renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
+  expect(screen.getByText('Test Bot')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Add Integration/ })).not.toBeInTheDocument()
 })
 
-it('offers relay-only providers only while the webhook relay is available', () => {
-  mockCanManage.mockReturnValue(true)
+it('reads the setup providers only while the section is open', () => {
   mockUseChatIntegrations.mockReturnValue({ data: [] })
-  relayState.available = false
-  const { unmount } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.queryByRole('button', { name: 'Connect via Hooks' })).not.toBeInTheDocument()
-  unmount()
-
-  relayState.available = true
-  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.getByRole('button', { name: 'Connect via Hooks' })).toBeInTheDocument()
+  mockUseAvailableProviders.mockClear()
+  section.open = false
+  try {
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(mockUseChatIntegrations).toHaveBeenCalled()
+    expect(mockUseAvailableProviders).not.toHaveBeenCalled()
+  } finally {
+    section.open = true
+  }
 })

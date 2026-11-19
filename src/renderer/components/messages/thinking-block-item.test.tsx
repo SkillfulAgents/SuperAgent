@@ -43,9 +43,8 @@ describe('ThinkingBlockItem Markdown', () => {
 
     expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute('href', 'https://example.com')
     expect(screen.getByRole('link', { name: 'Phone' })).toHaveAttribute('href', 'tel:+15551234567')
-    // An anchor with a blanked href intentionally has no accessible `link`
-    // role, so inspect the rendered element directly.
-    expect(screen.getByText('Bad').closest('a')).toHaveAttribute('href', '')
+    // A blanked href renders as plain text, not an anchor.
+    expect(screen.getByText('Bad').closest('a')).toBeNull()
     expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute('target', '_blank')
   })
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mockIsAuthMode = vi.hoisted(() => vi.fn(() => false))
-const mockGetSettings = vi.hoisted(() => vi.fn(() => ({ auth: {} as Record<string, unknown> })))
+const mockGetSettings = vi.hoisted(() => vi.fn(async () => ({ auth: {} as Record<string, unknown> })))
 
 vi.mock('./mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
@@ -37,7 +37,7 @@ function makeOrgToken(orgId: string): string {
 describe('auth-settings', () => {
   afterEach(() => {
     mockIsAuthMode.mockReturnValue(false)
-    mockGetSettings.mockReturnValue({ auth: {} })
+    mockGetSettings.mockResolvedValue({ auth: {} })
     delete process.env.PLATFORM_TOKEN
     delete process.env.AUTH_MODE
   })
@@ -112,13 +112,13 @@ describe('auth-settings', () => {
   })
 
   describe('getAuthSettings', () => {
-    it('reads persisted auth and applies platform-controlled override', () => {
+    it('reads persisted auth and applies platform-controlled override', async () => {
       mockIsAuthMode.mockReturnValue(true)
       process.env.PLATFORM_TOKEN = makeOrgToken('org_abc')
-      mockGetSettings.mockReturnValue({
+      mockGetSettings.mockResolvedValue({
         auth: { requireAdminApproval: true, allowLocalAuth: false, signupMode: 'open' },
       })
-      expect(getAuthSettings()).toMatchObject({
+      expect(await getAuthSettings()).toMatchObject({
         requireAdminApproval: false,
         allowLocalAuth: false,
         signupMode: 'closed',

@@ -1,7 +1,7 @@
 import type { VolumeValidation } from './volume-validation-schema'
 import { randomUUID } from 'node:crypto'
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand, CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, UploadPartCommand } from '@aws-sdk/client-s3'
-import { S3VolumeClient } from './s3-client'
+import { S3VolumeClient, sealedS3Access } from './s3-client'
 import { s3InputConfigSchema, type S3InputConfig, type S3VolumeConfig } from './s3-schema'
 import { sealS3Config } from './s3-credentials'
 import { VolumeError } from './volume-error'
@@ -10,7 +10,7 @@ import { VolumeError } from './volume-error'
  * require ListBuckets, IAM, ACL, or any access outside the mounted prefix. */
 export async function validateS3Volume(raw: unknown): Promise<VolumeValidation> {
   const config = s3InputConfigSchema.parse(raw)
-  const client = new S3VolumeClient(config)
+  const client = new S3VolumeClient(await sealedS3Access(config))
   const Bucket = config.bucket
   const Prefix = config.prefix ? `${config.prefix}/` : ''
   const probe = `${Prefix}.gamut-check-${randomUUID()}`
@@ -109,11 +109,11 @@ export async function validateS3Volume(raw: unknown): Promise<VolumeValidation> 
   return { valid: checks.every(check => check.status === 'passed') && !sessions.size, checks, warnings }
 }
 
-export async function prepareS3Volume(config: S3VolumeConfig): Promise<{ name: string; config: ReturnType<typeof sealS3Config> }> {
+export async function prepareS3Volume(config: S3VolumeConfig): Promise<{ name: string; config: Awaited<ReturnType<typeof sealS3Config>> }> {
   // Only fresh credentials are accepted from the API. A ciphertext copied out of
   // storage must never become a credential reference a different user can submit.
   const input: S3InputConfig = s3InputConfigSchema.parse(config)
   const result = await validateS3Volume(input)
   if (!result.valid) throw new VolumeError([...result.checks.filter(check => check.status === 'failed').map(check => `${check.label}: ${check.message}`), ...result.warnings].join(' '), 400)
-  return { name: input.prefix.split('/').at(-1) || input.bucket, config: sealS3Config(input) }
+  return { name: input.prefix.split('/').at(-1) || input.bucket, config: await sealS3Config(input) }
 }

@@ -27,20 +27,22 @@ const MAX_PIXELS = 1_200_000
  * Enforces both max dimension (1568px) and max pixel count (1.15MP).
  * Returns the resized buffer and the output MIME type.
  * If the image is already within limits, returns it unchanged.
+ * `scale` shrinks it first, for a capture that is larger than the page's CSS size.
  */
 export async function resizeScreenshot(
   input: Buffer,
   mimeType: string,
+  scale = 1,
 ): Promise<{ data: Buffer; mimeType: string; resized: boolean }> {
   try {
     const metadata = await sharp(input).metadata()
-    const width = metadata.width ?? 0
-    const height = metadata.height ?? 0
+    const width = Math.round((metadata.width ?? 0) * scale)
+    const height = Math.round((metadata.height ?? 0) * scale)
 
     const withinDimensions = width <= MAX_DIMENSION && height <= MAX_DIMENSION
     const withinPixels = width * height <= MAX_PIXELS
 
-    if (withinDimensions && withinPixels) {
+    if (scale === 1 && withinDimensions && withinPixels) {
       return { data: input, mimeType, resized: false }
     }
 

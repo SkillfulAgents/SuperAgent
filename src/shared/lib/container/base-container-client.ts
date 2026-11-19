@@ -1,9 +1,8 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
-import { isQueuedSessionSend } from './session-send-context'
-import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import type { ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { prewarmConnectionRuntime, sessionConnectionRuntime } from '@shared/lib/llm-provider/session-connection-runtime'
-import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
+import { resolveSelectionHierarchyFrom, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
 import { promisify } from 'util'
@@ -21,12 +20,13 @@ import type {
   CreateSessionOptions,
   HostPortProbeResult,
   SendMessageOptions,
+  SendMessageResult,
   StartOptions,
   StopOptions,
   StopResult,
   StreamMessage,
 } from './types'
-import { ContainerConflictError, ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
+import { ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
   ObserveUnexpectedDeathInput,
   RuntimeDeathProbe,
@@ -35,16 +35,37 @@ import type {
 } from './runtime-death'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { z } from 'zod'
-import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
-import { getAgentCapabilitySettings, getGlobalInstructions, getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getAppPort } from '@shared/lib/proxy/host-url'
+import { getSettings } from '@shared/lib/config/settings'
+import type { AppSettings } from '@shared/lib/config/settings'
+import { DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
+import { activeLlmProviderFrom } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
-import { getActiveWebProvider } from '../web-provider'
+import { activeWebProviderFrom } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { getOrCreateHostToken } from './host-token-store'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 import { getPlatformProxyBaseUrl } from '../platform-auth/config'
 import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
+import { runsInAppSandbox } from '../facts/capabilities'
+import { getServerFacts } from '../facts/server-facts'
+import { dockerStoppedInspectSchema } from './container-stop-schema'
+
+/**
+ * The integration families whose providers this host can run, by the same
+ * availability the setup routes use. Loaded on demand: the registry pulls in
+ * every family, and those reach back into this client.
+ */
+async function listAvailableIntegrationFamilies(): Promise<string[]> {
+  try {
+    const { agentIntegrationRegistry } = await import('@shared/lib/agent-integrations/registry')
+    return [...new Set((await agentIntegrationRegistry.listAvailableDefinitions()).map(definition => definition.family))]
+  } catch (error) {
+    captureException(error, { tags: { component: 'container', operation: 'integration-availability' } })
+    return []
+  }
+}
 
 const execAsync = promisify(exec)
 
@@ -59,11 +80,16 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
     '/usr/bin',
     '/opt/podman/bin',
     '/Applications/Docker.app/Contents/Resources/bin',
+    // Per-user installs: Docker Desktop's "User" mode, OrbStack, Rancher Desktop.
+    path.join(os.homedir(), '.docker', 'bin'),
+    path.join(os.homedir(), '.orbstack', 'bin'),
+    path.join(os.homedir(), '.rd', 'bin'),
   ],
   linux: [
     '/usr/local/bin',
     '/usr/bin',
     '/opt/podman/bin',
+    path.join(os.homedir(), '.rd', 'bin'),
   ],
   win32: [
     'C:\\Program Files\\Docker\\Docker\\resources\\bin',
@@ -74,8 +100,25 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
 /**
  * Get the PATH environment variable with common binary locations added.
  */
+/**
+ * The session's turns run on this runtime now: its agent keeps the non-secret
+ * facts its errors and analytics are read with. Best-effort, after the container
+ * took the session or the message: a failure here must not unsay that.
+ */
+async function recordSessionRuntime(agentId: string, sessionId: string, runtime: ConnectionRuntime): Promise<void> {
+  try {
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    await agentRegistry.get(agentId).sessions.recordRuntime(sessionId, { provider: runtime.provider })
+  } catch (error) {
+    console.error(`[ContainerClient] Could not record the runtime of session ${sessionId}:`, error)
+  }
+}
+
 export function getEnhancedPath(): string {
   const currentPath = process.env.PATH || ''
+  // The App Sandbox refuses to run Homebrew's and the runtimes' binaries, and a
+  // tool that finds one there fails instead of falling back to its own.
+  if (runsInAppSandbox(getServerFacts())) return currentPath
   const platformPaths = COMMON_BINARY_PATHS[process.platform] || []
   const pathsToAdd = platformPaths.filter(p => !currentPath.includes(p))
   return [...pathsToAdd, currentPath].join(path.delimiter)
@@ -176,9 +219,12 @@ export function execSyncWithPath(command: string, options?: { stdio?: 'pipe' | '
 }
 
 /**
- * Spawn a process with enhanced PATH.
+ * Spawn a process with enhanced PATH. `command` is an unquoted path: only the
+ * Windows shell needs it quoted, and quotes would make spawn() look for a file
+ * whose name includes them.
  */
 export function spawnWithPath(command: string, args: string[], options?: { cwd?: string; stdio?: any }): ReturnType<typeof spawn> {
+  if (isWindows && command.includes(' ') && !command.startsWith('"')) command = `"${command}"`
   return spawn(command, args, {
     ...options,
     env: { ...process.env, PATH: getEnhancedPath() },
@@ -255,11 +301,20 @@ const BASE_PORT = (() => {
 // Max time for a single /health probe (isHealthy). Kept short because it gates
 // the request hot path via ensureRunning's stale-cache liveness check.
 const HEALTH_PROBE_TIMEOUT_MS = 2000
+// Max wait for the container to accept a pre-resume (warmSession). It answers
+// before resuming anything, so only a struggling container takes this long.
+const WARM_SESSION_TIMEOUT_MS = 5000
+// Max wait for the container to drop a session. Its dispose gives the CLI 5 s to exit.
+const DELETE_SESSION_TIMEOUT_MS = 10000
 
 // Reads stderr only: an exec error's message repeats the command line, flags included.
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
   const text = stripNulls(error?.stderr).toLowerCase()
   return flags.split(/\s+/).some((flag) => flag.length > 4 && text.includes(flag.toLowerCase()))
+}
+
+export function withVolumesEnv(envVars: StartOptions['envVars'], volumes: StartOptions['volumes']): StartOptions['envVars'] {
+  return volumes?.length ? { ...envVars, SUPERAGENT_VOLUMES: JSON.stringify(volumes) } : envVars
 }
 
 /**
@@ -380,6 +435,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected getAdditionalRunFlags(): string {
     return ''
   }
+
+  /**
+   * Runs right before every attempt to run the container in start(). Subclasses
+   * throw here to refuse a run that would not work, e.g. one whose workspace
+   * the runtime can't see.
+   */
+  protected async beforeRun(): Promise<void> {}
 
   public volumeRunFlags(): string | null {
     return FUSE_RUN_FLAGS
@@ -564,9 +626,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * buildkit, so `build` is never an option there. Lazy import avoids a
    * base-client ↔ client-factory module cycle.
    */
-  protected async recreateImage(image: string): Promise<void> {
+  protected async recreateImage(image: string, settings: Pick<AppSettings, 'container'>): Promise<void> {
     const { canBuildImage, buildImage, pullImage } = await import('./client-factory')
-    const runner = getSettings().container.containerRunner as import('./client-factory').ContainerRunner
+    const runner = settings.container.containerRunner as import('./client-factory').ContainerRunner
     if (canBuildImage()) {
       await buildImage(runner, image)
     } else {
@@ -601,6 +663,25 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
     } catch {
       return { status: 'stopped', port: null }
+    }
+  }
+
+  async isDefinitelyStopped(): Promise<boolean> {
+    const runner = this.getRunnerShellCommand()
+    const name = this.getContainerName()
+    try {
+      const { stdout } = await execWithPath(`${runner} inspect ${shellEscape(name)}`, { timeoutMs: 5000 })
+      const raw: unknown = JSON.parse(stdout)
+      return dockerStoppedInspectSchema.safeParse(Array.isArray(raw) ? raw[0] : raw).success
+    } catch {
+      // A missing container and a failed runtime both fail inspect. Only a
+      // successful inventory that omits it establishes absence.
+      try {
+        const { stdout } = await execWithPath(`${runner} ps -a --format '{{.Names}}'`, { timeoutMs: 5000 })
+        return !stdout.split(/\r?\n/).some((line) => line.trim() === name)
+      } catch {
+        return false
+      }
     }
   }
 
@@ -722,15 +803,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     addErrorBreadcrumb({ category: 'container', message: 'Starting container', data: { agentId: this.config.agentId } })
 
+    // Read once for this start (or handed in by the caller that read it for
+    // the start's env); every step below and the failure report reuse it.
+    let settings: AppSettings | undefined
     try {
-      const settings = getSettings()
+      const startSettings = options?.settings ?? await getSettings()
+      settings = startSettings
       const runner = this.getRunnerShellCommand()
-      const image = settings.container.agentImage
-      const { cpu, memory } = settings.container.resourceLimits
+      const image = startSettings.container.agentImage
+      const { cpu, memory } = startSettings.container.resourceLimits
 
       // Ensure image exists (build if not), self-healing the runtime if the
       // build fails because the VM is dirty/unreachable (SUP-291).
-      await this.ensureImageExistsWithRecovery()
+      await this.ensureImageExistsWithRecovery(startSettings)
 
       // Ensure workspace directory exists for persistent storage
       const workspaceDir = getAgentWorkspaceDir(this.config.agentId)
@@ -742,10 +827,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // The volume list travels with the volume run flags: a run that drops one drops both.
       let volumes = options?.volumes?.length ? options.volumes : undefined
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const envFile = () => this.buildEnvFile(
-        volumes ? { ...options?.envVars, SUPERAGENT_VOLUMES: JSON.stringify(volumes) } : options?.envVars,
-        options?.agentName,
-      )
+      const envFile = () => this.buildEnvFile(withVolumesEnv(options?.envVars, volumes), options?.agentName, startSettings)
       let { flag: envFileFlag, cleanup: cleanupEnvFile } = await envFile()
       const containerName = this.getContainerName()
 
@@ -782,6 +864,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let stdout: string
       try {
         for (;;) {
+          // Before every attempt: a recovery below may have restarted the runtime.
+          await this.beforeRun()
           await execWithPathSilent(`${runner} rm -f ${containerName}`)
 
           try {
@@ -827,7 +911,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
               addErrorBreadcrumb({ category: 'container', message: 'Corrupt image snapshot, removing image and recreating', data: { image, agentId: this.config.agentId } })
               try {
                 await this.removeCorruptImage(image)
-                await this.recreateImage(image)
+                await this.recreateImage(image, startSettings)
                 captureMessage('Recovered from corrupt container image snapshot', {
                   level: 'warning',
                   tags: { component: 'container', operation: 'corrupt-image-recovery' },
@@ -875,7 +959,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             await execWithPathSilent(`${runner} rm -f ${containerName}`)
             try {
               await this.removeCorruptImage(image)
-              await this.recreateImage(image)
+              await this.recreateImage(image, startSettings)
               captureMessage('Recovered from corrupt container image content', {
                 level: 'warning',
                 tags: { component: 'container', operation: 'corrupt-image-recovery' },
@@ -900,7 +984,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
               containerName,
               port,
               image,
-              runner: settings.container.containerRunner,
+              runner: startSettings.container.containerRunner,
               cpu,
               memory,
               containerLogs: logs,
@@ -939,8 +1023,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           extra: {
             agentId: this.config.agentId,
             containerName: this.getContainerName(),
-            runner: getSettings().container.containerRunner,
-            image: getSettings().container.agentImage,
+            runner: settings?.container.containerRunner,
+            image: settings?.container.agentImage,
           },
         })
       }
@@ -1028,7 +1112,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             extra: {
               containerName,
               agentId: this.config.agentId,
-              runner: getSettings().container.containerRunner,
+              // Telemetry only: a failed settings read must not fail the stop.
+              runner: (await getSettings().catch(() => null))?.container.containerRunner,
               stopTimeoutMs,
               killTimeoutMs,
               escalateToForceStop,
@@ -1156,6 +1241,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   private async probeHealth(knownPort?: number): Promise<Response | null> {
     const port = knownPort ?? (await this.getInfo()).port
     if (!port) return null
+    // Outside the try: a failed token read is not an unhealthy container.
+    const headers = await this.getHostAuthHeaders()
     try {
       // Bound the probe: this runs on the request hot path (ensureRunning's
       // stale-cache liveness check), and a container that died with its port
@@ -1163,7 +1250,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // hanging the fetch — and the caller — indefinitely without this.
       return await fetch(`${this.getBaseUrl(port)}/health`, {
         signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
-        headers: this.getHostAuthHeaders(),
+        headers,
       })
     } catch {
       // Includes AbortError on timeout — treat an unresponsive probe as unhealthy.
@@ -1210,29 +1297,46 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `ws://127.0.0.1:${port}`
   }
 
-  public getHostApiBaseUrl(): string | Promise<string> {
-    return `http://${getContainerHostUrl()}:${getAppPort()}`
+  /**
+   * The host as this client's containers reach it. Docker, Apple Container,
+   * Lima and WSL2 all name it host.docker.internal; a runtime that names it
+   * otherwise overrides this (Podman), so the client's own runtime decides
+   * rather than a read of the runner setting.
+   */
+  protected containerHostName(): string {
+    return 'host.docker.internal'
   }
+
+  public getHostApiBaseUrl(): string | Promise<string> {
+    return `http://${this.containerHostName()}:${getAppPort()}`
+  }
+
+  /**
+   * The agent's host token, read on the client's first request and kept: it
+   * is created insert-if-absent and never changes for the agent, and the
+   * container keeps requiring the token it started with. A failed read keeps
+   * nothing, so the next request reads again.
+   */
+  private hostToken: string | null = null
 
   // Proves to the container API that the caller is the host, not the agent's
   // own Bash reaching the server over the shared network namespace.
-  private hostAuthHeadersCache?: Record<string, string>
-  getHostAuthHeaders(): Record<string, string> {
-    this.hostAuthHeadersCache ??= {
-      'x-superagent-host-token': getOrCreateHostToken(this.config.agentId),
-    }
-    return this.hostAuthHeadersCache
+  async getHostAuthHeaders(): Promise<Record<string, string>> {
+    this.hostToken ??= await getOrCreateHostToken(this.config.agentId)
+    return { 'x-superagent-host-token': this.hostToken }
   }
 
   async fetch(path: string, init?: RequestInit): Promise<Response> {
     const port = await this.getPortOrThrow()
     const baseUrl = this.getBaseUrl(port)
     const url = `${baseUrl}${path.startsWith('/') ? path : '/' + path}`
+    // Outside the try: a failed token read is not a connection error.
+    const hostAuthHeaders = await this.getHostAuthHeaders()
 
     try {
       return await fetch(url, {
         ...init,
-        headers: { ...this.getHostAuthHeaders(), ...(init?.headers as Record<string, string> | undefined) },
+        headers: { ...hostAuthHeaders, ...(init?.headers as Record<string, string> | undefined) },
       })
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
@@ -1254,41 +1358,55 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     let requestStarted = false
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
+      // One read of the settings for this session's creation: its provider
+      // binding and runtime, the prewarm, the web vendor, the launch policies
+      // and the global instructions all come from it. The session's later
+      // messages each read their own (see sendMessage).
+      const settings = await getSettings()
       // Resolve stored selections (bare aliases or concrete ids) to the active
       // provider's concrete wire id before the container ever sees them.
-      const selected = await resolveExecutionSelection(storedSelection(options.model, options.llmProviderId))
-      const llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
-      const warmSelection = options.prewarmDefaults
-        ? await resolveExecutionSelection(storedSelection(options.prewarmDefaults.model, options.prewarmDefaults.llmProviderId))
-        : null
-      const warmRuntime = warmSelection
-        ? await prewarmConnectionRuntime(warmSelection, this.config.agentId)
-        : undefined
+      const selected = await resolveSelectionHierarchyFrom(settings, await storedSelection(options.model, options.llmProviderId, settings))
+      const llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId, settings)
+      // The prewarm is for the agent's default session. A session on that same
+      // model and connection is the default one: its runtime is the prewarm's,
+      // and nothing is resolved or built a second time.
+      const warm = options.prewarmDefaults
+      const warmRuntime = !warm ? undefined
+        : warm.model === options.model && warm.llmProviderId === options.llmProviderId ? llmRuntime
+        : await prewarmConnectionRuntime(
+            await resolveSelectionHierarchyFrom(settings, await storedSelection(warm.model, warm.llmProviderId, settings)),
+            this.config.agentId,
+            settings,
+          )
       const resolvedModel = llmRuntime.model
       const resolvedBrowserModel = llmRuntime.browserModel
       const resolvedDashboardBuilderModel = llmRuntime.dashboardBuilderModel
       const modelPromptHints = llmRuntime.modelPromptHints
       const subagentModels = llmRuntime.subagentModels
       // Catalog windows for ALL models (not just isLatest like subagentModels):
-      // the container passes the session model's window to the Claude Agent SDK
-      // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
-      // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
+      // the container passes the non-Claude models' window to the Claude Agent
+      // SDK via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else the CLI assumes 1M for a
+      // model it does not know and a smaller one never compacts (CLI 2.1.323+).
       const modelContextWindows = llmRuntime.modelContextWindows
       // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
       // Resolved once here from global settings so every session-creation caller inherits it. One
       // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
       // signals, each derived from whether the vendor supports that operation (undefined -> native,
       // the container keeps its built-in WebSearch/WebFetch for that tool).
-      const activeWebProvider = getActiveWebProvider()
+      const activeWebProvider = activeWebProviderFrom(settings)
       const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
       const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
+      // Which integration families this host can run (meetings need a public address and a bot
+      // service), so the container registers only tool sets with a working route behind them.
+      const availableIntegrationFamilies = await listAvailableIntegrationFamilies()
       // Host-authoritative launch policies (allow/review/block for subagents and
       // workflows), resolved from global settings here so every session-creation
       // caller inherits them. Never taken from the request — a caller (or the
       // agent itself) must not be able to loosen its own policy.
-      const capabilityPolicies = getAgentCapabilitySettings()
+      const capabilityPolicies = settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES
       // Same per-session resolution for the org-wide guidance in the prompt.
-      const globalInstructions = getGlobalInstructions()
+      const globalInstructions = settings.globalInstructions ?? ''
+      const hostAuthHeaders = await this.getHostAuthHeaders()
 
       const controller = new AbortController()
       timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -1296,7 +1414,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const url = `${this.getBaseUrl(port)}/sessions`
       const request: RequestInit = {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
+        headers: { 'Content-Type': 'application/json', ...hostAuthHeaders },
         body: JSON.stringify({
           metadata: options.metadata,
           llmProviderId: selected.llmProviderId,
@@ -1313,6 +1431,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           modelContextWindows,
           webSearchProvider,
           webFetchProvider,
+          availableIntegrationFamilies,
           maxOutputTokens: options.maxOutputTokens,
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,
@@ -1321,6 +1440,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
           speed: options.speed,
+          ...(options.preloadToolsets?.length ? { preloadToolsets: options.preloadToolsets } : {}),
           capabilityPolicies,
           globalInstructions,
           prewarmDefaults: options.prewarmDefaults && warmRuntime ? {
@@ -1393,7 +1513,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       const session = await response.json()
-      rememberSessionRuntime(this.config.agentId, session.id, llmRuntime)
+      await recordSessionRuntime(this.config.agentId, session.id, llmRuntime)
       return session
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
@@ -1447,12 +1567,28 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   async deleteSession(sessionId: string): Promise<boolean> {
     this.closeTrackedWebSocket(sessionId)
 
-    const response = await this.fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
-
+    const response = await this.fetch(`/sessions/${sessionId}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(DELETE_SESSION_TIMEOUT_MS),
+    })
+    if (response.status === 404) {
+      return z.object({ error: z.literal('Session not found') }).safeParse(await response.json().catch(() => null)).success
+    }
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
+  async releaseSession(sessionId: string): Promise<boolean> {
+    this.closeTrackedWebSocket(sessionId)
+    // A distinct endpoint: an old container must not ignore a preserve flag
+    // on DELETE and irreversibly forget a session whose files we keep.
+    const response = await this.fetch(`/sessions/${sessionId}/release`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(DELETE_SESSION_TIMEOUT_MS),
+    })
+    return response.ok
+  }
+
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     const port = await this.getPortOrThrow().catch(error => {
       throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
     })
@@ -1461,24 +1597,47 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const speed = options?.speed
     // A queued follow-up belongs to the running turn. It must not resolve a
     // deleted connection, rotate credentials, or rebuild the active query.
-    const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
+    const preserveRuntime = options?.preserveRuntime === true
+    // One read of the settings for this message, never kept for the next: its
+    // provider binding and runtime, the launch policies and the global
+    // instructions all come from it, so a long-lived session tracks changes.
+    // Read before the request, so a failed read never sent anything and is
+    // safe to retry.
+    let settings: AppSettings
+    try {
+      settings = await getSettings()
+    } catch (error) {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Settings unavailable', { cause: error })
+    }
     let llmRuntime: ConnectionRuntime | undefined
+    const result: SendMessageResult = { llmDefault: Boolean(settings.llmDefault) }
     if (!preserveRuntime) {
       try {
         const { agentRegistry } = await import('@shared/lib/agent-actor')
         const actor = agentRegistry.get(this.config.agentId)
-        const metadata = await actor.sessions.metadata(sessionId)
-        const prefs = await actor.config.get('preferences')
-        const selected = await resolveExecutionSelection(
+        const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
+        const selected = await resolveSelectionHierarchyFrom(
+          settings,
           options?.model || options?.llmProviderId !== undefined
-            ? storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId)
+            ? await storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId, settings)
             : null,
-          storedSelection(metadata?.model, metadata?.llmProviderId),
-          storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
+          await storedSelection(metadata?.model, metadata?.llmProviderId, settings),
+          async () => {
+            const prefs = await actor.config.get('preferences')
+            return storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId, settings)
+          },
         )
-        llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
-        rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
-        await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
+        llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId, settings)
+        await recordSessionRuntime(this.config.agentId, sessionId, llmRuntime)
+        result.selection = { llmProviderId: selected.llmProviderId, model: selected.model }
+        // The container checks its credentials back through llm-runtime/resolve,
+        // which serves the STORED binding and refuses another, so a changed
+        // binding is stored before the container has the message. An unchanged
+        // one has nothing to store.
+        if (metadata?.llmProviderId !== selected.llmProviderId || metadata?.model !== selected.model) {
+          await actor.sessions.updateMetadata(sessionId, { ...options?.metadataUpdates, ...result.selection })
+          result.metadataWritten = true
+        }
       } catch (error) {
         // Provider preparation happens before HTTP, so durable delivery can
         // retry it without risking a second copy of the user's message.
@@ -1488,11 +1647,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const model = llmRuntime?.model
     const shouldQuery = options?.shouldQuery
     const isAutomated = options?.isAutomated
-    // Refreshed on every message so a long-lived session tracks settings
+    // From this message's settings, so a long-lived session tracks settings
     // changes; the container restarts its query only on a block-boundary flip.
-    const capabilityPolicies = getAgentCapabilitySettings()
-    // Also refreshed per message; a change re-queries so the prompt picks it up.
-    const globalInstructions = getGlobalInstructions()
+    // A change to the global instructions re-queries so the prompt picks it up.
+    const capabilityPolicies = settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES
+    const globalInstructions = settings.globalInstructions ?? ''
+    const hostAuthHeaders = await this.getHostAuthHeaders().catch((error: unknown) => {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Host token unavailable', { cause: error })
+    })
 
     try {
       const controller = new AbortController()
@@ -1502,7 +1664,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
+          headers: { 'Content-Type': 'application/json', ...hostAuthHeaders },
           body: JSON.stringify({
             content,
             ...(llmRuntime ? { llmProviderId: llmRuntime.llmProviderId, llmRuntime } : {}),
@@ -1557,6 +1719,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       throw err
     }
+    return result
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
@@ -1638,15 +1801,36 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       )
       return null
     }
-    if (response.status === 409) {
-      const body = (await response.json().catch(() => ({}))) as { error?: string }
-      throw new ContainerConflictError(body.error ?? 'Session is currently running')
-    }
     if (!response.ok) {
       const text = await response.text().catch(() => '')
       throw new Error(`Failed to fork session: ${response.status} ${text}`)
     }
     return (await response.json()) as { id: string }
+  }
+
+  async warmSession(sessionId: string): Promise<boolean> {
+    let response: Response
+    try {
+      response = await this.fetch(`/sessions/${encodeURIComponent(sessionId)}/warm`, {
+        method: 'POST',
+        // The container answers before it resumes anything; a slow answer is
+        // not worth holding a socket for — the next send resumes as before.
+        signal: AbortSignal.timeout(WARM_SESSION_TIMEOUT_MS),
+      })
+    } catch (error) {
+      console.debug(`[ContainerClient] warmSession: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+    if (response.ok) return true
+    const text = await response.text().catch(() => '')
+    // A plain 404 is the router's: an agent container from before this
+    // endpoint. Nothing to do — its next send pays the cold resume, as before.
+    console.debug(
+      response.status === 404 && !text.trim().startsWith('{')
+        ? '[ContainerClient] warmSession: the agent container predates the warm endpoint'
+        : `[ContainerClient] warmSession: container returned ${response.status}`
+    )
+    return false
   }
 
   // Drop listeners before close so a deliberate teardown cannot fire
@@ -1683,6 +1867,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
+      const headers = await this.getHostAuthHeaders()
       if (cancelled) return
 
       if (this.wsConnections.has(sessionId)) {
@@ -1691,7 +1876,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       const ws = new WebSocket(
         `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`,
-        { headers: this.getHostAuthHeaders() }
+        { headers }
       )
 
       socket = ws
@@ -1750,7 +1935,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         rejectReady(new Error('Session stream closed before initialization'))
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost
-        // This allows the message persister to handle the disconnection
+        // This allows the session's LiveSession to handle the disconnection
         const closeMessage: StreamMessage = {
           type: 'connection_closed',
           content: { type: 'connection_closed' },
@@ -1763,11 +1948,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       this.wsConnections.set(sessionId, ws)
     }
 
-    setupWebSocket().catch((error) => {
+    background(setupWebSocket().catch((error) => {
       if (cancelled) return
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
-      // Notify the callback so the consumer (e.g. MessagePersister) can react to
+      // Notify the callback so the consumer (e.g. LiveSessions) can react to
       // the failed (re)subscribe instead of relying on the `ready` promise —
       // callers that discard `ready` (e.g. reconnect) would otherwise leave a
       // free-floating rejected promise and never learn the session is gone.
@@ -1779,7 +1964,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
       callback(closeMessage)
       rejectReady(error instanceof Error ? error : new Error(String(error)))
-    })
+    }), { name: 'container-client.open-session-stream' })
 
     const unsubscribe = () => {
       cancelled = true
@@ -1836,14 +2021,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * handleRunError() self-heals when it can and is a no-op for runners that
    * can't (returns false → original build error rethrown), so this is safe for
    * docker/podman/etc. too.
+   *
+   * `settings`: the start's own read, for the image and the runner; read
+   * here when absent.
    */
-  protected async ensureImageExistsWithRecovery(): Promise<void> {
+  protected async ensureImageExistsWithRecovery(settings?: Pick<AppSettings, 'container'>): Promise<void> {
+    const current = settings ?? await getSettings()
     try {
-      await this.ensureImageExists()
+      await this.ensureImageExists(current)
     } catch (buildError) {
       if (!(await this.handleRunError(buildError))) throw buildError
       // Recovered (e.g. Lima VM cleaned + restarted) — retry the build once.
-      await this.ensureImageExists()
+      await this.ensureImageExists(current)
     }
   }
 
@@ -1858,8 +2047,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return (this.constructor as typeof BaseContainerClient).isRunning()
   }
 
-  private async ensureImageExists(): Promise<void> {
-    const settings = getSettings()
+  private async ensureImageExists(settings: Pick<AppSettings, 'container'>): Promise<void> {
     const image = settings.container.agentImage
 
     try {
@@ -1885,7 +2073,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // VM has no buildkit, so a build there fails unconditionally ("buildctl
     // not found in $PATH") — otherwise pull from the registry. Lazy import
     // avoids a base-client ↔ client-factory module cycle.
-    const { canBuildImage, buildImage, pullImage, checkImageExists, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES } = await import('./client-factory')
+    const { canBuildImage, buildImage, pullImage, checkImageExists, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES, IMAGE_COMMAND_TIMEOUT_MS } = await import('./client-factory')
     const runner = settings.container.containerRunner as import('./client-factory').ContainerRunner
 
     // Same pre-flight ensureImageReady() runs at startup: creating the image
@@ -1926,8 +2114,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch (createError) {
       // A concurrent create (e.g. startup's ensureImageReady racing this
       // start path) may have produced the image even though our attempt
-      // failed — re-check before propagating.
-      if (await checkImageExists(runner, image)) {
+      // failed — re-check before propagating. Bounded: a create that failed
+      // because the runtime stopped answering must still reach recovery.
+      if (await checkImageExists(runner, image, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS })) {
         console.log(`Container image ${image} appeared concurrently`)
         return
       }
@@ -1951,20 +2140,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   // The final agent env, transport-agnostic; subclasses only serialize it.
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
-  protected async buildAgentEnv(extra?: Record<string, string>, agentName?: string): Promise<Record<string, string>> {
-    const settings = getSettings()
-    const provider = getActiveLlmProvider()
-    const platformToken = await getPlatformContainerToken(this.config.agentId)
+  // `startSettings`: the settings the start read (read here when absent), for
+  // the provider, the tool-search switch and the platform token alike.
+  protected async buildAgentEnv(extra?: Record<string, string>, agentName?: string, startSettings?: AppSettings): Promise<Record<string, string>> {
+    const settings = startSettings ?? await getSettings()
+    const provider = activeLlmProviderFrom(settings)
+    const platformToken = await getPlatformContainerToken(this.config.agentId, settings)
     const merged: Record<string, string | undefined> = {
-      ...(settings.llmDefault ? {} : await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName))),
+      ...(settings.llmDefault ? {} : await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName), settings)),
       SUPERAGENT_AGENT_ID: this.config.agentId,
       ...(agentName ? { SUPERAGENT_AGENT_NAME: agentName } : {}),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred
-      // tools (see BaseLlmProvider.toolSearchEnv). Undefined leaves the var
-      // unset — the image must not define it either, or unset would read as on.
-      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv,
+      // tools (see BaseLlmProvider.toolSearchEnv). Always set: unset reads as
+      // on behind any custom base URL.
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : await provider.toolSearchEnv(),
       ...this.config.envVars,
       ...extra,
       // Platform services stay available with any LLM provider. Pin these after
@@ -1981,7 +2172,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   // Serialize the agent env to a temp --env-file (avoids shell-quoting + Windows
   // command-length limits). Caller cleans up the file after start.
-  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
-    return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId)
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string, settings?: AppSettings): Promise<{ flag: string; cleanup: () => void }> {
+    return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName, settings), this.config.agentId)
   }
 }

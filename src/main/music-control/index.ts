@@ -3,6 +3,8 @@ import path from 'path'
 import type { NowPlayingPauseResult, NowPlayingPlayer, NowPlayingProbe, NowPlayingResumeResult } from '@shared/lib/voice/now-playing-types'
 import type { NowPlayingBackend } from './backend'
 import { selectNowPlayingBackend } from './select-backend'
+import { runsInAppSandbox } from '@shared/lib/facts/capabilities'
+import { desktopClientFacts } from '../facts'
 
 /**
  * Voice mode's window onto the music player: what is playing, pause it, play
@@ -23,7 +25,11 @@ function mediaRemoteAdapterDir(): string {
 }
 
 function getBackend(): NowPlayingBackend | null {
-  if (backend === undefined) backend = selectNowPlayingBackend(process.platform, mediaRemoteAdapterDir())
+  // The App Sandbox may not reach another app's player (and the Store build
+  // ships no MediaRemote adapter, which uses a private framework).
+  if (backend === undefined) {
+    backend = runsInAppSandbox(desktopClientFacts()) ? null : selectNowPlayingBackend(process.platform, mediaRemoteAdapterDir())
+  }
   return backend
 }
 

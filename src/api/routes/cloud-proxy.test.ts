@@ -413,7 +413,7 @@ describe('cloud proxy boot prefetch', () => {
 
   it('answers from the request main already started', async () => {
     mockFetch.mockImplementation(async () => new Response('{"user":{"id":"u1"}}', { status: 200 }))
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     const prefetchCalls = mockFetch.mock.calls.length
 
     const res = await call('/api/auth/get-session')
@@ -425,7 +425,7 @@ describe('cloud proxy boot prefetch', () => {
   })
 
   it('serves it once, so a refetch reaches the deployment', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     const prefetchCalls = mockFetch.mock.calls.length
 
     await call('/api/auth/get-session')
@@ -435,7 +435,7 @@ describe('cloud proxy boot prefetch', () => {
   })
 
   it('ignores it for a conditional request, which is asking something else', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     const prefetchCalls = mockFetch.mock.calls.length
 
     await call('/api/agents', { headers: { 'if-none-match': 'W/"abc"' } })
@@ -445,7 +445,7 @@ describe('cloud proxy boot prefetch', () => {
   })
 
   it('leaves the entry for the renderer when the requester marks itself out', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     const prefetchCalls = mockFetch.mock.calls.length
 
     // A main-process poller (tray, app menu) racing the reload must not consume
@@ -459,7 +459,7 @@ describe('cloud proxy boot prefetch', () => {
   })
 
   it('ignores it for a write to the same path', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     const prefetchCalls = mockFetch.mock.calls.length
 
     await call('/api/agents', { method: 'POST' })
@@ -476,7 +476,7 @@ describe('cloud proxy boot prefetch', () => {
           headers: { 'set-cookie': 'session=secret', 'set-auth-token': 'token' },
         }),
     )
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     const prefetchCalls = mockFetch.mock.calls.length
 
     const res = await call('/api/auth/get-session')

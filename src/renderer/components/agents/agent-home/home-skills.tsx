@@ -2,7 +2,8 @@ import { useState, useMemo, useRef, useCallback } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, Download, FileArchive, Trash2 } from 'lucide-react'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
+import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, FileArchive, Trash2, Library, ArrowUpFromLine } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -16,7 +17,7 @@ import { SkillFilesDialog } from '../skill-files-dialog'
 import { SkillPublishDialog } from '../skill-publish-dialog'
 import { SkillPRDialog } from '../skill-pr-dialog'
 import { SkillDeleteDialog } from '../skill-delete-dialog'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 import { HomeSkillsBrowseDialog } from './home-skills-browse-dialog'
 import { useAgentSkills, useDiscoverableSkills, useUpdateSkill, useExportSkill, useImportSkillZip } from '@renderer/hooks/use-agent-skills'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
@@ -31,11 +32,20 @@ interface HomeSkillsProps {
 }
 
 export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps) {
-  const [browseOpen, setBrowseOpen] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
-
   const { data: skillsData } = useAgentSkills(agentSlug)
   const skills = Array.isArray(skillsData) ? skillsData : []
+
+  return (
+    <HomeCollapsible id="skills" title="Skills" count={skillsData ? skills.length : undefined} className={className}>
+      <HomeSkillsBody agentSlug={agentSlug} skills={skills} onRunSkill={onRunSkill} />
+    </HomeCollapsible>
+  )
+}
+
+// Mounted only while the section is open, so the skills the agent could add are read only then.
+function HomeSkillsBody({ agentSlug, skills, onRunSkill }: { agentSlug: string; skills: ApiSkillWithStatus[]; onRunSkill?: (skillName: string) => void }) {
+  const [browseOpen, setBrowseOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const { data: discoverableSkillsData } = useDiscoverableSkills(agentSlug)
   const discoverableSkills = useMemo(
     () => (Array.isArray(discoverableSkillsData) ? discoverableSkillsData : []),
@@ -45,39 +55,41 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
   const hasDiscoverable = discoverableSkills.length > 0
 
   return (
-    <HomeCollapsible title="Skills" className={className}>
+    <>
       {skills.length === 0 ? (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No skills yet</p>
-          <p className="text-xs mt-1">Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works.</p>
-        </div>
+        <HomeEmptyState description="Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works." />
       ) : (
-        <div className="mt-2 divide-y divide-border/50" data-testid="installed-skills-list">
+        <div className="mt-2" data-testid="installed-skills-list">
           {skills.map((skill) => (
             <SkillRow key={skill.path} skill={skill} agentSlug={agentSlug} onRunSkill={onRunSkill} />
           ))}
         </div>
       )}
 
-      <div className="flex justify-end mt-3 px-4 pb-1 gap-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => setImportOpen(true)}
-          data-testid="import-skill-button"
-        >
-          <Download className="h-3.5 w-3.5" />
-          Import
-        </Button>
-        {hasDiscoverable && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setBrowseOpen(true)}
-            data-testid="add-skill-button"
-          >
+      {/* One Add Skill, as Drives has one Add Drive: a menu of the ways in when the team has skills to browse, or
+          straight to the upload dialog when it has none. */}
+      <div className="flex justify-end mt-3 px-4 pb-1">
+        {hasDiscoverable ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" data-testid="add-skill-button">
+                <Plus />
+                Add Skill
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onSelect={() => setBrowseOpen(true)} data-testid="browse-skills-item">
+                <Library className="h-4 w-4" />
+                Browse skills
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setImportOpen(true)} data-testid="upload-skill-item">
+                <ArrowUpFromLine className="h-4 w-4" />
+                Upload a skill
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Button type="button" variant="ghost" size="sm" onClick={() => setImportOpen(true)} data-testid="add-skill-button">
             <Plus />
             Add Skill
           </Button>
@@ -95,7 +107,7 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
         onOpenChange={setImportOpen}
         agentSlug={agentSlug}
       />
-    </HomeCollapsible>
+    </>
   )
 }
 
@@ -114,7 +126,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
 
   return (
     <>
-      <div role="button" tabIndex={0} data-testid="installed-skill-row" data-skill-path={skill.path} className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setFilesOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilesOpen(true) } }}>
+      <div role="button" tabIndex={0} data-testid="installed-skill-row" data-skill-path={skill.path} className="group relative py-3 px-4 cursor-pointer" onClick={() => setFilesOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilesOpen(true) } }}>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium truncate">{skill.name ?? skill.path}</span>
           <StatusBadge status={skill.status} />
@@ -150,14 +162,14 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
             </PopoverTrigger>
             <PopoverContent align="end" className="w-36 p-1" onClick={(e) => e.stopPropagation()}>
               <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                 onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setFilesOpen(true) }}
               >
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
               </button>
               <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                 disabled={exportSkill.isPending}
                 onClick={(e) => {
                   e.stopPropagation()
@@ -177,7 +189,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               </button>
               {skill.status.type === 'local' && skill.status.publishable !== false && publishMode !== 'none' && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setPublishOpen(true) }}
                 >
                   <CloudUpload className="h-3.5 w-3.5" />
@@ -186,7 +198,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               )}
               {skill.status.type === 'update_available' && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   disabled={updateSkill.isPending}
                   onClick={(e) => { e.stopPropagation(); setActionsOpen(false); updateSkill.mutate({ agentSlug, skillDir: skill.path }) }}
                 >
@@ -200,7 +212,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               )}
               {skill.status.type === 'locally_modified' && publishMode !== 'none' && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setReviewOpen(true) }}
                 >
                   <ReviewIcon className="h-3.5 w-3.5" />
@@ -208,7 +220,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
                 </button>
               )}
               <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setDeleteOpen(true) }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -284,7 +296,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
     try {
       const result = await importSkill.mutateAsync({ agentSlug, file: importFile })
       closeDialog()
-      toast.success(`Imported skill "${result.skillName}"`)
+      toast.success(`Uploaded skill "${result.skillName}"`)
     } catch {
       // Error is shown by the mutation's error state
     }
@@ -300,15 +312,15 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
       <Dialog open={open} onOpenChange={(o) => { if (!o) closeDialog() }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="font-medium">Import a Skill</DialogTitle>
+            <DialogTitle className="font-medium">Upload a Skill</DialogTitle>
             <DialogDescription className="sr-only">
-              Upload a .skill or .zip file to import a skill.
+              Upload a .skill or .zip file to add it to this agent.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleImport}>
             <div className="py-4 space-y-4">
               <div
-                className={`border border-dashed rounded-lg p-6 text-center transition-colors bg-muted/50 ${
+                className={`border border-dashed rounded-card p-6 text-center transition-colors bg-muted/50 ${
                   importSkill.isPending ? 'opacity-50 pointer-events-none' : 'cursor-pointer'
                 }`}
                 role="button"
@@ -355,7 +367,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
                   </div>
                 ) : (
                   <>
-                    <Download className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
+                    <ArrowUpFromLine className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">
                       Drop a .skill or .zip file here<br />
                       or click to browse
@@ -379,10 +391,10 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
                 {importSkill.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Importing...
+                    Uploading...
                   </>
                 ) : (
-                  'Import'
+                  'Upload'
                 )}
               </Button>
             </DialogFooter>

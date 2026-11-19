@@ -6,6 +6,7 @@ import * as os from 'os'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
 import type { ContainerConfig, HostPortProbeResult } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import type { AppSettings } from '@shared/lib/config/settings'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import {
   RunnerSetupError,
@@ -478,10 +479,10 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * Override to write env files under %USERPROFILE%\.superagent\tmp\ and
    * translate the path for WSL2.
    */
-  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string, settings?: AppSettings): Promise<{ flag: string; cleanup: () => void }> {
     const home = os.homedir()
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    const { filePath, cleanup } = writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
+    const { filePath, cleanup } = writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName, settings), this.config.agentId, tmpDir)
 
     // Translate the Windows file path to a WSL2 path for the --env-file flag
     const wslPath = windowsToWSLPath(filePath)

@@ -12,10 +12,23 @@ async function fetchUserSettings(): Promise<UserSettingsData> {
   return res.json()
 }
 
+/**
+ * How long fetched user settings count as fresh. This window's own writes go
+ * straight into the cache (`useUpdateUserSettings`), so a new observer has no
+ * reason to read again on every navigation, as the 5 s default made it.
+ * Nothing tells this window about a write from the same user's other tab or
+ * device, and there is no poll, so the window stays finite: the first mount
+ * after it reads again.
+ */
+const USER_SETTINGS_STALE_MS = 5 * 60_000
+
 export function useUserSettings() {
   return useQuery<UserSettingsData>({
     queryKey: USER_SETTINGS_QUERY_KEY,
     queryFn: fetchUserSettings,
+    staleTime: USER_SETTINGS_STALE_MS,
+    // Back online is read again as before, without waiting out the window.
+    refetchOnReconnect: 'always',
   })
 }
 

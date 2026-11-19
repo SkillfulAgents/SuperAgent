@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { integrationRelayConfigShape } from '../agent-integrations/transport'
 
 export const EMAIL_PROVIDER = 'platform-email' as const
 export const EMAIL_GATEWAY_URL = 'https://email-gateway.datawizz.workers.dev'
@@ -16,14 +17,22 @@ export const emailSetupSchema = z.object({
   accessLevel: emailAccessSchema.default('agent-users-and-replies'),
   allowedDomains: z.array(domain).max(50).default([]),
 }).strict().refine(v => v.accessLevel !== 'allowed-domains' || v.allowedDomains.length > 0, 'Add at least one allowed domain')
+/** What an agent may choose for an inbox it creates; `emailSetupSchema` then validates the values. */
+export const emailAgentSetupSchema = z.strictObject({ localPart: z.unknown(), displayName: z.unknown() }, 'An agent sets only localPart and displayName; the owner chooses who may email the inbox')
 export const emailIntegrationConfigSchema = emailSetupSchema.safeExtend({
   mailboxId: z.string().uuid(),
   address: z.string().email(),
 })
+/** A Standard Webhooks secret the gateway accepts: `whsec_` and 24–64 base64-encoded bytes. */
+export const emailWebhookSecretSchema = z.string().regex(/^whsec_[A-Za-z0-9+/]{32,88}={0,2}$/)
 export const emailConfigSchema = emailIntegrationConfigSchema.safeExtend({
   eventCursor: z.number().int().nonnegative().default(0),
   platformOrgId: z.string().min(1),
   platformMemberId: z.string().min(1),
+  /** The relay endpoint the gateway posts this mailbox's events to; shared by every mailbox in its scope, set on the first connect with a relay. */
+  ...integrationRelayConfigShape,
+  /** Signs those posts. Generated with the endpoint, shared with it, and never shown. */
+  webhookSecret: emailWebhookSecretSchema.optional(),
 })
 export type EmailIntegrationConfig = z.infer<typeof emailIntegrationConfigSchema>
 export type EmailConfig = z.infer<typeof emailConfigSchema>
@@ -41,11 +50,15 @@ export const emailMessageSchema = z.object({
   subject: z.string().nullable(), text: z.string().nullable(), html: z.string().nullable(),
   status: z.string(), createdAt: z.number(), authentication,
   attachments: z.array(z.object({ id: z.string(), filename: z.string(), contentType: z.string(), size: z.number() })).default([]),
+  /** The threads the gateway merged into this one, nearest first. Only a read of one message lists them. */
+  threadAliases: z.array(z.string()).optional(),
 })
 export type EmailMessage = z.infer<typeof emailMessageSchema>
 export const emailSendSchema = z.object({
   to: z.array(z.string().email()).max(20).optional(), cc: z.array(z.string().email()).max(20).default([]), bcc: z.array(z.string().email()).max(20).default([]),
   subject: z.string().max(998).regex(/^[^\r\n]*$/).optional(), text: z.string().min(1).max(131072),
+  /** Host-rendered alternative to `text`; the agent's own sends are text only. */
+  html: z.string().max(131072).optional(),
   replyToMessageId: z.string().uuid().optional(), replyAll: z.boolean().default(false),
   attachmentIds: z.array(z.string().uuid()).max(10).default([]),
   idempotencyKey: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/, 'Use letters, numbers, dots, underscores, colons or hyphens'),

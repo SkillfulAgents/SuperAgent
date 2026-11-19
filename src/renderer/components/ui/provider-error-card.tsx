@@ -1,6 +1,6 @@
 import { useContext, useMemo, useState } from 'react'
 import type { Components } from 'react-markdown'
-import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
+import { CircleDollarSign, Info, Lock, TriangleAlert, type LucideIcon } from 'lucide-react'
 
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
@@ -10,11 +10,13 @@ import type { ProviderErrorComponentProps } from '@renderer/components/provider-
 import { Markdown } from '@renderer/components/ui/markdown'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { openExternalUrl } from '@renderer/lib/open-external'
+import { settingsTabFromHref } from '@renderer/lib/in-app-link'
 
 const ICONS: Record<string, LucideIcon> = {
   info: Info,
   'triangle-alert': TriangleAlert,
   'circle-dollar-sign': CircleDollarSign,
+  lock: Lock,
 }
 
 const OPAQUE_DARK: Record<ProviderErrorPresentation['severity'], string> = {
@@ -23,14 +25,12 @@ const OPAQUE_DARK: Record<ProviderErrorPresentation['severity'], string> = {
 }
 
 // In-app settings links (e.g. `/settings/llm`) navigate here; anything else opens in the browser.
-const SETTINGS_LINK = /^\/settings\/([\w-]+)$/
-
 function markdownComponents(openSettings: ((tab: string) => void) | undefined): Components {
   return {
     p: ({ children }) => <span>{children}</span>,
     strong: ({ children }) => <strong className="font-medium">{children}</strong>,
     a: ({ href, children }) => {
-      const settingsTab = href?.match(SETTINGS_LINK)?.[1]
+      const settingsTab = settingsTabFromHref(href)
       return (
         <a
           href={href}

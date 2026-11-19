@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { load, JSON_SCHEMA } from 'js-yaml'
-import type { FileOps, MemoryOps } from './types'
+import type { StoreFileOps, MemoryOps } from './types'
 import { WorkspaceFileError } from './workspace-path'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
 
@@ -17,7 +17,7 @@ function memoryPath(relative: string): string {
 
 // Resolve through the actor too: reject redirects to other workspace content.
 // All paths remain logical workspace paths; no host filesystem access.
-async function resolveMemoryPath(files: FileOps, target: string): Promise<string | null> {
+async function resolveMemoryPath(files: StoreFileOps, target: string): Promise<string | null> {
   const resolved = await files.resolve(target)
   if (resolved !== null && resolved !== target) throw new MemoryError('Invalid memory path', 400)
   return resolved
@@ -80,7 +80,7 @@ function describeMemory(relative: string, content: string): Omit<AgentMemoryDocu
   }
 }
 
-async function readAgentMemory(files: FileOps, relative: string): Promise<AgentMemoryDocument> {
+async function readAgentMemory(files: StoreFileOps, relative: string): Promise<AgentMemoryDocument> {
   const target = await resolveMemoryPath(files, memoryPath(relative))
   if (!target) throw new MemoryError('Memory not found', 404)
   const stat = await files.stat(target)
@@ -104,7 +104,7 @@ async function readAgentMemory(files: FileOps, relative: string): Promise<AgentM
   return { ...describeMemory(relative, content), revision: createHash('sha256').update(bytes).digest('hex') }
 }
 
-async function listAgentMemories(files: FileOps): Promise<AgentMemoryEntry[]> {
+async function listAgentMemories(files: StoreFileOps): Promise<AgentMemoryEntry[]> {
   const root = await resolveMemoryPath(files, AGENT_MEMORY_DIR)
   if (!root) return []
   const result: AgentMemoryEntry[] = []
@@ -132,11 +132,11 @@ async function listAgentMemories(files: FileOps): Promise<AgentMemoryEntry[]> {
 }
 
 /**
- * Memory operations belong to one actor. The implementation uses its FileOps,
+ * Memory operations belong to one actor. The implementation uses its StoreFileOps,
  * so directory layout, validation, and save serialization stay behind memories.
  */
-export function createMemoryOps(files: FileOps): MemoryOps {
-  // FileOps has no compare-and-swap: external writers can still race the final
+export function createMemoryOps(files: StoreFileOps): MemoryOps {
+  // StoreFileOps has no compare-and-swap: external writers can still race the final
   // revision check/atomic putDoc. Saves through this actor are serialized.
   let pendingSave: Promise<unknown> | undefined
 

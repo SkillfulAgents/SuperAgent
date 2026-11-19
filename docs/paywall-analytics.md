@@ -5,12 +5,12 @@ Events use the existing renderer analytics provider, identity, consent, and conf
 ## Correlation
 
 - `paywallId`: random ID for one mounted platform paywall. Shared by its impression, actions, and subscription attempts.
-- `attemptId`: new random ID when a provider button is clicked. Sign-in, save, and resume retries within that dialog retain this ID; reopening creates a new attempt.
+- `attemptId`: new random ID when a provider setup or saved-connection action is clicked. Sign-in, save, and resume retries within a setup dialog retain this ID; reopening creates a new attempt.
 - `entryPoint`: `platform_paywall`.
 - `paywallType`: `subscription` when a new plan is required, otherwise the resolved billing CTA kind (for example `topup`, `add_card`, or `ask_admin`; `none` when unresolved).
 - `ctaKind` and `placement`: the billing action and UI placement.
 
-Subscription attempt events also include `provider` (`grok-subscription`, `codex-subscription`, `kimi-subscription`, `minimax-subscription`, or `claude-subscription`), `authMethod` (`device_code` or `setup_token`), and `elapsedMs` since the provider click. The shared analytics provider adds user identity, tenant, app version, and web/Electron metadata as usual.
+New-connection attempt events also include `provider` (`grok-subscription`, `codex-subscription`, `kimi-subscription`, `minimax-subscription`, or `claude-subscription`), `authMethod` (`device_code` or `setup_token`), and `elapsedMs` since the provider click. Saved-connection switches include `provider` and `scope` (`session` or `always`) but no connection or model identifier. The shared analytics provider adds user identity, tenant, app version, and web/Electron metadata as usual.
 
 ## General paywall events
 
@@ -19,7 +19,6 @@ Subscription attempt events also include `provider` (`grok-subscription`, `codex
 | `paywall_shown` | Once per mounted wall after billing resolves; includes `blocked`, `live`, and workspace `role`. |
 | `paywall_cta_clicked` | External billing link (`surface: external`, `action: open_billing`), iframe fallback (`action: embed_fallback`), or trusted iframe panel open (`surface: embedded`, `action: open_panel`). |
 | `paywall_billing_closed` | Trusted iframe message closes the embedded panel. |
-| `paywall_recheck_clicked` | User requests a billing refresh. |
 | `paywall_dismissed` | User explicitly dismisses a dismissible wall. |
 | `paywall_cleared` | Once per wall, with `resolution: billing` or `subscription`. Subscription recovery includes its `attemptId` and `provider`. |
 
@@ -44,7 +43,8 @@ All events below use the `paywall_subscription_` prefix:
 | `save_failed` | Save fails; includes `saveAttempt`. |
 | `resume_started` | Chat recovery attempted; includes `resumeAttempt`. |
 | `resume_failed` | Recovery fails; includes `resumeAttempt` and `failureReason` (`connection_refresh_failed`, `model_unavailable`, `chat_busy`, or `send_failed`). |
-| `resumed` | API accepts Continue on the new provider, rather than queueing it; includes `resumeAttempt` and `outcome: message_accepted`. This does not confirm a successful model reply. |
+| `resumed` | API accepts Continue on the newly connected provider, rather than queueing it; includes `resumeAttempt` and `outcome: message_accepted`. This does not confirm a successful model reply. |
+| `switched` | API accepts Continue on an already-saved active connection; includes `provider`, `scope` (`session` or `always`), and a fresh `attemptId`. Emitted after both default writes for `always`. This does not confirm a successful model reply. |
 | `cancelled` | Setup is dismissed or unmounted before completion; includes `reason`, `lastStep`, and whether `connectionSaved` was confirmed. A request already in flight can still report its outcome afterwards. |
 
 Recommended conversion funnel: options shown → clicked → sign-in succeeded (device-code providers) or token entered (Claude) → saved → resumed. Group by provider and auth method; use the retry counters to distinguish retries from new attempts. Infer abandoned attempts from missing later steps as well as explicit cancellation: a browser crash or tab close may not deliver an unmount event.

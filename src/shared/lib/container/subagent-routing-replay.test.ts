@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+import { attachLiveSessionsHarness, createStreamClient } from '@shared/lib/agent-actor/testing/live-sessions-harness'
 import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
-import type { ContainerClient, StreamMessage } from './types'
+import type { StreamMessage } from './types'
 
 // ----- Mocks for external dependencies (real fs is intentionally NOT mocked) -----
 
@@ -28,21 +28,18 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: {
     checkPermission: vi.fn(() => 'prompt_needed'),
-    getGrabbedApp: vi.fn(() => undefined),
-    setGrabbedApp: vi.fn(),
-    clearGrabbedApp: vi.fn(),
+    getActiveApp: vi.fn(() => undefined),
+    setActiveApp: vi.fn(),
+    clearActiveApp: vi.fn(),
     consumeOnceGrant: vi.fn(),
   },
 }))
-vi.mock('@shared/lib/computer-use/types', () => ({
+vi.mock('@shared/lib/computer-use/types', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/computer-use/types')>()),
   getRequiredPermissionLevel: vi.fn(() => 'use_application'),
-  resolveTargetApp: vi.fn(() => undefined),
-  READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
-  TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
-vi.mock('@shared/lib/computer-use/executor', () => ({
-  resolveAppFromWindowRef: vi.fn(() => undefined),
-}))
+// Replays drive no machine.
+vi.mock('@shared/lib/computer-use/executor', () => ({}))
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: vi.fn(() => Promise.resolve('trigger_new_id')),
   listActiveWebhookTriggers: vi.fn(() => Promise.resolve([])),
@@ -54,7 +51,7 @@ vi.mock('@shared/lib/composio/triggers', () => ({
   deleteComposioTrigger: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: vi.fn(() => true),
+  isPlatformComposioActive: vi.fn(() => true), isPlatformComposioActiveFrom: vi.fn(() => true),
 }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: vi.fn(() => Promise.resolve('UTC')),
@@ -113,40 +110,9 @@ async function loadFixture(): Promise<{
   return { meta, streamEntries, fsSnapshotFiles }
 }
 
-// ----- Mock container client that replays captured messages -----
+// ----- The agent's live sessions, over test doubles -----
 
-function createReplayClient(): {
-  client: ContainerClient
-  send: (message: StreamMessage) => void
-} {
-  let callback: ((message: StreamMessage) => void) | null = null
-  const client = {
-    subscribeToStream: vi.fn((_sid: string, cb: (message: StreamMessage) => void) => {
-      callback = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    start: vi.fn(),
-    stop: vi.fn(),
-    stopSync: vi.fn(),
-    getInfoFromRuntime: vi.fn(),
-    getInfo: vi.fn(),
-    fetch: vi.fn(),
-    waitForHealthy: vi.fn(),
-    isHealthy: vi.fn(),
-    getStats: vi.fn(),
-    createSession: vi.fn(),
-    getSession: vi.fn(() => Promise.resolve(null)),
-    deleteSession: vi.fn(),
-    sendMessage: vi.fn(),
-    interruptSession: vi.fn(),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as ContainerClient
-  return {
-    client,
-    send: (m) => callback?.(m),
-  }
-}
+const live = attachLiveSessionsHarness()
 
 // ----- The harness itself -----
 
@@ -161,6 +127,7 @@ describe('subagent routing replay — sequential subagents across state reset', 
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+    live.reset()
     vi.clearAllMocks()
   })
 
@@ -178,25 +145,21 @@ describe('subagent routing replay — sequential subagents across state reset', 
     }
     mockSessionsDir.value = sessionsRoot
 
-    // Import the persister AFTER mocks are configured.
-    // message-persister is a module-level singleton, so import fresh per test.
-    vi.resetModules()
-    const { messagePersister } = await import('./message-persister')
-    // The registry attaches the real stores; this test drives the persister alone.
-    messagePersister.attachSessionStores(createInMemorySessionStore)
-    const { client, send } = createReplayClient()
+    // The agent's live sessions, fresh per test (reset after each).
+    const sessions = live.sessions(meta.agentSlug)
+    const client = createStreamClient()
 
     // Collect SSE events
-    const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
+    const cleanup = sessions.listen(meta.sessionId, (data) => {
       sseEvents.push(data as Record<string, unknown>)
     })
 
     // Subscribe (mirrors what happens on app launch / session resume)
-    await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
+    await sessions.subscribe(meta.sessionId, client, meta.sessionId)
 
     // Replay the captured stream
     for (const entry of streamEntries) {
-      send(entry.message)
+      client.emit(entry.message.content)
       // Yield to the microtask queue so async FS discovery can run
       await new Promise((r) => setImmediate(r))
     }
@@ -205,7 +168,7 @@ describe('subagent routing replay — sequential subagents across state reset', 
     await new Promise((r) => setTimeout(r, 100))
 
     cleanup()
-    messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
+    sessions.unsubscribe(meta.sessionId)
 
     // ----- Assertions -----
 

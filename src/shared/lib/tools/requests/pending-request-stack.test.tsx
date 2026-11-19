@@ -227,8 +227,8 @@ describe('PendingRequestStack', () => {
       </PendingRequestStack>
     )
 
-    // Stack strips have rounded-t-[12px] class
-    const strips = container.querySelectorAll('.rounded-t-\\[12px\\]')
+    // Stack strips have rounded-t-dialog class
+    const strips = container.querySelectorAll('.rounded-t-dialog')
     expect(strips.length).toBeGreaterThan(0)
   })
 
@@ -239,7 +239,7 @@ describe('PendingRequestStack', () => {
       </PendingRequestStack>
     )
 
-    const strips = container.querySelectorAll('.rounded-t-\\[12px\\]')
+    const strips = container.querySelectorAll('.rounded-t-dialog')
     expect(strips.length).toBe(0)
   })
 

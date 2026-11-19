@@ -1,7 +1,7 @@
 import { ProviderSelect } from './provider-select'
 import { resolveSelection, type ConnectionInfo, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 import { memo, useContext, useMemo, type ReactNode } from 'react'
-import { Check, ChevronDown, RotateCcw, Settings } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Lock, RotateCcw, Settings } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -9,7 +9,8 @@ import { Separator } from '@renderer/components/ui/separator'
 import { useModelSettings } from '@renderer/hooks/use-settings'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { useUser } from '@renderer/context/user-context'
-import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
+import { ModelFamilyList, findCatalogModel, familyDisplayName, type ModelLock } from '@renderer/components/messages/model-family-list'
+import { useModelLock } from '@renderer/hooks/use-model-lock'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
 import { ModelTooltip } from '@renderer/components/messages/model-tooltip'
@@ -17,7 +18,7 @@ import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/co
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 
-interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalog' | 'onPick' | 'webProvider' | 'header' | 'connection' | 'emptyLabel'> {
+interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalog' | 'onPick' | 'webProvider' | 'header' | 'connection' | 'emptyLabel' | 'modelLock'> {
   agentSlug?: string
   llmProviderId?: string | null
   globalOnly?: boolean
@@ -39,6 +40,8 @@ interface ModelPickerPopoverProps {
   connection?: ConnectionInfo
   /** Adds a top row that stores '' — for hosts where "no model" means inherit. */
   emptyLabel?: string
+  /** Model restrictions supplied by the selected connection's provider. */
+  modelLock?: ModelLock
   /** Show the effort picker alongside the model. Off by default for model-only knobs. */
   includeEffort?: boolean
   effort?: EffortLevel
@@ -56,6 +59,11 @@ interface ModelPickerPopoverProps {
    * card); 'start' for left-aligned hosts (the trigger/cron runtime card).
    */
   align?: 'start' | 'end'
+  /**
+   * The trigger's look: an outlined button ('outline', the default), or 'row', the lighter value and soft right chevron of
+   * Agent Home's side-panel rows, with no button frame or hover fill.
+   */
+  variant?: 'outline' | 'row'
   /**
    * Render a footer inside the picker (per-agent default surfaces) with a
    * "Reset to Global Default" action — disabled while the host already follows
@@ -109,6 +117,10 @@ function SettingsModelSelectImpl({
     () => onSelectionChange && selectedConnection ? selectedConnection.catalog : directApiOnly && connections?.connections.length ? [] : settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
     [settings, activeProvider, selectedConnection, onSelectionChange, directApiOnly, connections?.connections.length],
   )
+  const availabilityConnection = onSelectionChange
+    ? selectedConnection
+    : choices.find(c => c.id === llmProviderId) ?? choices.find(c => c.provider === activeProvider)
+  const modelLock = useModelLock(availabilityConnection)
 
   return (
     <ModelPickerPopover
@@ -117,6 +129,7 @@ function SettingsModelSelectImpl({
       model={selectedModel}
       onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
       webProvider={settings?.webProvider}
+      modelLock={modelLock}
       connection={onSelectionChange ? selectedConnection : undefined}
       header={onSelectionChange && <ProviderSelect connections={providers} value={selectedConnection?.id} directApiOnly={directApiOnly} disabled={pickerProps.disabled} onChange={id => {
         const next = choices.find(c => c.id === id)
@@ -143,10 +156,16 @@ export function ModelPickerPopover({
   onSpeedChange,
   disabled,
   align = 'end',
+  variant = 'outline',
   appDefault,
+  modelLock,
 }: ModelPickerPopoverProps) {
   // Resolve the current selection for the trigger label.
   const resolved = findCatalogModel(model, catalog)
+  // A saved selection the connection can no longer run (e.g. after a plan
+  // downgrade) runs nowhere: the trigger says so without being opened.
+  const lockedReason = resolved && modelLock?.isLocked(resolved) ? modelLock.reason(resolved) : undefined
+  const lockedSelection = lockedReason !== undefined
   const isLatestSelected = !!resolved?.isLatest && model !== resolved.id
   const selectedFamily = resolved?.family
 
@@ -170,26 +189,32 @@ export function ModelPickerPopover({
     // effort get set in one visit and the popover closes on outside click /
     // Escape / trigger toggle — so Radix owns the open state.
     <Popover>
-      <ModelTooltip line={resolved && triggerLabel ? `${triggerLabel}${isLatestSelected ? ` (${resolved.label})` : ''}${detail}` : undefined} connection={connection}>
+      <ModelTooltip line={resolved && triggerLabel ? `${triggerLabel}${isLatestSelected ? ` (${resolved.label})` : ''}${detail}${lockedReason ? ` · ${lockedReason}` : ''}` : undefined} connection={connection}>
         <PopoverTrigger asChild>
           <Button
             type="button"
-            variant="outline"
+            variant={variant === 'row' ? 'ghost' : 'outline'}
             size="sm"
             disabled={disabled}
-            className="h-[34px] gap-1.5 px-2 text-xs font-medium"
-            aria-label={`Model: ${triggerLabel ?? 'select'}. Click to change.`}
+            className={variant === 'row'
+              ? '-mr-1 h-8 gap-1 px-1 text-[12px]/5 font-normal text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground/70'
+              : 'h-[34px] gap-1.5 px-2 text-xs font-medium'}
+            aria-label={`Model: ${triggerLabel ?? 'select'}.${lockedReason ? ` ${lockedReason}` : ''} Click to change.`}
             data-testid="settings-model-trigger"
+            data-locked={lockedSelection || undefined}
           >
+            {lockedSelection && <Lock className="h-3 w-3 text-amber-600 dark:text-amber-500" aria-hidden="true" />}
             <span>
               {triggerLabel ?? 'Select model'}
               {includeEffort && (
-                <span className="text-muted-foreground">
+                <span className={variant === 'row' ? undefined : 'text-muted-foreground'}>
                   {detail}
                 </span>
               )}
             </span>
-            <ChevronDown className="h-3.5 w-3.5" />
+            {variant === 'row'
+              ? <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
+              : <ChevronDown className="h-3.5 w-3.5" />}
           </Button>
         </PopoverTrigger>
       </ModelTooltip>
@@ -211,7 +236,7 @@ export function ModelPickerPopover({
               data-testid="settings-model-empty"
               onClick={() => onPick('')}
               className={cn(
-                'flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent',
+                'flex items-center justify-between gap-2 rounded-item px-2 py-1 text-left text-xs hover:bg-accent',
                 !model && 'bg-accent'
               )}
             >
@@ -225,6 +250,7 @@ export function ModelPickerPopover({
             onPick={onPick}
             offerLatest
             webProvider={webProvider}
+            modelLock={modelLock}
           />
         </div>
         {includeEffort && (
@@ -282,7 +308,7 @@ function AppDefaultFooter({ isOverride, onUseAppDefault, label = 'Reset to Globa
         data-testid="settings-model-app-default"
         disabled={!isOverride}
         onClick={() => onUseAppDefault()}
-        className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
+        className="flex min-w-0 items-center gap-1.5 rounded-item px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
       >
         <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span className="truncate">{label}</span>
@@ -294,7 +320,7 @@ function AppDefaultFooter({ isOverride, onUseAppDefault, label = 'Reset to Globa
           aria-label="Change global default in Settings"
           title="Change global default in Settings"
           onClick={() => dialogs?.openSettings('llm')}
-          className="shrink-0 rounded-sm p-1 text-muted-foreground/70 hover:text-foreground"
+          className="shrink-0 rounded-icon p-1 text-muted-foreground/70 hover:text-foreground"
         >
           <Settings className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
@@ -304,3 +330,9 @@ function AppDefaultFooter({ isOverride, onUseAppDefault, label = 'Reset to Globa
 }
 
 export const SettingsModelSelect = memo(SettingsModelSelectImpl)
+
+/** {@link ModelPickerPopover} over one connection's catalog and availability. */
+export function ProviderModelPickerPopover({ connection, ...props }: Omit<ModelPickerPopoverProps, 'modelLock'> & { connection?: ConnectionInfo }) {
+  const modelLock = useModelLock(connection)
+  return <ModelPickerPopover {...props} modelLock={modelLock} />
+}

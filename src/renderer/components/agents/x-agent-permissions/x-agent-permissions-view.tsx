@@ -16,10 +16,18 @@ import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { agentsListQuery } from '@renderer/hooks/query-options'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 type Operation = 'list' | 'read' | 'invoke'
 type Decision = 'allow' | 'review' | 'block'
 type DecisionOrDefault = Decision | 'default'
+
+const globalDefault = { inheritedValue: 'review', inheritedLabel: 'default' } as const
+/** What a per-agent row falls back to: the Global row, else Review. */
+function inheritedFrom(global: DecisionOrDefault) {
+  return global !== 'default' ? { inheritedValue: global, inheritedLabel: 'from Global' } : globalDefault
+}
 
 interface PolicyRow {
   id: string
@@ -68,8 +76,9 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const queryClient = useQueryClient()
-  const { isAuthMode, rolesReady, canAdminAgent } = useUser()
-  const canManage = !isAuthMode || (rolesReady && canAdminAgent(agentSlug))
+  const { isAuthMode, rolesReady, canUseAgent, canAccessAgent } = useUser()
+  const canManage = !isAuthMode || (rolesReady && canUseAgent(agentSlug))
+  const canView = canManage || (rolesReady && canAccessAgent(agentSlug))
   const [filter, setFilter] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -102,17 +111,12 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       if (!res.ok) throw new Error('Failed to fetch policies')
       return res.json()
     },
-    enabled: canManage,
+    enabled: canView,
   })
 
   // Fetch all agents in workspace (for the per-target rows)
   const agentsQuery = useQuery<AgentsResponse>({
-    queryKey: ['agents'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/agents')
-      if (!res.ok) throw new Error('Failed to fetch agents')
-      return res.json()
-    },
+    ...agentsListQuery,
     enabled: canManage,
   })
 
@@ -135,8 +139,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   /** Effective send decision: explicit row, else the global default, else review. */
   const effectiveInvoke = (slug: string): Decision => {
     const explicit = getDecision('invoke', slug)
-    if (explicit !== 'default') return explicit
-    return globalInvoke !== 'default' ? globalInvoke : 'review'
+    return explicit !== 'default' ? explicit : inheritedFrom(globalInvoke).inheritedValue
   }
 
   /** "Connected" = this agent may send messages to the target without a prompt. */
@@ -213,6 +216,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       setPendingKeys((prev) => new Set(prev).add(key))
     },
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
       return queryClient.invalidateQueries({ queryKey: ['x-agent-policies', agentSlug] })
     },
     onError: (err: Error, change) => {
@@ -277,6 +281,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
     const connected = isConnected(slug)
     const blocked = effectiveInvoke(slug) === 'block'
     const pending = isSwitchPending(slug)
+    // A link needs someone who uses both agents; the page already checked this one.
+    const canChange = !isAuthMode || canUseAgent(slug)
     return (
       <div key={slug} data-testid={`x-agent-policy-row-${slug}`}>
         <IntegrationRow
@@ -289,7 +295,12 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
               </span>
             ) : undefined
           }
-          subtitle={<span className="font-mono truncate">{agent.displaySlug}</span>}
+          subtitle={(
+            <span className="flex min-w-0 flex-col">
+              <span className="font-mono truncate">{agent.displaySlug}</span>
+              {!canChange && <span>You need User access to {agent.name} to change this.</span>}
+            </span>
+          )}
           viewTransitionName={`xagent-${slug}`}
           right={
             <>
@@ -308,24 +319,28 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                   </PopoverTrigger>
                   <PopoverContent
                     align="end"
-                    className="w-72 p-3 space-y-2.5"
+                    className="w-[27rem] max-w-[calc(100vw-2rem)] p-3 space-y-2.5"
                     onOpenAutoFocus={(e) => e.preventDefault()}
                     data-testid={`x-agent-permissions-popover-${slug}`}
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <span className="whitespace-nowrap text-xs font-medium">Read sessions</span>
+                      <span className="whitespace-nowrap text-xs font-medium">Read sessions and files</span>
                       <PolicyDecisionDropdown
                         value={getDecision('read', slug)}
+                        {...inheritedFrom(globalRead)}
+                        className="w-60"
                         onChange={handleChange('read', slug)}
-                        disabled={pendingKeys.has(policyKey('read', slug))}
+                        disabled={!canChange || pendingKeys.has(policyKey('read', slug))}
                       />
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="whitespace-nowrap text-xs font-medium">Send messages</span>
+                      <span className="whitespace-nowrap text-xs font-medium">Send messages and files</span>
                       <PolicyDecisionDropdown
                         value={getDecision('invoke', slug)}
+                        {...inheritedFrom(globalInvoke)}
+                        className="w-60"
                         onChange={handleChange('invoke', slug)}
-                        disabled={pendingKeys.has(policyKey('invoke', slug))}
+                        disabled={!canChange || pendingKeys.has(policyKey('invoke', slug))}
                       />
                     </div>
                     {isRowSaving(slug) && (
@@ -343,6 +358,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
               ) : (
                 <Switch
                   checked={connected}
+                  disabled={!canChange}
                   onCheckedChange={(next) => handleToggle(slug, next)}
                   aria-label={`${connected ? 'Disconnect' : 'Connect'} ${agent.name}`}
                   data-testid={`x-agent-connect-switch-${slug}`}
@@ -372,11 +388,11 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
 
       {isAuthMode && !rolesReady ? (
         <p className="text-sm text-muted-foreground">Checking permissions...</p>
-      ) : !canManage ? (
-        <div className="rounded-xl border bg-background px-6 py-10 text-center" data-testid="x-agent-permissions-no-permission">
-          <p className="text-sm font-medium">Owner access required</p>
+      ) : !canView ? (
+        <div className="rounded-card border bg-background px-6 py-10 text-center" data-testid="x-agent-permissions-no-permission">
+          <p className="text-sm font-medium">Agent access required</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-            Only agent owners can view and manage agent-to-agent connections.
+            This agent must be shared with you to view its permissions.
           </p>
         </div>
       ) : policiesQuery.isLoading || agentsQuery.isLoading ? (
@@ -386,7 +402,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       ) : (
         <div className="space-y-6">
           {error && (
-            <div className="flex items-center gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
+            <div className="flex items-center gap-2 rounded-item bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
               <AlertCircle className="h-3.5 w-3.5 shrink-0" />
               {error}
             </div>
@@ -395,46 +411,52 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
           {/* Global toggles (apply to every agent in the workspace) */}
           <div className="space-y-2">
             <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
-            <div className="rounded-md border p-3">
+            <div className="rounded-card border p-3">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
                   Allow this agent to see a list of all other agents
                 </span>
                 <PolicyDecisionDropdown
                   value={getDecision('list', null)}
+                  {...globalDefault}
+                  className="w-60"
                   onChange={handleChange('list', null)}
-                  disabled={pendingKeys.has(policyKey('list', null))}
+                  disabled={!canManage || pendingKeys.has(policyKey('list', null))}
                 />
               </div>
             </div>
-            <div className="rounded-md border p-3" data-testid="x-agent-policy-global-read">
+            <div className="rounded-card border p-3" data-testid="x-agent-policy-global-read">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to read sessions of all other agents
+                  Allow this agent to read sessions and files of all other agents
                 </span>
                 <PolicyDecisionDropdown
                   value={globalRead}
+                  {...globalDefault}
+                  className="w-60"
                   onChange={handleChange('read', null)}
-                  disabled={pendingKeys.has(policyKey('read', null))}
+                  disabled={!canManage || pendingKeys.has(policyKey('read', null))}
                 />
               </div>
             </div>
-            <div className="rounded-md border p-3" data-testid="x-agent-policy-global-invoke">
+            <div className="rounded-card border p-3" data-testid="x-agent-policy-global-invoke">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to send messages to all other agents
+                  Allow this agent to send messages and files to all other agents
                 </span>
                 <PolicyDecisionDropdown
                   value={globalInvoke}
+                  {...globalDefault}
+                  className="w-60"
                   onChange={handleChange('invoke', null)}
-                  disabled={pendingKeys.has(policyKey('invoke', null))}
+                  disabled={!canManage || pendingKeys.has(policyKey('invoke', null))}
                 />
               </div>
             </div>
           </div>
 
           {/* Per-agent connections */}
-          {agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
+          {canManage && (agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
             <p className="text-sm text-muted-foreground">No other agents in this workspace yet.</p>
           ) : (
             <>
@@ -479,7 +501,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 {connectedAgents.length > 0 ? (
                   <IntegrationList>{connectedAgents.map(renderAgentRow)}</IntegrationList>
                 ) : (
-                  <div className="rounded-xl border border-dashed bg-background px-4 py-6 text-center">
+                  <div className="rounded-card border border-dashed bg-background px-4 py-6 text-center">
                     <p className="text-xs text-muted-foreground">
                       {filter
                         ? 'No connected agents match the filter.'
@@ -497,7 +519,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 </div>
               )}
             </>
-          )}
+          ))}
 
         </div>
       )}

@@ -1,0 +1,1 @@
+CREATE INDEX `chat_integration_sessions_session_id_idx` ON `chat_integration_sessions` (`session_id`);

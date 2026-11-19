@@ -144,7 +144,9 @@ test.describe('Message queueing while agent is working', () => {
       sessionPage.getAssistantMessages().filter({ hasText: 'Finished the slow work.' })
     ).toBeVisible({ timeout: 15000 })
     await sessionPage.waitForUserMessageCount(1, 15000)
-    await expect(page.getByText('cancel me before pickup')).not.toBeVisible()
+    await expect(sessionPage.getUserMessages().filter({ hasText: 'cancel me before pickup' })).toHaveCount(0)
+    // The host removed it before pickup, so its text is back in the composer
+    await expect(sessionPage.getMessageInput()).toHaveText('cancel me before pickup')
     // No steering acknowledgement for the cancelled message
     await expect(
       sessionPage.getAssistantMessages().filter({ hasText: 'Adjusting based on: cancel me before pickup' })

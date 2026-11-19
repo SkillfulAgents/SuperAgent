@@ -12,6 +12,7 @@ export interface PaywallAnalyticsContext {
 export interface SubscriptionRecovery {
   attemptId: string
   provider: string
+  scope?: 'session' | 'always'
 }
 
 export function usePaywallTracking() {

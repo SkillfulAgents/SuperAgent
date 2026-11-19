@@ -269,6 +269,26 @@ describe('useReadAloud', () => {
 describe('useSpokenWordHighlight', () => {
   let frames: FrameRequestCallback[]
 
+  // Live (docs/animations.md): a reply is read aloud while the person works in another app.
+  it('follows the voice in a window that is shown but not in use', () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const root = document.createElement('div')
+    root.innerHTML = '<span data-spoken-word="0">Hi</span> <span data-spoken-word="1">there</span>'
+    const cursor = vi.fn(() => 0)
+    vi.spyOn(readAloud, 'getPlayer').mockReturnValue({ getWordCursor: cursor } as never)
+    const { unmount } = renderHook(() => {
+      const ref = useRef<HTMLElement | null>(root)
+      useSpokenWordHighlight(ref, true)
+    })
+    const lit = () => Array.from(root.querySelectorAll('[data-spoken]')).map((s) => s.textContent)
+    runFrame()
+    expect(lit()).toEqual(['Hi'])
+    cursor.mockReturnValue(1)
+    runFrame()
+    expect(lit()).toEqual(['Hi', 'there'])
+    unmount()
+  })
+
   beforeEach(() => {
     frames = []
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
@@ -279,7 +299,9 @@ describe('useSpokenWordHighlight', () => {
     readAloud.stop()
   })
 
-  const runFrame = () => { const cb = frames.pop()!; frames.length = 0; cb(0) }
+  // Frames a tenth of a second apart: the highlight paints 30 times a second at most.
+  let frameTime = 0
+  const runFrame = () => { const cb = frames.pop()!; frames.length = 0; cb(frameTime += 100) }
 
   it('lights the words at or below the cursor, including repeated indices, and clears on stop', () => {
     const root = document.createElement('div')
@@ -762,7 +784,9 @@ describe('useSpokenWordHighlight with a custom cursor and live spans', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
-  const runFrame = () => { const cb = frames.pop()!; frames.length = 0; cb(0) }
+  // Frames a tenth of a second apart: the highlight paints 30 times a second at most.
+  let frameTime = 0
+  const runFrame = () => { const cb = frames.pop()!; frames.length = 0; cb(frameTime += 100) }
 
   it('follows the given cursor and picks up spans added after mount', async () => {
     const root = document.createElement('div')

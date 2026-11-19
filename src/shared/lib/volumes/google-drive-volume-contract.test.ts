@@ -10,6 +10,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({ attribution: { fromResource
 vi.mock('@shared/lib/proxy/audit', () => ({ writeProxyAuditEntry: async () => {} }))
 import { GoogleDriveMountableVolume } from './google-drive-mountable-volume'
 import { FOLDER_MIME_TYPE } from './google-drive-schema'
+import { UPLOAD_CHUNK_BYTES } from './google-drive-client'
 
 type Metadata = { name?: string; parents?: string[]; mimeType?: string; trashed?: boolean }
 function fixture(): VolumeContractFixture & { downloadWith(run: (bytes: Uint8Array) => ReadableStream<Uint8Array>): void } {
@@ -100,7 +101,7 @@ function fixture(): VolumeContractFixture & { downloadWith(run: (bytes: Uint8Arr
     throw new Error(`Unexpected Drive endpoint: ${method} ${url.pathname}`)
   })
   return {
-    volume: () => new GoogleDriveMountableVolume(id, 'Team', { accountId: id, folderId: rootId, folderName: 'Team', driveName: 'My Drive' }),
+    volume: () => new GoogleDriveMountableVolume(id, 'Team', { accountId: id, folderId: rootId, folderName: 'Team', driveName: 'My Drive' }, 'agent'),
     put: (path, bytes) => { tree.put(path, bytes) }, mkdir: path => { tree.mkdir(path) },
     bytes: path => tree.get(path)?.bytes, exists: path => !!tree.get(path),
     failWrite: () => { fail = true }, beforeCommit: run => { onCommit = run }, revoke: () => { active = false },
@@ -140,7 +141,7 @@ describe('Google Drive replacement transfers', () => {
 
   it('never publishes a large corrupted rename transfer after staging chunks', async () => {
     const f = fixture()
-    f.put('temporary', new Uint8Array(2 * 1024 * 1024).fill(1))
+    f.put('temporary', new Uint8Array(2 * UPLOAD_CHUNK_BYTES + 1).fill(1))
     f.put('saved', new TextEncoder().encode('keep'))
     f.downloadWith(bytes => { const bad = bytes.slice(); bad[bad.length - 1] = 2; return new Blob([bad]).stream() })
     await expect(f.volume().move('temporary', 'saved')).rejects.toThrow()

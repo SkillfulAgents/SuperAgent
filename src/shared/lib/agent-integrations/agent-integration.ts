@@ -1,5 +1,6 @@
 import { captureException } from '../error-reporting'
 import type {
+  IntegrationAccessCheck,
   AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationEvent,
   IntegrationInputContext, IntegrationInputEvent, IntegrationInputResult, IntegrationOutput,
   IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy,
@@ -9,6 +10,9 @@ import type { IntegrationTransport } from './transport'
 
 /** Application-facing lifecycle, input, and output contract for every integration. */
 export abstract class AgentIntegration {
+  /** Whether this host can offer new installations. Existing rows remain manageable. */
+  static isAvailable(): boolean | Promise<boolean> { return true }
+
   abstract readonly provider: string
   abstract readonly definition: AgentIntegrationDefinition
   private eventHandlers = new Set<IntegrationEventHandler>()
@@ -32,7 +36,7 @@ export abstract class AgentIntegration {
   activeTransport(): IntegrationTransport | null { return null }
   abstract resolveRoute(event: IntegrationInputEvent): IntegrationRoute
   abstract authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean>
-  abstract isAllowed(context: IntegrationSessionContext): Promise<boolean>
+  abstract isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean>
   abstract sessionPolicy(integration: AgentIntegrationRecord, route: Partial<IntegrationRoute>): IntegrationSessionPolicy
   abstract prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<PreparedIntegrationInput>
   abstract deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void>
@@ -43,6 +47,12 @@ export abstract class AgentIntegration {
   async consumeInput(_event: IntegrationInputEvent, _context: IntegrationInputContext, _input: PreparedIntegrationInput): Promise<boolean> { return false }
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] { return [] }
   shouldUpdateDisplayName(current: string | null | undefined): boolean { return !current }
+  /**
+   * Whether `observeSession` reads `context.activity`. Only then is the
+   * session's activity read for an observation (one actor read per session
+   * event); otherwise the context carries `'unknown'`.
+   */
+  readonly observesActivity: boolean = false
   observeSession(_context: IntegrationSessionContext): void {}
   releaseSession(_context: IntegrationSessionContext): void {}
   async onCreated(_integration: AgentIntegrationRecord): Promise<void> {}

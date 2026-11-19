@@ -8,7 +8,7 @@ interface FileDownloadPillProps {
   agentSlug: string
 }
 
-const PILL_CLASS = 'file-pill inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer'
+const PILL_CLASS = 'file-pill inline-flex items-center gap-1 px-2 py-0.5 rounded-item border text-xs text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer'
 
 export function FileDownloadPill({ filePath, agentSlug }: FileDownloadPillProps) {
   const { openFile } = useFilePreview()

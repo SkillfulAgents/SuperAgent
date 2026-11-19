@@ -1,3 +1,8 @@
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { mockChatIntegration } from '@shared/lib/chat-integrations/test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -54,11 +59,11 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   DuplicateIntegrationIdentityError: MockDuplicateIntegrationIdentityError,
 }))
 
-const mockListAgentIntegrationSessions = vi.fn()
+const mockListActiveAgentIntegrationSessions = vi.fn()
 const mockGetAgentIntegrationSessionBySessionId = vi.fn()
 
 vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
-  listAgentIntegrationSessions: (...args: unknown[]) => mockListAgentIntegrationSessions(...args),
+  listActiveAgentIntegrationSessions: (...args: unknown[]) => mockListActiveAgentIntegrationSessions(...args),
   getAgentIntegrationSessionBySessionId: (...args: unknown[]) => mockGetAgentIntegrationSessionBySessionId(...args),
 }))
 
@@ -68,9 +73,14 @@ const mockGetActiveIntegrationIds = vi.fn()
 const mockEnsureSession = vi.fn()
 const mockGetConnectorClass = vi.fn()
 
+const mockPauseIntegration = vi.fn()
+const mockResumeIntegration = vi.fn()
+
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
   agentIntegrationManager: {
     addIntegration: (...args: unknown[]) => mockAddIntegration(...args),
+    pauseIntegration: (...args: unknown[]) => mockPauseIntegration(...args),
+    resumeIntegration: (...args: unknown[]) => mockResumeIntegration(...args),
     getConnector: (...args: unknown[]) => {
       const transport = mockGetConnector(...args)
       return transport ? mockChatIntegration(transport) : undefined
@@ -78,7 +88,6 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
     getActiveIntegrationIds: (...args: unknown[]) => mockGetActiveIntegrationIds(...args),
     ensureSession: (...args: unknown[]) => mockEnsureSession(...args),
     getDefinition: (...args: unknown[]) => mockGetConnectorClass(...args),
-    describeTarget: async (provider: string, externalId: string) => ({ type: (await mockGetConnectorClass(provider))?.classifyChatId?.({ chatId: externalId }) }),
     integrationCreated: vi.fn(),
   },
 }))
@@ -100,6 +109,17 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
 
 const mockCaptureException = vi.fn()
 
+// A host with a webhook relay and a team directory that creates apps, when a test turns them on.
+const setupHost = vi.hoisted(() => ({ relay: false, directory: null as { directoryId: string; workspace: string } | null }))
+vi.mock('@shared/lib/webhook-relay', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/webhook-relay')>()
+  return { ...actual, getWebhookRelay: () => setupHost.relay ? { snapshot: () => ({ available: true }) } : actual.getWebhookRelay() }
+})
+vi.mock('@shared/lib/team-directory/provisioning', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/team-directory/provisioning')>()),
+  findProvisioner: async () => setupHost.directory,
+}))
+
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
 }))
@@ -112,11 +132,22 @@ vi.mock('fs', () => ({
   promises: {
     appendFile: (...args: unknown[]) => mockAppendFile(...args),
     mkdir: vi.fn(),
+    // No session metadata yet: the delivery reads none.
+    readFile: vi.fn(async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    }),
   },
 }))
 
 import xAgentChat from './x-agent-chat'
+import { chatDefinitions } from '@shared/lib/chat-integrations/definitions'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { answerSetupRequests } from '@shared/lib/agent-integrations/setup-request'
+import type { AgentIntegrationRecord } from '@shared/lib/agent-integrations/types'
+import { z } from 'zod'
+
+const FIXED_TIME = new Date('2026-11-03T12:00:00Z')
 
 function createApp() {
   const app = new Hono()
@@ -178,15 +209,18 @@ describe('x-agent chat route', () => {
     mockValidateProxyToken.mockResolvedValue('agent-one')
     mockGetChatIntegration.mockReturnValue(createIntegration())
     mockListChatIntegrations.mockReturnValue([createIntegration()])
-    mockListAgentIntegrationSessions.mockReturnValue([
-      { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
+    mockListActiveAgentIntegrationSessions.mockReturnValue([
+      { externalChatId: 'chat-1', displayName: 'General', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
     ])
     mockGetAgentIntegrationSessionBySessionId.mockReturnValue(null)
     mockGetConnector.mockReturnValue(connector)
     mockGetConnectorClass.mockResolvedValue(undefined)
     mockGetActiveIntegrationIds.mockReturnValue(['integration-1'])
     mockEnsureSession.mockResolvedValue('session-1')
-    mockEnsureRunning.mockResolvedValue({ sendMessage: containerSendMessage })
+    mockEnsureRunning.mockResolvedValue({
+      sendMessage: containerSendMessage,
+      subscribeToStream: vi.fn(() => ({ unsubscribe: vi.fn(), ready: Promise.resolve() })),
+    })
     mockAppendFile.mockResolvedValue(undefined)
     mockExistsSync.mockReturnValue(false)
     vi.spyOn(Math, 'random').mockReturnValue(0)
@@ -228,12 +262,37 @@ describe('x-agent chat route', () => {
     expect(mockAddIntegration).toHaveBeenCalledExactlyOnceWith('created-imessage')
   })
 
+  it("records the agent's first owner as the creator of an integration the agent adds", async () => {
+    vi.stubEnv('AUTH_MODE', 'true')
+    try {
+      for (const [id, email] of [['user-dana', 'dana@example.com'], ['user-lee', 'lee@example.com']]) {
+        testSqlite.prepare('INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 1, 0, 0)').run(id, id, email)
+      }
+      const acl = testSqlite.prepare('INSERT INTO agent_acl (id, user_id, agent_slug, role, created_at) VALUES (?, ?, ?, ?, ?)')
+      acl.run('acl-2', 'user-lee', 'agent-one', 'owner', 2000)
+      acl.run('acl-1', 'user-dana', 'agent-one', 'owner', 1000)
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ token: 'issued-token' })))
+      mockCreateChatIntegration.mockResolvedValue('created-imessage')
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-imessage', provider: 'imessage', status: 'active' }))
+
+      const response = await app.request('/api/x-agent/chat/add', {
+        method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'imessage', config: { phoneNumber: '+15555550100', code: '123456' } }),
+      })
+
+      expect(response.status).toBe(201)
+      expect(mockCreateChatIntegration).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentSlug: 'agent-one', createdByUserId: 'user-dana' }))
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('persists a provider-prepared disconnected status without starting the runtime', async () => {
     agentIntegrationRegistry.register({
       definition: { provider: 'test-agent-setup', name: 'Test', family: 'chat', managementAccess: 'user', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },
       policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
       create: async () => { throw new Error('not needed') },
-      setup: { allowAgentCreation: true, prepare: async () => ({ config: { prepared: true }, status: 'disconnected' }) },
+      setup: { prepare: async () => ({ config: { prepared: true }, status: 'disconnected' }) },
     })
     mockCreateChatIntegration.mockResolvedValue('created-pending')
     mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-pending', provider: 'test-agent-setup', status: 'disconnected' }))
@@ -247,12 +306,148 @@ describe('x-agent chat route', () => {
     expect(await response.json()).toMatchObject({ status: 'disconnected' })
   })
 
-  it('lists integrations with only active chat sessions', async () => {
-    mockListAgentIntegrationSessions.mockReturnValue([
-      { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
-      { externalChatId: 'chat-archived', displayName: 'Old thread', archivedAt: '2026-01-01T00:00:00.000Z' },
-    ])
+  describe('a provider the agent sets up in its browser', () => {
+    const provider = 'test-agent-oauth'
+    const post = (route: string, body: Record<string, unknown>) => app.request(`/api/x-agent/chat/${route}`, {
+      method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    const run = vi.fn()
+    const callback = vi.fn()
 
+    beforeEach(() => {
+      run.mockResolvedValue({ url: 'https://provider.example/authorize?state=s1' })
+      if (agentIntegrationRegistry.getDefinition(provider)) return
+      agentIntegrationRegistry.register({
+        definition: { provider, name: 'OAuth Test', family: 'task-manager', managementAccess: 'owner', capabilities: [], settings: [], setup: { kind: 'private-oauth-app', credentialFields: [] } },
+        policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
+        create: async () => { throw new Error('not needed') },
+        setup: {
+          agentGuide: 'Create the app in your browser, then authorize it.',
+          agentNextStep: record => `Create the app for ${record.id}`,
+          prepare: async (_input, context) => ({ config: { redirectUri: context.callbackUrl }, status: 'disconnected' }),
+          authorize: { inputSchema: z.object({ clientId: z.string() }).strict(), run: (...args) => run(...args) },
+          callback: (...args) => callback(...args),
+        },
+      })
+    })
+
+    it('creates the installation on the address the container calls from, with its next step', async () => {
+      mockCreateChatIntegration.mockResolvedValue('oauth-1')
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider, status: 'disconnected' }))
+
+      const response = await app.request('http://host.docker.internal:3000/api/x-agent/chat/add', {
+        method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, name: 'Bot' }),
+      })
+
+      expect(response.status).toBe(201)
+      expect(await response.json()).toMatchObject({ id: 'oauth-1', status: 'disconnected', nextStep: 'Create the app for oauth-1' })
+      expect(mockCreateChatIntegration).toHaveBeenCalledWith(expect.objectContaining({
+        provider, config: { redirectUri: `http://host.docker.internal:3000/api/agent-integrations/providers/${provider}/callback` },
+      }))
+      expect(mockAddIntegration).not.toHaveBeenCalled()
+    })
+
+    it('hands the agent its authorization link', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider, status: 'disconnected' }))
+
+      const response = await post('authorize', { integration_id: 'oauth-1', config: { clientId: 'client' } })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ url: 'https://provider.example/authorize?state=s1' })
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ id: 'oauth-1' }), { clientId: 'client' }, expect.objectContaining({ agentSlug: 'agent-one' }))
+      expect(mockPauseIntegration).toHaveBeenCalledWith('oauth-1')
+    })
+
+    it('authorizes only the caller\'s own installations', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-2', agentSlug: 'agent-two', provider }))
+      expect((await post('authorize', { integration_id: 'oauth-2' })).status).toBe(404)
+      expect(run).not.toHaveBeenCalled()
+    })
+
+    it('lists every provider with how the agent sets it up', async () => {
+      const response = await post('providers', {})
+
+      expect(response.status).toBe(200)
+      const { providers, webhookRelay } = await response.json() as { providers: Array<{ provider: string; guide?: string; unavailable?: string }>; webhookRelay: boolean }
+      expect(webhookRelay).toBe(false)
+      expect(providers.find(listed => listed.provider === provider)).toEqual({ provider, name: 'OAuth Test', guide: 'Create the app in your browser, then authorize it.' })
+      // Every registered provider is there: none is kept from the agent.
+      expect(providers.map(listed => listed.provider).sort()).toEqual(agentIntegrationRegistry.listDefinitions().map(definition => definition.provider).sort())
+      for (const listed of providers) expect(listed.guide ?? listed.unavailable).toBeTruthy()
+    })
+
+    it('marks a provider whose app the user can create in one click', async () => {
+      setupHost.relay = true
+      setupHost.directory = { directoryId: 'directory-1', workspace: 'Acme' }
+      try {
+        const { providers } = await (await post('providers', {})).json() as { providers: Array<{ provider: string; oneClickWorkspace?: string }> }
+        expect(providers.find(listed => listed.provider === 'slack')?.oneClickWorkspace).toBe('Acme')
+        // This one can't receive webhooks, so no directory creates its app.
+        expect(providers.find(listed => listed.provider === provider)).not.toHaveProperty('oneClickWorkspace')
+      } finally {
+        setupHost.relay = false
+        setupHost.directory = null
+      }
+    })
+
+    it('completes the provider callback from the address the browser was sent to', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider, status: 'active' }))
+      callback.mockResolvedValue({ integrationId: 'oauth-1' })
+
+      const response = await post('complete-authorization', {
+        integration_id: 'oauth-1',
+        url: `http://localhost:47891/api/agent-integrations/providers/${provider}/callback?state=s1&code=c1&installation_id=7`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ status: 'active' })
+      expect(callback).toHaveBeenCalledWith({ state: 's1', code: 'c1', error: undefined, parameters: { state: 's1', code: 'c1', installation_id: '7' } })
+      expect(mockResumeIntegration).toHaveBeenCalledWith('oauth-1')
+    })
+
+    it('passes a further provider step back to the agent', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider }))
+      callback.mockResolvedValue({ redirectUrl: 'https://provider.example/install?state=s1' })
+
+      const response = await post('complete-authorization', { integration_id: 'oauth-1', url: `http://x/api/agent-integrations/providers/${provider}/callback?state=s1&code=c1` })
+
+      expect(await response.json()).toEqual({ status: 'continue', url: 'https://provider.example/install?state=s1' })
+      expect(mockResumeIntegration).not.toHaveBeenCalled()
+    })
+
+    it('refuses addresses that are not this provider\'s callback, and another installation\'s authorization', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider }))
+      const notCallback = await post('complete-authorization', { integration_id: 'oauth-1', url: 'https://evil.example/steal?state=s1&code=c1' })
+      expect(notCallback.status).toBe(400)
+      expect(callback).not.toHaveBeenCalled()
+
+      callback.mockResolvedValue({ integrationId: 'someone-else' })
+      const other = await post('complete-authorization', { integration_id: 'oauth-1', url: `http://x/api/agent-integrations/providers/${provider}/callback?state=s2&code=c2` })
+      expect(other.status).toBe(400)
+      expect(mockResumeIntegration).not.toHaveBeenCalled()
+    })
+  })
+
+  it('answers a setup the agent handed to the user when that provider connects', async () => {
+    const fetch = vi.fn(async (_path: string, _init?: RequestInit) => Response.json({ success: true }))
+    mockEnsureRunning.mockResolvedValue({ fetch })
+    const inputs = agentRegistry.get('agent-one').inputs
+    const ask = (id: string, provider: string) => inputs.register({ id, kind: 'integration_setup', scope: { sessionId: 'session-9' }, blocking: true, payload: { provider } })
+    await ask('tool-linear', 'linear')
+    await ask('tool-github', 'github')
+
+    await answerSetupRequests({ id: 'integration-9', agentSlug: 'agent-one', provider: 'linear' } as AgentIntegrationRecord)
+
+    expect(fetch).toHaveBeenCalledOnce()
+    const [path, init] = fetch.mock.calls[0]
+    expect(path).toBe('/inputs/tool-linear/resolve')
+    expect(JSON.parse(String(init?.body)).value).toContain('integration ID: integration-9')
+    expect(await inputs.get('tool-linear')).toBeNull()
+    expect(await inputs.get('tool-github')).not.toBeNull()
+    await inputs.resolve('tool-github', 'cancelled')
+  })
+
+  it('lists integrations with only active chat sessions', async () => {
     const res = await app.request('http://localhost/api/x-agent/chat/list', {
       method: 'POST',
       headers: { Authorization: 'Bearer good-token' },
@@ -270,16 +465,18 @@ describe('x-agent chat route', () => {
       }],
     })
     expect(mockListChatIntegrations).toHaveBeenCalledWith('agent-one')
+    // Archived rows are left out by the query, not by the route.
+    expect(mockListActiveAgentIntegrationSessions).toHaveBeenCalledWith('integration-1')
   })
 
   it('labels chats and advertises capabilities from the connector class statics', async () => {
     mockGetConnectorClass.mockResolvedValue({
       capabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
-      classifyChatId: (chat: { chatId: string }) => (chat.chatId.startsWith('D') ? 'dm' : chat.chatId.includes('|') ? 'thread' : 'channel'),
     })
-    mockListAgentIntegrationSessions.mockReturnValue([
-      { externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null },
-      { externalChatId: 'C0BBB222|123.456', displayName: '#office', archivedAt: null },
+    mockListActiveAgentIntegrationSessions.mockReturnValue([
+      { externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
+      { externalChatId: 'C0BBB222|123.456', displayName: '#office — Nov 2, 3:04 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
+      { externalChatId: 'C0BBB222|123.789', displayName: '#office — Nov 2, 3:09 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
     ])
 
     const res = await app.request('http://localhost/api/x-agent/chat/list', {
@@ -292,8 +489,29 @@ describe('x-agent chat route', () => {
     expect(body.integrations[0].capabilities).toEqual(['list_users', 'list_channels', 'dm_by_user_id'])
     expect(body.integrations[0].chats).toEqual([
       { chatId: 'D0AAA111', displayName: 'Iddo Gino', type: 'dm' },
-      { chatId: 'C0BBB222|123.456', displayName: '#office', type: 'thread' },
+      { chatId: 'C0BBB222', displayName: '#office', type: 'channel', threads: [
+        { chatId: 'C0BBB222|123.456', displayName: '#office — Nov 2, 3:04 PM', type: 'thread' },
+        { chatId: 'C0BBB222|123.789', displayName: '#office — Nov 2, 3:09 PM', type: 'thread' },
+      ] },
     ])
+  })
+
+  it('sends without a chat_id to the one channel whose threads are the only active chats', async () => {
+    mockListActiveAgentIntegrationSessions.mockReturnValue([
+      { externalChatId: 'C0DEALS|1000.001', displayName: '#deals — Nov 2, 3:04 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
+      { externalChatId: 'C0DEALS|1000.002', displayName: '#deals — Nov 2, 3:09 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
+    ])
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Weekly digest' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(connector.sendMessage).toHaveBeenCalledWith('C0DEALS', { text: 'Weekly digest' })
+    // The channel has no session of its own, so none is opened just to hold the note.
+    expect(mockEnsureSession).not.toHaveBeenCalled()
   })
 
   it('does not send through integrations owned by another agent', async () => {
@@ -341,8 +559,37 @@ describe('x-agent chat route', () => {
       'session-1',
       '[SYSTEM] A message was sent to the user on your behalf via chat integration:\n[Internal context: Asked from a scheduled task]\n\nShip the update',
       undefined,
-      { shouldQuery: false },
+      { shouldQuery: false, preserveRuntime: true },
     )
+  })
+
+  it('reports why a send failed without the message, and tells the agent why and what was not sent', async () => {
+    const notInChannel = new Error('An API error occurred: not_in_channel')
+    connector.sendMessage.mockRejectedValue(notInChannel)
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Ship the update' }),
+    })
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Not sent (An API error occurred: not_in_channel): Ship the update' })
+    expect(mockCaptureException).toHaveBeenCalledWith(notInChannel, expect.anything())
+  })
+
+  it('answers the agent when the send runs out of time while a post is still in flight', async () => {
+    immediateTimeout()
+    connector.sendMessage.mockReturnValue(new Promise(() => {}))
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Ship the update' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Ship the update' })
   })
 
   it('falls back to appending JSONL when the live container cannot be notified', async () => {
@@ -442,6 +689,51 @@ describe('x-agent chat route', () => {
 
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toContain('post it twice')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('lets a thread session also send a takeaway to its own thread or another thread', async () => {
+    immediateTimeout()
+    mockGetConnectorClass.mockResolvedValue(chatDefinitions.slack)
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'C1|100.1', displayName: null, archivedAt: null,
+    })
+
+    for (const chat_id of [undefined, 'C1|100.1', 'C1|200.2']) {
+      const res = await sendRequest({ message: 'Decision: we pass on Acme.', chat_id, also_send_to_channel: true, session_id: 'caller-session' })
+      expect(res.status).toBe(200)
+    }
+
+    expect(connector.sendMessage.mock.calls).toEqual([
+      ['C1|100.1', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+      ['C1|100.1', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+      ['C1|200.2', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+    ])
+    expect(mockEnsureSession.mock.calls.map(([, chatId]) => chatId)).toEqual(['C1|200.2'])
+  })
+
+  it('refuses also_send_to_channel outside a thread', async () => {
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['thread_broadcast'] })
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'D1', displayName: null, archivedAt: null,
+    })
+
+    for (const target of [{}, { chat_id: 'C1' }, { chat_id: 'C1|' }, { user_id: 'U1' }]) {
+      const res = await sendRequest({ ...target, also_send_to_channel: true, session_id: 'caller-session' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('only for a thread in a channel')
+    }
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses also_send_to_channel on providers without thread_broadcast, without touching the connector', async () => {
+    mockGetConnector.mockReturnValue(undefined)
+
+    const res = await sendRequest({ chat_id: 'C1|100.1', also_send_to_channel: true })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('does not support also_send_to_channel')
+    expect(mockAddIntegration).not.toHaveBeenCalled()
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 

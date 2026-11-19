@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { volumeFolderNameSchema } from './volume-folders-schema'
 
 /** Drive IDs are opaque. The check keeps anything else out of queries built from them. */
 export const driveIdSchema = z.string().regex(/^[A-Za-z0-9_-]+$/, 'Invalid Google Drive ID')
@@ -54,3 +55,4 @@ export const driveErrorSchema = z.object({
   error: z.object({ errors: z.array(z.object({ reason: z.string().optional() })).optional() }).optional(),
 })
 export const googleDriveBrowseSchema = z.object({ accountId: z.string().min(1), folderId: driveIdSchema.optional() })
+export const googleDriveCreateFolderSchema = z.object({ accountId: z.string().min(1), folderId: driveIdSchema, name: volumeFolderNameSchema })

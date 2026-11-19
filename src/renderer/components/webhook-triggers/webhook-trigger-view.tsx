@@ -218,7 +218,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
         </PopoverTrigger>
         <PopoverContent align="end" className="w-44 p-1">
           <button
-            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+            className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
             onClick={() => {
               setSettingsOpen(false)
               setDeleteDialogOpen(true)
@@ -399,9 +399,12 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
           <RuntimeOptionsCard
             agentSlug={agentSlug}
-            model={trigger.model ?? null}
-            effort={trigger.effort ?? null}
-            speed={trigger.speed ?? null}
+            stored={{
+              llmProviderId: trigger.llmProviderId ?? null,
+              model: trigger.model ?? null,
+              effort: trigger.effort ?? null,
+              speed: trigger.speed ?? null,
+            }}
             disabled={!canCancel || !isActive}
             onUpdate={(options) => {
               updateRuntimeOptions.mutate({ triggerId, agentSlug, ...options })

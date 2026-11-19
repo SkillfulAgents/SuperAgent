@@ -582,5 +582,281 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1791852666500,
     "hash": "509e144ec0676c120491a0a92af8f5d94780b0930658d88b80472d1748f89f0b"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `todos` ADD `attachments` text DEFAULT '[]' NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791910293234,
+    "hash": "9d13dd97eda5eafbcfce764cef25fd88b30999af8969a83b62999e392ce56f21"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `agent_volumes` ADD `read_only` integer DEFAULT false NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791924124387,
+    "hash": "51ec4cbbcee73557e8d2840d2d286a03279a78dd6b5d29e7d51f23ed7e943b98"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_integration_meetings` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`integration_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`meeting_url` text NOT NULL,\n\t`platform` text NOT NULL,\n\t`bot_name` text NOT NULL,\n\t`mode` text DEFAULT 'voice' NOT NULL,\n\t`bot_id` text,\n\t`status` text DEFAULT 'requested' NOT NULL,\n\t`status_detail` text,\n\t`session_id` text,\n\t`context` text,\n\t`participant_token_hash` text NOT NULL,\n\t`created_by_user_id` text,\n\t`requested_at` integer NOT NULL,\n\t`joined_at` integer,\n\t`ended_at` integer,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `agent_integration_meetings_integration_idx` ON `agent_integration_meetings` (`integration_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_session_idx` ON `agent_integration_meetings` (`agent_slug`,`session_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_status_idx` ON `agent_integration_meetings` (`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792093164911,
+    "hash": "3a227888890cbbc01667d8ecaed1a7604e1830fb29d0148e6e92dc5a5ba5b3de"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `proxy_rule_versions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`rule_id` text NOT NULL,\n\t`version` integer NOT NULL,\n\t`name` text NOT NULL,\n\t`effect` text NOT NULL,\n\t`description` text NOT NULL,\n\t`restatement` text NOT NULL,\n\t`patterns` text NOT NULL,\n\t`code` text NOT NULL,\n\t`tests` text NOT NULL,\n\t`warnings` text NOT NULL,\n\t`tool_schema_hash` text,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`rule_id`) REFERENCES `proxy_rules`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `proxy_rule_versions_unique` ON `proxy_rule_versions` (`rule_id`,`version`);",
+      "\nCREATE TABLE `proxy_rules` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`kind` text NOT NULL,\n\t`account_id` text,\n\t`mcp_id` text,\n\t`agent_slug` text,\n\t`created_by` text NOT NULL,\n\t`created_by_agent_slug` text,\n\t`current_version_id` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`deleted_at` integer,\n\tFOREIGN KEY (`account_id`) REFERENCES `connected_accounts`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`mcp_id`) REFERENCES `remote_mcp_servers`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"proxy_rules_target_check\" CHECK((\"proxy_rules\".\"kind\" = 'api' and \"proxy_rules\".\"account_id\" is not null and \"proxy_rules\".\"mcp_id\" is null) or (\"proxy_rules\".\"kind\" = 'mcp' and \"proxy_rules\".\"mcp_id\" is not null and \"proxy_rules\".\"account_id\" is null))\n);\n",
+      "\nCREATE INDEX `proxy_rules_account_idx` ON `proxy_rules` (`account_id`);",
+      "\nCREATE INDEX `proxy_rules_mcp_idx` ON `proxy_rules` (`mcp_id`);",
+      "\nALTER TABLE `mcp_audit_log` ADD `rule_version_id` text;",
+      "\nALTER TABLE `mcp_audit_log` ADD `rule_outcomes` text;",
+      "\nALTER TABLE `proxy_audit_log` ADD `rule_version_id` text;",
+      "\nALTER TABLE `proxy_audit_log` ADD `rule_outcomes` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1792098812435,
+    "hash": "e5fea3fe1d8a068040f3db42f3826bc027eef61e032a262fbdfe88b8f05c3c36"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `notifications` ADD `recipient_user_id` text;",
+      "\nALTER TABLE `notifications` ADD `message_uuid` text;",
+      "\nCREATE UNIQUE INDEX `notifications_message_recipient_unique` ON `notifications` (`message_uuid`,`recipient_user_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792435823425,
+    "hash": "2839f95efe6f7fdd06bbf0e4dd0f5c1570fc0466f32ae73c26d59851f12a3ee2"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `volume_definitions` ADD `global_access` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1792530753728,
+    "hash": "120b750015a5321de599a2ce92bb3160d57bdfa308b901568816b27a503ff0ff"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_browser_accounts` (\n\t`agent_slug` text NOT NULL,\n\t`account_id` text NOT NULL,\n\t`granted_by` text,\n\t`applied_session_version` integer,\n\t`created_at` integer NOT NULL,\n\t`last_used_at` integer,\n\tPRIMARY KEY(`agent_slug`, `account_id`),\n\tFOREIGN KEY (`agent_slug`) REFERENCES `agents`(`slug`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`granted_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE INDEX `agent_browser_accounts_account_idx` ON `agent_browser_accounts` (`account_id`);",
+      "\nCREATE TABLE `browser_account_sessions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`account_id` text NOT NULL,\n\t`browser_type` text NOT NULL,\n\t`bundle` text NOT NULL,\n\t`version` integer DEFAULT 1 NOT NULL,\n\t`captured_at` integer NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `browser_account_sessions_account_type_unique` ON `browser_account_sessions` (`account_id`,`browser_type`);",
+      "\nCREATE TABLE `browser_accounts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`site` text NOT NULL,\n\t`username` text NOT NULL,\n\t`username_key` text NOT NULL,\n\t`label` text,\n\t`origin` text NOT NULL,\n\t`via_account_id` text,\n\t`secrets` text,\n\t`parts` text DEFAULT '[]' NOT NULL,\n\t`revision` integer DEFAULT 1 NOT NULL,\n\t`rejected_at` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`last_used_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`via_account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE UNIQUE INDEX `browser_accounts_owner_site_username_unique` ON `browser_accounts` (coalesce(`user_id`, ''),`site`,`username_key`);",
+      "\nCREATE INDEX `browser_accounts_user_site_idx` ON `browser_accounts` (`user_id`,`site`);",
+      "\nCREATE INDEX `browser_accounts_via_idx` ON `browser_accounts` (`via_account_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792781899070,
+    "hash": "01e2b1213c3ad5da13957a52c4656cfb11eddcd8ea9347b9b3252697db96790d"
+  },
+  {
+    "sql": [
+      "-- Hand-written (SUP-220, SUP-222). schema.ts has always declared a cascading FK\n-- from connected_accounts, remote_mcp_servers and agent_acl to `user`, and the\n-- snapshots claim it exists, but the tables only ever got a bare `user_id`\n-- column (SQLite cannot add a FK with ALTER). Deleting a user left their\n-- accounts, MCP servers (with stored tokens and client secrets) and ACL rows\n-- behind. This rebuilds the three tables with the FK, and scopes the\n-- provider connection id's uniqueness to its provider.\n--\n-- Migrations run in one transaction, where `PRAGMA foreign_keys=OFF` is a\n-- no-op, so dropping a parent table runs its children's ON DELETE CASCADE. The\n-- children of connected_accounts and remote_mcp_servers are therefore set\n-- aside first and put back once both parents are rebuilt. Every statement\n-- leaves the foreign keys satisfied, so no check is deferred.\n--\n-- Nothing here relies on a cascade either: `drizzle-kit migrate` runs on\n-- libsql, whose migrate() turns foreign keys off, so each delete names the\n-- rows it removes and only children of surviving parents are put back.\n\n-- Non-auth mode now stores no owner (as account sync always has) instead of\n-- the 'local' sentinel, which has no user row to reference.\nUPDATE `connected_accounts` SET `user_id` = NULL WHERE `user_id` = 'local';",
+      "\nUPDATE `remote_mcp_servers` SET `user_id` = NULL WHERE `user_id` = 'local';",
+      "\n\n-- Rows whose owner is already deleted: what the cascade would have removed.\n-- Their children are left out of the copies below.\nDELETE FROM `connected_accounts` WHERE `user_id` IS NOT NULL AND `user_id` NOT IN (SELECT `id` FROM `user`);",
+      "\nDELETE FROM `remote_mcp_servers` WHERE `user_id` IS NOT NULL AND `user_id` NOT IN (SELECT `id` FROM `user`);",
+      "\nDELETE FROM `agent_acl` WHERE `user_id` NOT IN (SELECT `id` FROM `user`);",
+      "\nDELETE FROM `user_settings` WHERE `user_id` <> 'local' AND `user_id` NOT IN (SELECT `id` FROM `user`);",
+      "\n\nCREATE TABLE `__saved_agent_connected_accounts` AS SELECT * FROM `agent_connected_accounts` WHERE `connected_account_id` IN (SELECT `id` FROM `connected_accounts`);",
+      "\nCREATE TABLE `__saved_api_scope_policies` AS SELECT * FROM `api_scope_policies` WHERE `account_id` IN (SELECT `id` FROM `connected_accounts`);",
+      "\nCREATE TABLE `__saved_agent_remote_mcps` AS SELECT * FROM `agent_remote_mcps` WHERE `remote_mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);",
+      "\nCREATE TABLE `__saved_mcp_tool_policies` AS SELECT * FROM `mcp_tool_policies` WHERE `mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);",
+      "\nCREATE TABLE `__saved_proxy_rules` AS SELECT * FROM `proxy_rules` WHERE `account_id` IN (SELECT `id` FROM `connected_accounts`) OR `mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);",
+      "\nCREATE TABLE `__saved_proxy_rule_versions` AS SELECT * FROM `proxy_rule_versions` WHERE `rule_id` IN (SELECT `id` FROM `__saved_proxy_rules`);",
+      "\nDELETE FROM `proxy_rule_versions`;",
+      "\nDELETE FROM `proxy_rules`;",
+      "\nDELETE FROM `agent_connected_accounts`;",
+      "\nDELETE FROM `api_scope_policies`;",
+      "\nDELETE FROM `agent_remote_mcps`;",
+      "\nDELETE FROM `mcp_tool_policies`;",
+      "\n\nCREATE TABLE `__new_connected_accounts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`provider_connection_id` text NOT NULL,\n\t`provider_name` text DEFAULT 'composio' NOT NULL,\n\t`toolkit_slug` text NOT NULL,\n\t`display_name` text NOT NULL,\n\t`status` text DEFAULT 'active' NOT NULL,\n\t`user_id` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nINSERT INTO `__new_connected_accounts`(\"id\", \"provider_connection_id\", \"provider_name\", \"toolkit_slug\", \"display_name\", \"status\", \"user_id\", \"created_at\", \"updated_at\") SELECT \"id\", \"provider_connection_id\", \"provider_name\", \"toolkit_slug\", \"display_name\", \"status\", \"user_id\", \"created_at\", \"updated_at\" FROM `connected_accounts`;",
+      "\nDROP TABLE `connected_accounts`;",
+      "\nALTER TABLE `__new_connected_accounts` RENAME TO `connected_accounts`;",
+      "\nCREATE INDEX `connected_accounts_userId_idx` ON `connected_accounts` (`user_id`);",
+      "\nCREATE UNIQUE INDEX `connected_accounts_provider_connection_unique` ON `connected_accounts` (`provider_name`,`provider_connection_id`);",
+      "\n\nCREATE TABLE `__new_remote_mcp_servers` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`name` text NOT NULL,\n\t`url` text NOT NULL,\n\t`user_id` text,\n\t`auth_type` text DEFAULT 'none' NOT NULL,\n\t`access_token` text,\n\t`refresh_token` text,\n\t`token_expires_at` integer,\n\t`oauth_token_endpoint` text,\n\t`oauth_client_id` text,\n\t`oauth_client_secret` text,\n\t`oauth_resource` text,\n\t`tools_json` text,\n\t`tools_discovered_at` integer,\n\t`status` text DEFAULT 'active' NOT NULL,\n\t`error_message` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nINSERT INTO `__new_remote_mcp_servers`(\"id\", \"name\", \"url\", \"user_id\", \"auth_type\", \"access_token\", \"refresh_token\", \"token_expires_at\", \"oauth_token_endpoint\", \"oauth_client_id\", \"oauth_client_secret\", \"oauth_resource\", \"tools_json\", \"tools_discovered_at\", \"status\", \"error_message\", \"created_at\", \"updated_at\") SELECT \"id\", \"name\", \"url\", \"user_id\", \"auth_type\", \"access_token\", \"refresh_token\", \"token_expires_at\", \"oauth_token_endpoint\", \"oauth_client_id\", \"oauth_client_secret\", \"oauth_resource\", \"tools_json\", \"tools_discovered_at\", \"status\", \"error_message\", \"created_at\", \"updated_at\" FROM `remote_mcp_servers`;",
+      "\nDROP TABLE `remote_mcp_servers`;",
+      "\nALTER TABLE `__new_remote_mcp_servers` RENAME TO `remote_mcp_servers`;",
+      "\n\nINSERT INTO `agent_connected_accounts` SELECT * FROM `__saved_agent_connected_accounts`;",
+      "\nINSERT INTO `api_scope_policies` SELECT * FROM `__saved_api_scope_policies`;",
+      "\nINSERT INTO `agent_remote_mcps` SELECT * FROM `__saved_agent_remote_mcps`;",
+      "\nINSERT INTO `mcp_tool_policies` SELECT * FROM `__saved_mcp_tool_policies`;",
+      "\nINSERT INTO `proxy_rules` SELECT * FROM `__saved_proxy_rules`;",
+      "\nINSERT INTO `proxy_rule_versions` SELECT * FROM `__saved_proxy_rule_versions`;",
+      "\nDROP TABLE `__saved_agent_connected_accounts`;",
+      "\nDROP TABLE `__saved_api_scope_policies`;",
+      "\nDROP TABLE `__saved_agent_remote_mcps`;",
+      "\nDROP TABLE `__saved_mcp_tool_policies`;",
+      "\nDROP TABLE `__saved_proxy_rules`;",
+      "\nDROP TABLE `__saved_proxy_rule_versions`;",
+      "\n\nCREATE TABLE `__new_agent_acl` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`role` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nINSERT INTO `__new_agent_acl`(\"id\", \"user_id\", \"agent_slug\", \"role\", \"created_at\") SELECT \"id\", \"user_id\", \"agent_slug\", \"role\", \"created_at\" FROM `agent_acl`;",
+      "\nDROP TABLE `agent_acl`;",
+      "\nALTER TABLE `__new_agent_acl` RENAME TO `agent_acl`;",
+      "\nCREATE UNIQUE INDEX `agent_acl_user_agent_unique` ON `agent_acl` (`user_id`,`agent_slug`);",
+      "\nCREATE INDEX `agent_acl_agent_slug_idx` ON `agent_acl` (`agent_slug`);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793208365492,
+    "hash": "2c09aa6052f6f77e0b64de33853598c4420a21aa2d310d299f44b11b1693111d"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `chat_integrations` ADD `version` integer DEFAULT 0 NOT NULL;",
+      "\n-- Hand-written: drizzle-kit does not model triggers. Every update of a row that\n-- does not raise its version itself moves it by one, in the same statement, so\n-- no writer can leave a changed row at an old version. A migration that rebuilds\n-- this table drops the trigger; integration-row-version.test.ts fails until it\n-- is created again.\nCREATE TRIGGER `chat_integrations_version_bump` AFTER UPDATE ON `chat_integrations` FOR EACH ROW WHEN NEW.`version` <= OLD.`version` BEGIN UPDATE `chat_integrations` SET `version` = OLD.`version` + 1 WHERE `id` = NEW.`id`; END;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793838676102,
+    "hash": "9bbcfdae2f84b66afa662edee0c052af30c5fabdec6ad3169fec8f0201a0c0fb"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `app_records` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` text NOT NULL,\n\t`revision` integer NOT NULL,\n\t`updated_at` integer NOT NULL\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793840639365,
+    "hash": "773815730f63f226f64dd501cff54a9a75589b604f237b97f210d3a108d5faa5"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `team_directories` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`provider` text NOT NULL,\n\t`tenant_id` text NOT NULL,\n\t`tenant_name` text NOT NULL,\n\t`credentials` text NOT NULL,\n\t`revision` integer DEFAULT 1 NOT NULL,\n\t`status` text DEFAULT 'active' NOT NULL,\n\t`error_message` text,\n\t`created_by_user_id` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`created_by_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE UNIQUE INDEX `team_directories_provider_tenant_unique` ON `team_directories` (`provider`,`tenant_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794169367052,
+    "hash": "dd3f35ee6a917dce7b6bf20edbada511911eaca7a2bd40917a23f3e3c7b90ab5"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `user` ADD `status` text DEFAULT 'active' NOT NULL;",
+      "\nALTER TABLE `user` ADD `invited_by_user_id` text;",
+      "\nALTER TABLE `user` ADD `directory_provider` text;",
+      "\nALTER TABLE `user` ADD `directory_tenant_id` text;",
+      "\nALTER TABLE `user` ADD `directory_remote_id` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794181010721,
+    "hash": "60f97691dde6e559399e2e3d2f0db962c3d13672349219e264aa7a3489727339"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `team_directories` ADD `provisioning_credentials` text;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_revision` integer DEFAULT 0 NOT NULL;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_status` text;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_error` text;",
+      "\nALTER TABLE `team_directories` ADD `directory_app` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794182726903,
+    "hash": "4a2c26f37c2e6aee059d42d42d98e38f4513afa1fdefee3f9600896ec4151401"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_sessions` (\n\t`agent_slug` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`metadata` text,\n\t`transcript_mtime_ms` real,\n\t`transcript_birthtime_ms` real,\n\t`transcript_size` integer,\n\tPRIMARY KEY(`agent_slug`, `session_id`)\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1794261056427,
+    "hash": "00ee07e7ef2c3cfc242f056c6d8da8fd74ad5f00a0809ec22bf057f0b283710a"
+  },
+  {
+    "sql": [
+      "CREATE INDEX `chat_integration_sessions_session_id_idx` ON `chat_integration_sessions` (`session_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794451767741,
+    "hash": "2c87583b4f97fb0437d89d54aaecc08d1d02381685edfc04c15ebaebde39e8c3"
+  },
+  {
+    "sql": [
+      "DROP INDEX `audit_log_object_idx`;",
+      "\nCREATE INDEX `audit_log_object_created_at_idx` ON `audit_log` (`object`,`created_at`);",
+      "\nDROP INDEX `chat_integration_sessions_integration_id_idx`;",
+      "\nCREATE INDEX `chat_integration_sessions_integration_chat_idx` ON `chat_integration_sessions` (`integration_id`,`external_chat_id`);",
+      "\nDROP INDEX `notifications_agent_slug_is_read_idx`;",
+      "\nCREATE INDEX `notifications_agent_read_type_idx` ON `notifications` (`agent_slug`,`is_read`,`type`,`recipient_user_id`,`session_id`);",
+      "\nCREATE INDEX `notifications_agent_created_at_idx` ON `notifications` (`agent_slug`,`created_at`);",
+      "\nCREATE INDEX `scheduled_tasks_agent_slug_status_idx` ON `scheduled_tasks` (`agent_slug`,`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794868843117,
+    "hash": "d4ce1cca596492dca6fbeaf7f86ba65f0471fa7e9950d4e6906753b058969861"
+  },
+  {
+    "sql": [
+      "-- Generated, then one statement added by hand (the UPDATE below).\n-- `todos.llm_provider_id` was a bare column: unlike scheduled_tasks,\n-- webhook_triggers and chat_integrations it had no reference to\n-- `llm_connections`, so deleting a connection left drafts pointing at it.\n-- SQLite cannot add a FK with ALTER, so the table is rebuilt.\n--\n-- Migrations run in one transaction, where `PRAGMA foreign_keys=OFF` is a\n-- no-op, so the copy into the new table is checked row by row. A todo that\n-- already points at a deleted connection would fail it; those picks are\n-- cleared first, which is what ON DELETE SET NULL would have done. Nothing\n-- references `todos`, so dropping it cascades into nothing.\nUPDATE `todos` SET `llm_provider_id` = NULL WHERE `llm_provider_id` IS NOT NULL AND `llm_provider_id` NOT IN (SELECT `id` FROM `llm_connections`);",
+      "\nPRAGMA foreign_keys=OFF;",
+      "\nCREATE TABLE `__new_todos` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`title` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`agent_slug` text,\n\t`new_agent` integer DEFAULT false NOT NULL,\n\t`model` text,\n\t`llm_provider_id` text,\n\t`effort` text,\n\t`speed` text,\n\t`session_id` text,\n\t`status` text DEFAULT 'draft' NOT NULL,\n\t`position` real NOT NULL,\n\t`start_claim` text,\n\t`start_claimed_at` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`started_at` integer,\n\t`completed_at` integer,\n\t`attachments` text DEFAULT '[]' NOT NULL,\n\tFOREIGN KEY (`llm_provider_id`) REFERENCES `llm_connections`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"todos_session_check\" CHECK(\"__new_todos\".\"session_id\" is null or (\"__new_todos\".\"agent_slug\" is not null and \"__new_todos\".\"status\" <> 'draft'))\n);\n",
+      "\nINSERT INTO `__new_todos`(\"id\", \"user_id\", \"title\", \"description\", \"agent_slug\", \"new_agent\", \"model\", \"llm_provider_id\", \"effort\", \"speed\", \"session_id\", \"status\", \"position\", \"start_claim\", \"start_claimed_at\", \"created_at\", \"updated_at\", \"started_at\", \"completed_at\", \"attachments\") SELECT \"id\", \"user_id\", \"title\", \"description\", \"agent_slug\", \"new_agent\", \"model\", \"llm_provider_id\", \"effort\", \"speed\", \"session_id\", \"status\", \"position\", \"start_claim\", \"start_claimed_at\", \"created_at\", \"updated_at\", \"started_at\", \"completed_at\", \"attachments\" FROM `todos`;",
+      "\nDROP TABLE `todos`;",
+      "\nALTER TABLE `__new_todos` RENAME TO `todos`;",
+      "\nPRAGMA foreign_keys=ON;",
+      "\nCREATE INDEX `todos_user_idx` ON `todos` (`user_id`);",
+      "\nCREATE INDEX `todos_agent_session_idx` ON `todos` (`agent_slug`,`session_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1795027962529,
+    "hash": "051af179d120653b096c843fc46e8d87c83ed9b61f9dd9aba7f02d135f32fe9b"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `volume_acl` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`volume_id` text NOT NULL,\n\t`user_id` text,\n\t`role` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`volume_id`) REFERENCES `volume_definitions`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"volume_acl_role_check\" CHECK(\"volume_acl\".\"role\" = 'owner')\n);\n",
+      "\nCREATE UNIQUE INDEX `volume_acl_member_unique` ON `volume_acl` (`volume_id`,`user_id`);",
+      "\nCREATE UNIQUE INDEX `volume_acl_workspace_unique` ON `volume_acl` (`volume_id`) WHERE \"volume_acl\".\"user_id\" is null;",
+      "\nCREATE INDEX `volume_acl_user_idx` ON `volume_acl` (`user_id`);",
+      "\n-- Rebuilding a referenced parent with foreign keys enabled would cascade into its\n-- attachments. Preserve every mount identity, name, timestamp and access level.\nCREATE TABLE __drive_acl_mounts AS SELECT * FROM agent_volumes;\n",
+      "\nDELETE FROM agent_volumes;",
+      "\nCREATE TABLE `__new_volume_definitions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`visibility` text NOT NULL,\n\t`name` text NOT NULL,\n\t`type` text NOT NULL,\n\t`config` text NOT NULL,\n\t`global_access` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"volume_visibility_check\" CHECK(\"__new_volume_definitions\".\"visibility\" in ('public', 'private') and (\"__new_volume_definitions\".\"global_access\" is null or \"__new_volume_definitions\".\"visibility\" = 'public'))\n);\n",
+      "\nINSERT INTO `__new_volume_definitions`(\"id\", \"user_id\", \"visibility\", \"name\", \"type\", \"config\", \"global_access\", \"created_at\", \"updated_at\") SELECT \"id\", \"user_id\", CASE WHEN user_id IS NULL THEN 'public' ELSE 'private' END, \"name\", \"type\", \"config\", \"global_access\", \"created_at\", \"updated_at\" FROM `volume_definitions`;",
+      "\nDROP TABLE `volume_definitions`;",
+      "\nALTER TABLE `__new_volume_definitions` RENAME TO `volume_definitions`;",
+      "\nINSERT INTO agent_volumes SELECT * FROM __drive_acl_mounts;\n",
+      "\nDROP TABLE __drive_acl_mounts;",
+      "\nCREATE INDEX `volume_definitions_creator_idx` ON `volume_definitions` (`user_id`);\n",
+      "\nINSERT INTO volume_acl(id, volume_id, user_id, role, created_at)\nSELECT lower(hex(randomblob(16))), id, user_id, 'owner', created_at FROM volume_definitions;\n",
+      "\n-- Creating the definition, including create-and-attach and legacy imports, always\n-- creates its first owner in the same statement. Local drives belong to the workspace.\nCREATE TRIGGER volume_seed_owner AFTER INSERT ON volume_definitions BEGIN\n  INSERT INTO volume_acl(id, volume_id, user_id, role, created_at)\n  VALUES(lower(hex(randomblob(16))), NEW.id, NEW.user_id, 'owner', NEW.created_at);\nEND;\n",
+      "\nCREATE TRIGGER volume_workspace_owner_public BEFORE INSERT ON volume_acl\nWHEN NEW.user_id IS NULL AND EXISTS (\n  SELECT 1 FROM volume_definitions WHERE id = NEW.volume_id AND visibility = 'private'\n) BEGIN\n  SELECT RAISE(ABORT, 'A private drive requires a named owner');\nEND;\n",
+      "\nCREATE TRIGGER volume_acl_immutable_principal BEFORE UPDATE OF volume_id, user_id ON volume_acl\nWHEN NEW.volume_id IS NOT OLD.volume_id OR NEW.user_id IS NOT OLD.user_id BEGIN\n  SELECT RAISE(ABORT, 'Add an owner before removing another');\nEND;\n",
+      "\nCREATE TRIGGER volume_remove_workspace_owner AFTER UPDATE OF visibility ON volume_definitions\nWHEN NEW.visibility = 'private' AND OLD.visibility = 'public' BEGIN\n  DELETE FROM volume_acl WHERE volume_id = NEW.id AND user_id IS NULL;\nEND;\n",
+      "\n-- Also covers a user's FK cascade. Deleting the drive itself is allowed because\n-- SQLite removes the parent before running its cascading deletes.\nCREATE TRIGGER volume_keep_owner BEFORE DELETE ON volume_acl\nWHEN EXISTS (SELECT 1 FROM volume_definitions WHERE id = OLD.volume_id)\nAND NOT EXISTS (SELECT 1 FROM volume_acl WHERE volume_id = OLD.volume_id AND id <> OLD.id AND role = 'owner')\nBEGIN\n  SELECT RAISE(ABORT, 'A drive must have at least one owner');\nEND;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795041346189,
+    "hash": "59e122deaf50c4bef30c9727bd3370fd00d05832d9a18020d41d8c46e69708ff"
+  },
+  {
+    "sql": [
+      "-- Drive visibility checks the current Team Brain designation in its UPDATE.\n-- Check the other direction at the settings write too: choosing a drive and\n-- making it private in another window cannot both succeed.\nCREATE TRIGGER team_brain_public_drive_insert BEFORE INSERT ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value) AND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n",
+      "\nCREATE TRIGGER team_brain_public_drive_update BEFORE UPDATE OF value ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value)\nAND json_extract(NEW.value, '$.teamBrain.volumeId') IS NOT\n  CASE WHEN json_valid(OLD.value) THEN json_extract(OLD.value, '$.teamBrain.volumeId') END\nAND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795048855087,
+    "hash": "d0708071a2b154fbf64540385e5586487a239d5460d7b7ba8737d4f6abf4c9c0"
+  },
+  {
+    "sql": [
+      "PRAGMA foreign_keys=OFF;",
+      "\nCREATE TABLE `__new_message_author` (\n\t`id` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`user_id` text,\n\t`integration_id` text,\n\t`display` text,\n\t`author_agent_slug` text,\n\t`billed_user_id` text,\n\t`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,\n\tPRIMARY KEY(`agent_slug`, `session_id`, `id`),\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`billed_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"message_author_author_check\" CHECK(\n    (\"__new_message_author\".\"user_id\" is not null) + (\"__new_message_author\".\"integration_id\" is not null) + (\"__new_message_author\".\"author_agent_slug\" is not null) = 1\n    and (\"__new_message_author\".\"integration_id\" is null) = (\"__new_message_author\".\"display\" is null)\n    and (\"__new_message_author\".\"billed_user_id\" is null or \"__new_message_author\".\"author_agent_slug\" is not null))\n);\n",
+      "\n-- Main has person and integration rows. The previous PR build also recorded\n-- the calling agent alongside its payer in user_id. The trailing NULL supplies\n-- the missing column on main; an existing column from * takes precedence.\nINSERT INTO `__new_message_author` (id, session_id, agent_slug, user_id, integration_id, display, author_agent_slug, billed_user_id, created_at)\nSELECT id, session_id, agent_slug, CASE WHEN author_agent_slug IS NULL THEN user_id END, integration_id, display,\n       author_agent_slug, CASE WHEN author_agent_slug IS NOT NULL THEN user_id END, created_at\nFROM (SELECT *, NULL AS author_agent_slug FROM `message_author`);\n",
+      "\nDROP TABLE `message_author`;",
+      "\nALTER TABLE `__new_message_author` RENAME TO `message_author`;",
+      "\nPRAGMA foreign_keys=ON;",
+      "\nCREATE INDEX `message_author_session_idx` ON `message_author` (`session_id`);",
+      "\nCREATE UNIQUE INDEX `message_author_integration_delivery_idx` ON `message_author` (`id`) WHERE \"message_author\".\"integration_id\" is not null;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795053244107,
+    "hash": "a7213cf3790efe8a2f872d2388f93e5e9d4574cda1bf602f4b04d80a6b91cbc5"
   }
 ]

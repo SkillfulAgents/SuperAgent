@@ -71,6 +71,10 @@ player runs on the computer the window runs on and is heard there, whichever
 Superagent the window drives (see `docs/cloud-workspace.md` § Capability
 gating).
 
+The Mac App Store build has none either: its sandbox may not reach another
+app's player, and it ships no MediaRemote adapter, whose framework is
+private. Main picks no backend there and the setting is hidden, as on Windows.
+
 Windows has no backend yet; the service reports `supported: false` and the
 setting is hidden. The path is WinRT's
 `GlobalSystemMediaTransportControlsSessionManager`, through a long-lived

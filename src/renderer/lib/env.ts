@@ -1,5 +1,6 @@
 import { buildDashboardViewPath } from '@shared/lib/dashboard-url'
-import { setActiveTarget } from './api-target'
+import { getActiveTarget, setActiveTarget } from './api-target'
+import { initFacts } from './facts'
 
 // Cache for the API base URL (fetched once from Electron main process)
 let cachedApiBaseUrl: string | null = null
@@ -14,8 +15,19 @@ let cachedApiBaseUrl: string | null = null
  *
  * Every renderer calls this, including the quick-dispatch launcher, and they all
  * get the same answer from main.
+ *
+ * Then the facts for that target (`facts.ts`), on every exit, so nothing that
+ * renders afterwards reads them unsettled.
  */
 export async function initApiBaseUrl(): Promise<void> {
+  try {
+    await settleApiTarget()
+  } finally {
+    await initFacts(getActiveTarget())
+  }
+}
+
+async function settleApiTarget(): Promise<void> {
   try {
     if (!isElectron() || !window.electronAPI?.getApiUrl) {
       // Web: same-origin, and no cloud target to choose.

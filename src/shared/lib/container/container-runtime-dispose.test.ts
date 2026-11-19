@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ContainerConfig } from './types'
 
@@ -82,35 +85,14 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
-}))
-
-vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  copyChromeProfileData: vi.fn().mockReturnValue(false),
 }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => false,
+  isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
@@ -119,6 +101,7 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  remounted: async () => {},
 }))
 
 import { containerHost } from './container-host'
@@ -126,8 +109,9 @@ import { containerHost } from './container-host'
 // ============================================================================
 // A dropped runtime is inert
 //
-// The persister keeps the client a runtime handed out (stream subscriptions,
-// input settlement) and the client keeps calling the runtime's callbacks.
+// The agent's live sessions keep the client a runtime handed out (stream
+// subscriptions, input settlement) and the client keeps calling the runtime's
+// callbacks.
 // Dropping the runtime used to reset its `stopping`/`starting` guards, so a
 // container dying after an eviction — the delete route stops it through a
 // fresh runtime — ran unexpected-death recovery through the dropped one.
@@ -140,9 +124,9 @@ describe('ContainerRuntime after dropRuntime', () => {
     containerHost.dropRuntime('agent-x')
   })
 
-  it("a live runtime's client callback triggers recovery (control)", () => {
+  it("a live runtime's client callback triggers recovery (control)", async () => {
     const runtime = containerHost.runtime('agent-x')
-    runtime.getClient()
+    await runtime.getClient()
     const recover = vi.spyOn(runtime, 'handleUnexpectedDeath').mockImplementation(() => {})
 
     lastConfig!.onConnectionError!()
@@ -152,7 +136,7 @@ describe('ContainerRuntime after dropRuntime', () => {
 
   it("a dropped runtime ignores its old client's connection error and restart", async () => {
     const runtime = containerHost.runtime('agent-x')
-    runtime.getClient()
+    await runtime.getClient()
     const recover = vi.spyOn(runtime, 'handleUnexpectedDeath')
     const oldConfig = lastConfig!
 
@@ -166,14 +150,14 @@ describe('ContainerRuntime after dropRuntime', () => {
     expect(mockStop).not.toHaveBeenCalled()
   })
 
-  it('the host hands out a fresh runtime whose own callbacks still work', () => {
+  it('the host hands out a fresh runtime whose own callbacks still work', async () => {
     const dropped = containerHost.runtime('agent-x')
-    dropped.getClient()
+    await dropped.getClient()
     containerHost.dropRuntime('agent-x')
 
     const fresh = containerHost.runtime('agent-x')
     expect(fresh).not.toBe(dropped)
-    fresh.getClient()
+    await fresh.getClient()
     const recover = vi.spyOn(fresh, 'handleUnexpectedDeath').mockImplementation(() => {})
 
     lastConfig!.onConnectionError!()

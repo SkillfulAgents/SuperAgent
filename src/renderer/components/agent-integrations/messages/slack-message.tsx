@@ -21,7 +21,7 @@ export function SlackIntegrationMessage({ display, message, renderMarkdown, icon
   const sentAt = formatSentAt(sentAtOf(display, message.createdAt))
   return (
     <div className="flex w-full max-w-[560px] flex-col items-end gap-1.5" data-testid="integration-message" data-provider="slack">
-      <div className="w-full overflow-hidden rounded-xl border border-border bg-background text-left shadow-sm">
+      <div className="w-full overflow-hidden rounded-card border border-border bg-background text-left shadow-sm">
         <IntegrationEventLine display={display} iconClassName={iconClassName} className="border-b border-border bg-muted/30 px-3 py-2">
           <span className="ml-auto flex min-w-0 shrink items-center gap-1 pl-2 text-xs text-muted-foreground" data-testid="slack-message-channel">
             <ChannelLabel kind={source.kind} title={source.title} />

@@ -34,6 +34,8 @@ export interface WorkspaceFile {
   previewable: boolean
   /** Whether to draw it as the picture itself rather than as a named chip. */
   isImage: boolean
+  /** Whether its preview can take new bytes where it stands, so the drawer reloads it when the file changes. */
+  reloadsInPlace: boolean
   /** Route path for a fetch or a HEAD. Null for a folder, which has no bytes. */
   apiPath: string | null
   /** `href` that saves the file. Null for a folder. */
@@ -44,12 +46,18 @@ export interface WorkspaceFile {
 
 export interface DescribeWorkspaceFileOptions {
   /**
-   * The preview tab's cache-busting token, folded into both URLs. Only the
-   * drawer has one — everywhere else a path is either immutable or re-read on
-   * its own schedule. See `getAgentFileUrl`.
+   * Cache-busting token folded into both URLs: the drawer tab's counter, or the
+   * id of the delivery a chat image belongs to. Uploads need none, since their
+   * paths are never rewritten. See `getAgentFileUrl`.
    */
-  version?: number
+  version?: number | string
 }
+
+/**
+ * The previews that swap in new bytes without remounting. The others restart
+ * playback or lose the page on a new URL, so they reload only when reopened.
+ */
+const RELOADS_IN_PLACE: ReadonlySet<PreviewKind> = new Set(['markdown', 'text', 'csv', 'image'])
 
 /** Describe a workspace path for whichever surface is about to draw it. */
 export function describeWorkspaceFile(
@@ -70,6 +78,7 @@ export function describeWorkspaceFile(
     preview,
     previewable: preview !== null,
     isImage: isPreviewableImage(filePath),
+    reloadsInPlace: preview !== null && RELOADS_IN_PLACE.has(preview),
     // The file route serves bytes. A folder has none, and asking for one
     // returns a 404 rather than a listing, so it gets no URL at all instead of
     // one that only fails when followed.

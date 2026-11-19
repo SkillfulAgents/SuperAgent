@@ -94,3 +94,61 @@ export function describeExecFailure(err: ExecFailure, verb: string, elapsedMs: n
   const code = err.code === null || err.code === undefined ? 'unknown' : String(err.code)
   return `agent-browser ${verb} failed (exit ${code}) without output.`
 }
+
+/**
+ * The Chrome net error of a navigation the CLI reported as failed
+ * (`✗ Navigation failed: net::ERR_CONNECTION_REFUSED`), or null for any other
+ * failure. Such a navigation still commits Chrome's error page in the tab.
+ */
+export function navigationNetError(stdout: string): string | null {
+  const m = /Navigation failed: net::(ERR_[A-Z0-9_]+)/.exec(stdout)
+  return m ? m[1] : null
+}
+
+// --- WebMCP notices ------------------------------------------------------------
+
+/**
+ * agent-browser 0.36+ announces a page's WebMCP tools (site-registered tools,
+ * `document.modelContext`) on whichever command runs after the tool list
+ * changes — an `eval` included, which would break every observer read that
+ * parses eval output as JSON. The container sets AGENT_BROWSER_NO_WEBMCP=1,
+ * which turns the feature off; this strip is the backstop for a browser or
+ * CLI that announces anyway. The block has fixed delimiters: a summary line,
+ * the tools between nonce-tagged AGENT_BROWSER_PAGE_CONTENT markers, then a
+ * usage hint and, for a long catalog, a "shortened" line (0.39.1 output.rs).
+ */
+const WEBMCP_CHANGED_BLOCK =
+  /(^|\n)WebMCP tools changed: \d+\.[^\n]*\n--- AGENT_BROWSER_PAGE_CONTENT nonce=(\S+) [^\n]*---\n[\s\S]*?\n--- END_AGENT_BROWSER_PAGE_CONTENT nonce=\2 ---(?:\nFor a relevant tool, fetch its schema: [^\n]*)?(?:\nCatalog shortened; webmcp list --json retrieves all metadata\.)?(?=\n|$)/g
+const WEBMCP_STATUS_LINE =
+  /(^|\n)WebMCP (?:tools cleared; no page tools are currently available\.|state unavailable; do not reuse tools from an earlier response\.)(?=\n|$)/g
+
+export function stripWebMcpNotices(text: string): string {
+  if (!text.includes('WebMCP')) return text
+  return text.replace(WEBMCP_CHANGED_BLOCK, '$1').replace(WEBMCP_STATUS_LINE, '$1').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/**
+ * The message of a `--json` failure envelope (`{"success":false,"error":…}`),
+ * or the text unchanged when it is not one.
+ */
+export function cliJsonError(text: string): string {
+  try {
+    const parsed = JSON.parse(text.trim()) as { success?: unknown; error?: unknown }
+    if (parsed && parsed.success === false && typeof parsed.error === 'string' && parsed.error) return parsed.error
+  } catch { /* not an envelope */ }
+  return text
+}
+
+// --- Screenshot output ---------------------------------------------------------
+
+export function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, '')
+}
+
+/** The absolute .png/.jpg path in a screenshot command's text output, or the cleaned text when there is none. */
+export function extractScreenshotPath(output: string): string {
+  const clean = stripAnsi(output).trim()
+  const match = clean.match(/(\/\S+\.(?:png|jpe?g))/i)
+  return match ? match[1] : clean
+}

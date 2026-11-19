@@ -1,5 +1,23 @@
 import { describe, it, expect } from 'vitest'
-import { splitCommandArgs, buildRunCommandArgs, resolveRunCommandArgs } from './browser-command-args'
+import { splitCommandArgs, buildRunCommandArgs, resolveRunCommandArgs, runCommandRefusal } from './browser-command-args'
+
+describe('runCommandRefusal', () => {
+  it('refuses the CLI\'s own HAR, its upload and a press of no key', () => {
+    expect(runCommandRefusal(['network', 'har', 'start'])).toMatch(/browser_capture_traffic/)
+    expect(runCommandRefusal(['network', 'HAR', 'stop', '/workspace/x.har'])).toMatch(/browser_capture_traffic/)
+    expect(runCommandRefusal(['upload', '@e1', '/tmp/a.png'])).toMatch(/browser_upload/)
+    expect(runCommandRefusal(['press', ''])).toBe('key is required')
+    expect(runCommandRefusal(['network', 'requests'])).toBeNull()
+    expect(runCommandRefusal(['press', 'Enter'])).toBeNull()
+  })
+
+  it('checks each command of a batch the same way', () => {
+    expect(runCommandRefusal(['batch', 'network har start'])).toMatch(/browser_capture_traffic/)
+    expect(runCommandRefusal(['batch', '--bail', 'snapshot -i', 'network har stop /workspace/x.har'])).toMatch(/browser_capture_traffic/)
+    expect(runCommandRefusal(['batch', 'upload @e1 "/tmp/a b.png"'])).toMatch(/browser_upload/)
+    expect(runCommandRefusal(['batch', 'open https://example.com', 'snapshot -i'])).toBeNull()
+  })
+})
 
 describe('splitCommandArgs', () => {
   it('splits simple commands on whitespace', () => {

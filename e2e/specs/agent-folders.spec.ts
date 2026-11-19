@@ -299,7 +299,12 @@ test.describe('agent folders in the left nav', () => {
     await removeCreatedFolders(request)
   })
 
-  test('creates an agent in a collapsed section and waits for its assignment before navigating', async ({ page }, testInfo) => {
+  test('creates an agent in a collapsed section and waits for its assignment before navigating', async ({
+    page,
+    request,
+  }, testInfo) => {
+    // "Add section" only shows once an agent exists, and this project starts empty.
+    await createAgent(request, uniqueName(testInfo, 'Section Anchor'))
     await page.goto('/')
     const folder = await createFolder(page, uniqueName(testInfo, 'Create In Section'))
     const id = await folderIdOf(folder)
@@ -336,7 +341,12 @@ test.describe('agent folders in the left nav', () => {
     await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
   })
 
-  test('opens the section menu with the keyboard and cancels a rename through its actions', async ({ page }, testInfo) => {
+  test('opens the section menu with the keyboard and cancels a rename through its actions', async ({
+    page,
+    request,
+  }, testInfo) => {
+    // "Add section" only shows once an agent exists, and this project starts empty.
+    await createAgent(request, uniqueName(testInfo, 'Section Anchor'))
     await page.goto('/')
     const name = uniqueName(testInfo, 'Keyboard Section')
     const folder = await createFolder(page, name)

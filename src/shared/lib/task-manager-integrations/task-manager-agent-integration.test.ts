@@ -19,7 +19,7 @@ class FakeTasks extends TaskManagerAgentIntegration {
   stop(taskId: string) { return this.stopTask(taskId) }
 }
 const integration: AgentIntegrationRecord = { id: 'integration', agentSlug: 'agent', provider: 'fake', config: '{}', name: null, status: 'active', errorMessage: null,
-  model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+  model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), version: 0, updatedAt: new Date() }
 let tasks: FakeTasks
 let events: IntegrationEvent[]
 function event(id: string, taskId = 'issue'): TaskEvent { return { id, taskId, interactionId: taskId, kind: 'invocation', sourceCommentId: id, timestamp: new Date().toISOString(), text: 'Do work', replyTarget: { commentId: 'root' }, payload: {} } }
@@ -34,6 +34,19 @@ beforeEach(async () => {
 afterEach(async () => { await tasks.disconnect(); vi.useRealTimers() })
 
 describe('TaskManagerAgentIntegration live input', () => {
+  it('routes and hydrates an older event whose optional provider context was omitted', async () => {
+    const task = event('without-context')
+    delete task.payload
+    await tasks.accept(task)
+    expect(tasks.resolveRoute(input())).toMatchObject({ externalId: 'issue', replyTarget: { commentId: 'root' }, action: 'run' })
+    await tasks.acknowledgeInput(input())
+    expect(tasks.acknowledgeTask).toHaveBeenCalledOnce()
+    const prepared = await tasks.prepareInput(input(), context() as IntegrationInputContext)
+    expect(prepared.text).toContain('Request: Do work')
+    expect(prepared.text).toContain('SUP-1')
+    expect(tasks.hydrateTask).toHaveBeenCalledWith('issue')
+  })
+
   it('hands every follow-up to the manager immediately without waiting for turn completion', async () => {
     const activityLookup = vi.fn(async () => ({ integration, externalId: 'issue', sessionId: 'session', activity: 'working' as const }))
     tasks.bindHost({ session: activityLookup })

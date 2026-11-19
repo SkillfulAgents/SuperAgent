@@ -107,7 +107,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   handshakes = []
   rejectWith401 = 0
-  mockResolveTarget.mockReturnValue({
+  mockResolveTarget.mockResolvedValue({
     deploymentUrl: `http://127.0.0.1:${upstreamPort}`,
     token: 'deployment-token',
   })
@@ -263,7 +263,7 @@ describe('cloud stream proxy', () => {
   })
 
   it('reports a workspace with no token as a gateway failure', async () => {
-    mockResolveTarget.mockReturnValue(null)
+    mockResolveTarget.mockResolvedValue(null)
 
     const client = connect(keyed(STREAM_PATH))
 

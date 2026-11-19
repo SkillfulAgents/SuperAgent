@@ -4,6 +4,9 @@ import path from 'path'
 import fs from 'fs'
 import { getSettings } from '@shared/lib/config/settings'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
+import { withLoginShellPath } from '@shared/lib/utils/login-shell-path'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import {
   BaseSkillsetProvider,
   type SkillsetProviderRef,
@@ -48,10 +51,10 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
   readonly name = 'GitHub'
   readonly publishMode = 'pull_request' as const
 
-  private getToken(ref: SkillsetProviderRef): string | undefined {
+  private async getToken(ref: SkillsetProviderRef): Promise<string | undefined> {
     if (ref.credential?.type === 'token') return ref.credential.token
 
-    const settings = getSettings()
+    const settings = await getSettings()
     const currentSkillset = settings.skillsets?.find((skillset) => skillset.id === ref.skillsetId)
     // Installed skill/agent metadata is a historical snapshot. Prefer the
     // live skillset binding so adding, removing, or replacing a credential
@@ -90,7 +93,7 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
   }
 
   override async resolveCloneUrl(url: string, options?: SkillsetProviderRef): Promise<string> {
-    const token = options ? this.getToken(options) : undefined
+    const token = options ? await this.getToken(options) : undefined
     this.validateUrlForToken(url, token)
 
     if (/^https?:\/\//i.test(url)) {
@@ -107,8 +110,8 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
     return url
   }
 
-  override getGitEnvironment(ref: SkillsetProviderRef, baseEnvironment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const token = this.getToken(ref)
+  override async getGitEnvironment(ref: SkillsetProviderRef, baseEnvironment: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
+    const token = await this.getToken(ref)
     this.validateUrlForToken(ref.skillsetUrl ?? '', token)
     if (!token) return baseEnvironment
 
@@ -127,25 +130,30 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
     )
   }
 
-  override getCliEnvironment(ref: SkillsetProviderRef, baseEnvironment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const token = this.getToken(ref)
+  override async getCliEnvironment(ref: SkillsetProviderRef, baseEnvironment: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
+    const token = await this.getToken(ref)
     return token ? { ...baseEnvironment, GH_TOKEN: token } : baseEnvironment
   }
 
   async ensurePublishPreconditions(ref?: SkillsetProviderRef): Promise<void> {
+    // Publishing commits and opens pull requests with git and gh on the host.
+    if (!runsHostGit(getServerFacts())) {
+      throw new Error('Publishing to GitHub needs git and the GitHub CLI, which the Mac App Store edition can’t run.')
+    }
     await this.ensureAuthenticated(ref)
   }
 
   private async ensureAuthenticated(ref?: SkillsetProviderRef): Promise<void> {
-    const repositoryToken = ref ? this.getToken(ref) : undefined
+    const repositoryToken = ref ? await this.getToken(ref) : undefined
+    const hostEnvironment = await withLoginShellPath()
     try {
-      await execFileAsync('gh', ['--version'], { timeout: 5000 })
+      await execFileAsync('gh', ['--version'], { timeout: 5000, env: hostEnvironment })
     } catch {
       throw new Error('GitHub CLI (gh) is not installed. Install it from https://cli.github.com')
     }
 
     try {
-      const env = ref ? this.getCliEnvironment(ref, process.env) : process.env
+      const env = ref ? await this.getCliEnvironment(ref, hostEnvironment) : hostEnvironment
       await execFileAsync('gh', ['auth', 'status'], { timeout: 5000, env })
     } catch {
       if (repositoryToken) {
@@ -157,7 +165,7 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
 
   override async publishUpdate(input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
     const ctx = await this.prepareForkBranch(input, input.branchPrefix)
-    const gitEnvironment = this.getGitEnvironment(input, BASE_GIT_ENV)
+    const gitEnvironment = await this.getGitEnvironment(input, BASE_GIT_ENV)
 
     for (const file of input.files) {
       const fullPath = path.join(input.repoDir, file.path)
@@ -191,8 +199,8 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
     branchPrefix: string,
   ): Promise<ForkBranchContext> {
     const repoDir = input.repoDir
-    const gitEnvironment = this.getGitEnvironment(input, BASE_GIT_ENV)
-    const cliEnvironment = this.getCliEnvironment(input, process.env)
+    const gitEnvironment = await this.getGitEnvironment(input, BASE_GIT_ENV)
+    const cliEnvironment = await this.getCliEnvironment(input, await withLoginShellPath())
     await execFileAsync('git', ['checkout', '.'], {
       cwd: repoDir, timeout: 5000, env: gitEnvironment,
     }).catch(() => { /* ignore */ })

@@ -1,8 +1,9 @@
 import { Power, Square, Clock, Loader2, Zap, MoreVertical } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
-import { useSessions, useSession } from '@renderer/hooks/use-sessions'
+import { useNotableSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -19,7 +20,8 @@ import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
-import { agentActivity } from '@shared/lib/types/agent-activity-status'
+import { agentActivity, agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
 import { ForkedFromIndicator } from './forked-from-indicator'
 import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/todo-session-chrome'
@@ -27,10 +29,22 @@ import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/
 interface AgentHeaderProps {
   slug: string
   isViewOnly: boolean
-  isStreaming?: boolean
   startAgent: ReturnType<typeof useStartAgent>
   stopAgent: ReturnType<typeof useStopAgent>
 }
+
+/**
+ * The power button inside the status chip: the agent cards' white bordered button (home-page.tsx), a size up. Its
+ * corners are its own size's (the icon radius); the chip's are only a pixel rounder, so the chip stays crisp and the
+ * button never looks as round as it.
+ */
+const CHIP_BUTTON = cn(
+  // Its glass is status-chip-button in globals.css.
+  'status-chip-button flex h-6 w-6 shrink-0 items-center justify-center rounded-icon text-foreground',
+  'cursor-pointer transition-colors',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+  'disabled:cursor-not-allowed disabled:opacity-60',
+)
 
 function BreadcrumbSeparator() {
   return (
@@ -48,13 +62,14 @@ function BreadcrumbSeparator() {
  * active styling is route-derived (`data-status`) and survives a cold reload
  * with no hand-computed leaf flag.
  */
-export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent, stopAgent }: AgentHeaderProps) {
+export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
   const inboundXAgentOpen = view.kind === 'inboundXAgent'
   const completedTasksOpen = view.kind === 'completedTasks'
+  const newSessionOpen = view.kind === 'newSession'
   const apiLogsOpen = view.kind === 'apiLogs'
   const memoriesOpen = view.kind === 'memories'
   const secretsOpen = view.kind === 'secrets'
@@ -64,7 +79,10 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
   const dashboardHeader = useDashboardHeader(slug, dashboardSlug)
 
   const { data: agent } = useAgent(slug)
-  const { data: sessions } = useSessions(slug)
+  // Only for the two activity flags below: the notable slice holds every live
+  // session, where the full list would read (and refetch, on every session
+  // event) every session the agent has.
+  const { data: sessions } = useNotableSessions(slug)
   const { data: session } = useSession(sessionId, slug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)
@@ -81,11 +99,18 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
       {/* A session that is a Todo board item: back to the board. */}
       {sessionId && <TodoSessionBack agentSlug={slug} sessionId={sessionId} />}
       <div className="min-w-0 flex-1" data-testid="breadcrumb-drag-area">
+        {/* One 20px line (text-sm), the height of every crumb in it, so the
+            header's flex centring centres the crumbs. The icon crumbs are
+            20px boxes pinned to its top: `align-middle` would set them on the
+            baseline + half an x-height, which sits below the line's centre. */}
         <HoverScrollText
-          className="w-fit max-w-full app-no-drag"
+          className="w-fit max-w-full text-sm app-no-drag"
           data-testid="breadcrumb-trail"
         >
-        <ScrollAwareNavTitle>
+        <ScrollAwareNavTitle className="items-center gap-2 align-top">
+          {/* Travels with the name when the page heading scrolls away; the
+              picker stays on the page heading, so this one is display-only. */}
+          {agent && <AgentAvatar agent={agent} state={agentAvatarState(agent, sessions)} />}
           {agent ? (
             <AgentContextMenu agent={agent}>
               <AppLink
@@ -123,7 +148,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
             <>
               <BreadcrumbSeparator />
               {isLeaf ? (
-                <span className="inline-flex items-center gap-1 align-middle text-muted-foreground app-no-drag">
+                <span className="inline-flex items-center gap-1 align-top text-muted-foreground app-no-drag">
                   <Clock className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light text-foreground">
                     {taskCrumbName || 'Scheduled Task'}
@@ -134,7 +159,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
                   to="/agents/$slug/tasks/$taskId"
                   params={{ slug, taskId: taskCrumbId }}
                   noDrag
-                  className="inline-flex items-center gap-1 align-middle text-muted-foreground hover:text-foreground transition-colors"
+                  className="inline-flex items-center gap-1 align-top text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Clock className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light">
@@ -154,7 +179,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
             <>
               <BreadcrumbSeparator />
               {isLeaf ? (
-                <span className="inline-flex items-center gap-1 align-middle text-muted-foreground app-no-drag">
+                <span className="inline-flex items-center gap-1 align-top text-muted-foreground app-no-drag">
                   <Zap className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light text-foreground">
                     {webhookCrumbName || 'Webhook Trigger'}
@@ -165,7 +190,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
                   to="/agents/$slug/webhooks/$webhookId"
                   params={{ slug, webhookId: webhookCrumbId }}
                   noDrag
-                  className="inline-flex items-center gap-1 align-middle text-muted-foreground hover:text-foreground transition-colors"
+                  className="inline-flex items-center gap-1 align-top text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Zap className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light">
@@ -201,7 +226,6 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
               activity={{
                 isActive: !!session?.isActive,
                 isAwaitingInput: !!session?.isAwaitingInput,
-                isStreaming,
               }}
             >
               <span
@@ -235,6 +259,12 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
           <>
             <BreadcrumbSeparator />
             <span className="text-sm font-light text-foreground">API Logs</span>
+          </>
+        )}
+        {newSessionOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">New Session</span>
           </>
         )}
         {memoriesOpen && (
@@ -282,79 +312,84 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
         {dashboardHeader?.actions && (
           <Separator orientation="vertical" className="hidden h-5 md:block" />
         )}
-        {agent && (
-          <AgentStatus
-            status={agent.status}
-            hasActiveSessions={hasActiveSessions}
-            hasSessionsAwaitingInput={hasSessionsAwaitingInput}
-            // Mobile collapses the status into the kebab menu below; keep it
-            // inline on desktop. View-only mode has no kebab, so it stays inline.
-            className={!isViewOnly ? 'hidden md:flex' : undefined}
-          />
+        {/* The status and its power button in one frosted chip, as on the agent cards on the home page, a size up. Mobile
+            collapses it into the kebab menu below; view-only has no kebab or power button, so its status stays. */}
+        {(agent || !isViewOnly) && (
+          <div className={cn('h-[30px] items-center gap-2 rounded-[calc(var(--radius-icon)+1px)] status-chip pl-2.5', isViewOnly ? 'flex pr-2.5' : 'hidden md:flex pr-[2px]')}>
+            {agent && (
+              <AgentStatus
+                status={agent.status}
+                hasActiveSessions={hasActiveSessions}
+                hasSessionsAwaitingInput={hasSessionsAwaitingInput}
+                className="[&>svg]:h-[11px] [&>svg]:w-[11px]"
+              />
+            )}
+            {!isViewOnly && (
+              <div className="flex items-center" data-testid="agent-power-controls">
+                {agent?.status === 'running' ? (
+                  <TooltipProvider delayDuration={0}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          className={CHIP_BUTTON}
+                          onClick={() => stopAgent.mutate(slug)}
+                          disabled={stopAgent.isPending}
+                          aria-label="Stop Agent"
+                        >
+                          <Square className="h-3 w-3 fill-current" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Stop Agent</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : (
+                  <TooltipProvider delayDuration={0}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex">
+                          <button
+                            type="button"
+                            className={CHIP_BUTTON}
+                            onClick={() => startAgent.mutate(slug)}
+                            disabled={isAgentStarting || !isRuntimeReady}
+                            aria-label="Start Agent"
+                          >
+                            {isPulling || isAgentStarting ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Power className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </span>
+                      </TooltipTrigger>
+                      {!apiKeyConfigured ? (
+                        <TooltipContent>
+                          <p>No API key configured. An administrator needs to set up the LLM API key.</p>
+                        </TooltipContent>
+                      ) : !isRuntimeReady && readiness ? (
+                        <TooltipContent>
+                          <p>{readiness.message}</p>
+                          {readiness.pullProgress && readiness.pullProgress.percent != null && (
+                            <p className="text-xs opacity-80">{readiness.pullProgress.status} ({readiness.pullProgress.percent}%)</p>
+                          )}
+                        </TooltipContent>
+                      ) : (
+                        <TooltipContent>
+                          <p>Wake up agent</p>
+                        </TooltipContent>
+                      )}
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
+              </div>
+            )}
+          </div>
         )}
         {!isViewOnly && (
           <>
-            <Separator orientation="vertical" className="hidden h-5 md:block" />
-            <div className="hidden md:flex items-center gap-2" data-testid="agent-power-controls">
-              {agent?.status === 'running' ? (
-                <TooltipProvider delayDuration={0}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => stopAgent.mutate(slug)}
-                        disabled={stopAgent.isPending}
-                        aria-label="Stop Agent"
-                      >
-                        <Square className="h-4 w-4 fill-current" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>Stop Agent</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                <TooltipProvider delayDuration={0}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => startAgent.mutate(slug)}
-                          disabled={isAgentStarting || !isRuntimeReady}
-                          aria-label="Start Agent"
-                        >
-                          {isPulling || isAgentStarting ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Power className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </span>
-                    </TooltipTrigger>
-                    {!apiKeyConfigured ? (
-                      <TooltipContent>
-                        <p>No API key configured. An administrator needs to set up the LLM API key.</p>
-                      </TooltipContent>
-                    ) : !isRuntimeReady && readiness ? (
-                      <TooltipContent>
-                        <p>{readiness.message}</p>
-                        {readiness.pullProgress && readiness.pullProgress.percent != null && (
-                          <p className="text-xs opacity-80">{readiness.pullProgress.status} ({readiness.pullProgress.percent}%)</p>
-                        )}
-                      </TooltipContent>
-                    ) : (
-                      <TooltipContent>
-                        <p>Wake up agent</p>
-                      </TooltipContent>
-                    )}
-                  </Tooltip>
-                </TooltipProvider>
-              )}
-            </div>
             {/* Mobile: the inline status pill + power controls above are
                 `hidden md:*`; collapse them into a kebab on small screens. */}
             {agent && (
@@ -436,7 +471,7 @@ function AgentHeaderMobileMenu({
         {isRunning ? (
           <button
             type="button"
-            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
+            className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
             onClick={() => stopAgent.mutate(slug)}
             disabled={stopAgent.isPending}
           >
@@ -447,7 +482,7 @@ function AgentHeaderMobileMenu({
           <>
             <button
               type="button"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
+              className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
               onClick={() => startAgent.mutate(slug)}
               disabled={startDisabled}
             >
@@ -476,7 +511,7 @@ function ConnectionsCrumbs({
   detail,
 }: {
   slug: string
-  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs' } | null
+  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs'; from?: string } | null
 }) {
   const { data: accountsData } = useConnectedAccounts()
   const { data: mcpsData } = useRemoteMcps()
@@ -519,7 +554,7 @@ function ConnectionsCrumbs({
         <AppLink
           to="/agents/$slug/connections"
           params={{ slug }}
-          search={{ detail: detail.rowKey, source: detail.source }}
+          search={{ detail: detail.rowKey, source: detail.source, from: detail.from }}
           noDrag
           className="text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
         >

@@ -35,6 +35,7 @@ How it works: after this tool succeeds, END YOUR TURN. The session goes idle (it
 wakeTime accepts natural language: "tomorrow 9am", "in 72 hours", "next monday 8am", "2027-03-15 14:00".
 
 Constraints:
+- Main conversation only. A wake resumes the main conversation, so a subagent cannot call this: it should finish and report back, and the main agent pauses the session.
 - A session holds at most ONE pending wake — scheduling a new one replaces the previous one.
 - One-shot only (no recurring wakes). For recurring checks, re-schedule on each wake, or use schedule_task if the work doesn't need this conversation's context.
 
@@ -53,7 +54,7 @@ This is different from schedule_task, which starts a NEW session with no memory 
     note: z
       .string()
       .describe(
-        'Why you are pausing and what to check when you wake. Echoed back to you verbatim in the resume message — write it as a note to your future self. Only you read it.'
+        'Why you are pausing and what to check when you wake. Write a note to your future self. The resume message echoes it verbatim, and the expanded tool details also show it.'
       ),
     timezone: z
       .string()

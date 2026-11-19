@@ -12,9 +12,9 @@ import { z } from 'zod'
 import { openMediaBlob, type MediaRef } from '@shared/lib/services/session-media'
 import { buildWorkflowTree } from '@shared/lib/workflows/workflow-tree'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
-import type { JsonlEntry } from '@shared/lib/types/agent'
+import { isQueuedUserPrompt, type JsonlEntry } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
-import { isAbsentFile, readJsonl, streamJsonl } from './jsonl-files'
+import { chunksOf, isAbsentFile, readJsonl, streamJsonl, streamLines } from './jsonl-files'
 import { sessionDirPath, sessionFilePath, transcriptPath, type SessionStore } from './session-store'
 import type { FileEntry, MediaBlob, SubagentRef } from './types'
 import { WorkspaceFileError, joinWorkspacePath } from './workspace-path'
@@ -149,10 +149,114 @@ export async function copyDerivedSessionFiles(store: SessionStore, sourceSession
   if (real !== source) return
   if ((await store.files.stat(source))?.kind !== 'directory') return
   await copyTree(store, source, target)
+  await repointForkContextRefs(store, sourceSessionId, targetSessionId)
 }
 
-export function streamRawEntries(store: SessionStore, sessionId: string): AsyncIterable<unknown> {
-  return streamJsonl(store.files, transcriptPath(store, sessionId))
+/** The first line of a fork subagent's transcript (CLI 2.1.302+). */
+const forkContextRefSchema = z.object({
+  type: z.literal('fork-context-ref'),
+  parentSessionId: z.string(),
+  parentLastUuid: z.string(),
+}).loose()
+
+/** A copied transcript entry: the copy re-ids it and names the entry it came from. */
+const forkedEntrySchema = z.object({
+  uuid: z.string().min(1),
+  forkedFrom: z.object({ sessionId: z.string(), messageUuid: z.string().min(1) }),
+}).loose()
+
+/**
+ * A fork subagent rebuilds the context it inherited from the session its
+ * `fork-context-ref` names. Copied verbatim, a fork in the copy reads that
+ * context from the SOURCE session and loses it once the source is deleted
+ * (CLI 2.1.303: resumed after an eviction, it answered from no inherited
+ * context). Repoint each ref at the copy, whose transcript re-ids every entry
+ * and records the source uuid in `forkedFrom.messageUuid`. A ref with no
+ * copied counterpart is left as is.
+ */
+async function repointForkContextRefs(store: SessionStore, sourceSessionId: string, targetSessionId: string): Promise<void> {
+  const subagentsDir = sessionFilePath(store, targetSessionId, 'subagents')
+  let entries: FileEntry[]
+  try {
+    entries = await store.files.list(subagentsDir)
+  } catch {
+    return // No subagents directory
+  }
+  let copiedUuids: Map<string, string> | undefined
+  for (const entry of entries) {
+    if (entry.kind !== 'file' || !/^agent-[\w-]+\.jsonl$/.test(entry.name)) continue
+    // Only the first line: a subagent transcript can be tens of MB.
+    let firstLine: Buffer | undefined
+    try {
+      for await (const line of streamLines(store.files, entry.path)) {
+        firstLine = line
+        break
+      }
+    } catch (error) {
+      if (isAbsentFile(error)) continue
+      throw error
+    }
+    if (firstLine === undefined) continue
+    let ref: z.infer<typeof forkContextRefSchema>
+    try {
+      const parsed = forkContextRefSchema.safeParse(JSON.parse(firstLine.toString('utf8')))
+      if (!parsed.success) continue
+      ref = parsed.data
+    } catch {
+      continue
+    }
+    if (ref.parentSessionId !== sourceSessionId) continue
+    copiedUuids ??= await copiedEntryUuids(store, sourceSessionId, targetSessionId)
+    const parentLastUuid = copiedUuids.get(ref.parentLastUuid)
+    if (!parentLastUuid) continue
+    const repointed = JSON.stringify(forkContextRefSchema.parse({ ...ref, parentSessionId: targetSessionId, parentLastUuid }))
+    const stat = await store.files.stat(entry.path)
+    if (stat === null) continue
+    // The rest (from the first newline on) is streamed behind the new first line.
+    const rest = stat.size > firstLine.length
+      ? await store.files.read(entry.path, { start: firstLine.length, end: stat.size - 1 })
+      : null
+    await store.files.write(
+      entry.path,
+      Readable.toWeb(Readable.from(withFirstLine(Buffer.from(repointed, 'utf8'), rest))) as ReadableStream<Uint8Array>,
+      stat.mode === undefined ? undefined : { mode: stat.mode },
+    )
+  }
+}
+
+async function* withFirstLine(firstLine: Buffer, rest: ReadableStream<Uint8Array> | null): AsyncGenerator<Buffer> {
+  yield firstLine
+  if (rest) yield* chunksOf(rest)
+}
+
+/** Source uuid → its copy's uuid, from the copied transcript. */
+async function copiedEntryUuids(store: SessionStore, sourceSessionId: string, targetSessionId: string): Promise<Map<string, string>> {
+  const uuids = new Map<string, string>()
+  try {
+    for await (const entry of streamJsonl<unknown>(store.files, transcriptPath(store, targetSessionId))) {
+      const parsed = forkedEntrySchema.safeParse(entry)
+      if (parsed.success && parsed.data.forkedFrom.sessionId === sourceSessionId) {
+        uuids.set(parsed.data.forkedFrom.messageUuid, parsed.data.uuid)
+      }
+    }
+  } catch (error) {
+    if (!isAbsentFile(error)) throw error
+  }
+  return uuids
+}
+
+/** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
+export async function forkedUserUuids(store: SessionStore, sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>> {
+  const pairs: Array<{ newUuid: string; oldUuid: string }> = []
+  for await (const raw of streamJsonl<JsonlEntry>(store.files, transcriptPath(store, sessionId))) {
+    if (!raw || (raw.type !== 'user' && !isQueuedUserPrompt(raw))) continue
+    const parsed = forkedEntrySchema.safeParse(raw)
+    if (!parsed.success) continue
+    // The SDK re-keys the attachment line, but preserves its queue ID on every fork.
+    const queueId = raw.type === 'attachment' ? raw.attachment.source_uuid : undefined
+    pairs.push({ newUuid: queueId ?? parsed.data.uuid, oldUuid: queueId ?? parsed.data.forkedFrom.messageUuid })
+  }
+  return pairs
 }
 
 function isBenignStreamError(error: unknown): boolean {

@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import { _setFactsForTest } from '@renderer/lib/facts'
 
 // Auth mode is now derived from the resolved API target, and reading it before
 // boot settles that target throws by design (a wrong guess routes cloud traffic
@@ -9,10 +10,52 @@ import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-targe
 // local target here so everything that renders UserProvider behaves exactly as
 // it did when auth mode was a build-time constant. A test that needs the cloud
 // target resets and re-sets it in its own `beforeEach`, which runs after this.
+//
+// The facts are settled alongside it, and also throw if read before boot. Tests
+// have no `window.electronAPI`, so the default is a browser driving a web
+// deployment; a test that needs other facts sets them in its own `beforeEach`.
 beforeEach(() => {
   _resetApiTargetForTest()
   setActiveTarget('local', null)
+  _setFactsForTest({
+    client: { shell: 'browser', os: null, distribution: null },
+    server: { os: 'linux', distribution: 'deployment' },
+  })
 })
+
+// Ambient animation runs only in the window in use (ambient-frames.ts), and
+// jsdom's document has focus only once something in it is focused. A test's DOM
+// stands for a window someone is using; one about a window in the background
+// mocks `document.hasFocus` itself.
+if (typeof document !== 'undefined') {
+  beforeEach(() => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+  })
+}
+
+// Server code reads shared state through AppState, which throws until an entry
+// point initializes it. Node-environment tests (the server's) get a fresh
+// LocalAppState per test here, so no state or listener crosses tests. A test
+// of the uninitialized path calls closeAppState() first. Imported in the hook,
+// not up here: by then the test file's vi.mock()s are in place, so AppState's
+// own imports (background, error reporting) are the ones the test file sees.
+if (typeof window === 'undefined') {
+  beforeEach(async () => {
+    // The holder module itself, so a test that mocks @shared/lib/app-state cannot break this.
+    const { closeAppState, initializeLocalAppState } = await import('@shared/lib/app-state/app-state')
+    await closeAppState()
+    await initializeLocalAppState()
+  })
+
+  // The same for scheduled work: a fresh manager with nothing registered and
+  // dispatch on, so no timer crosses tests. A test registers the tasks it uses.
+  beforeEach(async () => {
+    const { closeBackgroundWork, initializeBackgroundWork } = await import('@shared/lib/background-work/global')
+    const { LocalTaskManager } = await import('@shared/lib/background-work/local-task-manager')
+    await closeBackgroundWork()
+    await initializeBackgroundWork(new LocalTaskManager())
+  })
+}
 
 // jsdom has no matchMedia; components read it via useIsMobile() and
 // prefers-reduced-motion. Default to "no match" (desktop, motion allowed) with
@@ -49,7 +92,7 @@ if (typeof HTMLCanvasElement !== 'undefined') {
 
 const signIn = {
   email: vi.fn(),
-  oauth2: vi.fn(),
+  social: vi.fn(),
 }
 
 const signUp = {
@@ -144,4 +187,11 @@ vi.mock('@renderer/context/dialog-context', async () => {
 // that depends on the active view/slug.
 vi.mock('@renderer/router/use-route-location', () => ({
   useRouteLocation: () => ({ selectedAgentSlug: null, view: { kind: 'home' } }),
+}))
+
+// The same for the per-agent route selections (sidebar rows, the agent menu):
+// off every agent's route by default.
+vi.mock('@renderer/router/use-route-agent', () => ({
+  useRouteAgentRow: () => ({ isSelected: false, isViewingSubItem: false }),
+  useIsRouteAgent: () => false,
 }))

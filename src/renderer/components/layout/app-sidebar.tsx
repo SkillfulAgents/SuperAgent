@@ -1,12 +1,15 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
+import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, Loader2, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
+import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import { ContextMenuMoreButton } from '@renderer/components/ui/context-menu'
+import { UnreadDot } from '@renderer/components/agents/status-indicators'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { targetIsRemote } from '@renderer/lib/api-target'
@@ -49,17 +52,17 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { useAgents, useListedAgents, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useSessions, useRecentSessions, useSessionTotal, recentSessionsQueryOptions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { RECENT_SESSIONS_LIMIT } from '@renderer/lib/agent-cache'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useSettings, useModelSettings } from '@renderer/hooks/use-settings'
+import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useExperiment } from '@renderer/hooks/use-experiment'
 import { useTodos } from '@renderer/hooks/use-todos'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
-import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
@@ -73,7 +76,7 @@ import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-
 import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
-import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useRouteAgentRow } from '@renderer/router/use-route-agent'
 import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
 import { useCmdHintTarget, CmdHintBadge } from '@renderer/context/cmd-hint-context'
@@ -112,7 +115,7 @@ import {
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
-import { AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
+import { AGENT_AVATAR_LEFT, AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
 import {
   AgentDragOverlayRow,
@@ -141,13 +144,12 @@ import {
   type TreeOperation,
 } from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useHasDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
-/** Set once Explore has been opened, which retires its "New" badge. */
-const EXPLORE_SEEN_KEY = 'explore.seen'
+/** Set once Team Brain has been opened, which retires its "New" badge: the badge invites a first look, then goes away. */
+const TEAM_BRAIN_SEEN_KEY = 'team-brain.seen'
 
 function VersionBehindDot({
   wayBehind,
@@ -167,8 +169,8 @@ function VersionBehindDot({
   )
 }
 
-// 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
-// agents-list group; pull out as a constant so the call site stays readable.
+// 4px-wide thin scrollbar with a muted-foreground/20 thumb, for the sidebar's
+// scrolling content; a constant so the call site stays readable.
 const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
@@ -198,18 +200,21 @@ type FolderDropCue = { folderId: string; edge: 'above' | 'below' }
 function SessionSubItem({
   session,
   agentSlug,
+  isAgentSelected,
 }: {
   session: ApiSession
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
   useRenderTracker('SessionSubItem')
   // Active state is route-derived (URL is authoritative, read from useParams) so
   // the highlight + the stream subscription are correct on a cold reload, with no
-  // in-memory selection state to wait on.
-  const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
-  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
+  // in-memory selection state to wait on. Selected down to the one boolean, so
+  // a navigation re-renders the rows it leaves and enters, not every open one.
+  const isRouteSession = useParams({ strict: false, select: (params) => params.sessionId === session.id })
+  const isSelected = isAgentSelected && isRouteSession
+  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
@@ -230,7 +235,7 @@ function SessionSubItem({
   return (
     <SidebarMenuSubItem
       {...dragHandlers}
-      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+      className={cn('rounded-item', SIDEBAR_FILE_DROP_CUE)}
     >
       <SessionContextMenu
         sessionId={session.id}
@@ -239,52 +244,72 @@ function SessionSubItem({
         activity={{
           isActive: !!session.isActive,
           isAwaitingInput: !!session.isAwaitingInput,
-          isStreaming,
         }}
       >
+        {/* The row (menu target) wraps the link and the 3-dot button, which
+            can't nest inside the <a>; the link fills the rest of the row. */}
         <SidebarMenuSubButton
           asChild
           isActive={isSelected}
+          className="relative gap-0 overflow-visible px-0"
         >
-          <AppLink
-            ref={hintRef}
-            to="/agents/$slug/sessions/$sessionId"
-            params={{ slug: agentSlug, sessionId: session.id }}
-            className="flex items-center gap-2 w-full"
-            data-testid={`session-item-${session.id}`}
-          >
-            <HoverScrollText
-              className="flex-1 text-left"
-              data-testid={`session-name-${session.id}`}
-              hoverTarget="parent"
+          <div>
+            <AppLink
+              ref={hintRef}
+              to="/agents/$slug/sessions/$sessionId"
+              params={{ slug: agentSlug, sessionId: session.id }}
+              // Not draggable, as when the link was the menu trigger itself:
+              // iOS would otherwise lift it on a long-press.
+              draggable={false}
+              className="flex h-full min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-md px-2 outline-none ring-sidebar-ring [-webkit-user-drag:none] focus-visible:ring-2"
+              data-testid={`session-item-${session.id}`}
             >
-              {session.name}
-            </HoverScrollText>
-            {hint !== null ? (
-              <CmdHintBadge hint={hint} />
-            ) : (
-              <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
-                {showPendingWake && (
-                  <span
-                    className="flex items-center"
-                    role="img"
-                    aria-label="scheduled to resume"
-                    title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
-                    data-testid={`session-pending-wake-${session.id}`}
-                  >
-                    <MoonStar className="h-3 w-3 text-muted-foreground" />
-                  </span>
-                )}
-                {isAwaitingInput ? (
-                  <AwaitingDot />
-                ) : isWorking ? (
-                  <WorkingDots />
-                ) : hasUnread ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
-                ) : null}
-              </span>
+              <HoverScrollText
+                className="flex-1 text-left"
+                data-testid={`session-name-${session.id}`}
+                hoverTarget="parent"
+              >
+                {session.name}
+              </HoverScrollText>
+              {hint !== null ? (
+                <CmdHintBadge hint={hint} />
+              ) : (
+                <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
+                  {showPendingWake && (
+                    <span
+                      className="flex items-center"
+                      role="img"
+                      aria-label="scheduled to resume"
+                      title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
+                      data-testid={`session-pending-wake-${session.id}`}
+                    >
+                      <MoonStar className="h-3 w-3 text-muted-foreground" />
+                    </span>
+                  )}
+                  {isAwaitingInput ? (
+                    <AwaitingDot />
+                  ) : isWorking ? (
+                    <WorkingDots />
+                  ) : hasUnread ? (
+                    <UnreadDot mention={session.hasUnreadMention} />
+                  ) : null}
+                </span>
+              )}
+            </AppLink>
+            {hint === null && (
+              <ContextMenuMoreButton
+                label={`Options for ${session.name}`}
+                // Spill to the right: a dropdown here would cover the rows below.
+                anchor="beside"
+                data-testid={`session-menu-button-${session.id}`}
+                iconClassName="h-3.5 w-3.5"
+                // After the status slot rather than over it, so the status (and
+                // the resume-time title on its moon) stays readable on hover; no
+                // width until revealed, so the row is unchanged at rest.
+                className="h-5 w-0 overflow-hidden text-muted-foreground hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:ring-sidebar-ring menu-revealed:mr-1 menu-revealed:w-5"
+              />
             )}
-          </AppLink>
+          </div>
         </SidebarMenuSubButton>
       </SessionContextMenu>
     </SidebarMenuSubItem>
@@ -295,13 +320,15 @@ function SessionSubItem({
 function DashboardSubItem({
   artifact,
   agentSlug,
+  isAgentSelected,
 }: {
   artifact: ArtifactInfo
   agentSlug: string
+  /** The route is on this row's agent; the agent row has already worked it out. */
+  isAgentSelected: boolean
 }) {
-  const { dashSlug: routeDashSlug } = useParams({ strict: false }) as { dashSlug?: string }
-  const routeAgentId = useRouteAgentId()
-  const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
+  const isRouteDashboard = useParams({ strict: false, select: (params) => params.dashSlug === artifact.slug })
+  const isSelected = isAgentSelected && isRouteDashboard
   const [isRenaming, setIsRenaming] = useState(false)
   const { ref: hintRef, hint } = useCmdHintTarget()
 
@@ -322,26 +349,30 @@ function DashboardSubItem({
           isActive={isSelected}
           title={`${artifact.description || artifact.name} (double-click to open in new window)`}
         >
-          <AppLink
-            ref={hintRef}
-            to="/agents/$slug/dashboards/$dashSlug"
-            params={{ slug: agentSlug, dashSlug: artifact.slug }}
-            onDoubleClick={handleDoubleClick}
-            className="flex items-center gap-2 w-full"
-          >
-            <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
-            {isRenaming ? (
+          {/* Not inside the link while renaming: a click in the input would follow its href (a full reload on web). */}
+          {isRenaming ? (
+            <div className="flex items-center gap-2 w-full">
+              <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
               <InlineRenameInput
                 agentSlug={agentSlug}
                 artifactSlug={artifact.slug}
                 currentName={artifact.name}
                 onDone={() => setIsRenaming(false)}
               />
-            ) : (
+            </div>
+          ) : (
+            <AppLink
+              ref={hintRef}
+              to="/agents/$slug/dashboards/$dashSlug"
+              params={{ slug: agentSlug, dashSlug: artifact.slug }}
+              onDoubleClick={handleDoubleClick}
+              className="flex items-center gap-2 w-full"
+            >
+              <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
               <span className="truncate">{artifact.name}</span>
-            )}
-            {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
-          </AppLink>
+              {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
+            </AppLink>
+          )}
         </SidebarMenuSubButton>
       </DashboardContextMenu>
     </SidebarMenuSubItem>
@@ -408,7 +439,7 @@ function InlineRenameInput({
       onBlur={submit}
       onClick={(e) => e.stopPropagation()}
       autoFocus
-      className="w-full bg-background border border-input rounded px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
+      className="w-full bg-background border border-input rounded-item px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
     />
   )
 }
@@ -430,49 +461,84 @@ function SessionsSkeleton() {
 }
 
 // Only this label subscribes to the clock; the expensive agent row stays memoized.
+// The row's second line: when the agent last ran. A sleeping agent keeps it;
+// its avatar shows the sleep (agentAvatarState).
 function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
   useMinuteClock()
   return (
     <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
-      {formatLastRun(date) ?? 'Last run never'}
+      {formatLastRun(date) ?? 'Never active'}
     </span>
   )
 }
 
-// Right-side indicator on the agent row.
-// Awaiting / working aggregate across sessions regardless of expansion, with
-// the same formula as the agent header's AgentStatus (fresh sessions data
-// when loaded, agent-level flags as fallback) — the sidebar and the top nav
-// render on the same screen and must never disagree about whether an agent
-// is working. The unread dot IS still suppressed when expanded: it's a
-// sidebar-only navigation aid with no header counterpart, and the session
-// rows already point at the unread session.
-// Priority: awaiting > working > unread > sleeping/idle.
-function AgentRowIndicator({
+// The agent row's notification dot, pinned to the avatar's bottom-right like a
+// presence dot: orange while a session waits on the user, otherwise blue for
+// unread, or a small violet @ when it mentions
+// you. Awaiting aggregates across sessions with the same formula as the agent
+// header's AgentStatus (fresh sessions data when loaded, agent-level flags as
+// fallback), so the sidebar and the top nav never disagree. Unread is
+// suppressed when expanded: the session rows already point at the unread
+// session.
+function agentBadgeKind(agent: ApiAgent, sessions: ApiSession[] | undefined, isOpen: boolean) {
+  if (agentActivity(agent, sessions).isAwaiting) return 'awaiting'
+  if (isOpen || !agent.hasUnreadNotifications) return null
+  return agent.hasUnreadMention ? 'mention' : 'unread'
+}
+
+// Each badge sits in a 2px gap cut out of the avatar rather than a ring painted
+// in the sidebar colour, so whatever is behind the row (the glass, a hover or
+// selected fill) shows through and nothing has to match it. Every badge shares
+// one centre within the 32px avatar, 5px in from its bottom-right corner: the 6px
+// dots sit inside it, the 14px @ overhangs it by 2px. A mask also hides
+// everything outside its own box, and needs input's hop and squash carry the
+// orb past the avatar's edges, so the mask sits on a frame 12px bigger all
+// round (AvatarCutout); the centre is measured from that frame's corner.
+const AVATAR_BADGE_CUTOUT = {
+  awaiting: '[mask-image:radial-gradient(circle_at_39px_39px,transparent_4.5px,#000_5px)]',
+  unread: '[mask-image:radial-gradient(circle_at_39px_39px,transparent_4.5px,#000_5px)]',
+  mention: '[mask-image:radial-gradient(circle_at_39px_39px,transparent_6.5px,#000_7px)]',
+} as const
+
+function AvatarCutout({ cutout, children }: { cutout: string | null; children: React.ReactNode }) {
+  if (!cutout) return <>{children}</>
+  return <span className={cn('-m-3 block p-3', cutout)}>{children}</span>
+}
+
+function AgentAvatarBadge({
   agent,
   sessions,
   isOpen,
+  className,
 }: {
   agent: ApiAgent
   sessions: ApiSession[] | undefined
   isOpen: boolean
+  className?: string
 }) {
-  const { isAwaiting, isWorking } = agentActivity(agent, sessions)
-  const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
-  if (isUnread) {
-    return (
-      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
-        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-      </span>
-    )
-  }
+  const kind = agentBadgeKind(agent, sessions, isOpen)
+  if (!kind) return null
+  const isAwaiting = kind === 'awaiting'
+  const isMention = kind === 'mention'
+  const label = isAwaiting ? 'needs input' : isMention ? 'mentioned you' : 'unread notifications'
   return (
-    <AgentStatus
-      status={agent.status}
-      hasActiveSessions={isWorking}
-      hasSessionsAwaitingInput={isAwaiting}
-      iconOnly
-    />
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      data-testid={`agent-avatar-badge-${agent.slug}`}
+      className={cn(
+        'pointer-events-none absolute rounded-full',
+        isMention
+          // A bare @ with no disc behind it: the cut-out alone separates it.
+          ? '-right-0.5 -bottom-0.5 flex h-3.5 w-3.5 items-center justify-center text-violet-600 dark:text-purple-400'
+          // The dots need no ring: AVATAR_BADGE_CUTOUT separates them.
+          : cn('right-0.5 bottom-0.5 h-1.5 w-1.5', isAwaiting ? 'bg-orange-500' : 'bg-blue-500'),
+        className,
+      )}
+    >
+      {isMention && <AtSign className="h-[11px] w-[11px]" strokeWidth={3} aria-hidden />}
+    </span>
   )
 }
 
@@ -482,14 +548,14 @@ const AgentMenuItemInner = React.forwardRef<
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { view } = useRouteLocation()
-  const { isAuthMode, agentMemberCount } = useUser()
+  const { agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
-  // no slug). Drives the highlight AND the submenu auto-expand below.
-  const routeAgentId = useRouteAgentId()
-  const isSelected = agent.slug === routeAgentId
+  // no slug). Drives the highlight AND the submenu auto-expand below. Both
+  // answers are selected per row, so a navigation re-renders only the rows it
+  // changes them for: this subtree is the expensive part of the sidebar.
+  const { isSelected, isViewingSubItem } = useRouteAgentRow(agent)
   // Auto-expand on selection only if the agent has content to show. Brand-new
   // agents (no sessions / dashboards yet) start collapsed - the empty submenu
   // would just be visual noise.
@@ -507,30 +573,37 @@ const AgentMenuItemInner = React.forwardRef<
   // The mount-time `useState` can't catch this — sessionCount is 0 at mount on
   // a freshly-created agent, then jumps to 1 once the first message creates a
   // session. Reactively expand here.
-  const isViewingSubItem =
-    isSelected &&
-    (view.kind === 'session' ||
-      view.kind === 'task' ||
-      view.kind === 'webhook' ||
-      view.kind === 'chat' ||
-      view.kind === 'dashboard' ||
-      view.kind === 'completedTasks')
   useEffect(() => {
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const toggleShowAll = () => {
+    if (showAll) requestAnimationFrame(() => rowRef.current?.scrollIntoView({ block: 'nearest' }))
+    setShowAll(!showAll)
+  }
   const [showSkeleton, setShowSkeleton] = useState(false)
   const memberCount = agentMemberCount(agent.slug)
-  const isShared = isAuthMode && memberCount > 1
 
-  // Lazy-load detail data only when expanded
-  const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
+  // Lazy-load detail data only when expanded. The row shows five sessions, so
+  // it reads the bounded recent slice and its count; every session is read
+  // only once "Show all" asks for them (or to count them, where the server
+  // does not report the total).
+  const { data: recentSessions, isLoading: sessionsLoading } = useRecentSessions(isOpen ? agent.slug : null)
+  const reportedTotal = useSessionTotal(isOpen ? agent.slug : null)
+  const recentIsCut = (recentSessions?.length ?? 0) >= RECENT_SESSIONS_LIMIT
+  const needsAllSessions = isOpen && (showAll || (recentIsCut && reportedTotal === undefined))
+  const { data: allSessions } = useSessions(needsAllSessions ? agent.slug : null)
+  const sessions = allSessions ?? recentSessions
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
 
-  const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
-  const hasMore = (sessions?.length ?? 0) > 5
+  const visibleSessions = showAll && allSessions ? allSessions : sessions?.slice(0, 5)
+  const sessionTotal = allSessions?.length ?? (recentIsCut ? reportedTotal : undefined) ?? recentSessions?.length ?? 0
+  const hasMore = sessionTotal > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
   const avatarState = agentAvatarState(agent, sessions)
+  const badgeKind = agentBadgeKind(agent, sessions, isOpen)
+  const avatarCutout = badgeKind ? AVATAR_BADGE_CUTOUT[badgeKind] : null
 
   // Use pre-aggregated counts to determine if the chevron should show.
   // Also show when isOpen (agent selected) since sessions may have been
@@ -553,15 +626,8 @@ const AgentMenuItemInner = React.forwardRef<
   // Prefetch sessions on hover so expand is instant
   const handleMouseEnter = useCallback(() => {
     if (!isOpen) {
-      queryClient.prefetchQuery({
-        queryKey: ['sessions', agent.slug],
-        queryFn: async () => {
-          const res = await apiFetch(`/api/agents/${agent.slug}/sessions`)
-          if (!res.ok) throw new Error('Failed to fetch sessions')
-          return res.json()
-        },
-        staleTime: 30_000,
-      })
+      // The same bounded read, under the same key, the open row makes.
+      queryClient.prefetchQuery({ ...recentSessionsQueryOptions(queryClient, agent.slug), staleTime: 30_000 })
     }
   }, [isOpen, agent.slug, queryClient])
 
@@ -571,6 +637,17 @@ const AgentMenuItemInner = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  // View-only members can't send, so they get no new-session control; nor
+  // does the slot while it shows the ⌘-number hint.
+  const canStartSession = hint === null && canUseAgent(agent.slug)
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const startAgent = useStartAgent()
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const warmStart = () => {
+    if (warmStartEnabled && canStartSession && runtimeStatus?.runtimeReadiness.status === 'READY') {
+      startAgent.mutate({ slug: agent.slug, source: 'warm-start' })
+    }
+  }
   const dragHandlers = useSidebarFileDrop({
     kind: 'agent',
     agentSlug: agent.slug,
@@ -596,9 +673,9 @@ const AgentMenuItemInner = React.forwardRef<
           <SidebarMenuButton
             asChild
             isActive={isSelected}
-            className={cn('relative h-10 gap-1.5 overflow-visible pl-[42px]', SIDEBAR_FILE_DROP_CUE)}
+            className={cn('group/agent-row relative h-11 gap-1.5 overflow-visible pl-[50px]', SIDEBAR_FILE_DROP_CUE)}
           >
-            <div {...dragHandlers}>
+            <div {...dragHandlers} ref={rowRef}>
               {/* Stretch the native link across the row; the roster and
                   chevron sit above it as separate interactive controls. */}
               <AppLink
@@ -607,55 +684,145 @@ const AgentMenuItemInner = React.forwardRef<
                 params={{ slug: agent.displaySlug }}
                 data-testid={`agent-item-${agent.slug}`}
                 data-active={isSelected}
-                className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-item focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                <AgentLastRun date={agent.lastActivityAt} />
-              </AppLink>
-              {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
-              {/* Expose the status title above the stretched link while keeping
-                  clicks (including modifier clicks) native agent navigation. */}
-              <AppLink
-                to="/agents/$slug"
-                params={{ slug: agent.displaySlug }}
-                tabIndex={-1}
-                aria-label={`Open ${agent.name}`}
-                className="relative z-10 ml-auto flex shrink-0 items-center"
-              >
-                {hint !== null ? (
-                  <CmdHintBadge hint={hint} />
+                {/* The orb is decorative; its state still needs a text equivalent. */}
+                <span className="sr-only">, {avatarState === 'needs-input' ? 'needs input' : avatarState === 'done' ? 'unread notifications' : avatarState}. </span>
+                {/* While the avatar carries a badge, the second line says what
+                    that notification says instead of when the agent last ran. */}
+                {badgeKind && agent.notificationPreview ? (
+                  <span className="block truncate text-[11px] leading-tight text-muted-foreground/60" data-testid={`agent-notification-preview-${agent.slug}`}>
+                    {agent.notificationPreview}
+                  </span>
                 ) : (
-                  <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                  <AgentLastRun date={agent.lastActivityAt} />
                 )}
               </AppLink>
+              {/* The faces sit flush right, over the empty trailing slot (its
+                  16px plus the 6px gap); when the row's controls or ⌘-hint show,
+                  they slide left to make room for it, and the options button
+                  revealed beside the slot pushes them further. Keyboard focus
+                  only (:focus-visible), like the pen: a click on the avatar's
+                  chevron leaves focus in the row without showing the pen.
+                  Viewers also need room for the options button. */}
+              {/* Rendered for every row: the stack hides itself unless the agent
+                  has a second person or a member agent. */}
+              <SidebarMemberIndicator
+                agentSlug={agent.slug}
+                agentName={agent.name}
+                memberCount={memberCount}
+                className={cn(
+                  'transition-transform duration-200 ease-out group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
+                  hint === null && 'translate-x-[22px]',
+                )}
+              />
+              {/* The 3-dot button and the status slot travel together, so the
+                  slot holds the right edge whether or not the button shows
+                  (touch never shows it). */}
+              {/* Empty space overlaps the tucked roster: only visible controls
+                  may intercept the pointer, never this wrapper or a hidden pen. */}
+              <span className="pointer-events-none relative z-10 ml-auto flex shrink-0 items-center">
+                {hint === null && (
+                  <ContextMenuMoreButton
+                    label={`Options for ${agent.name}`}
+                    // Spill to the right: a dropdown here would cover the rows below.
+                    anchor="beside"
+                    data-testid={`agent-menu-button-${agent.slug}`}
+                    iconClassName="h-3.5 w-3.5"
+                    // Left of the status slot, so the pen that takes over the
+                    // slot doesn't move; no width until revealed, so a long name
+                    // keeps its room. mr-1.5 clears the pen, which overhangs the
+                    // w-4 slot by 4px.
+                    className="w-0 overflow-hidden text-muted-foreground hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:ring-sidebar-ring menu-revealed:mr-1.5 menu-revealed:w-6"
+                  />
+                )}
+                {/* The trailing slot holds the new-session control: hovering the
+                    row (or focusing the button) shows a pen opening the session
+                    view with an empty composer. Status lives on the avatar (its
+                    motion and AgentAvatarBadge), so the slot is otherwise empty
+                    but for the ⌘-number hint. */}
+                <span className="group/status-slot relative flex shrink-0 items-center">
+                  {/* Sits above the stretched link while keeping clicks
+                      (including modifier clicks) native agent navigation. */}
+                  <AppLink
+                    to="/agents/$slug"
+                    params={{ slug: agent.displaySlug }}
+                    tabIndex={-1}
+                    aria-label={`Open ${agent.name}`}
+                    className={cn(
+                      'flex items-center transition-opacity',
+                      hint !== null && 'pointer-events-auto',
+                      canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
+                    )}
+                  >
+                    {hint !== null ? <CmdHintBadge hint={hint} /> : <span className="w-4" />}
+                  </AppLink>
+                  {canStartSession && (
+                    <TooltipProvider delayDuration={200}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <AppLink
+                            to="/agents/$slug/sessions/new"
+                            params={{ slug: agent.displaySlug }}
+                            onPointerDown={(event) => { if (event.button === 0) warmStart() }}
+                            onClick={(event) => { if (event.detail === 0) warmStart() }}
+                            aria-label={`New session with ${agent.name}`}
+                            data-testid={`agent-new-session-${agent.slug}`}
+                            className="pointer-events-none absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:pointer-events-auto group-hover/agent-row:opacity-100"
+                          >
+                            <SquarePen className="h-3.5 w-3.5" />
+                          </AppLink>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">New session</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                </span>
+              </span>
               {/* The avatar holds the expand slot; hovering it (or focusing
-                  the toggle) swaps in the chevron, Notion-style. */}
+                  the toggle) swaps in the chevron, Notion-style, on the same 24px
+                  hover square as the new-session pen (the ::before). */}
               {hasExpandableContent ? (
                 <button
                   type="button"
                   onClick={handleChevronClick}
                   aria-label={isOpen ? 'Collapse' : 'Expand'}
                   aria-expanded={isOpen}
-                  className="group/avatar absolute left-1 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-control outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
-                  <AgentAvatar
+                  <AvatarCutout cutout={avatarCutout}>
+                    <AgentAvatar
+                      agent={agent}
+                      state={avatarState}
+                      size={AGENT_AVATAR_SIZE}
+                      followPointer={SIDEBAR_FOLLOW_REGION}
+                      className="transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0"
+                    />
+                  </AvatarCutout>
+                  <AgentAvatarBadge
                     agent={agent}
-                    state={avatarState}
-                    size={AGENT_AVATAR_SIZE}
-                    followPointer={SIDEBAR_FOLLOW_REGION}
-                    className="transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0"
+                    sessions={sessions}
+                    isOpen={isOpen}
+                    className={cn(agent.avatar && 'transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0')}
                   />
                   <ChevronRight
                     className={cn(
-                      'absolute h-3.5 w-3.5 text-sidebar-foreground opacity-0 transition-[opacity,transform] group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
+                      'absolute h-3.5 w-3.5 text-sidebar-foreground transition-[opacity,transform]',
+                      agent.avatar && 'opacity-0 group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
                       isOpen && !isDragActive && 'rotate-90'
                     )}
                   />
                 </button>
               ) : (
-                <span className="pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
-                  <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
-                </span>
+                // A div avoids SidebarMenuButton's last-span text truncation,
+                // which clips the badge overhang and the orb's animated hop.
+                <div className="pointer-events-none absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
+                  <AvatarCutout cutout={avatarCutout}>
+                    <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
+                  </AvatarCutout>
+                  <AgentAvatarBadge agent={agent} sessions={sessions} isOpen={isOpen} />
+                </div>
               )}
             </div>
           </SidebarMenuButton>
@@ -663,7 +830,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[25px]', SIDEBAR_TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-12')}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -674,6 +841,7 @@ const AgentMenuItemInner = React.forwardRef<
                         key={artifact.slug}
                         artifact={artifact}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {/* Regular sessions */}
@@ -682,21 +850,27 @@ const AgentMenuItemInner = React.forwardRef<
                         key={session.id}
                         session={session}
                         agentSlug={agent.slug}
+                        isAgentSelected={isSelected}
                       />
                     ))}
                     {hasMore && (
-                      <SidebarMenuSubItem>
+                      // `!` beats the tree connectors' `[&>li]` rules; pinned, the row covers their gutter and its ::before becomes a blurred fade.
+                      <SidebarMenuSubItem
+                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 mt-4 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
+                      >
                         <SidebarMenuSubButton
                           asChild
                           className="text-muted-foreground"
                         >
                           <button
-                            onClick={() => setShowAll((prev) => !prev)}
-                            className="w-full"
+                            onClick={toggleShowAll}
+                            aria-expanded={showAll}
+                            className="w-full focus-visible:ring-inset"
                           >
                             <span>
-                              {showAll ? 'Show less' : `Show all (${sessions?.length})`}
+                              {showAll ? 'Show less' : `Show all (${sessionTotal})`}
                             </span>
+                            <ChevronDown className={cn('ml-auto !size-3.5 transition-transform', showAll && 'rotate-180')} aria-hidden="true" />
                           </button>
                         </SidebarMenuSubButton>
                       </SidebarMenuSubItem>
@@ -733,19 +907,46 @@ if (__RENDER_TRACKING__) {
   (AgentMenuItem as any).whyDidYouRender = true
 }
 
+/**
+ * `ids`, keeping the previous array's identity while the ids and their order
+ * are unchanged. dnd-kit's SortableContext keys its context value on the
+ * identity of `items`, and a new value re-renders every `useSortable` row
+ * beneath it — on each agents refetch, every row in the section, since the
+ * list is rebuilt whenever any agent changes.
+ */
+function useSortableIds(ids: string[]): string[] {
+  const key = ids.join('\n')
+  return useMemo(() => (key ? key.split('\n') : []), [key])
+}
+
+/** One section's sortable member list. */
+function SectionAgentList({ agents }: { agents: ApiAgent[] }) {
+  const items = useSortableIds(agents.map((a) => a.slug))
+  return (
+    <SortableContext items={items} strategy={verticalListSortingStrategy}>
+      {agents.map((agent) => (
+        <SortableAgentMenuItem key={agent.slug} agent={agent} />
+      ))}
+    </SortableContext>
+  )
+}
+
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const { data: platformCountData } = usePlatformUnreadCount()
   const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
+  const unreadMentions = countData?.mentions ?? 0
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 
   return (
     <SidebarMenuButton asChild data-testid="notifications-button" isActive={isActive}>
       <AppLink to="/notifications">
-        <Bell className="h-4 w-4" />
+        <AnimatedNavIcon name="bell" className="h-4 w-4" />
         <span>Notifications</span>
-        {unreadCount > 0 && (
+        {unreadMentions > 0 ? (
+          <UnreadDot mention className="ml-auto" />
+        ) : unreadCount > 0 && (
           <span
             className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
             aria-label={`${unreadCount} unread`}
@@ -769,7 +970,7 @@ function TodoMenuButton() {
   return (
     <SidebarMenuButton asChild data-testid="todo-button" isActive={pathname === '/todo'}>
       <AppLink to="/todo">
-        <ListTodo className="h-4 w-4" />
+        <AnimatedNavIcon name="todo" className="h-4 w-4" />
         <span>Todo</span>
         {needsInput > 0 && (
           <span
@@ -782,8 +983,44 @@ function TodoMenuButton() {
   )
 }
 
+function findTeamBrainAgent(agents: ApiAgent[]): ApiAgent | undefined {
+  return agents.find((agent) => agent.teamBrain)
+}
+
+/**
+ * Team Brain (the `team-brain` experiment): its page, the pitch and set-up or,
+ * once set up, its home page; lit there and in its agent's sessions. The row
+ * carries Explore's "New" badge until opened or set up.
+ */
+function TeamBrainMenuButton() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const { data: brainAgent } = useAgents({ select: findTeamBrainAgent, poll: false })
+  const visited = pathname === '/team-brain' || (!!brainAgent && pathname.startsWith(`/agents/${brainAgent.displaySlug}`))
+  const [seen] = useState(() => localStorage.getItem(TEAM_BRAIN_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (visited) localStorage.setItem(TEAM_BRAIN_SEEN_KEY, '1')
+  }, [visited])
+
+  const label = (
+    <>
+      <AnimatedNavIcon name="brain" className="h-4 w-4" />
+      <span>Team Brain</span>
+      {!seen && !visited && !brainAgent && (
+        <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+          New
+        </span>
+      )}
+    </>
+  )
+  return (
+    <SidebarMenuButton asChild data-testid="team-brain-button" isActive={visited}>
+      <AppLink to="/team-brain">{label}</AppLink>
+    </SidebarMenuButton>
+  )
+}
+
 const userMenuItemClassName =
-  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
+  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-item hover:bg-accent transition-colors disabled:opacity-60'
 
 /**
  * The footer's primary button. With a signed-in user it is their avatar and
@@ -802,9 +1039,10 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
       <SidebarMenuButton
         onClick={onOpenSettings}
         className="w-auto"
+        style={{ paddingLeft: AGENT_AVATAR_LEFT }}
         data-testid="settings-button"
       >
-        <Settings className="h-4 w-4" />
+        <AnimatedNavIcon name="settings" className="h-4 w-4" />
         <span>Settings</span>
       </SidebarMenuButton>
     )
@@ -812,8 +1050,12 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <SidebarMenuButton className="w-auto min-w-0" data-testid="user-menu-trigger">
-          <UserAvatar user={user} size={20} className="-ml-0.5" />
+        <SidebarMenuButton
+          className="w-auto min-w-0"
+          style={{ paddingLeft: AGENT_AVATAR_LEFT }}
+          data-testid="user-menu-trigger"
+        >
+          <UserAvatar user={user} size={20} />
           <span className="truncate">{user.name || user.email}</span>
         </SidebarMenuButton>
       </PopoverTrigger>
@@ -827,7 +1069,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
           className={userMenuItemClassName}
           data-testid="settings-button"
         >
-          <Settings className="h-4 w-4" />
+          <AnimatedNavIcon name="settings" className="h-4 w-4" />
           Settings
         </button>
         <div className="-mx-1 my-1 h-px bg-border" role="separator" />
@@ -838,7 +1080,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="sign-out-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Sign out
           </button>
         ) : (
@@ -853,7 +1095,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="switch-to-local-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Use this computer
           </button>
         )}
@@ -899,7 +1141,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 function HistoryNavigationButtons() {
   const { canGoBack, canGoForward, back, forward } = useHistoryNavigation()
   const buttonClassName =
-    'h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors ' +
+    'h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground transition-colors ' +
     'hover:bg-foreground/10 hover:text-foreground disabled:cursor-default disabled:text-muted-foreground/30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/30'
 
   return (
@@ -959,31 +1201,16 @@ export function AppSidebar() {
   useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
-  const { data: agents, isLoading, error } = useAgents()
-  // Whether to offer Explore is two round trips deep — skillsets, and only then
-  // the discoverable agents they contain — so the item arrives after the rest of
-  // the nav and pushes it down on the way in. Remember the last answer for this
-  // Superagent and show that until the real one lands; `null` means "still
-  // asking", which is not the same as "no" and must not render as one.
-  const { data: skillsets } = useSkillsets()
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const marketplaceAnswer =
-    skillsets === undefined
-      ? null
-      : skillsets.length === 0
-        ? false // no skillsets, so the discoverable query never runs at all
-        : discoverableAgents === undefined
-          ? null
-          : discoverableAgents.length > 0
+  const { data: agents, isLoading, error } = useListedAgents()
+  // Whether to offer Explore waits on the skillsets, so the item arrives after
+  // the rest of the nav and pushes it down on the way in. Remember the last
+  // answer for this Superagent and show that until the real one lands; `null`
+  // means "still asking", which is not the same as "no" and must not render as one.
+  const marketplaceAnswer = useHasDiscoverableAgents()
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const todoBoardEnabled = useExperiment('todo-board')
+  const teamBrainEnabled = useExperiment('team-brain')
   const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
-  // Sticky across reloads, and read once at mount so the badge doesn't vanish
-  // out from under the pointer mid-click.
-  const [seenExplore] = useState(() => localStorage.getItem(EXPLORE_SEEN_KEY) === '1')
-  useEffect(() => {
-    if (exploreVisited) localStorage.setItem(EXPLORE_SEEN_KEY, '1')
-  }, [exploreVisited])
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -1070,6 +1297,7 @@ export function AppSidebar() {
     () => buildFolderSections(orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder),
     [orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder]
   )
+  const sectionSortableIds = useSortableIds(sections.map((s) => sortableIdForFolder(s.folder.id)))
   const hasFolders = (effectiveFolders?.length ?? 0) > 0
 
   // Drag handlers fire between renders, so they read the sections through a
@@ -1493,7 +1721,7 @@ export function AppSidebar() {
   const handleCreateAgentInFolder = useCallback((folderId: string) => {
     if (isCreatingAgent) return
     if ((collapsedFolders ?? []).includes(folderId)) handleToggleFolder(folderId)
-    void createUntitledAgent({ folderId })
+    void createUntitledAgent({ surface: 'section_plus', folderId })
   }, [isCreatingAgent, collapsedFolders, handleToggleFolder, createUntitledAgent])
 
   const isOnline = useIsOnline()
@@ -1548,7 +1776,7 @@ export function AppSidebar() {
 
           {isWindowsElectron && (
             <button
-              className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              className="app-no-drag shrink-0 p-0.5 rounded-icon hover:bg-foreground/10 transition-colors cursor-default"
               aria-label="Application menu"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect()
@@ -1573,10 +1801,10 @@ export function AppSidebar() {
                     type="button"
                     onClick={openSearch}
                     aria-label="Search"
-                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground hover:bg-foreground/10 transition-colors"
                     data-testid="search-button"
                   >
-                    <Search className="h-4 w-4 -translate-y-[1px]" />
+                    <AnimatedNavIcon name="search" className="h-4 w-4" style={{ translate: '0 -1px' }} />
                   </button>
                 </TooltipTrigger>
                 {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
@@ -1594,7 +1822,13 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="overflow-visible">
+        {/* Everything between the title bar and the footer scrolls as one:
+            the nav rows travel with the agent list rather than pinning above
+            it, so a short window gives the list the full height. */}
+        <SidebarContent
+          className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
+          data-testid="agent-list-scroll"
+        >
           <SidebarGroup className="shrink-0 p-0">
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
@@ -1629,7 +1863,7 @@ export function AppSidebar() {
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5 py-2 pt-0">
+              <SidebarMenu className="gap-0.5 pt-2 pb-0">
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild
@@ -1639,7 +1873,7 @@ export function AppSidebar() {
                     data-testid="home-button"
                   >
                     <AppLink to="/">
-                      <LayoutGrid className="h-4 w-4" />
+                      <AnimatedNavIcon name="home" className="h-4 w-4" />
                       <span>Home</span>
                     </AppLink>
                   </SidebarMenuButton>
@@ -1652,6 +1886,11 @@ export function AppSidebar() {
                     <TodoMenuButton />
                   </SidebarMenuItem>
                 )}
+                {teamBrainEnabled && (
+                  <SidebarMenuItem>
+                    <TeamBrainMenuButton />
+                  </SidebarMenuItem>
+                )}
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
@@ -1661,36 +1900,28 @@ export function AppSidebar() {
                       data-testid="marketplace-button"
                     >
                       <AppLink to="/explore">
-                        <Compass className="h-4 w-4" />
+                        <AnimatedNavIcon name="compass" className="h-4 w-4" />
                         <span>Discover New Agents</span>
-                        {/* Retires itself the first time the page is opened —
-                            a badge that says "New" forever says nothing. */}
-                        {!seenExplore && (
-                          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
-                            New
-                          </span>
-                        )}
                       </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={() => { void createUntitledAgent() }}
+                    onClick={() => { void createUntitledAgent({ surface: 'nav' }) }}
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
-                    <Plus className="h-4 w-4" />
+                    {isCreatingAgent
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <AnimatedNavIcon name="plus" className="h-4 w-4" />}
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup
-            className={cn('group/agents-group flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}
-            data-testid="agent-list-scroll"
-          >
+          <SidebarGroup className="group/agents-group shrink-0 p-0">
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (
@@ -1729,7 +1960,7 @@ export function AppSidebar() {
                         list of their own.
                       */}
                       <SortableContext
-                        items={sections.map((s) => sortableIdForFolder(s.folder.id))}
+                        items={sectionSortableIds}
                         strategy={topLevelStrategy}
                       >
                         {sections.map((section) => (
@@ -1753,14 +1984,7 @@ export function AppSidebar() {
                             onDelete={() => handleDeleteFolder(section.folder.id)}
                             onCreateAgent={() => handleCreateAgentInFolder(section.folder.id)}
                           >
-                            <SortableContext
-                              items={section.agents.map((a) => a.slug)}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              {section.agents.map((agent) => (
-                                <SortableAgentMenuItem key={agent.slug} agent={agent} />
-                              ))}
-                            </SortableContext>
+                            <SectionAgentList agents={section.agents} />
                           </AgentFolderBlock>
                         ))}
                       </SortableContext>
@@ -1778,39 +2002,45 @@ export function AppSidebar() {
                 {/*
                   Always the last thing in the list, under the sections it
                   adds to, and styled as one of them: a section header's text
-                  and chevron-sized icon, spaced like one (mt-2, as on each
+                  and chevron-sized icon, spaced like one (mt-4, as on each
                   section's block) so the gaps down the list stay uniform.
                   Unlike a header it is a plain action, so it keeps the menu
                   button's hover fill (the Electron vibrancy rules supply the
                   translucent one there) and its text and + darken on hover.
                 */}
-                <SidebarMenuItem className="mt-2">
-                  <SidebarMenuButton
-                    onClick={handleCreateFolder}
-                    className={cn(
-                      SECTION_ROW_CLASS,
-                      'group/add-section hover:bg-sidebar-accent hover:text-sidebar-foreground active:bg-sidebar-accent active:text-sidebar-foreground'
-                    )}
-                    data-testid="add-section-button"
-                  >
-                    <span className="flex shrink-0 items-center">
-                      <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
-                    </span>
-                    <span>Add section</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+                {(agents?.length ?? 0) > 0 && (
+                  <SidebarMenuItem className="mt-4">
+                    <SidebarMenuButton
+                      onClick={handleCreateFolder}
+                      className={cn(
+                        SECTION_ROW_CLASS,
+                        'group/add-section hover:bg-sidebar-accent hover:text-sidebar-foreground active:bg-sidebar-accent active:text-sidebar-foreground'
+                      )}
+                      data-testid="add-section-button"
+                    >
+                      <span className="flex shrink-0 items-center">
+                        <AnimatedNavIcon name="plus" className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                      </span>
+                      <span>Add section</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
+      {/* Full width like the agent rows, so its ends can line up with
+          theirs: the user's avatar starts where the agent avatars do (in
+          UserMenu), and the version ends 12px in, where the rows' status
+          icons end (a 10px icon centred in a 16px slot 8px in). */}
+      <SidebarFooter className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-between gap-2">
           <UserMenu onOpenSettings={() => openSettings()} />
           {isCloud && versionState.showPair && versionState.cloudVersion ? (
             <div
-              className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
+              className="flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0"
               data-testid="sidebar-version"
             >
               <button
@@ -1858,7 +2088,7 @@ export function AppSidebar() {
             <button
               type="button"
               onClick={() => openSettings('general')}
-              className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              className="inline-flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0 hover:text-foreground"
               title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
               data-testid="sidebar-version"
             >

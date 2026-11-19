@@ -68,6 +68,9 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('file:///workspace/reports/chart 1.png', 'src', node)).toBe(
       '/api/agents/my%20agent/files/reports/chart%201.png?inline=true'
     )
+    expect(transform('/workspace/reports/chart 1.png', 'src', node)).toBe(
+      '/api/agents/my%20agent/files/reports/chart%201.png?inline=true'
+    )
   })
 
   it('does not widen traversals, non-images, or file URLs outside the workspace', () => {
@@ -77,6 +80,49 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('file:///etc/passwd.png', 'src', node)).toBe('')
     // a sibling directory, not the workspace
     expect(transform('file:///workspaceX/chart.png', 'src', node)).toBe('')
+    expect(transform('/workspace/../secrets.png', 'src', node)).toBe('')
+    expect(transform('/workspace/report.txt', 'src', node)).toBe('')
+    expect(transform('/workspaceX/chart.png', 'src', node)).toBe('')
+    expect(transform('//localhost/workspace/chart.png', 'src', node)).toBe('')
+  })
+
+  // A relative src loads from the app's own origin with the user's session.
+  it('resolves a relative path only from the folder it is given', () => {
+    expect(createMarkdownUrlTransform({ agentSlug: 'a', folder: '/workspace/blog' })('shots/c.png', 'src', node)).toBe(
+      '/api/agents/a/files/blog/shots/c.png?inline=true'
+    )
+    expect(createMarkdownUrlTransform({ agentSlug: 'a' })('out/c.png', 'src', node)).toBe('')
+    expect(createMarkdownUrlTransform({ agentSlug: 'a' })('/mounts/Drive/c.png', 'src', node)).toBe(
+      '/api/agents/a/mount-files/Drive/c.png?inline=true'
+    )
+  })
+
+  it('resolves nothing without an agent to read the files of', () => {
+    expect(createMarkdownUrlTransform({ folder: '/workspace/blog' })('shots/c.png', 'src', node)).toBe('')
+    expect(createMarkdownUrlTransform({ folder: '/workspace/blog' })('notes.md', 'href', node)).toBe('notes.md')
+  })
+
+  it('gives an agent file link the file URL and records the path it opens', () => {
+    const agentFileLinks = new Map<string, string>()
+    const transform = createMarkdownUrlTransform({ agentSlug: 'a', folder: '/workspace/blog', agentFileLinks })
+    expect(transform('notes.md', 'href', node)).toBe('/api/agents/a/files/blog/notes.md')
+    expect(transform('/workspace/Q3%20report.md#x', 'href', node)).toBe('/api/agents/a/files/Q3%20report.md')
+    expect(transform('shots/', 'href', node)).toBe('/workspace/blog/shots/')
+    expect(transform('#results', 'href', node)).toBe('#results')
+    expect(transform('https://example.com/a.md', 'href', node)).toBe('https://example.com/a.md')
+    expect([...agentFileLinks]).toEqual([
+      ['/api/agents/a/files/blog/notes.md', '/workspace/blog/notes.md'],
+      ['/api/agents/a/files/Q3%20report.md', '/workspace/Q3 report.md'],
+      ['/workspace/blog/shots/', '/workspace/blog/shots/'],
+    ])
+  })
+
+  it('loads an unresolved image only from an absolute web URL', () => {
+    expect(onSrc('/api/agents/a/files/chart.png')).toBe('')
+    expect(onSrc('media/chart.png')).toBe('')
+    expect(onSrc('//example.com/chart.png')).toBe('')
+    const transform = createMarkdownUrlTransform({ agentSlug: 'a' })
+    expect(transform('/api/agents/a/files/chart.png', 'src', node)).toBe('')
   })
 
   // This used to carry its own extension list, and it had drifted from the one
@@ -84,13 +130,13 @@ describe('markdownUrlTransform (SUP-238)', () => {
   // .avif it did not preview was allowed. Both now ask the same table.
   it('inlines exactly the images a renderer here can draw', () => {
     const transform = createMarkdownUrlTransform({ agentSlug: 'a' })
-    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']) {
+    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif', 'heic', 'heif']) {
       expect(transform(`file:///workspace/chart.${ext}`, 'src', node)).toBe(
         `/api/agents/a/files/chart.${ext}?inline=true`,
       )
     }
     // image/* to a browser, undisplayable to every renderer here
-    for (const ext of ['tiff', 'heic', 'psd']) {
+    for (const ext of ['tiff', 'psd']) {
       expect(transform(`file:///workspace/chart.${ext}`, 'src', node)).toBe('')
     }
   })

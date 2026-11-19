@@ -103,7 +103,12 @@ test.describe('Provider connection lifecycle', () => {
     await page.getByTestId('settings-model-trigger').first().click()
     await page.getByRole('combobox', { name: 'Connection' }).click()
     await page.getByRole('option', { name: firstName, exact: true }).click()
+    // Wait for the nested Select to finish closing and restore focus before
+    // Escape targets the parent model picker rather than the exiting layer.
+    await expect(page.getByRole('listbox')).not.toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Connection' })).toBeFocused()
     await page.keyboard.press('Escape')
+    await expect(page.getByTestId('settings-model-trigger').first()).toHaveAttribute('aria-expanded', 'false')
     await expect
       .poll(
         async () =>
@@ -121,7 +126,10 @@ test.describe('Provider connection lifecycle', () => {
     await page.getByTestId('settings-model-trigger').first().click()
     await page.getByRole('combobox', { name: 'Connection' }).click()
     await page.getByRole('option', { name: secondName, exact: true }).click()
+    await expect(page.getByRole('listbox')).not.toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Connection' })).toBeFocused()
     await page.keyboard.press('Escape')
+    await expect(page.getByTestId('settings-model-trigger').first()).toHaveAttribute('aria-expanded', 'false')
     await firstMenu.click()
     await expect(deleteFirst).toBeEnabled()
     await deleteFirst.click()

@@ -1,4 +1,5 @@
-import { toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
+import { isFolderPath, parseMountPath, toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
+import { encodeWorkspaceFilePath, getAgentFileApiPath, localFilePath } from '@shared/lib/utils/workspace-file-url'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 /**
@@ -22,28 +23,34 @@ export function isSafeWorkspaceFilePath(filePath: string): boolean {
   return relative.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..')
 }
 
-/** Convert a container workspace path into safely encoded API path segments. */
-export function encodeWorkspaceFilePath(filePath: string): string {
-  return toWorkspaceRelativePath(filePath)
-    .split('/')
-    .filter(Boolean)
-    .map(segment => encodeURIComponent(segment))
-    .join('/')
+export { encodeWorkspaceFilePath, getAgentFileApiPath }
+
+/** Whether a container path is one of the agent's own files or folders: in its workspace or one of its drives. */
+export function isAgentFilePath(filePath: string): boolean {
+  return isSafeWorkspaceFilePath(filePath) || Boolean(parseMountPath(filePath)?.path)
 }
 
-export function getAgentFileApiPath(agentSlug: string, filePath: string): string {
-  return `/api/agents/${encodeURIComponent(agentSlug)}/files/${encodeWorkspaceFilePath(filePath)}`
+/** The workspace itself or a drive's top folder, written as a folder: `/workspace/`, `/mounts/<drive>/`. */
+function isAgentRootFolder(filePath: string): boolean {
+  return filePath === '/workspace/' || (isFolderPath(filePath) && parseMountPath(filePath)?.path === '')
+}
+
+/** The agent file or folder a path in agent markdown names, or null. A relative path resolves only from a `folder`. */
+export function resolveAgentFilePath(reference: string, folder?: string): string | null {
+  const filePath = localFilePath(reference, folder)
+  return filePath !== null && (isAgentFilePath(filePath) || isAgentRootFolder(filePath)) ? filePath : null
 }
 
 interface AgentFileUrlOptions {
   /** Ask the route to serve the bytes for display rather than as a download. */
   inline?: boolean
   /**
-   * The tab's cache-busting token. `v` is not read by the server: it exists so
-   * a redelivered file does not resolve to a URL a browser or CDN still holds
-   * the previous body for. `0` means "never redelivered" and is left off.
+   * Cache-busting token: the drawer tab's counter, or a delivery's id. `v` is
+   * not read by the server: it exists so a redelivered file does not resolve to
+   * a URL a browser or CDN still holds the previous body for. `0` or `''` means
+   * "never redelivered" and is left off.
    */
-  version?: number
+  version?: number | string
 }
 
 /** Absolute URL for a workspace file, for an `<a href>`, an `<img src>` or a fetch. */
@@ -54,7 +61,7 @@ export function getAgentFileUrl(
 ): string {
   const params = new URLSearchParams()
   if (inline) params.set('inline', 'true')
-  if (version > 0) params.set('v', String(version))
+  if (version) params.set('v', String(version))
   const query = params.toString()
   return `${getApiBaseUrl()}${getAgentFileApiPath(agentSlug, filePath)}${query ? `?${query}` : ''}`
 }

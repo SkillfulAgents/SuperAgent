@@ -5,6 +5,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { db } from '../db'
 import { llmConnections } from '../db/schema'
 import { changesOf } from '../db/batch'
+import { announceConnectionChange } from './announce-connection-change'
 import { connectionConfigSchema, parseConnectionJson } from './connection-schema'
 import { refreshGrokCredential } from './grok-oauth'
 import { refreshKimiCredential } from './kimi-oauth'
@@ -61,6 +62,9 @@ export async function resolveConnectionCredential(id: string, rejectedGeneration
       const savedFailure = await db.update(llmConnections).set({ config: JSON.stringify(failed) })
         .where(and(eq(llmConnections.id, id), eq(llmConnections.config, claimedJson), eq(llmConnections.generation, row.generation))).run()
       if (!changesOf(savedFailure)) continue // A reconnect/deletion won; inspect its state.
+      // Every list of connections now shows it as needing a reconnect. A
+      // failure that will be retried changes nothing a list shows.
+      if (safe.status === 401) announceConnectionChange(row)
       throw safe
     }
   }

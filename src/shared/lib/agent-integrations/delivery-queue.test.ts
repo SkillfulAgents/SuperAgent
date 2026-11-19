@@ -1,5 +1,6 @@
-import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { DeliveryError } from '../agent-actor/delivery-errors'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
@@ -21,6 +22,7 @@ let reconcile: ReturnType<typeof vi.fn<(row: DeliveryRecord) => Promise<boolean>
 let notice: ReturnType<typeof vi.fn<(row: DeliveryRecord) => Promise<void>>>
 function queue() {
   const result = new IntegrationDeliveryQueue({ connectedIds: () => available ? ['integration'] : [], dispatch, reconcile, notice })
+  registerTasks(result)
   queues.push(result); return result
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }
@@ -165,7 +167,7 @@ describe('durable integration delivery (common SQL path)', () => {
   })
   it('retries a definite pre-acceptance refusal but not an unknown transport failure', async () => {
     dispatch.mockImplementationOnce(async (_row, attempt) => {
-      await attempt.handoff('runtime-session', async () => { throw new MessageNotAcceptedError('unavailable', 'not running') })
+      await attempt.handoff('runtime-session', async () => { throw new DeliveryError('unavailable', 'not running') })
     })
     const q = queue(); await q.start(); await q.accept('integration', event(), route)
     await settled({ state: 'pending', attempts: 1 })
@@ -175,7 +177,7 @@ describe('durable integration delivery (common SQL path)', () => {
   it.each([400, 503])('settles a confirmed creation rejection as failed/retryable, never uncertain (HTTP %s)', async status => {
     dispatch.mockImplementationOnce(async (_row, attempt) => {
       await attempt.handoff(undefined, async () => {
-        throw Object.assign(new MessageNotAcceptedError('rejected', 'Runtime rejected before submission'), { status })
+        throw new DeliveryError('rejected', 'Runtime rejected before submission', { status })
       })
     })
     const q = queue(); await q.start(); await q.accept('integration', event(), route)

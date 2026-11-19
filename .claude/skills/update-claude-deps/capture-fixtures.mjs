@@ -15,7 +15,8 @@
 //   flags: --model <id> (default claude-haiku-4-5-20251001), --out <dir>, --keep-going
 //
 // Each scenario writes __fixtures__/sdk<version>-<name>/{stream-input.jsonl,
-// metadata.json}. A new directory also needs an entry in FIXTURE_EXPECTATIONS
+// metadata.json}; one that sets snapshotTranscripts also writes the session's
+// subagent transcripts (fs-snapshot/) and lead transcript. A new directory also needs an entry in FIXTURE_EXPECTATIONS
 // (agent-container/src/session-settlement.test.ts) — the discovery test fails
 // until it has one, which is the point: someone has to decide what the
 // tracker should conclude from the new shape.
@@ -76,6 +77,29 @@ const SCENARIOS = [
       'Step 1: use the Agent tool exactly once with subagent_type "general-purpose", run_in_background: true, description "word probe", and prompt "Reply with the single word alpha." ' +
       'Reply "launched" and end your turn. Step 2: when you are notified that the agent finished, use the SendMessage tool to send that same agent the message "Reply with the single word beta." ' +
       'Reply "resumed" and end your turn. Step 3: when you are notified it finished again, reply with the single word "done".',
+  },
+  {
+    name: 'fork-subagent',
+    description:
+      'The lead runs a Bash step, then launches a fork (Agent subagent_type "fork", CLI 2.1.302+) that runs its own Bash; the lead turn ends while it runs, then the completion wake turn. Snapshots the transcripts: the fork\'s opens with the parent\'s launching entry and its directive.',
+    prompt:
+      'Step 1: use the Bash tool to run `echo parent-step-one`. ' +
+      'Step 2: use the Agent tool exactly once with subagent_type "fork", description "fork probe", and prompt ' +
+      '"Run the Bash command `echo forked-child` and report its output in one line." ' +
+      'Then reply with the single word "launched" and end your turn. When you are later notified that the fork finished, reply with the single word "done".',
+    snapshotTranscripts: true,
+  },
+  {
+    name: 'fork-sendmessage-resumed',
+    description:
+      'A fork completes, then the lead resumes it with SendMessage; the second run appends to the fork transcript after its first.',
+    prompt:
+      'Step 1: use the Bash tool to run `echo parent-step-one`. ' +
+      'Step 2: use the Agent tool exactly once with subagent_type "fork", description "fork probe", and prompt "Reply with the single word alpha." ' +
+      'Reply "launched" and end your turn. Step 3: when you are notified that the fork finished, use the SendMessage tool to send that same agent ' +
+      'the message "Run the Bash command `echo second-run` and reply with its output." Reply "resumed" and end your turn. ' +
+      'Step 4: when you are notified it finished again, reply with the single word "done".',
+    snapshotTranscripts: true,
   },
 ];
 
@@ -170,6 +194,7 @@ async function capture(scenario) {
   const lines = [];
   const open = new Map(); // task_id -> {taskId, taskType, startedT, prematureIdleT, realCompletionT}
   const tasks = [];
+  const subagents = [];
   let results = 0;
   let sessionId;
   let interruptT = null;
@@ -203,6 +228,9 @@ async function capture(scenario) {
     if (frame.type !== 'system') continue;
     switch (frame.subtype) {
       case 'task_started': {
+        if (frame.task_type === 'local_agent' && !subagents.some((s) => s.agentId === frame.task_id)) {
+          subagents.push({ parentToolId: frame.tool_use_id, taskId: frame.task_id, agentId: frame.task_id, subagentType: frame.subagent_type, description: frame.description });
+        }
         const rec = { taskId: frame.task_id, taskType: frame.task_type, startedT: t, prematureIdleT: null, realCompletionT: null };
         if (frame.parent_task_id) rec.parentTaskId = frame.parent_task_id;
         open.set(frame.task_id, rec);
@@ -255,7 +283,7 @@ async function capture(scenario) {
     capturedAt: new Date().toISOString().slice(0, 10),
     model,
     startActive: true,
-    subagents: [],
+    subagents,
     source:
       'capture-fixtures.mjs (.claude/skills/update-claude-deps): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; host capture wrapper (t = ms since start, message.content = SDK frame)',
     description: `Real capture (SDK ${sdkVersion} / CLI ${cliVersion}). ${scenario.description}`,
@@ -265,7 +293,30 @@ async function capture(scenario) {
     totalEntries: lines.length,
   };
   fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify(metadata, null, 2) + '\n');
+  if (scenario.snapshotTranscripts) snapshotTranscripts(configDir, sessionId, dir);
   console.log(`[${scenario.name}] ${lines.length} frames, ${tasks.length} task(s), settled ${settledAt ?? 'never'} → ${path.relative(repoRoot, dir)}`);
+}
+
+// The session's subagents directory goes to fs-snapshot/ verbatim (the shape
+// the host reads through the subagent messages route), and the lead transcript
+// to lead-transcript.jsonl with only its message chain (entries with a uuid; a
+// fork's fork-context-ref names one, often an attachment): the CLI's
+// api-request-* bookkeeping is ~100 KB the host never reads.
+function snapshotTranscripts(configDir, sessionId, dir) {
+  const projectsDir = path.join(configDir, 'projects');
+  const [project] = fs.readdirSync(projectsDir);
+  const sessionDir = path.join(projectsDir, project, sessionId);
+  const subagentsDir = path.join(sessionDir, 'subagents');
+  const snapDir = path.join(dir, 'fs-snapshot');
+  fs.mkdirSync(snapDir, { recursive: true });
+  for (const name of fs.existsSync(subagentsDir) ? fs.readdirSync(subagentsDir) : []) {
+    if (/^agent-[\w-]+\.(jsonl|meta\.json)$/.test(name)) fs.copyFileSync(path.join(subagentsDir, name), path.join(snapDir, name));
+  }
+  const lead = fs
+    .readFileSync(`${sessionDir}.jsonl`, 'utf8')
+    .split('\n')
+    .filter((line) => line && typeof JSON.parse(line).uuid === 'string');
+  fs.writeFileSync(path.join(dir, 'lead-transcript.jsonl'), lead.join('\n') + '\n');
 }
 
 function fail(msg) {

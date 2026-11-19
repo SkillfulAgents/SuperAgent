@@ -1,15 +1,19 @@
 import { SessionChatColumn } from './session-chat-column'
+import { pickRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
-import { CalendarClock, GitFork, Wrench, Zap } from 'lucide-react'
+import { CalendarClock, GitFork, Plug, Wrench, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
-import { useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
 import { HttpError } from '@renderer/lib/api'
 import { SessionNotFound } from '@renderer/router/route-fallbacks'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import type { MessageTarget } from '@renderer/components/messages/locate-message'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
-import { usePendingMessages } from '@renderer/context/pending-messages-context'
+import { useAgentIntegration, useSessionAgentIntegrationId } from '@renderer/hooks/use-agent-integrations'
+import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
+import { usePendingMessages, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
@@ -18,28 +22,32 @@ import { SessionSearchBar } from '@renderer/components/messages/session-search-b
 
 interface SessionViewProps {
   agentSlug: string
-  sessionId: string
+  sessionId: string | null
+  onSessionCreated?: PendingMessagesContextValue['onSessionCreated']
 }
 
 /**
- * The session leaf (sessionRoute, `/agents/$slug/sessions/$sessionId`). Renders
+ * The session leaf, including `/sessions/new` with a null sessionId. Renders
  * the chat column, the per-session search bar, and the automated-session
  * indicator banners (which link back to the originating trigger/schedule).
  *
- * `FilePreviewProvider` wraps ONLY this leaf: files are session-specific, so it
- * must remount/clear when the route's `sessionId` changes. The optimistic
+ * `FilePreviewProvider` wraps this view. SessionRoute keeps it through first
+ * send, and remounts it when navigating to a different session or fresh draft. The optimistic
  * `pendingMessagesRef` + two-holder `useMessageStream` live one level up in
  * `AgentShell`, so they survive leaving this leaf for a sibling sub-view and
  * coming back.
  */
-export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
+export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSessionCreated }: SessionViewProps) {
   useRenderTracker('SessionView')
   const navigate = useNavigate()
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
+  const { data: integrationId } = useSessionAgentIntegrationId(agentSlug, sessionId)
+  const { data: integration } = useAgentIntegration(integrationId ?? null)
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const clearSessionUnread = useClearSessionUnread()
   const {
+    onSessionCreated,
     getPendingMessages,
     onMessageSent,
     onMessageUuidAssigned,
@@ -48,14 +56,26 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   } = usePendingMessages()
   const { canUseAgent } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
-  const search = useSessionSearch(true, sessionId)
+  const search = useSessionSearch(!!sessionId, sessionId)
+
+  // A mention's click target: the transcript lands on that message once, then the URL drops it.
+  const routeSearch: { message?: unknown } = useSearch({ strict: false })
+  const targetMessageId = typeof routeSearch.message === 'string' ? routeSearch.message : undefined
+  const settleTarget = useCallback(() => {
+    void navigate({ to: '.', search: (prev: Record<string, unknown>) => ({ ...prev, message: undefined }), replace: true })
+  }, [navigate])
+  const messageTarget = useMemo<MessageTarget | undefined>(
+    () => (targetMessageId ? { id: targetMessageId, onSettled: settleTarget } : undefined),
+    [targetMessageId, settleTarget],
+  )
 
   // Context usage: prefer live stream data, fall back to persisted session metadata
-  const contextUsage = streamContextUsage ?? session?.lastUsage ?? null
+  const contextUsage = sessionId ? streamContextUsage ?? session?.lastUsage ?? null : null
   const contextPercent = contextUsage ? computeContextPercent(contextUsage) : null
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
+    if (!sessionId) return
     const clearWrites = () => {
       markSessionNotificationsRead.mutate(sessionId)
       // "Mark as unread" survives until the session is *reopened*, so it clears
@@ -81,6 +101,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
 
   // Also mark notifications as read when the tab regains focus while viewing it
   useEffect(() => {
+    if (!sessionId) return
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         markSessionNotificationsRead.mutate(sessionId)
@@ -95,6 +116,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   // (optimistic ghost in flight while the backend catches up) never flashes
   // not-found — and the agent-level loader has already gated access.
   if (
+    sessionId &&
     sessionError instanceof HttpError &&
     sessionError.status === 404 &&
     getPendingMessages(sessionId).length === 0
@@ -130,6 +152,24 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
           }}
         />
       )}
+      {sessionId && integrationId && (
+        <SessionProvenanceBanner
+          icon={Plug}
+          text={<>Session from {integration ? `${formatProviderName(integration.provider)} integration${integration.name ? ` "${integration.name}"` : ''}` : 'agent integration'}</>}
+          back={{
+            label: 'View integration',
+            onClick: () => {
+              void navigate({
+                to: '/agents/$slug/chat/$integrationId',
+                params: { slug: agentSlug, integrationId },
+                search: { session: sessionId },
+              })
+            },
+            testId: 'integration-session-back-button',
+          }}
+          testId="integration-session-banner"
+        />
+      )}
       {session?.isWidgetRepair && (
         <SessionProvenanceBanner
           icon={Wrench}
@@ -159,20 +199,19 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
         />
       )}
 
-      <FilePreviewProvider>
+      <FilePreviewProvider sessionAgentSlug={agentSlug} commentsEnabled={!isViewOnly}>
         <WorkflowProvider>
           <div className="flex-1 flex flex-col min-h-0">
-            <SessionSearchBar search={search} />
+            {sessionId && <SessionSearchBar search={search} />}
             <SessionChatColumn
               sessionId={sessionId}
+              onSessionCreated={handleSessionCreated ?? onSessionCreated}
               agentSlug={agentSlug}
               agentId={session?.agentSlug}
               pendingUserMessages={getPendingMessages(sessionId)}
               isViewOnly={isViewOnly}
               contextPercent={contextPercent}
-              effort={session?.effort}
-              speed={session?.speed}
-              model={session?.model} llmProviderId={session?.llmProviderId}
+              runtimeOptions={session ? pickRuntimeOptions(session) : undefined}
               onPendingMessageAppeared={onPendingMessageAppeared}
               onMessageSent={onMessageSent}
               onMessageUuidAssigned={onMessageUuidAssigned}
@@ -183,6 +222,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               pendingWakeTaskId={session?.pendingWakeTaskId}
               pendingWakeNote={session?.pendingWakeNote}
               pendingWakeSummary={session?.pendingWakeSummary}
+              messageTarget={messageTarget}
             />
           </div>
         </WorkflowProvider>

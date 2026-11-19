@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { UserInputRequestKind } from '@shared/lib/tools/requests/request-schema'
-import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
+import { EFFORT_LEVELS, SPEED_LEVELS } from '@shared/lib/container/types'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.
@@ -40,6 +41,33 @@ const runtimeFields = {
   speed: z.enum(SPEED_LEVELS).nullable().optional(),
 }
 
+const attachmentBase = {
+  id: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  mimeType: z.string().max(200),
+}
+
+/** A file or folder already in the draft agent's workspace, or a mount path bound at Start. */
+export const todoAttachmentSchema = z.discriminatedUnion('kind', [
+  z.object({ ...attachmentBase, kind: z.literal('file'), path: z.string().min(1).max(4096) }).strict(),
+  z.object({ ...attachmentBase, kind: z.literal('folder'), path: z.string().min(1).max(4096) }).strict(),
+  z.object({ ...attachmentBase, kind: z.literal('mount'), hostPath: z.string().min(1).max(4096) }).strict(),
+])
+export type TodoAttachment = z.infer<typeof todoAttachmentSchema>
+
+export const todoAttachmentsSchema = z.array(todoAttachmentSchema).max(100)
+
+/** The list on the row. A bad value reads as none, so one bad write cannot blank the board. */
+export function parseTodoAttachments(raw: string): TodoAttachment[] {
+  try {
+    const parsed = todoAttachmentsSchema.safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data : []
+  } catch {
+    return []
+  }
+}
+
 export const createTodoSchema = z
   .object({
     title: titleSchema,
@@ -67,9 +95,11 @@ export const updateTodoSchema = z
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
     ...runtimeFields,
+    attachments: todoAttachmentsSchema.optional(),
   })
   .strict()
   .refine((patch) => !(patch.newAgent && patch.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
+  .refine((patch) => !(patch.newAgent && patch.attachments?.length), { message: 'A new agent has no workspace to attach files to' })
 export type UpdateTodoInput = z.infer<typeof updateTodoSchema>
 
 /** Puts a session that already exists on the board, titled by the person (the session's name by default). */
@@ -167,9 +197,11 @@ const ASK_BY_KIND: Record<UserInputRequestKind, TodoAsk> = {
   mcp_reauth_required: 'reconnect',
   connected_account: 'connect',
   remote_mcp: 'connect',
+  integration_setup: 'connect',
   secret: 'info',
   file: 'info',
   browser_input: 'info',
+  login: 'info',
 }
 
 /** The ask for a session's open requests: the oldest one that blocks it. */
@@ -186,19 +218,18 @@ export const TODO_ASK_LABELS: Record<TodoAsk, string> = {
   info: 'Needs info',
 }
 
-/** What the list endpoint returns per item. Times are epoch milliseconds. */
-export interface TodoView {
+/**
+ * What the list endpoint returns per item. Times are epoch milliseconds. Its
+ * runtime options are what was picked to run it on; each null starts it on
+ * the agent's default.
+ */
+export interface TodoView extends StoredRuntimeOptions {
   id: string
   title: string
   description: string
   agentSlug: string | null
   /** A draft to be given to an agent created for it when it starts. */
   newAgent: boolean
-  /** What was picked to run it on; each null starts it on the agent's default. */
-  model: string | null
-  llmProviderId: string | null
-  effort: EffortLevel | null
-  speed: SpeedLevel | null
   sessionId: string | null
   status: TodoStatus
   column: TodoColumn
@@ -210,6 +241,8 @@ export interface TodoView {
   ask: TodoAsk | null
   /** When its session is scheduled to resume on its own, if it is. */
   pendingWakeAt: number | null
+  /** Files held with the item. The list freezes at Start, like the brief. */
+  attachments: TodoAttachment[]
   createdAt: number
   updatedAt: number
   startedAt: number | null

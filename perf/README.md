@@ -34,10 +34,11 @@ CI uploads as an artifact.
 
 | File | Role |
 |---|---|
-| `nfs-shim.ts` | Wraps `fs.promises.*` and `FileHandle#read/stat/readFile` with latency + counters, and the sync entry points with counters. Installed once, disabled outside `measure()`. |
+| `nfs-shim.ts` | Wraps `fs.promises.*` and `FileHandle#read/stat/readFile/write/sync` with latency + counters, and the sync entry points with counters. Installed once, disabled outside `measure()`. `NFS_SIM_TRACE=1` prints each counted operation with its path. |
 | `fixtures.ts` | Deterministic seeding (`PROFILES.small`, `PROFILES.big`), with hidden automations, metadata-only sessions, SDK subagent artifacts, artifacts, and a pre-written ownership index. |
 | `harness.ts` | `bootPerfApp()` (seeds, boots the router, sends one unmeasured warm-up request), `measure()`, `expectWithinBudget()`. |
 | `home-scenarios.ts` | The iOS home-page scenarios, parameterised by profile. |
+| `session-send.perf.ts` | Creating a session and sending it messages: operations before the container has the message, and to the response. |
 | `*.perf.ts` | One file per profile: calls the scenario definition with that profile's budgets. Each file runs in its own fork, so profiles share no process state. |
 | `../vitest.perf.config.ts` | Separate config: `perf/**/*.perf.ts`, single fork, no concurrency. |
 
@@ -63,9 +64,16 @@ adds to it), so give it room for a busy runner.
 1. Seed what you need in `fixtures.ts` (keep it deterministic — PRNG, fixed
    timestamps via `utimes`, ownership index written up front).
 2. `const { result, measurement } = await measure(() => perf.request(url))`.
+   A route that leaves fire-and-forget work running when it responds (a
+   rename, a background read) takes `measure(fn, { settle: true })`, which
+   keeps counting until the filesystem goes quiet; otherwise that work lands
+   in the counts in part, differently on every run.
 3. Assert correctness on `result` first (this is the only place the whole
    chain runs on a real filesystem; the route unit tests mock the services).
 4. `expectWithinBudget(label, measurement, budget)`.
+
+To find out which call an operation belongs to, run the file with
+`NFS_SIM_TRACE=1`.
 
 ## Agent avatar browser benchmark
 

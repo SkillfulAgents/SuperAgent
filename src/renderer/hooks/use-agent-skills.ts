@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked } from '@renderer/lib/upload'
 import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillWithStatus, ApiDiscoverableSkill } from '@shared/lib/types/api'
@@ -33,7 +34,7 @@ export function useAgentSkills(agentSlug: string | null) {
     agentSkillAutoRefreshAt.set(agentSlug, Date.now())
 
     let cancelled = false
-    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/refresh`, { method: 'POST' })
+    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/refresh?background=1`, { method: 'POST' })
       .then(async (res) => {
         if (cancelled || !res.ok) return
         const fresh = await res.json() as { skills: ApiSkillWithStatus[] }
@@ -292,18 +293,10 @@ export function useImportSkillZip() {
   >({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, file }) => {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const res = await apiFetch(
-        `/api/agents/${encodeURIComponent(agentSlug)}/skills/import-zip`,
-        { method: 'POST', body: formData },
-      )
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to import skill')
-      }
-      return res.json()
+      return uploadFileChunked<{ skillDir: string; skillName: string }>({
+        url: `/api/agents/${encodeURIComponent(agentSlug)}/skills/import-zip`,
+        file,
+      })
     },
     onSuccess: (_, vars) => {
       queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })

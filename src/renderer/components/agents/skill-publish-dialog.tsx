@@ -147,7 +147,7 @@ export function SkillPublishDialog({
                         type="button"
                         disabled={!publishable}
                         className={cn(
-                          'w-full text-left p-3 rounded-lg transition-colors',
+                          'w-full text-left p-3 rounded-card transition-colors',
                           publishable
                             ? 'bg-muted/50 hover:bg-muted'
                             : 'cursor-not-allowed bg-muted/30 opacity-70',

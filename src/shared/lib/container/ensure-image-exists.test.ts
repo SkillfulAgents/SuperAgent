@@ -102,16 +102,17 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 const pullImageMock = vi.fn((_runner: string, _image: string) => Promise.resolve())
 const buildImageMock = vi.fn((_runner: string, _image: string) => Promise.resolve())
-const checkImageExistsMock = vi.fn((_runner: string, _image: string) => Promise.resolve(false))
+const checkImageExistsMock = vi.fn((_runner: string, _image: string, _opts?: { timeoutMs?: number }) => Promise.resolve(false))
 let canBuild = false
 let availableDiskBytes = 100 * 1024 * 1024 * 1024
 vi.mock('./client-factory', () => ({
   canBuildImage: vi.fn(() => canBuild),
   pullImage: (runner: string, image: string) => pullImageMock(runner, image),
   buildImage: (runner: string, image: string) => buildImageMock(runner, image),
-  checkImageExists: (runner: string, image: string) => checkImageExistsMock(runner, image),
+  checkImageExists: (runner: string, image: string, opts?: { timeoutMs?: number }) => checkImageExistsMock(runner, image, opts),
   getAvailableDiskSpace: vi.fn(() => Promise.resolve(availableDiskBytes)),
   MIN_IMAGE_DISK_SPACE_BYTES: 5 * 1024 * 1024 * 1024,
+  IMAGE_COMMAND_TIMEOUT_MS: 60_000,
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -126,7 +127,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: vi.fn(() => ({
+  activeLlmProviderFrom: vi.fn(() => ({
     getContainerEnvVars: () => ({}),
   })),
 }))
@@ -215,6 +216,22 @@ describe('ensureImageExists via start()', () => {
     expect(buildExecAttempted()).toBe(false)
   })
 
+  it('reads the settings once per start, and none when the caller hands in what it read for the start', async () => {
+    const { getSettings } = await import('@shared/lib/config/settings')
+    const reads = vi.mocked(getSettings)
+    const startSettings = await reads()
+    // The image is missing, so the create path (runner, image) runs too.
+    inspectScript = [IMAGE_MISSING_INSPECT_MSG]
+    reads.mockClear()
+    await makeClient().start({ settings: startSettings })
+    expect(reads).not.toHaveBeenCalled()
+    expect(pullImageMock).toHaveBeenCalledWith('docker', IMAGE)
+
+    inspectScript = [IMAGE_MISSING_INSPECT_MSG]
+    await makeClient().start()
+    expect(reads).toHaveBeenCalledTimes(1)
+  })
+
   it('returns the health-validated port and clears stale state with one force-remove', async () => {
     const info = await makeClient().start()
 
@@ -280,7 +297,8 @@ describe('ensureImageExists via start()', () => {
 
     await makeClient().start()
 
-    expect(checkImageExistsMock).toHaveBeenCalledWith('docker', IMAGE)
+    // Bounded, so a create that failed because the runtime stopped answering still reaches recovery.
+    expect(checkImageExistsMock).toHaveBeenCalledWith('docker', IMAGE, { timeoutMs: 60_000 })
   })
 
   it('propagates the pull error when the image is genuinely missing and the pull fails', async () => {

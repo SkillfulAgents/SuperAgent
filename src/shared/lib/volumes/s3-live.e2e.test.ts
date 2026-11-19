@@ -14,11 +14,11 @@ import { serve, type ServerType } from '@hono/node-server'
 import { AbortMultipartUploadCommand, DeleteObjectsCommand, GetObjectCommand, ListMultipartUploadsCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3'
 import { s3InputConfigSchema, type S3InputConfig } from './s3-schema'
 import { S3MountableVolume, S3_PART_BYTES } from './s3-mountable-volume'
-import { S3VolumeClient } from './s3-client'
+import { S3VolumeClient, sealedS3Access } from './s3-client'
 import { validateS3Volume } from './s3-validation'
 
 let volume: S3MountableVolume
-vi.mock('@shared/lib/services/mount-service', () => ({ resolveVolume: async (agent: string, id: string) => agent === 's3-test' && id === 's3-test' ? volume : null }))
+vi.mock('@shared/lib/services/mount-service', () => ({ resolveVolume: async (agent: string, id: string) => agent === 's3-test' && id === 's3-test' ? { ops: volume, readOnly: false } : null }))
 vi.mock('../../../api/middleware/auth', () => ({ IsAgent: (): MiddlewareHandler => async (c, next) => {
   if (c.req.header('Authorization') !== 'Bearer s3-live-test') return c.body(null, 401)
   c.set('agentSlug' as never, 's3-test' as never); return next()
@@ -43,11 +43,11 @@ describe.skipIf(!enabled)('live S3 bucket and mounted filesystem', () => {
   let config: S3InputConfig, client: S3VolumeClient
   let server: ServerType | undefined
   let container: string | undefined
-  beforeAll(() => {
+  beforeAll(async () => {
     const input = s3InputConfigSchema.parse(JSON.parse(readFileSync(process.env.S3_TEST_CONFIG!, 'utf8')))
     if (!input.prefix) throw new Error('Live testing requires an explicit test prefix')
     config = { ...input, prefix: `${input.prefix}/run-${randomUUID()}` }
-    client = new S3VolumeClient(config)
+    client = new S3VolumeClient(await sealedS3Access(config))
     volume = new S3MountableVolume(randomUUID(), 'S3 Test', config)
     console.log('Live S3 test prefix:', config.prefix)
   })
@@ -115,7 +115,7 @@ describe.skipIf(!enabled)('live S3 bucket and mounted filesystem', () => {
     const port = (server.address() as AddressInfo).port
     container = `gamut-s3-test-${randomUUID().slice(0, 8)}`
     await docker('run', '-d', '--name', container, '--cap-add', 'SYS_ADMIN', '--device', '/dev/fuse', '--security-opt', 'apparmor:unconfined', '--add-host', 'host.docker.internal:host-gateway', '--user', 'root', '--entrypoint', 'bash', process.env.S3_TEST_IMAGE!, '-lc',
-      `mkdir -p /tmp/s3-mount && exec rclone mount2 :webdav: /tmp/s3-mount --webdav-url http://host.docker.internal:${port}/api/volumes/s3-test/ --webdav-bearer-token s3-live-test --webdav-vendor rclone --vfs-cache-mode full --vfs-write-back 1s --dir-cache-time 30s --attr-timeout 0s --vfs-handle-caching 0 --cache-dir /tmp/s3-cache --log-level INFO`)
+      `mkdir -p /tmp/s3-mount && exec rclone mount2 :webdav: /tmp/s3-mount --webdav-url http://host.docker.internal:${port}/api/volumes/s3-test/ --webdav-bearer-token s3-live-test --webdav-vendor rclone --vfs-cache-mode full --vfs-write-back 1s --dir-cache-time 5m --attr-timeout 0s --vfs-handle-caching 0 --cache-dir /tmp/s3-cache --log-level INFO`)
     const shell = (script: string) => docker('exec', container!, 'bash', '-lc', script)
     await waitFor(async () => (await shell('mountpoint /tmp/s3-mount')).includes('is a mountpoint'))
     await shell(`python3 - <<'PY'

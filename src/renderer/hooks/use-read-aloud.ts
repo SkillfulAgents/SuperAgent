@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 'react'
 import { readAloud, voiceStreamId, READ_ALOUD_IDLE as IDLE, type ReadAloudStatus } from '@renderer/lib/voice/services/read-aloud'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 export function useIsReadAloudAvailable(): boolean {
   return useSyncExternalStore(readAloud.subscribe, readAloud.isAvailable, readAloud.isAvailable)
@@ -77,7 +78,6 @@ export function useSpokenWordHighlight(
     let spans: HTMLElement[] = []
     const indexOf = (span: HTMLElement) => Number(span.dataset.spokenWord)
     let lit = 0 // spans[0..lit) carry data-spoken
-    let frame = 0
     const collect = () => {
       for (const span of spans) delete span.dataset.spoken
       spans = Array.from(root.querySelectorAll<HTMLElement>('[data-spoken-word]'))
@@ -94,12 +94,13 @@ export function useSpokenWordHighlight(
       const cursor = Math.floor(getCursor())
       for (; lit < spans.length && indexOf(spans[lit]) <= cursor; lit++) spans[lit].dataset.spoken = ''
       for (; lit > 0 && indexOf(spans[lit - 1]) > cursor; lit--) delete spans[lit - 1].dataset.spoken
-      frame = requestAnimationFrame(tick)
     }
-    frame = requestAnimationFrame(tick)
+    // Live: the reading goes on without the window's focus, and the lit words with it. A
+    // word lasts far longer than a thirtieth of a second (ambient-frames.ts).
+    const stop = subscribeToAmbientFrames(tick, { kind: 'live', fps: 30 })
 
     return () => {
-      cancelAnimationFrame(frame)
+      stop()
       observer?.disconnect()
       for (const span of spans) delete span.dataset.spoken
     }

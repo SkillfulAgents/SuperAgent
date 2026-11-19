@@ -1,15 +1,27 @@
 /**
- * SlackConnector — Slack Bot integration via @slack/bolt Socket Mode.
+ * SlackConnector — Slack Bot integration via @slack/bolt.
  *
- * Uses WebSocket (Socket Mode) for Electron compatibility — no webhooks.
+ * Each connection receives Slack's events one of two ways. Over Socket Mode
+ * (a WebSocket the app-level token opens), or, once the installation's
+ * webhooks are set up and the app posts to them, through the host's webhook
+ * relay, which holds what arrives while the host is away. Both feed the same
+ * Bolt handlers. See slack-webhooks.ts.
  * Supports streaming via chat.update with throttling.
  * User request cards rendered as Block Kit components.
- * Typing indicator via emoji reactions (Slack doesn't support bot typing).
+ * Working indicator via Slack's status line under the user's message (assistant.threads.setStatus).
  */
 
-import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
+import { App as SlackApp, SocketModeReceiver, type BlockAction, type Receiver, type types as SlackTypes } from '@slack/bolt'
+import { z } from 'zod'
+import { Marked, type Token, type Tokens } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
+import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
+import type { IntegrationRelayAttachment, IntegrationRelayBinding } from '../agent-integrations/transport'
+import { relayAcceptResult } from '../agent-integrations/relay-transport'
+import type { RelayAcceptResult, RelayEvent } from '../webhook-relay'
+import type { SlackConfig as StoredSlackConfig } from './config-schema'
+import { checkSlackWebhook, recordSlackAppId, recordSlackWebhookStatus, slackRequestKey } from './slack-webhooks'
 import {
   ChatAgentIntegration,
   isMultiPartyChatType,
@@ -18,30 +30,32 @@ import {
   type ChatDirectoryPage,
   type ChatDirectoryUser,
   type ChatClassifyContext,
+  type IncomingMessage,
   type OutgoingMessage,
   type SystemPromptContext,
+  type ToolOutcome,
+  type SendFileOptions,
 } from './chat-agent-integration'
+import { NoImageError } from './chat-visuals'
 import { buildSessionContextPrompt } from './chat-session-context'
+import { SLACK_AGENT_INSTRUCTIONS } from './definitions'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
-import { isUnrecoverableSlackError } from './slack-error'
+import { isSlackBlocksRejection, isSlackFileNotReady, isUnrecoverableSlackError } from './slack-error'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
-export interface SlackConfig {
-  botToken: string
-  appToken: string
-  channelId?: string
-  onlyMentioned?: boolean
-  answerInThread?: boolean
-  newSessionPerThread?: boolean
-}
+export type SlackConfig = StoredSlackConfig
 
 // ── Slack limits ────────────────────────────────────────────────────────
 
 const MAX_MESSAGE_LENGTH = 3000 // Slack's mrkdwn rendering gets unreliable past ~4000; be conservative
+const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown block limit
+const SLACK_TABLE_MAX_ROWS = 100 // header included; Slack drops the rest silently
+const SLACK_TABLE_MAX_COLUMNS = 20
 
 // ── Markdown → Slack mrkdwn ─────────────────────────────────────────────
 
@@ -90,8 +104,17 @@ export function markdownToSlackMrkdwn(md: string): string {
   // Blockquotes: > text → > text (Slack supports this natively)
   // Already compatible, no change needed
 
-  // Tables: convert to monospace pre block
-  result = result.replace(
+  result = tablesToMonospace(result)
+
+  // Clean up excessive newlines
+  result = result.replace(/\n{3,}/g, '\n\n')
+
+  return result.trim()
+}
+
+/** Tables as monospace blocks: Slack's plain-text fallback drops its own tables' content. */
+function tablesToMonospace(md: string): string {
+  return md.replace(
     /(?:^[|].*[|]$\n?)+/gm,
     (match) => {
       const lines = match.trim().split('\n')
@@ -120,17 +143,29 @@ export function markdownToSlackMrkdwn(md: string): string {
         }
       }
       out += '```'
-      return out
+      // Keep the newline the match consumed: a closing fence needs its own line.
+      return match.endsWith('\n') ? out + '\n' : out
     },
   )
+}
 
-  // Clean up excessive newlines
-  result = result.replace(/\n{3,}/g, '\n\n')
+const slackMarked = new Marked({ async: false, gfm: true })
+const isTable = (token: Token): token is Tokens.Table => token.type === 'table'
 
-  return result.trim()
+/** Markdown with each table Slack would cut turned monospace. Tables it draws whole stay as markdown. */
+export function fitSlackTables(markdown: string): string {
+  // The lexer's tokens partition its (newline-normalized) input, so their raw text joins back to it.
+  return slackMarked.lexer(markdown.replace(/\r\n?/g, '\n'))
+    .map(token => isTable(token) && (token.rows.length >= SLACK_TABLE_MAX_ROWS || token.header.length > SLACK_TABLE_MAX_COLUMNS)
+      // Every row gets outer pipes first: the monospace pass only matches piped rows.
+      ? tablesToMonospace(token.raw.replace(/^[ \t]*\|?(.*?)\|?[ \t]*$/gm, (line, cells: string) => cells.trim() ? `| ${cells} |` : line))
+      : token.raw)
+    .join('')
 }
 
 // ── Session system prompt ───────────────────────────────────────────────
+
+const SLACK_PROVIDER_RULES = `- ${SLACK_AGENT_INSTRUCTIONS}`
 
 /**
  * Session-level context for Slack conversations, built per session so it names
@@ -150,22 +185,23 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
       : kind === 'channel' || kind === 'group'
         ? `a channel (id ${baseChannelId})`
         : 'a Slack conversation'
-  return buildSessionContextPrompt({
+  const shared = buildSessionContextPrompt({
     surface: 'chat',
     where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId})`,
     multiParty: isMultiPartyChatType(kind),
   })
+  return `${shared}\n${SLACK_PROVIDER_RULES}`
 }
 
 // ── Chat id classification ──────────────────────────────────────────────
 
 /**
  * Classify a Slack (effective) chat id by shape: `channel|threadTs` composites
- * are threads, and top-level conversation ids encode their type in the prefix
+ * of a channel are threads, and top-level conversation ids encode their type in the prefix
  * (D* = DM, G* = private group/mpim, C* = channel).
  */
 export function classifySlackChatId(chatId: string): ChatConversationType | undefined {
-  if (chatId.indexOf('|') > 0) return 'thread'
+  if (/^[CG][^|]*\|\d+\.\d+$/.test(chatId)) return 'thread'
   if (chatId.startsWith('D')) return 'dm'
   if (chatId.startsWith('G')) return 'group'
   if (chatId.startsWith('C')) return 'channel'
@@ -221,6 +257,37 @@ export function slackLinks(workspaceUrl: string | undefined, channel: string, ts
     return { messageUrl: message.toString(), conversationUrl: conversation.toString() }
   } catch {
     return {}
+  }
+}
+
+interface SlackFileLike { name?: string; mimetype?: string; url_private_download?: string; url_private?: string; permalink?: string }
+interface SlackAttachmentLike { is_share?: boolean; is_msg_unfurl?: boolean; text?: string; fallback?: string; author_name?: string; from_url?: string; files?: SlackFileLike[] }
+
+/**
+ * A message's text and files with the Slack messages shared into it: a forward
+ * (is_share) brings its text and files, a pasted message link (is_msg_unfurl)
+ * its text only. Website previews carry neither flag and stay out.
+ */
+export function slackMessageContent(msg: { text?: string; files?: SlackFileLike[]; attachments?: SlackAttachmentLike[] }): {
+  text: string
+  files: NonNullable<IncomingMessage['files']>
+} {
+  const shared = (msg.attachments ?? []).filter(a => a.is_share || a.is_msg_unfurl)
+  const quotes = shared.map(a => {
+    // A `]` or line break in the name would end the label early, as in formatSenderPrefix.
+    const author = a.author_name?.replace(/[\]\r\n]/g, ' ').trim()
+    const header = `[Shared message${author ? ` from ${author}` : ''}${a.from_url ? `: ${a.from_url}` : ''}]`
+    const body = a.text || a.fallback
+    return body ? `${header}\n${body.split('\n').map(line => `> ${line}`).join('\n')}` : header
+  })
+  const files = [...(msg.files ?? []), ...shared.filter(a => a.is_share).flatMap(a => a.files ?? [])]
+  return {
+    text: [msg.text, ...quotes].filter(Boolean).join('\n\n'),
+    files: files.map(f => ({
+      name: f.name || 'file',
+      url: f.url_private_download || f.url_private || f.permalink || '',
+      mimeType: f.mimetype,
+    })),
   }
 }
 
@@ -309,6 +376,35 @@ export function touchAndCapSet(set: Set<string>, key: string, max: number): void
   }
 }
 
+type ToolCard = { id: string; title: string; status: 'running' | ToolOutcome }
+interface ToolGroup { ts: string; cards: ToolCard[] }
+
+/** Slack drops blocks past 50, so a group holds at most this many cards. */
+export const MAX_TOOL_GROUP_CARDS = 50
+
+const TASK_STATUS = { running: 'in_progress', success: 'complete', error: 'error', cancelled: 'error' } as const
+const TOOL_OUTCOME_WORD = { running: 'running', success: 'done', error: 'failed', cancelled: 'stopped' } as const
+
+/** A tool group's cards as Slack `task_card` blocks. A stopped tool reads as an error with a note. */
+export function toolGroupBlocks(cards: ToolCard[]): SlackTypes.TaskCardBlock[] {
+  return cards.map(card => ({
+    type: 'task_card',
+    task_id: card.id,
+    title: card.title,
+    status: TASK_STATUS[card.status],
+    ...(card.status === 'cancelled' ? { output: { type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'Stopped before it finished' }] }] } } : {}),
+  }))
+}
+
+/**
+ * Fallback text for notifications and screen readers: each tool with its outcome. Slack parses this
+ * text, so `&`, `<` and `>` are escaped: a command like `echo <!channel>` must not notify the channel.
+ */
+export function toolGroupText(cards: ToolCard[]): string {
+  const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return cards.map(card => `${escape(card.title)} (${TOOL_OUTCOME_WORD[card.status]})`).join('\n')
+}
+
 /** Map counterpart of {@link touchAndCapSet}: (re)inserts `key` as MRU and evicts the oldest beyond `max`. */
 export function touchAndCapMap<V>(map: Map<string, V>, key: string, value: V, max: number): void {
   map.delete(key)
@@ -320,19 +416,145 @@ export function touchAndCapMap<V>(map: Map<string, V>, key: string, value: V, ma
   }
 }
 
+// ── Status line ─────────────────────────────────────────────────────────
+
+/** The status line shown under the user's message. Slack drops it after 2 minutes without a send. */
+export interface SlackStatus { anchor: string; label: string; sentAt: number; shown: boolean }
+
+export const SLACK_STATUS_REFRESH_MS = 60_000
+
+function slackStatusLabel(activity: SessionActivity): string {
+  switch (activity) {
+    case 'thinking': return 'is thinking…'
+    case 'compacting': return 'is compacting the conversation…'
+    case 'retrying': return 'is retrying…'
+    default: return 'is working…'
+  }
+}
+
+/** Send when the line is not showing, its label changed, or the refresh is due. */
+export function statusNeedsSend(status: SlackStatus | undefined, label: string, now: number): boolean {
+  return !status?.shown || status.label !== label || now - status.sentAt >= SLACK_STATUS_REFRESH_MS
+}
+
+// ── Answer buttons ──────────────────────────────────────────────────────
+
 /**
- * Every tracked thinking-reaction for a chat. Reaction keys are `${chatId}:${ts}`;
- * the colon-delimited prefix avoids matching a chat whose id is a prefix of another.
- * Used to sweep ALL reactions on clear so a mid-turn ts change can't orphan one.
+ * What an answer button carries: the request, the chat to reply in, the
+ * question and the answer, and how many questions the request asked. A click
+ * resolves on whichever connection it reaches, even after a restart.
  */
-export function reactionsForChat(activeReactions: Set<string>, chatId: string): Array<{ key: string; ts: string }> {
-  const prefix = `${chatId}:`
-  return [...activeReactions]
-    .filter((k) => k.startsWith(prefix))
-    .map((k) => ({ key: k, ts: k.slice(prefix.length) }))
+const slackAnswerSchema = z.object({ t: z.string().min(1), c: z.string(), q: z.string(), a: z.string(), n: z.number().int().positive() })
+export type SlackAnswer = z.infer<typeof slackAnswerSchema>
+
+const ANSWER_ACTION = /^answer_/
+const OTHER_ACTION = 'answer_other'
+const PICK_ACTION = 'answer_pick'
+const SUBMIT_ACTION = 'answer_submit'
+const MAX_BUTTON_VALUE = 2000
+
+/** A button value, within Slack's limit: a question too long to fit is shortened. */
+export function encodeSlackAnswer(answer: SlackAnswer): string {
+  let value = JSON.stringify(answer)
+  let question = answer.q
+  while (value.length > MAX_BUTTON_VALUE && question.length > 0) {
+    question = question.slice(0, Math.max(0, question.length - (value.length - MAX_BUTTON_VALUE) - 1))
+    value = JSON.stringify({ ...answer, q: `${question}…` })
+  }
+  return value
+}
+
+export function decodeSlackAnswer(value: unknown): SlackAnswer | null {
+  if (typeof value !== 'string') return null
+  try {
+    return slackAnswerSchema.safeParse(JSON.parse(value)).data ?? null
+  } catch {
+    return null
+  }
+}
+
+type SlackStateValues = NonNullable<BlockAction['state']>['values']
+
+/** An approval card stays Allow or Deny: typed text would decide it. */
+const isApproval = (requestId: string) => requestId.startsWith('review:')
+
+/**
+ * The answer an action on a question card gives, or null when it gives none
+ * yet (a box ticked, an empty field). As in the app, typed text wins over
+ * ticked boxes. A typed answer takes the card's identity from an option button
+ * on the same message: a text field has no value of its own.
+ */
+export function slackAnswerFromAction(
+  action: { action_id?: string; value?: string | null },
+  blocks: Array<{ type: string; elements?: Array<{ value?: string }> }>,
+  state: SlackStateValues = {},
+): SlackAnswer | null {
+  const field = (actionId: string) => Object.values(state).map((block) => block[actionId]).find(Boolean)
+  if (action.action_id === OTHER_ACTION) {
+    const card = blocks.flatMap((b) => (b.type === 'actions' ? b.elements ?? [] : [])).map((e) => decodeSlackAnswer(e.value)).find(Boolean)
+    const typed = action.value?.trim()
+    return card && typed && !isApproval(card.t) ? { ...card, a: typed } : null
+  }
+  const answer = decodeSlackAnswer(action.value)
+  if (!answer || action.action_id !== SUBMIT_ACTION) return answer
+  if (isApproval(answer.t)) return null
+  const typed = field(OTHER_ACTION)?.value?.trim()
+  const picked = field(PICK_ACTION)?.selected_options?.map((o) => o.value).join(', ')
+  const a = typed || picked
+  return a ? { ...answer, a } : null
+}
+
+// ── Installation state ──────────────────────────────────────────────────
+
+/**
+ * What an installation keeps across its connections, in this process: the
+ * answers a multi-question card has collected so far (its clicks can reach
+ * different connections), and the relayed requests already handled, so one
+ * the relay offers again acts once. A restart forgets both.
+ */
+interface SlackInstallationState {
+  pendingQuestions: Map<string, { totalQuestions: number; answers: Record<string, string>; ts: number }>
+  handledRequests: Set<string>
+}
+
+const installations = new Map<string, SlackInstallationState>()
+const PENDING_QUESTIONS_TTL_MS = 24 * 60 * 60 * 1000
+// Slack processes an uploaded image for a few seconds before a block can show it.
+const IMAGE_READY_MS = 10_000
+const IMAGE_RETRY_MS = 500
+const MAX_ALT_TEXT_LENGTH = 2000
+const MAX_HANDLED_REQUESTS = 1000
+
+/** The installation's state; a connector without one keeps its own. */
+function installationState(integrationId: string | undefined): SlackInstallationState {
+  const fresh = (): SlackInstallationState => ({ pendingQuestions: new Map(), handledRequests: new Set() })
+  if (!integrationId) return fresh()
+  let state = installations.get(integrationId)
+  if (!state) installations.set(integrationId, state = fresh())
+  return state
+}
+
+/** The installation is gone. */
+export function forgetSlackInstallation(integrationId: string): void {
+  installations.delete(integrationId)
+}
+
+/** Webhook-only connections listen for nothing themselves: the relay hands Bolt each post. */
+function relayOnlyReceiver(): Receiver {
+  return { init: () => {}, start: async () => {}, stop: async () => {} }
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
+
+/** Standard markdown as a block, with mrkdwn text for notifications: Slack's own text for a markdown message drops its tables. */
+function markdownMessage(md: string): { blocks: SlackTypes.MarkdownBlock[]; text: string } {
+  return { blocks: [{ type: 'markdown', text: md }], text: splitChatMessage(markdownToSlackMrkdwn(md), MARKDOWN_TEXT_LENGTH)[0] }
+}
+
+function inThread<T extends object>(args: T, threadTs: string | undefined, alsoSendToChannel: boolean) {
+  if (!threadTs) return args
+  return alsoSendToChannel ? { ...args, thread_ts: threadTs, reply_broadcast: true } : { ...args, thread_ts: threadTs }
+}
 
 export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
@@ -340,6 +562,7 @@ export class SlackConnector extends ChatAgentIntegration {
   static generateSystemPrompt = buildSlackSystemPrompt
   static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
   static classifyChatId = classifySlackChat
+  static parentChatId = (chatId: string) => classifySlackChatId(chatId) === 'thread' ? chatId.slice(0, chatId.indexOf('|')) : undefined
 
   private app: SlackApp | null = null
   private receiver: SocketModeReceiver | null = null
@@ -368,22 +591,35 @@ export class SlackConnector extends ChatAgentIntegration {
   private static readonly BASE_RECONNECT_DELAY_MS = 1_000
   private static readonly MAX_RECONNECT_DELAY_MS = 60_000
 
-  // Track action_id → toolUseId mappings for interactive responses
-  private actionDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
-  private nextActionId = 0
-  private static readonly ACTION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
+  private readonly shared: SlackInstallationState
 
-  // Track pending multi-question requests
-  private pendingQuestions: Map<string, {
-    totalQuestions: number
-    answers: Record<string, string>
-  }> = new Map()
+  /** Bumped by each connect and disconnect; relayed posts for an older connection are retried. */
+  private generation = 0
+  /** Whether this connection runs Socket Mode: until Slack's posts to the webhook verify, the app may still use it. */
+  private socketMode = false
+  private relayAttachment?: IntegrationRelayAttachment
+  /** What this connection knows about the webhook: set once a post has verified, or failed to. */
+  private webhookStatus: SlackConfig['webhookStatus']
+  /** Relayed posts are handled one at a time, in the order the relay hands them over. */
+  private processing: Promise<unknown> = Promise.resolve()
+  /** What the host did with each relayed message, keyed by the body Bolt hands the handler. */
+  private readonly inputResults = new WeakMap<object, Promise<IntegrationInputResult>>()
 
-  // Track last user message ts per channel for reaction-based typing indicator
+  // Last user message ts per chat: where the status line sits when the reply is not in a thread
   private lastUserMessageTs: Map<string, string> = new Map()
+  // Messages Slack refused as markdown, so their edits stay converted text. Finalize clears its own, the rest clear at disconnect.
+  private convertedMessages: Set<string> = new Set()
 
-  // Track whether we have a thinking reaction active
-  private activeReactions: Set<string> = new Set() // effectiveChatId:ts
+  private status: Map<string, SlackStatus> = new Map()
+  // The tool group a new tool joins, per chat. Any other post or an inbound message closes it.
+  private openToolGroups: Map<string, ToolGroup> = new Map()
+  // When each chat's group was last closed, from one counter that never repeats, so a post can tell it was closed meanwhile.
+  private toolGroupClosedAt: Map<string, number> = new Map()
+  private toolGroupCloses = 0
+  // Each tool's card and the group holding it, kept until the card's outcome arrives.
+  private toolCards: Map<string, { group: ToolGroup; card: ToolCard }> = new Map()
+  // One status write per chat at a time, in call order, so a late set cannot revive a cleared line.
+  private statusWrites: Map<string, Promise<void>> = new Map()
 
   // Thread context: maps effective chatId → real channel + thread anchor ts (for answerInThread)
   private threadContextMap: Map<string, { channel: string; threadTs: string }> = new Map()
@@ -395,12 +631,19 @@ export class SlackConnector extends ChatAgentIntegration {
   // requires a re-mention if it ever resurfaces.
   private static readonly MAX_TRACKED_THREADS = MAX_TRACKED_SLACK_THREADS
 
+  /**
+   * `integration` is the installation this connects for. Without it the
+   * webhook is never used (its endpoint is saved on the installation), and
+   * multi-question cards collect answers only as long as this connector.
+   */
   constructor(
     private config: SlackConfig,
     private appLink?: AppLinkContext,
     private threadState?: SlackThreadStateStore,
+    private integration?: Pick<AgentIntegrationRecord, 'id'>,
   ) {
     super()
+    this.shared = installationState(integration?.id)
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -409,6 +652,19 @@ export class SlackConnector extends ChatAgentIntegration {
     this.disconnecting = false
     this.started = false
     this.reconnectAttempts = 0
+    const generation = ++this.generation
+    const { botToken, appToken } = this.config
+    if (!botToken) throw new Error('Finish setting up the Slack app: its bot token isn’t saved yet')
+    const webhook = this.webhook()
+    this.webhookStatus = webhook ? this.config.webhookStatus : undefined
+    // Socket Mode until a post to the webhook verifies, since the app may still
+    // be on it; after that the app only posts to the webhook.
+    this.socketMode = !!appToken && this.webhookStatus !== 'verified'
+    if (!this.socketMode && !webhook) throw new Error('Slack needs an app-level token for Socket Mode, or its webhooks set up')
+    const relay = webhook ? this.host.relay : null
+    // Nothing else can bring Slack's posts in; they wait on the relay, and the
+    // manager retries this connect as it would through a network outage.
+    if (!this.socketMode && !relay) throw new Error('Slack delivers to this agent’s webhook, but the webhook relay is unavailable')
 
     // Fail fast on the underlying API calls (auth.test, apps.connections.open):
     // retry pacing belongs to our loop below and to the manager's health-check
@@ -420,15 +676,15 @@ export class SlackConnector extends ChatAgentIntegration {
     // Locals throughout this method: disconnect() nulls this.app/this.receiver,
     // and a disconnect racing this connect used to turn that into a TypeError
     // ("Cannot read properties of null") mid-flight (ELECTRON-3T's signature).
-    const receiver = new SocketModeReceiver({
-      appToken: this.config.appToken,
+    const receiver = this.socketMode && appToken ? new SocketModeReceiver({
+      appToken,
       autoReconnectEnabled: false,
       logLevel: 'warn' as any,
       installerOptions: { clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 } },
-    })
+    }) : null
     const app = new SlackApp({
-      token: this.config.botToken,
-      receiver,
+      token: botToken,
+      receiver: receiver ?? relayOnlyReceiver(),
       logLevel: 'warn' as any,
       clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 },
       // Without this, Bolt's constructor kicks off its own auth.test on the bot
@@ -448,7 +704,7 @@ export class SlackConnector extends ChatAgentIntegration {
     })
 
     // Handle incoming messages
-    app.message(async ({ message, say: _say }: { message: any; say: any }) => {
+    app.message(async ({ message, body }: { message: any; body?: object }) => {
       if (!message || this.disconnecting) return
       // Skip bot messages, edits, etc. — but allow file_share (user sent an image/file)
       const subtype = (message as any).subtype
@@ -479,6 +735,11 @@ export class SlackConnector extends ChatAgentIntegration {
       const isNewThreadEntry = routing.isNewThreadEntry
 
       const effectiveChatId = routing.effectiveChatId
+      // Track message ts for the status line (bounded: in-thread sessions
+      // make effectiveChatId per-thread, so this would otherwise grow with threads).
+      // Recorded before any await, so a tool arriving meanwhile starts a new group below this message.
+      touchAndCapMap(this.lastUserMessageTs, effectiveChatId, ts, SlackConnector.MAX_TRACKED_THREADS)
+      this.closeToolGroup(effectiveChatId)
       // Record the reply destination and mark the thread active (both bounded — see
       // MAX_TRACKED_THREADS). For in-thread replies the destination is also encoded
       // in effectiveChatId (composite id), so resolveSlackChannel can recover it by
@@ -501,16 +762,13 @@ export class SlackConnector extends ChatAgentIntegration {
         }
       }
 
-      // Track message ts for reaction-based typing (bounded: in-thread sessions
-      // make effectiveChatId per-thread, so this would otherwise grow with threads).
-      touchAndCapMap(this.lastUserMessageTs, effectiveChatId, ts, SlackConnector.MAX_TRACKED_THREADS)
-
       // Resolve real user and channel names
       const userName = await this.resolveUserName(userId)
       const chatName = await this.resolveChannelName(chatId)
 
+      const content = slackMessageContent(msg)
       // Resolve <@U123>, <#C123|name>, links, and special mentions in the text
-      let text = await this.resolveMentionsInText(rawText)
+      let text = await this.resolveMentionsInText(content.text)
       const requestText = text
 
       // When joining a thread mid-conversation, fetch earlier messages as context.
@@ -520,21 +778,14 @@ export class SlackConnector extends ChatAgentIntegration {
         if (history) text = history + '\n\n' + text
       }
 
-      // Handle file uploads
-      const files = msg.files?.map((f: any) => ({
-        name: f.name || 'file',
-        url: f.url_private_download || f.url_private || f.permalink || '',
-        mimeType: f.mimetype,
-      }))
-
-      this.emitMessage({
+      const input = this.emitMessage({
         externalMessageId: ts,
         text,
         chatId: effectiveChatId,
         userId,
         userName,
         chatName,
-        files: files?.length ? files : undefined,
+        files: content.files.length ? content.files : undefined,
         timestamp: new Date(Number(ts) * 1000),
         display: {
           requestText,
@@ -543,55 +794,55 @@ export class SlackConnector extends ChatAgentIntegration {
           ...slackLinks(this.workspace.url, chatId, ts, routing.threadContext?.threadTs),
         },
       })
+      // A relayed message reports what the host did with it; one from the socket was acked already.
+      if (body) this.inputResults.set(body, input)
     })
 
-    // Handle button clicks (interactive actions)
-    app.action(/^cb_\d+$/, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
+    // Buttons on cards from before answers rode in the button: their requests are gone.
+    app.action(/^cb_\d+$/, async ({ ack }: { ack: any }) => { await ack() })
+
+    // Answers from request cards. A checkbox tick is acknowledged and gives none.
+    app.action(ANSWER_ACTION, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
       await ack()
-
-      const actionId = (action as any).action_id
-      const mapping = this.actionDataMap.get(actionId)
-      if (!mapping) return
-
-      const val = mapping.value as { question: string; answer: string }
+      const answer = slackAnswerFromAction(action ?? {}, body?.message?.blocks ?? [], body?.state?.values)
+      if (!answer) return
 
       // Update the message to show the selected answer
       try {
-        const channel = (body as any).channel?.id
-        const messageTs = (body as any).message?.ts
+        const channel = body?.channel?.id
+        const messageTs = body?.message?.ts
         if (channel && messageTs) {
-          const originalText = (body as any).message?.text || ''
-          // Preserve non-action blocks, only remove the buttons
-          const existingBlocks = ((body as any).message?.blocks || []) as Array<{ type: string }>
-          const preserved = existingBlocks.filter((b) => b.type !== 'actions')
-          await this.app!.client.chat.update({
+          const originalText = body.message.text || ''
+          // Keep the question, replace the controls with the answer
+          const existingBlocks = (body.message.blocks || []) as Array<{ type: string }>
+          const preserved = existingBlocks.filter((b) => b.type !== 'actions' && b.type !== 'input')
+          const shown = isApproval(answer.t) ? answer.a : `✅ ${answer.a}`
+          await app.client.chat.update({
             channel,
             ts: messageTs,
-            text: `${originalText}\n\n:white_check_mark: *${val.answer}*`,
-            blocks: preserved,
+            text: `${originalText}\n\n${shown}`,
+            blocks: [...preserved, { type: 'section', text: { type: 'plain_text', text: shown } }],
           })
         }
       } catch {
         // Non-critical — message may have been deleted
       }
 
-      this.actionDataMap.delete(actionId)
-
-      // Accumulate answer for multi-question requests
-      const pending = this.pendingQuestions.get(mapping.toolUseId)
-      if (pending) {
-        pending.answers[val.question] = val.answer
-        if (Object.keys(pending.answers).length >= pending.totalQuestions) {
-          this.emitInteractiveResponse(mapping.toolUseId, {
-            question: '_all',
-            answer: '_all',
-            answers: pending.answers,
-          })
-          this.pendingQuestions.delete(mapping.toolUseId)
-        }
-      } else {
-        // Single question — emit immediately
-        this.emitInteractiveResponse(mapping.toolUseId, mapping.value)
+      if (answer.n === 1) {
+        this.emitInteractiveResponse(answer.t, { question: answer.q, answer: answer.a }, answer.c)
+        return
+      }
+      // Each question of a multi-question request is its own card; answer once all are in.
+      const now = Date.now()
+      for (const [id, entry] of this.shared.pendingQuestions) {
+        if (now - entry.ts > PENDING_QUESTIONS_TTL_MS) this.shared.pendingQuestions.delete(id)
+      }
+      const pending = this.shared.pendingQuestions.get(answer.t) ?? { totalQuestions: answer.n, answers: {}, ts: now }
+      pending.answers[answer.q] = answer.a
+      this.shared.pendingQuestions.set(answer.t, pending)
+      if (Object.keys(pending.answers).length >= pending.totalQuestions) {
+        this.shared.pendingQuestions.delete(answer.t)
+        this.emitInteractiveResponse(answer.t, { question: '_all', answer: '_all', answers: pending.answers }, answer.c)
       }
     })
 
@@ -604,6 +855,15 @@ export class SlackConnector extends ChatAgentIntegration {
       this.botUserId = authResult.user_id || null
       this.workspace = { name: authResult.team || undefined, url: authResult.url || undefined }
       console.log(`[SlackConnector] Authenticated as ${authResult.user} in workspace ${authResult.team}`)
+      // Which Slack app this is, for a link to its settings (renaming an app made by hand happens there).
+      if (authResult.bot_id && !this.config.appId && this.integration) {
+        const integrationId = this.integration.id
+        const botId = authResult.bot_id
+        background(app.client.bots.info({ bot: botId })
+          .then((info) => info.bot?.app_id ? recordSlackAppId(integrationId, info.bot.app_id) : undefined)
+          .catch((error: unknown) => console.warn('[SlackConnector] Could not read the app id:', error instanceof Error ? error.message : error)),
+        { name: 'slack-connector.record-app-id' })
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack bot token invalid: ${msg}`)
@@ -622,18 +882,18 @@ export class SlackConnector extends ChatAgentIntegration {
 
     // Track the real socket state so isConnected() is honest — the manager's
     // health check is blind without this.
-    const client = receiver.client
-    client.on('connected', () => {
+    receiver?.client.on('connected', () => {
       // A 'connected' arriving after disconnect() began is a socket that
       // outlived its owner (a start() that was mid-flight during teardown) —
       // it is being closed, and must not flip a torn-down connector "live".
-      if (this.disconnecting) return
+      // Nor can one after Socket Mode was retired for the webhook.
+      if (this.disconnecting || !this.socketMode) return
       this.connected = true
       this.reconnectAttempts = 0
     })
-    client.on('disconnected', () => {
+    receiver?.client.on('disconnected', () => {
       this.connected = false
-      if (!this.disconnecting && this.started) this.scheduleReconnect()
+      if (!this.disconnecting && this.started && this.socketMode) this.scheduleReconnect()
     })
 
     // Restore before Socket Mode can deliver the first event. Session restore
@@ -645,12 +905,27 @@ export class SlackConnector extends ChatAgentIntegration {
       }
     }
 
+    // Posts that waited on the relay, the URL check among them, arrive from here on.
+    if (relay && webhook && !this.disconnecting) {
+      const { signingSecret, relay: binding } = webhook
+      this.relayAttachment = relay.attach(binding, events => this.acceptRelayed(events, signingSecret, binding.endpointId, generation))
+    }
+
     // Start Socket Mode (requires valid app-level token with connections:write)
-    try {
-      await app.start()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new Error(`Slack Socket Mode failed to start (check app-level token and connections:write scope): ${msg}`)
+    let socketOpen = false
+    if (this.socketMode && !this.disconnecting) {
+      try {
+        await app.start()
+        socketOpen = true
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!this.relayAttachment) throw new Error(`Slack Socket Mode failed to start (check app-level token and connections:write scope): ${msg}`)
+        // Until a post to the webhook verifies, the app may still be on Socket
+        // Mode: keep trying it, while the webhook stays attached for that post.
+        console.warn(`[SlackConnector] Socket Mode failed to start; retrying while waiting for Slack’s first post to the webhook: ${msg}`)
+      }
+      // A post to the webhook verified while the socket was opening.
+      if (!this.socketMode && receiver) background(receiver.client.disconnect().catch(() => {}), { name: 'slack-connector.close-socket' })
     }
     // disconnect() may have raced this connect (user pause, manager teardown):
     // its app.stop() ran against a socket that didn't exist yet, so the one
@@ -659,9 +934,17 @@ export class SlackConnector extends ChatAgentIntegration {
       await app.stop().catch(() => {})
       throw new Error('Slack connector was disconnected during connect')
     }
-    this.started = true
-    this.connected = true
-    console.log('[SlackConnector] Socket Mode connected')
+    this.started = this.socketMode
+    this.connected = this.socketMode && socketOpen
+    if (this.socketMode && !socketOpen) this.scheduleReconnect()
+    else if (this.socketMode) console.log(`[SlackConnector] Socket Mode connected${this.relayAttachment ? ', waiting for Slack’s first post to the webhook' : ''}`)
+    else console.log(`[SlackConnector] Receiving through the webhook for ${this.integration?.id}`)
+  }
+
+  /** The installation's webhook, once it's set up; only a connector built for an installation uses it. */
+  private webhook(): { relay: IntegrationRelayBinding; signingSecret: string } | null {
+    const { relay, signingSecret } = this.config
+    return this.integration && relay && signingSecret ? { relay, signingSecret } : null
   }
 
   /**
@@ -671,7 +954,7 @@ export class SlackConnector extends ChatAgentIntegration {
    * onError so the manager can badge the integration and eventually auto-pause.
    */
   private scheduleReconnect(): void {
-    if (this.disconnecting || this.reconnectTimer) return
+    if (this.disconnecting || this.reconnectTimer || !this.socketMode) return
     this.reconnectAttempts++
     const delay = Math.min(
       SlackConnector.BASE_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1),
@@ -680,22 +963,22 @@ export class SlackConnector extends ChatAgentIntegration {
     console.log(`[SlackConnector] Socket closed — reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      if (this.disconnecting || !this.receiver) return
+      if (this.disconnecting || !this.receiver || !this.socketMode) return
       const client = this.receiver.client
       const attempt = client.start()
         .then(() => {
-          if (this.disconnecting) {
-            // Teardown began while this attempt was awaiting its connection —
-            // the socket that just opened has no owner. Close it (socket-mode's
-            // disconnect() never rejects).
-            void client.disconnect()
+          if (this.disconnecting || !this.socketMode) {
+            // Teardown (or the move to the webhook) began while this attempt was
+            // awaiting its connection — the socket that just opened has no owner.
+            // Close it (socket-mode's disconnect() never rejects).
+            background(client.disconnect(), { name: 'slack-connector.close-socket' })
             return
           }
           // The 'connected' listener already restored state.
           console.log('[SlackConnector] Socket Mode reconnected')
         })
         .catch((err: unknown) => {
-          if (this.disconnecting) return
+          if (this.disconnecting || !this.socketMode) return
           if (isUnrecoverableSlackError(err)) {
             console.error('[SlackConnector] Unrecoverable Slack error — stopping reconnect loop:', err)
             this.emitError(err instanceof Error ? err : new Error(String(err)))
@@ -716,6 +999,9 @@ export class SlackConnector extends ChatAgentIntegration {
   async disconnect(): Promise<void> {
     this.disconnecting = true
     this.connected = false
+    this.generation++
+    this.relayAttachment?.detach()
+    this.relayAttachment = undefined
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -726,16 +1012,17 @@ export class SlackConnector extends ChatAgentIntegration {
     // disconnecting is set (see restartInFlight).
     const restart = this.restartInFlight
 
-    // Remove any active reactions (before clearing thread context needed to resolve channels)
-    for (const key of this.activeReactions) {
-      const [effectiveChatId, ts] = key.split(':')
-      const { channel } = this.resolveChannel(effectiveChatId)
-      this.removeThinkingReaction(channel, ts).catch(() => {})
+    // Clear status lines while the app and thread context can still reach them
+    for (const [chatId, { anchor }] of this.status) {
+      background(this.setStatus(chatId, anchor, '').catch(() => {}), { name: 'slack-connector.clear-status' })
     }
-    this.activeReactions.clear()
-    this.actionDataMap.clear()
-    this.pendingQuestions.clear()
+    this.releaseAllAcknowledgements()
+    this.status.clear()
+    this.openToolGroups.clear()
+    this.toolGroupClosedAt.clear()
+    this.toolCards.clear()
     this.lastUserMessageTs.clear()
+    this.convertedMessages.clear()
     this.threadContextMap.clear()
     this.activeThreads.clear()
     this.userNameCache.clear()
@@ -753,11 +1040,21 @@ export class SlackConnector extends ChatAgentIntegration {
     // success handler tears that late socket down; don't report "disconnected"
     // until it has.
     if (restart) await restart.catch(() => {})
+    // Relayed posts mid-handling finish before the next connection starts.
+    await this.processing.catch(() => {})
     console.log('[SlackConnector] Disconnected')
   }
 
   isConnected(): boolean {
-    return this.connected
+    // Until a post to the webhook verifies, the socket is what Slack delivers to.
+    if (this.socketMode) return this.connected
+    // Through the webhook, posts wait on the relay while it's down, so being attached is enough.
+    return !!this.relayAttachment?.isAttached()
+  }
+
+  activeTransport() {
+    if (this.socketMode) return this.connected ? 'direct' as const : null
+    return this.relayAttachment?.isAttached() ? 'relay' as const : null
   }
 
   // ── Message sending ─────────────────────────────────────────────────
@@ -765,29 +1062,17 @@ export class SlackConnector extends ChatAgentIntegration {
   async sendMessage(chatId: string, message: OutgoingMessage): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
-    const { channel, threadTs } = this.resolveChannel(chatId)
-    const mrkdwn = markdownToSlackMrkdwn(message.text || '(empty message)')
-    const chunks = splitChatMessage(mrkdwn, MAX_MESSAGE_LENGTH)
-
     let lastTs = ''
-    for (const chunk of chunks) {
-      const result = await this.app.client.chat.postMessage({
-        channel,
-        text: chunk,
-        mrkdwn: true,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-      })
-      lastTs = result.ts || ''
+    for (const chunk of splitChatMessage(fitSlackTables(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
+      lastTs = await this.postText(chatId, chunk, message.alsoSendToChannel)
     }
-
-    // Remove thinking reaction now that we've sent a real message
-    await this.clearThinkingReaction(chatId)
 
     return lastTs
   }
 
-  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: SendFileOptions): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
+    if (options?.asImage) return this.postImage(chatId, fileData, filename, options)
 
     const { channel, threadTs } = this.resolveChannel(chatId)
     const result = await this.app.client.filesUploadV2({
@@ -798,37 +1083,62 @@ export class SlackConnector extends ChatAgentIntegration {
       ...(threadTs ? { thread_ts: threadTs } : {}),
     } as any)
 
+    this.posted(chatId)
+
     // filesUploadV2 returns files array; extract the message ts if available
     const file = (result as any).files?.[0]
     return file?.shares?.public?.[channel]?.[0]?.ts || file?.shares?.private?.[channel]?.[0]?.ts || ''
   }
 
+  /**
+   * An image goes up unshared, then posts as an image block: a shared upload
+   * lands after text posted later, so it would break the reply's order.
+   */
+  private async postImage(chatId: string, fileData: Buffer, filename: string, { altText, alsoSendToChannel = false, deadline: sendDeadline = Infinity }: SendFileOptions): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    const upload = await this.app.client.filesUploadV2({ file: fileData, filename })
+    const id = upload.files[0]?.files?.[0]?.id
+    if (!id) throw new Error('Slack returned no file id for the upload')
+    const block: SlackTypes.ImageBlock = { type: 'image', slack_file: { id }, alt_text: (altText || filename).slice(0, MAX_ALT_TEXT_LENGTH) }
+    const deadline = Math.min(Date.now() + IMAGE_READY_MS, sendDeadline)
+    for (;;) {
+      try {
+        const result = await this.app.client.chat.postMessage(inThread({ channel, text: filename, blocks: [block] }, threadTs, alsoSendToChannel))
+        this.posted(chatId)
+        return result.ts || ''
+      } catch (err: unknown) {
+        if (!isSlackFileNotReady(err) || Date.now() >= deadline) {
+          // Slack refused the block, so the file was never shared and would only sit in the bot's files.
+          // A lost response may have posted it, so anything else keeps the file.
+          if (isSlackBlocksRejection(err)) await this.app.client.files.delete({ file: id }).catch(() => {})
+          // The send ran out of time, not Slack: expected, so the image goes out as its source unreported.
+          if (isSlackFileNotReady(err) && Date.now() >= sendDeadline) throw new NoImageError('Out of time while Slack processed the image')
+          throw err
+        }
+        await new Promise(resolve => setTimeout(resolve, IMAGE_RETRY_MS))
+      }
+    }
+  }
+
   async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
-    const { channel, threadTs } = this.resolveChannel(chatId)
-    const truncated = text.length > MAX_MESSAGE_LENGTH
-      ? text.slice(0, MAX_MESSAGE_LENGTH - 60) + '\n\n... (full response will appear when done)'
-      : text
-    const displayText = markdownToSlackMrkdwn(truncated || ':hourglass_flowing_sand: Thinking...')
+    const { channel } = this.resolveChannel(chatId)
+    const md = fitSlackTables(text)
+    const draft = (limit: number) => (md.length > limit
+      ? md.slice(0, limit - 60) + '\n\n... (full response will appear when done)'
+      : md) || ':hourglass_flowing_sand: Thinking...'
+    // Kept tables are padded only on conversion, so bound the converted draft too.
+    const converted = () => splitChatMessage(markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)), MAX_MESSAGE_LENGTH)[0]
 
     if (!existingMessageId) {
-      const result = await this.app.client.chat.postMessage({
-        channel,
-        text: displayText,
-        mrkdwn: true,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-      })
-      return result.ts || ''
+      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), false, () => [converted()])
     }
 
     // Edit existing message
     try {
-      await this.app.client.chat.update({
-        channel,
-        ts: existingMessageId,
-        text: displayText,
-      })
+      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), converted)
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       // Slack returns this when text hasn't changed
@@ -842,24 +1152,17 @@ export class SlackConnector extends ChatAgentIntegration {
   async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
     if (!this.app) return
 
-    const { channel, threadTs } = this.resolveChannel(chatId)
-    const mrkdwn = markdownToSlackMrkdwn(finalText || '(empty response)')
-    const chunks = splitChatMessage(mrkdwn, MAX_MESSAGE_LENGTH)
+    const { channel } = this.resolveChannel(chatId)
+    const md = fitSlackTables(finalText || '(empty response)')
 
     try {
-      await this.app.client.chat.update({
-        channel,
-        ts: messageId,
-        text: chunks[0],
-      })
-
-      for (let i = 1; i < chunks.length; i++) {
-        await this.app.client.chat.postMessage({
-          channel,
-          text: chunks[i],
-          mrkdwn: true,
-          ...(threadTs ? { thread_ts: threadTs } : {}),
-        })
+      const [first, ...rest] = splitChatMessage(md, MARKDOWN_TEXT_LENGTH)
+      const converted = () => splitChatMessage(markdownToSlackMrkdwn(md), MAX_MESSAGE_LENGTH)
+      await this.updateText(channel, messageId, first, () => converted()[0])
+      if (this.convertedMessages.delete(messageId)) {
+        await this.postConverted(chatId, converted().slice(1))
+      } else {
+        for (const chunk of rest) await this.postText(chatId, chunk)
       }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -869,44 +1172,187 @@ export class SlackConnector extends ChatAgentIntegration {
       }
     }
 
-    // Remove thinking reaction
-    await this.clearThinkingReaction(chatId)
+    this.posted(chatId)
   }
 
-  async startWorking(chatId: string, _activity: SessionActivity): Promise<void> {
+  async retireStreamingMessage(chatId: string, messageId: string): Promise<void> {
     if (!this.app) return
+    this.convertedMessages.delete(messageId)
+    await this.app.client.chat.delete({ channel: this.resolveChannel(chatId).channel, ts: messageId })
+  }
 
-    // Slack's surface is a single reaction, so it can't show distinct labels —
-    // the activity is intentionally ignored here (coarse "busy" fidelity).
-    // Slack doesn't support typing indicators for bots.
-    // Workaround: add a :thinking_face: reaction to the user's last message.
-    // The reaction persists until removed, so no keep-alive timer is needed.
-    const lastTs = this.lastUserMessageTs.get(chatId)
-    if (!lastTs) return
-
-    const key = `${chatId}:${lastTs}`
-    if (this.activeReactions.has(key)) return // Already reacting
-
-    const { channel } = this.resolveChannel(chatId)
+  /** Post standard markdown, or `converted` chunks of today's text when Slack refuses its blocks. Returns the last ts. */
+  private async postText(
+    chatId: string,
+    md: string,
+    alsoSendToChannel = false,
+    converted = () => splitChatMessage(markdownToSlackMrkdwn(md), MAX_MESSAGE_LENGTH),
+  ): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
     try {
-      await this.app.client.reactions.add({
-        channel,
-        timestamp: lastTs,
-        name: 'thinking_face',
-      })
-      this.activeReactions.add(key)
-    } catch {
-      // Already reacted or message deleted — non-critical
+      const result = await this.app.client.chat.postMessage(inThread({ channel, ...markdownMessage(md) }, threadTs, alsoSendToChannel))
+      this.posted(chatId)
+      return result.ts || ''
+    } catch (err: unknown) {
+      if (!isSlackBlocksRejection(err)) throw err
+      console.warn('[SlackConnector] Slack refused the markdown blocks, sending converted text')
+      const ts = await this.postConverted(chatId, converted(), alsoSendToChannel)
+      this.convertedMessages.add(ts)
+      return ts
     }
   }
 
+  /** Post chunks of today's converted text. Returns the last ts. */
+  private async postConverted(chatId: string, chunks: string[], alsoSendToChannel = false): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    let ts = ''
+    for (const chunk of chunks) {
+      ts = (await this.app.client.chat.postMessage(inThread({ channel, text: chunk, mrkdwn: true }, threadTs, alsoSendToChannel))).ts || ''
+      this.posted(chatId)
+    }
+    return ts
+  }
+
+  /** Edit to standard markdown, or to `converted` text once Slack has refused this message's blocks. */
+  private async updateText(channel: string, ts: string, md: string, converted: () => string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    if (!this.convertedMessages.has(ts)) {
+      try {
+        await this.app.client.chat.update({ channel, ts, ...markdownMessage(md) })
+        return
+      } catch (err: unknown) {
+        if (!isSlackBlocksRejection(err)) throw err
+        console.warn('[SlackConnector] Slack refused the markdown blocks, sending converted text')
+        this.convertedMessages.add(ts)
+      }
+    }
+    await this.app.client.chat.update({ channel, ts, text: converted() })
+  }
+
+  async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
+    // A write in flight: the next tick re-sends, so a slow Slack cannot pile up starts ahead of a clear.
+    if (this.statusWrites.has(chatId)) return
+    await this.enqueueStatus(chatId, async () => {
+      const current = this.status.get(chatId)
+      const anchor = current?.anchor ?? this.resolveChannel(chatId).threadTs ?? this.lastUserMessageTs.get(chatId)
+      if (!anchor) return
+      const label = slackStatusLabel(activity)
+      const now = Date.now()
+      if (!statusNeedsSend(current, label, now)) return
+      await this.setStatus(chatId, anchor, label)
+      this.status.set(chatId, { anchor, label, sentAt: now, shown: true })
+    })
+  }
+
   async stopWorking(chatId: string): Promise<void> {
-    await this.clearThinkingReaction(chatId)
+    await this.enqueueStatus(chatId, async () => {
+      const current = this.status.get(chatId)
+      if (!current) return
+      // Cleared even when a post marked it not shown: only a reply in its thread clears it on Slack's side.
+      this.status.delete(chatId)
+      await this.setStatus(chatId, current.anchor, '')
+    })
+  }
+
+  private enqueueStatus(chatId: string, write: () => Promise<void>): Promise<void> {
+    const next: Promise<void> = (this.statusWrites.get(chatId) ?? Promise.resolve()).then(write).catch(() => {}).then(() => {
+      if (this.statusWrites.get(chatId) === next) this.statusWrites.delete(chatId)
+    })
+    this.statusWrites.set(chatId, next)
+    return next
+  }
+
+  /** After a bot post: Slack clears a status line when the bot replies in its thread, so the next tick re-sets it. */
+  private markStatusNotShown(chatId: string): void {
+    background(this.enqueueStatus(chatId, async () => {
+      const current = this.status.get(chatId)
+      if (current) current.shown = false
+    }), { name: 'slack-connector.mark-status' })
+  }
+
+  private async setStatus(chatId: string, anchor: string, status: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel } = this.resolveChannel(chatId)
+    await this.app.client.assistant.threads.setStatus({ channel_id: channel, thread_ts: anchor, status })
+  }
+
+  protected async addAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    await this.app.client.reactions.add({ channel: this.resolveChannel(chatId).channel, timestamp: messageId, name: 'eyes' })
+  }
+
+  protected async removeAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    await this.app.client.reactions.remove({ channel: this.resolveChannel(chatId).channel, timestamp: messageId, name: 'eyes' })
   }
 
   // ── User request cards ──────────────────────────────────────────────
 
   async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
+    try {
+      return await this.postUserRequestCard(chatId, event, sessionId)
+    } finally {
+      this.posted(chatId)
+    }
+  }
+
+  /** A bot post: the status line may be gone, and the open tool group is no longer the last post. */
+  private posted(chatId: string): void {
+    this.markStatusNotShown(chatId)
+    this.closeToolGroup(chatId)
+  }
+
+  private closeToolGroup(chatId: string): void {
+    this.openToolGroups.delete(chatId)
+    touchAndCapMap(this.toolGroupClosedAt, chatId, ++this.toolGroupCloses, SlackConnector.MAX_TRACKED_THREADS)
+  }
+
+  /** A tool joins the chat's open tool group as a card, or starts a new group below the last post. */
+  async showToolStart(chatId: string, tool: { toolUseId: string; toolName: string; summary: string }): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    const card: ToolCard = { id: tool.toolUseId, title: tool.summary ? `${tool.toolName}: ${tool.summary}` : tool.toolName, status: 'running' }
+
+    const open = this.openToolGroups.get(chatId)
+    if (open && open.cards.length < MAX_TOOL_GROUP_CARDS) {
+      // Kept only once the edit lands: a failed edit leaves no card, so no later redraw shows it running forever.
+      const cards = [...open.cards, card]
+      await this.app.client.chat.update({ channel, ts: open.ts, text: toolGroupText(cards), blocks: toolGroupBlocks(cards) })
+      open.cards.push(card)
+      touchAndCapMap(this.toolCards, card.id, { group: open, card }, SlackConnector.MAX_TRACKED_THREADS)
+      return open.ts
+    }
+
+    const closedBefore = this.toolGroupClosedAt.get(chatId)
+    const result = await this.app.client.chat.postMessage({
+      channel,
+      text: toolGroupText([card]),
+      blocks: toolGroupBlocks([card]),
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    })
+    const group = { ts: result.ts || '', cards: [card] }
+    // A user message or another post that landed during this post closed the group: the next tool goes below it.
+    const closedMeanwhile = this.toolGroupClosedAt.get(chatId) !== closedBefore
+    this.posted(chatId)
+    if (!closedMeanwhile) touchAndCapMap(this.openToolGroups, chatId, group, SlackConnector.MAX_TRACKED_THREADS)
+    touchAndCapMap(this.toolCards, card.id, { group, card }, SlackConnector.MAX_TRACKED_THREADS)
+    return group.ts
+  }
+
+  /** A tool's outcome updates its card in whichever group holds it. No card means its post failed. */
+  async showToolOutcome(chatId: string, toolUseId: string, outcome: ToolOutcome): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const entry = this.toolCards.get(toolUseId)
+    if (!entry) return
+    this.toolCards.delete(toolUseId)
+    entry.card.status = outcome
+    const { channel } = this.resolveChannel(chatId)
+    await this.app.client.chat.update({ channel, ts: entry.group.ts, text: toolGroupText(entry.group.cards), blocks: toolGroupBlocks(entry.group.cards) })
+  }
+
+  private async postUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const appLink = withSessionUrl(this.appLink, sessionId)
 
@@ -931,14 +1377,6 @@ export class SlackConnector extends ChatAgentIntegration {
       case 'question_request': {
         let lastTs = ''
 
-        // Track multi-question requests
-        if (event.questions.length > 1) {
-          this.pendingQuestions.set(event.toolUseId, {
-            totalQuestions: event.questions.length,
-            answers: {},
-          })
-        }
-
         // Send each question as its own message with buttons
         for (const q of event.questions) {
           const blocks: any[] = []
@@ -955,22 +1393,34 @@ export class SlackConnector extends ChatAgentIntegration {
             text: { type: 'mrkdwn', text: q.question },
           })
 
+          const answer = (a: string) => encodeSlackAnswer({ t: event.toolUseId, c: chatId, q: q.question, a, n: event.questions.length })
           if (q.options && q.options.length > 0) {
-            const buttons = q.options.map(opt => {
-              const actionId = this.registerAction(event.toolUseId, {
-                question: q.question,
-                answer: opt.label,
-              })
-              return {
+            const options = q.multiSelect
+              ? [{ type: 'checkboxes', action_id: PICK_ACTION, options: q.options.map((opt) => ({ text: { type: 'plain_text', text: opt.label }, value: opt.label })) }]
+              : q.options.map((opt, i) => ({
                 type: 'button' as const,
                 text: { type: 'plain_text' as const, text: opt.label },
-                action_id: actionId,
-              }
-            })
+                action_id: `answer_${i}`,
+                value: answer(opt.label),
+              }))
             blocks.push({
               type: 'actions',
-              elements: buttons,
+              elements: options,
             })
+            if (!isApproval(event.toolUseId)) {
+              blocks.push({
+                type: 'input',
+                dispatch_action: !q.multiSelect,
+                label: { type: 'plain_text', text: 'Other' },
+                element: { type: 'plain_text_input', action_id: OTHER_ACTION, max_length: 2000, placeholder: { type: 'plain_text', text: 'Type something else' } },
+              })
+            }
+            if (q.multiSelect) {
+              blocks.push({
+                type: 'actions',
+                elements: [{ type: 'button', action_id: SUBMIT_ACTION, style: 'primary', text: { type: 'plain_text', text: 'Submit' }, value: answer('') }],
+              })
+            }
           }
 
           const result = await this.app.client.chat.postMessage({
@@ -980,6 +1430,7 @@ export class SlackConnector extends ChatAgentIntegration {
             ...threadOpt,
           })
           lastTs = result.ts || ''
+          this.posted(chatId)
         }
 
         return lastTs
@@ -1136,7 +1587,8 @@ export class SlackConnector extends ChatAgentIntegration {
       const lines: string[] = []
       for (const m of previous) {
         const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
-        const text = m.text ? await this.resolveMentionsInText(m.text) : ''
+        const content = slackMessageContent(m).text
+        const text = content ? await this.resolveMentionsInText(content) : ''
         if (text) lines.push(`${name}: ${text}`)
       }
       if (lines.length === 0) return null
@@ -1146,46 +1598,6 @@ export class SlackConnector extends ChatAgentIntegration {
     } catch (err) {
       console.warn('[SlackConnector] Failed to fetch thread history (non-critical):', err instanceof Error ? err.message : err)
       return null
-    }
-  }
-
-  private registerAction(toolUseId: string, value: unknown): string {
-    // Evict stale action entries to prevent unbounded growth
-    const now = Date.now()
-    for (const [key, entry] of this.actionDataMap) {
-      if (now - entry.ts > SlackConnector.ACTION_TTL_MS) {
-        this.actionDataMap.delete(key)
-      }
-    }
-    const id = `cb_${this.nextActionId++}`
-    this.actionDataMap.set(id, { toolUseId, value, ts: now })
-    return id
-  }
-
-  private async clearThinkingReaction(chatId: string): Promise<void> {
-    // Sweep EVERY tracked reaction for the chat, not just the current ts: if a second
-    // message landed mid-turn the ts changed and a second reaction was added, so
-    // clearing only the latest would orphan the first.
-    const entries = reactionsForChat(this.activeReactions, chatId)
-    if (entries.length === 0) return
-
-    const { channel } = this.resolveChannel(chatId)
-    for (const { key, ts } of entries) {
-      await this.removeThinkingReaction(channel, ts)
-      this.activeReactions.delete(key)
-    }
-  }
-
-  private async removeThinkingReaction(channel: string, ts: string): Promise<void> {
-    if (!this.app) return
-    try {
-      await this.app.client.reactions.remove({
-        channel,
-        timestamp: ts,
-        name: 'thinking_face',
-      })
-    } catch {
-      // Reaction already removed or message deleted — non-critical
     }
   }
 
@@ -1254,4 +1666,91 @@ export class SlackConnector extends ChatAgentIntegration {
     }
   }
 
+  // ── Relay ────────────────────────────────────────────────────────────
+
+  /** Posts the relay claimed, each checked, then handed to Bolt as if from the socket. */
+  private async acceptRelayed(events: readonly RelayEvent[], signingSecret: string, endpointId: string, generation: number): Promise<Map<string, RelayAcceptResult>> {
+    const results = new Map<string, RelayAcceptResult>()
+    for (const event of events) {
+      const handled = this.processing.then(() => this.acceptRelayedPost(event, signingSecret, endpointId, generation))
+      this.processing = handled.catch(() => {})
+      results.set(event.id, await handled)
+    }
+    return results
+  }
+
+  private async acceptRelayedPost(event: RelayEvent, signingSecret: string, endpointId: string, generation: number): Promise<RelayAcceptResult> {
+    const app = this.app
+    // A replaced connection's posts belong to its successor.
+    if (!app || this.disconnecting || generation !== this.generation) return 'retry'
+    const check = checkSlackWebhook(event, signingSecret)
+    if (!check.ok) {
+      if (check.reason === 'signature') this.webhookRejected(event, check.signed, signingSecret, endpointId)
+      else console.warn(`[SlackConnector] Discarding relayed post ${event.id}: malformed`)
+      return 'discard'
+    }
+    // One the endpoint checked against the secret before this one says nothing about this one.
+    if (check.verifiedBy === 'host') this.webhookVerified(signingSecret, endpointId)
+    // Slack checking the URL: the endpoint answered it.
+    if (check.kind === 'handshake') return 'discard'
+
+    const { body } = check
+    const key = slackRequestKey(body)
+    if (key && this.shared.handledRequests.has(key)) return 'duplicate'
+    let result: RelayAcceptResult
+    try {
+      // Nothing to acknowledge: the endpoint answered Slack as the post arrived.
+      await app.processEvent({ body, ack: async () => {} })
+      const input = this.inputResults.get(body)
+      // A message the handler left for the teardown is the next connection's.
+      if (!input && generation !== this.generation) return 'retry'
+      result = input ? relayAcceptResult(await input) : 'accepted'
+    } catch (error) {
+      // A handler that threw would throw again.
+      captureException(error, { tags: { component: 'slack', operation: 'relayed-request' }, extra: { integrationId: this.integration?.id, type: body.type } })
+      result = 'discard'
+    }
+    if (key && result !== 'retry') touchAndCapSet(this.shared.handledRequests, key, MAX_HANDLED_REQUESTS)
+    return result
+  }
+
+  /** A post verified with the saved secret, so the app now posts to the webhook. */
+  private webhookVerified(signingSecret: string, endpointId: string): void {
+    if (this.webhookStatus === 'verified') return
+    this.webhookStatus = 'verified'
+    this.recordWebhookStatus('verified', signingSecret, endpointId)
+    this.retireSocket()
+  }
+
+  /** A post the endpoint didn't vouch for, whose signature doesn't match the saved secret. */
+  private webhookRejected(event: RelayEvent, signed: boolean, signingSecret: string, endpointId: string): void {
+    console.warn(`[SlackConnector] Discarding relayed post ${event.id}: its signature doesn't match the signing secret`)
+    // Once posts have verified, a mismatch isn't the app's; Slack signs every
+    // request, so an unsigned one isn't either.
+    if (this.webhookStatus || !signed) return
+    this.webhookStatus = 'rejected'
+    this.recordWebhookStatus('rejected', signingSecret, endpointId)
+  }
+
+  private recordWebhookStatus(status: 'verified' | 'rejected', signingSecret: string, endpointId: string): void {
+    if (!this.integration) return
+    const integrationId = this.integration.id
+    background(recordSlackWebhookStatus(integrationId, status, { signingSecret, endpointId }).catch((error: unknown) => {
+      captureException(error, { tags: { component: 'slack', operation: 'record-webhook-status' }, extra: { integrationId } })
+    }), { name: 'slack-connector.record-webhook-status' })
+  }
+
+  /** The app has moved off Socket Mode, so the socket has nothing more to bring. */
+  private retireSocket(): void {
+    if (!this.socketMode) return
+    this.socketMode = false
+    this.started = false
+    this.connected = false
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.receiver) background(this.receiver.client.disconnect().catch(() => {}), { name: 'slack-connector.close-socket' })
+    console.log(`[SlackConnector] Slack posts to the webhook for ${this.integration?.id}; Socket Mode closed`)
+  }
 }

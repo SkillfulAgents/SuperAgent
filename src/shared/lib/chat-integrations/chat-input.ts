@@ -6,6 +6,8 @@ import { isHostOrSubdomain, tryParseUrl } from '../utils/url-safety'
 import { formatSenderPrefix } from '../utils/sender-prefix'
 import { agentRegistry } from '../agent-actor'
 import { captureException } from '../error-reporting'
+import { chunksOf } from '../agent-actor/jsonl-files'
+import { heicUploadAsJpeg } from '@/api/routes/heic-jpeg'
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
@@ -88,15 +90,15 @@ export class ChatInputBuilder {
       )
       if (!config) return null
 
-      if (integration.provider === 'slack' && 'botToken' in config) {
+      if (integration.provider === 'slack' && 'botToken' in config && config.botToken) {
         return await this.downloadSlackFile(config.botToken, fileUrl)
       }
 
       // Telegram & iMessage: direct URL download (no auth needed)
       const response = await fetch(fileUrl)
       if (!response.ok) return null
-      const buffer = Buffer.from(await response.arrayBuffer())
-      if (!this.validateFileContent(buffer)) return null
+      const buffer = await this.readDownload(response)
+      if (!buffer || !this.validateFileContent(buffer)) return null
       return buffer
     } catch (err) {
       console.error(`[ChatAgentIntegration] File download failed:`, err)
@@ -170,11 +172,33 @@ export class ChatInputBuilder {
       return null
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer())
-    if (!this.validateFileContent(buffer)) {
+    const buffer = await this.readDownload(response)
+    if (!buffer || !this.validateFileContent(buffer)) {
       return null
     }
     return buffer
+  }
+
+  /** The response body, or null once it is over the size limit: an oversized file is never held whole. */
+  private async readDownload(response: Response): Promise<Buffer | null> {
+    const declared = Number(response.headers.get('content-length'))
+    if (declared > MAX_FILE_DOWNLOAD_SIZE) {
+      await response.body?.cancel().catch(() => {})
+      console.error(`[ChatAgentIntegration] Downloaded file too large (${(declared / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
+      return null
+    }
+    if (!response.body) return Buffer.alloc(0)
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of chunksOf(response.body)) {
+      size += chunk.length
+      if (size > MAX_FILE_DOWNLOAD_SIZE) {
+        console.error(`[ChatAgentIntegration] Downloaded file too large (over ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
+        return null
+      }
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks, size)
   }
 
   /** Validate downloaded content is actual file data, not an HTML error page. */
@@ -204,9 +228,10 @@ export class ChatInputBuilder {
     // basename so `../` segments cannot leave the uploads directory. The
     // actor's containment keeps the write inside the workspace, but it does
     // not stop a name from landing one level up, so the basename is still ours.
-    const safeName = sanitizeUploadFilename(filename)
+    const jpeg = await heicUploadAsJpeg(filename, data)
+    const safeName = sanitizeUploadFilename(jpeg?.name ?? filename)
     const uploadName = withUploadTimestamp(safeName)
-    await agentRegistry.get(agentSlug).files.putDoc(`uploads/${uploadName}`, data)
+    await agentRegistry.get(agentSlug).files.putDoc(`uploads/${uploadName}`, jpeg?.data ?? data)
 
     return `/workspace/uploads/${uploadName}`
   }
@@ -215,7 +240,7 @@ export class ChatInputBuilder {
   private async tryTranscribeAudio(audioBuffer: Buffer, mimeType: string): Promise<string | null> {
     try {
       const { getConfiguredVoiceProvider } = await import('@shared/lib/voice')
-      const provider = getConfiguredVoiceProvider()
+      const provider = await getConfiguredVoiceProvider()
       if (!provider || !provider.supportsTranscription()) return null
       const transcript = await provider.transcribe(audioBuffer, mimeType)
       return transcript || null

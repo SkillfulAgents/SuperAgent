@@ -2,8 +2,12 @@ import { BrowserWindow, ipcMain, app, powerMonitor } from 'electron'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import type { NsisUpdater } from 'electron-updater'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { isBackgroundWorkInitialized, PassTask, serviceHost, taskManager, type Service } from '@shared/lib/background-work'
+import { verifyUpdateSignature } from './update-signature'
+import { removeInstalledUpdateDownload } from './update-download-cache'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -16,8 +20,6 @@ let currentStatus: UpdateStatus = { state: 'idle' }
 let mainWindowRef: BrowserWindow | null = null
 let updaterReady = false
 let suppressErrors = false
-let scheduledCheckTimer: NodeJS.Timeout | null = null
-let initialCheckTimer: NodeJS.Timeout | null = null
 
 // Coalesces concurrent calls to runUpdateCheck so the dual-channel prerelease
 // path can't have its `autoUpdater.channel` mutations interleave.
@@ -44,6 +46,18 @@ async function getAutoUpdater() {
   return mod.autoUpdater ?? (mod as any).default?.autoUpdater
 }
 
+// Where electron-updater keeps its downloads, from its own helper (private in
+// its typings). Null if this electron-updater has no such helper.
+async function pendingUpdateDir(autoUpdater: unknown): Promise<string | null> {
+  const updater = autoUpdater as { getOrCreateDownloadHelper?: () => Promise<{ cacheDirForPendingUpdate: string }> }
+  try {
+    return (await updater.getOrCreateDownloadHelper?.())?.cacheDirForPendingUpdate ?? null
+  } catch (err) {
+    console.warn('[auto-updater] Could not find the update download folder:', err)
+    return null
+  }
+}
+
 function semverGt(a: string, b: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('semver').gt(a, b)
@@ -68,6 +82,16 @@ function isChannelFileNotFoundError(err: unknown): boolean {
   if (statusCode === 404) return true
   const message = err instanceof Error ? err.message : String(err)
   return /Cannot find .*latest-mac\.yml.*404/.test(message)
+}
+
+// Node's execFile error keeps exit code / timeout kill only as fields, not in
+// the message, e.g. electron-updater's Windows Get-AuthenticodeSignature check.
+function childProcessErrorDetails(err: unknown): Record<string, unknown> {
+  if (!err || typeof err !== 'object') return {}
+  const { code, killed, signal } = err as { code?: unknown; killed?: unknown; signal?: unknown }
+  return Object.fromEntries(
+    Object.entries({ errorCode: code, killed, signal }).filter(([, v]) => v !== undefined && v !== null),
+  )
 }
 
 function sendStatusToRenderer() {
@@ -270,31 +294,48 @@ async function runUpdateCheckBody() {
   }
 }
 
-function scheduleAutomaticUpdateChecks() {
-  if (scheduledCheckTimer) return
+async function automaticUpdateCheck() {
+  // Re-read setting each tick so toggling it takes effect on the next interval.
+  const autoCheck = (await getUserSettings('local')).autoCheckUpdates
+  if (autoCheck === false) return
+  await runUpdateCheck({ silent: true })
+}
 
-  const tick = async () => {
-    // Re-read setting each tick so toggling it takes effect on the next interval.
-    const autoCheck = (await getUserSettings('local')).autoCheckUpdates
-    if (autoCheck === false) return
-    await runUpdateCheck({ silent: true })
+const automaticUpdateCheckTask = new PassTask('auto-updater.check', automaticUpdateCheck)
+const INITIAL_CHECK_JOB = 'auto-updater.initial-check'
+const RECURRING_CHECK_JOB = 'auto-updater.recurring-check'
+
+class AutomaticUpdateChecks implements Service {
+  readonly id = 'auto-updater'
+  readonly tasks = [automaticUpdateCheckTask]
+
+  async start(): Promise<void> {
+    // The recurring check is suspended during macOS sleep; on resume we may have
+    // skipped multiple ticks. Run an immediate check to catch up. The check is
+    // async but electron's typings accept `() => void`; the assignment is sound
+    // because it swallows its own errors via runUpdateCheck's catch.
+    powerMonitor.on('resume', automaticUpdateCheck)
+
+    await taskManager().at(Date.now() + INITIAL_CHECK_DELAY_MS, INITIAL_CHECK_JOB, automaticUpdateCheckTask.spec)
+    await taskManager().ensureEvery(RECURRING_CHECK_JOB, automaticUpdateCheckTask.spec, { intervalMs: RECURRING_CHECK_INTERVAL_MS })
   }
 
-  initialCheckTimer = setTimeout(tick, INITIAL_CHECK_DELAY_MS)
-  scheduledCheckTimer = setInterval(tick, RECURRING_CHECK_INTERVAL_MS)
+  stop(): void {
+    powerMonitor.off('resume', automaticUpdateCheck)
+  }
+}
 
-  // setInterval is suspended during macOS sleep; on resume we may have skipped
-  // multiple ticks. Run an immediate check to catch up. `tick` is async but
-  // electron's typings accept `() => void`; the assignment is sound because
-  // tick swallows its own errors via runUpdateCheck's catch.
-  powerMonitor.on('resume', tick)
+/** Electron's own service: its entry point registers this, and no other entry point runs it. */
+export const automaticUpdateChecks = new AutomaticUpdateChecks()
 
-  app.on('before-quit', () => {
-    if (initialCheckTimer) clearTimeout(initialCheckTimer)
-    if (scheduledCheckTimer) clearInterval(scheduledCheckTimer)
-    initialCheckTimer = null
-    scheduledCheckTimer = null
-  })
+/**
+ * Starts the checks once the updater is ready and the service is registered, so it
+ * is called after each: a second launch can open the window, and with it get the
+ * updater ready, while the app is still on its way to registering the service.
+ */
+export function startAutomaticUpdateChecks() {
+  if (!updaterReady || !isBackgroundWorkInitialized() || !serviceHost().isRegistered(automaticUpdateChecks.id)) return
+  void serviceHost().startService(automaticUpdateChecks.id)
 }
 
 /**
@@ -318,7 +359,11 @@ export function registerUpdateHandlers() {
     } catch (err) {
       captureException(err, {
         tags: { component: 'auto-updater', operation: 'download' },
-        extra: { currentVersion: app.getVersion(), targetVersion: currentStatus.version },
+        extra: {
+          currentVersion: app.getVersion(),
+          targetVersion: currentStatus.version,
+          ...childProcessErrorDetails(err),
+        },
       })
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
@@ -369,6 +414,12 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
       console.log(`[auto-updater] TEST MODE: pretending to be v${fakeVersion}, feed=${cfgPath}`)
     }
 
+    // electron-updater's own Windows signature check gives up after 20s, too
+    // short for slow machines and VDIs (see update-signature.ts).
+    if (process.platform === 'win32') {
+      ;(autoUpdater as NsisUpdater).verifyUpdateCodeSignature = verifyUpdateSignature
+    }
+
     // Don't auto-download — let the user choose
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
@@ -417,6 +468,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
             currentVersion: app.getVersion(),
             state: currentStatus.state,
             userVisible: runIsUserVisible,
+            ...childProcessErrorDetails(err),
           },
           level: 'warning',
         })
@@ -432,8 +484,15 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
       setStatus({ state: 'error', error: err.message })
     })
 
+    // Before any check or download can start: a second copy of the update
+    // zip this app was installed from (update-download-cache.ts).
+    if (process.platform === 'darwin') {
+      const pendingDir = await pendingUpdateDir(autoUpdater)
+      if (pendingDir) await removeInstalledUpdateDownload(pendingDir, app.getVersion())
+    }
+
     updaterReady = true
-    scheduleAutomaticUpdateChecks()
+    startAutomaticUpdateChecks()
   } catch (err) {
     captureException(err, {
       tags: { component: 'auto-updater', operation: 'init' },

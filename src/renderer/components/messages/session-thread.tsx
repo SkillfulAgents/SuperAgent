@@ -4,9 +4,10 @@ import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
+import type { MessageTarget } from './locate-message'
 
 interface SessionThreadProps {
-  sessionId: string
+  sessionId: string | null
   agentSlug: string
   /** Footer pinned below the scrollable message list (input bar, read-only notice, etc.) */
   footer: ReactNode
@@ -24,6 +25,7 @@ interface SessionThreadProps {
   pendingRequestCount?: number
   onPendingMessageAppeared?: (localId: string) => void
   suppressScrollToBottom?: boolean
+  messageTarget?: MessageTarget
 }
 
 /**
@@ -47,6 +49,7 @@ export function SessionThread({
   pendingRequestCount,
   onPendingMessageAppeared,
   suppressScrollToBottom,
+  messageTarget,
 }: SessionThreadProps) {
   const footerRef = useRef<HTMLDivElement>(null)
   const [footerHeight, setFooterHeight] = useState(0)
@@ -88,17 +91,20 @@ export function SessionThread({
         )}
         data-testid="session-thread-main"
       >
-        <MessageList
-          key={sessionId}
-          sessionId={sessionId}
-          agentSlug={agentSlug}
-          readOnly={readOnly}
-          pendingUserMessages={pendingUserMessages}
-          pendingRequestCount={pendingRequestCount}
-          onPendingMessageAppeared={onPendingMessageAppeared}
-          suppressScrollToBottom={suppressScrollToBottom}
-          bottomInset={overlayFooter ? footerHeight : 0}
-        />
+        {sessionId && (
+          <MessageList
+            key={sessionId}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            readOnly={readOnly}
+            pendingUserMessages={pendingUserMessages}
+            pendingRequestCount={pendingRequestCount}
+            onPendingMessageAppeared={onPendingMessageAppeared}
+            suppressScrollToBottom={suppressScrollToBottom}
+            bottomInset={overlayFooter ? footerHeight : 0}
+            messageTarget={messageTarget}
+          />
+        )}
         <div
           ref={footerRef}
           className={cn(
@@ -109,12 +115,12 @@ export function SessionThread({
           data-composer-footer
           data-overlay-footer={overlayFooter || undefined}
         >
-          <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+          {sessionId && <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />}
           {footer}
         </div>
       </div>
       {/* Side tray (browser, file preview) */}
-      <TrayManager agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} />
+      {sessionId && <TrayManager agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} />}
     </div>
   )
 }

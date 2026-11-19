@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { AccountReplacedError } from '@shared/lib/proxy/account-replacement'
 
 // Mock dependencies
 const mockValidateProxyToken = vi.fn()
@@ -18,8 +17,15 @@ vi.mock('@shared/lib/proxy/allowed-hosts', () => ({
 
 const mockMakeApiCall = vi.fn()
 const mockGetConnection = vi.fn()
+/** Each settings read hands back a distinct snapshot, so a test can tell which read a call used. */
+let settingsReads = 0
+const mockGetSettings = vi.fn(async () => ({ read: ++settingsReads }))
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => mockGetSettings(),
+}))
 const mockAccountProvider = {
   name: 'composio',
+  credentialsFrom: (settings: { read: number }) => ({ provider: 'composio', read: settings.read }),
   makeApiCall: (...args: unknown[]) => mockMakeApiCall(...args),
   getConnection: (...args: unknown[]) => mockGetConnection(...args),
 }
@@ -69,9 +75,18 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
 }))
 
+// No proxy rules exist in these tests; the rule paths have their own suite.
+vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
+
+/** The attribution each call ran under, and what the owner's attribution was built from. */
+const attributedCalls: unknown[] = []
+const mockFromResourceCreator = vi.fn((_owner: unknown, settings: { read: number }) => ({ owner: true, read: settings.read }))
 vi.mock('@shared/lib/platform-attribution', () => ({
-  attribution: { fromResourceCreator: () => null },
-  runWithAttribution: <T,>(_auth: unknown, fn: () => T): T => fn(),
+  attribution: { fromResourceCreator: (owner: unknown, settings: { read: number }) => mockFromResourceCreator(owner, settings) },
+  runWithAttribution: <T,>(auth: unknown, fn: () => T): T => {
+    attributedCalls.push(auth)
+    return fn()
+  },
 }))
 
 // Mock policy enforcement
@@ -88,15 +103,26 @@ vi.mock('@shared/lib/proxy/policy-resolver', () => ({
   resolveApiPolicy: (...args: unknown[]) => mockResolveApiPolicy(...args),
 }))
 
+// The agent's reviews, as its router answers the actor's review ops: a
+// request resolves to its outcome; resume and settle follow a recheck.
+const mockResumeReview = vi.fn(async (..._args: unknown[]): Promise<string> => 'allow')
+const mockSettleReview = vi.fn(async (_slug: string, _id: string, decision: string): Promise<string> => decision)
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestReview: (...args: unknown[]) => mockRequestReview(...args),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestReview({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
+    resume: (...args: unknown[]) => mockResumeReview(...args),
+    settle: (slug: string, id: string, decision: string) => mockSettleReview(slug, id, decision),
+    takeDecisionDetail: vi.fn(async () => ({})),
   },
 }))
 
+// The agent's account re-auth waits, as its router answers the actor's ops:
+// a request resolves to how the wait ended.
 vi.mock('@shared/lib/proxy/account-reauth-manager', () => ({
   accountReauthManager: {
-    requestReauth: (...args: unknown[]) => mockRequestReauth(...args),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestReauth({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
   },
 }))
 
@@ -122,6 +148,8 @@ describe('proxy route', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    settingsReads = 0
+    attributedCalls.length = 0
     app = createApp()
 
     // Default: DB insert for audit log succeeds
@@ -141,7 +169,7 @@ describe('proxy route', () => {
       scopeDescriptions: {},
       resolvedFrom: 'global_default',
     })
-    mockRequestReauth.mockResolvedValue(undefined)
+    mockRequestReauth.mockResolvedValue({ outcome: 'resumed' })
   })
 
   async function makeRequest(
@@ -740,6 +768,64 @@ describe('proxy route', () => {
   })
 
   // =========================================================================
+  // Target host validation, against the real allowlist
+  // =========================================================================
+  describe('target host validation', () => {
+    async function useRealAllowlist() {
+      const actual = await vi.importActual<typeof import('@shared/lib/proxy/allowed-hosts')>(
+        '@shared/lib/proxy/allowed-hosts'
+      )
+      mockIsHostAllowed.mockImplementation(actual.isHostAllowed)
+    }
+
+    // The route param arrives percent-decoded: `%23` reaches the route as `#`.
+    it.each([
+      'evil.com%23.atlassian.net',
+      'evil.com%3F.atlassian.net',
+      'evil.com%5C.atlassian.net',
+      'evil.com%23%40acme.atlassian.net',
+      'evil.com%09.atlassian.net',
+      'evil.com%2523.atlassian.net',
+      'Evil.com%23.Atlassian.net',
+    ])('rejects %s before policy or forwarding', async (host) => {
+      setupSuccessPath({ toolkit: 'jira' })
+      await useRealAllowlist()
+
+      const res = await makeRequest(
+        `/api/proxy/my-agent/acc-123/${host}/rest/api/3/myself`,
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(403)
+      expect((await res.json()).error).toContain('not allowed')
+      expect(mockResolveApiPolicy).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).not.toHaveBeenCalled()
+      expect(mockInsertValues).toHaveBeenCalledOnce()
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.toolkit).toBe('jira')
+      expect(entry.errorMessage).toContain('not allowed')
+    })
+
+    it.each([
+      ['jira', 'acme.atlassian.net', 'acme.atlassian.net'],
+      ['jira', 'Acme.atlassian.net', 'acme.atlassian.net'],
+      ['github', 'API.GitHub.com', 'api.github.com'],
+    ])('forwards %s at %s to %s', async (toolkit, host, expectedHost) => {
+      setupSuccessPath({ toolkit })
+      await useRealAllowlist()
+
+      const res = await makeRequest(
+        `/api/proxy/my-agent/acc-123/${host}/rest/api/3/myself`,
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+      expect(new URL(targetUrl).hostname).toBe(expectedHost)
+    })
+  })
+
+  // =========================================================================
   // Account status checks
   // =========================================================================
   describe('account status checks', () => {
@@ -784,7 +870,7 @@ describe('proxy route', () => {
         accountId: 'acc-123',
         toolkit: 'gmail',
         accountStatus: 'expired',
-      }, expect.any(AbortSignal))
+      }, { waitId: expect.any(String) })
       expect(mockMakeApiCall).toHaveBeenCalledWith(expect.objectContaining({
         providerConnectionId: 'comp-reconnected',
       }))
@@ -803,9 +889,12 @@ describe('proxy route', () => {
           status: failure === 'local' ? 'expired' : 'active',
         } }])
         mockIsHostAllowed.mockReturnValue(true)
-        if (failure === 'remote') mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
+        if (failure === 'remote') {
+          mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status: 401 }))
+          mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
+        }
         if (failure === 'token') mockMakeApiCall.mockRejectedValueOnce(new Error('Failed to fetch token'))
-        mockRequestReauth.mockRejectedValueOnce(new AccountReplacedError('replacement'))
+        mockRequestReauth.mockResolvedValueOnce({ outcome: 'replaced', replacementId: 'replacement' })
 
         const response = await makeRequest('/api/proxy/my-agent/acc-123/slack.com/api/conversations.list', {
           headers: { Authorization: 'Bearer synth_valid' },
@@ -815,7 +904,7 @@ describe('proxy route', () => {
           error: 'account_replaced', replacementAccountId: 'replacement',
           message: expect.stringContaining('Retry the request using account ID replacement'),
         })
-        expect(mockMakeApiCall).toHaveBeenCalledTimes(failure === 'token' ? 1 : 0)
+        expect(mockMakeApiCall).toHaveBeenCalledTimes(failure === 'local' ? 0 : 1)
 
         // The new credential must not inherit the old account's allow decision.
         mockMakeApiCall.mockClear()
@@ -850,7 +939,7 @@ describe('proxy route', () => {
           },
         },
       ])
-      mockRequestReauth.mockRejectedValue(new Error('Account re-authentication timed out'))
+      mockRequestReauth.mockResolvedValue({ outcome: 'timeout' })
 
       const res = await makeRequest(
         '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
@@ -893,7 +982,7 @@ describe('proxy route', () => {
       mockIsHostAllowed.mockReturnValue(true)
       mockMakeApiCall.mockResolvedValue(new Response('{}', { status: 200 }))
       let resume!: () => void
-      mockRequestReauth.mockReturnValue(new Promise<void>((resolve) => { resume = resolve }))
+      mockRequestReauth.mockReturnValue(new Promise((resolve) => { resume = () => resolve({ outcome: 'resumed' }) }))
 
       const request = makeRequest(
         '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
@@ -908,8 +997,41 @@ describe('proxy route', () => {
       expect((await request).status).toBe(200)
     })
 
-    it('holds and resumes when remote status check returns non-ACTIVE', async () => {
+    /** The upstream refuses the first forward; later forwards go through. */
+    function refuseFirstForward(status: 401 | 403 = 401) {
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status }))
+    }
+
+    it('does not ask the provider for the status when the call goes through', async () => {
       setupSuccessPath()
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockGetConnection).not.toHaveBeenCalled()
+    })
+
+    it.each([401, 403] as const)('returns a %s from the upstream as it is when the remote status is ACTIVE', async (status) => {
+      setupSuccessPath({ upstreamStatus: status, upstreamBody: '{"error":"missing_scope"}' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(status)
+      expect(await res.json()).toEqual({ error: 'missing_scope' })
+      expect(mockGetConnection).toHaveBeenCalledOnce()
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).toHaveBeenCalledOnce()
+    })
+
+    it('holds and resumes when the upstream refuses the call and the remote status is non-ACTIVE', async () => {
+      setupSuccessPath()
+      refuseFirstForward()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
       const res = await makeRequest(
@@ -920,12 +1042,37 @@ describe('proxy route', () => {
       expect(res.status).toBe(200)
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'expired',
-      }), expect.any(AbortSignal))
-      expect(mockMakeApiCall).toHaveBeenCalledOnce()
+      }), { waitId: expect.any(String) })
+      // The refused forward, then the status check, then the wait, then the forward again.
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
+      const [firstForward, secondForward] = mockMakeApiCall.mock.invocationCallOrder
+      const [statusCheck] = mockGetConnection.mock.invocationCallOrder
+      const [reauthWait] = mockRequestReauth.mock.invocationCallOrder
+      expect(firstForward).toBeLessThan(statusCheck)
+      expect(statusCheck).toBeLessThan(reauthWait)
+      expect(reauthWait).toBeLessThan(secondForward)
+    })
+
+    it('holds and resumes when the forward fails and the remote status is non-ACTIVE', async () => {
+      setupSuccessPath()
+      mockMakeApiCall.mockRejectedValueOnce(new Error('Composio API error: 400'))
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'INACTIVE' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
+        accountStatus: 'revoked',
+      }), { waitId: expect.any(String) })
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
     })
 
     it('updates DB status when remote returns EXPIRED', async () => {
       setupSuccessPath()
+      refuseFirstForward()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
       await makeRequest(
@@ -940,6 +1087,7 @@ describe('proxy route', () => {
 
     it('updates DB status to revoked when remote returns FAILED', async () => {
       setupSuccessPath()
+      refuseFirstForward(403)
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
 
       await makeRequest(
@@ -953,6 +1101,7 @@ describe('proxy route', () => {
 
     it('holds and resumes with revoked when remote status is FAILED', async () => {
       setupSuccessPath()
+      refuseFirstForward(403)
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
 
       const res = await makeRequest(
@@ -963,11 +1112,11 @@ describe('proxy route', () => {
       expect(res.status).toBe(200)
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'revoked',
-      }), expect.any(AbortSignal))
+      }), { waitId: expect.any(String) })
     })
 
-    it('proceeds with request when remote status check fails (network error)', async () => {
-      setupSuccessPath()
+    it('returns the refused answer when remote status check fails (network error)', async () => {
+      setupSuccessPath({ upstreamStatus: 401 })
       mockGetConnection.mockRejectedValueOnce(new Error('Network error'))
 
       const res = await makeRequest(
@@ -975,8 +1124,9 @@ describe('proxy route', () => {
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
 
-      expect(res.status).toBe(200)
-      expect(mockMakeApiCall).toHaveBeenCalled()
+      expect(res.status).toBe(401)
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).toHaveBeenCalledOnce()
     })
 
     it('re-authenticates and retries once when token retrieval reports expiry', async () => {
@@ -1016,11 +1166,50 @@ describe('proxy route', () => {
       expect(res.status).toBe(200)
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'expired',
-      }), expect.any(AbortSignal))
+      }), { waitId: expect.any(String) })
       expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
       expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
         providerConnectionId: 'comp-new',
       }))
+    })
+  })
+
+  describe('settings reads', () => {
+    const request = () => makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } },
+    )
+
+    it('reads settings once for the forward and the status check after it, both under the owner built from that read', async () => {
+      setupSuccessPath({ upstreamStatus: 401 })
+
+      expect((await request()).status).toBe(401)
+
+      expect(mockGetSettings).toHaveBeenCalledTimes(1)
+      expect(mockFromResourceCreator).toHaveBeenCalledTimes(1)
+      expect(mockMakeApiCall.mock.calls[0][0].credentials).toEqual({ provider: 'composio', read: 1 })
+      expect(mockGetConnection.mock.calls[0][2]).toEqual({ provider: 'composio', read: 1 })
+      expect(attributedCalls).toEqual([{ owner: true, read: 1 }, { owner: true, read: 1 }])
+    })
+
+    it('reads again on the next request', async () => {
+      setupSuccessPath()
+      await request()
+      await request()
+      expect(mockGetSettings).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[1][0].credentials).toEqual({ provider: 'composio', read: 2 })
+    })
+
+    it('reads again after waiting for re-authentication, and forwards with that read', async () => {
+      setupSuccessPath()
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status: 401 }))
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
+
+      expect((await request()).status).toBe(200)
+
+      expect(mockGetSettings).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[1][0].credentials).toEqual({ provider: 'composio', read: 2 })
+      expect(attributedCalls.at(-1)).toEqual({ owner: true, read: 2 })
     })
   })
 })
@@ -1141,10 +1330,72 @@ describe('proxy policy enforcement', () => {
     expect(mockRequestReview).toHaveBeenCalledOnce()
     // Stamped as an API review: "always allow" must write apiScopePolicies
     // keyed by this connected account, never the MCP table.
+    // A sweep that changes the policy hands it back to decide again.
     expect(mockRequestReview).toHaveBeenCalledWith(
       expect.objectContaining({ reviewType: 'api', accountId: 'acc-123' }),
+      { id: expect.any(String), recheck: true },
+    )
+  })
+
+  it('review → passes endpoint ambiguity and what the request sends to the review', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['read', 'write'], descriptions: {}, endpointAmbiguous: true })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['read'],
+      scopeDescriptions: {},
+      endpointAmbiguous: true,
+      resolvedFrom: 'scope_policy',
+    })
+    // A sweep asks to decide again; the policy still says review, so the card stays for the person.
+    mockRequestReview.mockResolvedValue('recheck')
+    mockResumeReview.mockResolvedValueOnce('allow')
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const body = '{"query":"mutation { issueDelete(id: \\"LIN-1\\") { success } }"}'
+
+    await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { method: 'POST', body, headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' } }
+    )
+    expect(mockRequestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ endpointAmbiguous: true, requestBody: 'mutation { issueDelete(id: "LIN-1") { success } }' }),
       expect.anything(),
     )
+    // The matcher gets the body, to name a GraphQL operation, again when a sweep re-decides the request.
+    expect(new TextDecoder().decode(mockMatchScopes.mock.calls[0][4])).toBe(body)
+    expect(new TextDecoder().decode(mockMatchScopes.mock.calls[1][4])).toBe(body)
+    expect(mockResumeReview).toHaveBeenCalledOnce()
+    expect(mockSettleReview).not.toHaveBeenCalled()
+    // The body read for the card is the one forwarded.
+    expect(new TextDecoder().decode(mockMakeApiCall.mock.calls[0][0].body)).toBe(body)
+  })
+
+  it('review → leaves a binary upload unread until the call is allowed', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['drive.file'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['drive.file'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const upload = new Uint8Array([0, 1, 2, 3])
+    const request = new Request('http://localhost/api/proxy/my-agent/acc-123/www.googleapis.com/upload/drive/v3/files', {
+      method: 'POST',
+      body: upload,
+      headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/octet-stream; name=data.json' },
+    })
+    let readBeforeReview: boolean | undefined
+    mockRequestReview.mockImplementation(async () => {
+      readBeforeReview = request.bodyUsed
+      return 'allow'
+    })
+
+    await app.request(request)
+    expect(readBeforeReview).toBe(false)
+    expect(mockRequestReview).toHaveBeenCalledWith(expect.objectContaining({ requestBody: undefined }), expect.anything())
+    expect(new Uint8Array(mockMakeApiCall.mock.calls[0][0].body)).toEqual(upload)
   })
 
   it('review → user denies → returns 403, error: "denied_by_user"', async () => {
@@ -1176,7 +1427,7 @@ describe('proxy policy enforcement', () => {
       scopeDescriptions: {},
       resolvedFrom: 'scope_policy',
     })
-    mockRequestReview.mockRejectedValue(new Error('Review timeout'))
+    mockRequestReview.mockResolvedValue('timeout')
 
     const res = await makeRequest(
       '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
@@ -1242,6 +1493,230 @@ describe('proxy policy enforcement', () => {
     expect(res.status).toBe(200)
     // The key assertion: reviewManager was called because fallback is 'review'
     expect(mockRequestReview).toHaveBeenCalledOnce()
+  })
+})
+
+// ===========================================================================
+// Target path canonicalisation: the path the policy check matches is the path
+// the upstream request reaches. Uses the real scope matcher; sending mail is
+// blocked and everything else (unmatched paths included) is allowed.
+// ===========================================================================
+
+describe('proxy target path canonicalisation', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockInsertValues.mockResolvedValue(undefined)
+    mockGetConnection.mockResolvedValue({ id: 'mock-conn', status: 'ACTIVE' })
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockIsHostAllowed.mockReturnValue(true)
+
+    const actual = await vi.importActual<typeof import('@shared/lib/proxy/scope-matcher')>(
+      '@shared/lib/proxy/scope-matcher',
+    )
+    mockMatchScopes.mockImplementation(actual.matchScopes)
+    mockResolveApiPolicy.mockImplementation(async (_accountId: string, match: { matched: boolean; scopes: string[] }) => ({
+      decision: match.scopes.includes('gmail.send') ? 'block' : 'allow',
+      matchedScopes: match.scopes,
+      scopeDescriptions: {},
+      resolvedFrom: match.matched ? 'scope_policy' : 'account_default',
+    }))
+    useAccount('gmail')
+  })
+
+  function useAccount(toolkitSlug: string) {
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        account: {
+          id: 'acc-123',
+          toolkitSlug,
+          providerConnectionId: 'comp-123',
+          providerName: 'composio',
+          status: 'active',
+          userId: 'user-1',
+        },
+      },
+    ])
+  }
+
+  function send(tail: string, method = 'POST') {
+    return app.request(`http://localhost/api/proxy/my-agent/acc-123/${tail}`, {
+      method,
+      headers: { Authorization: 'Bearer synth_valid' },
+    })
+  }
+
+  it('baseline: sending mail is blocked', async () => {
+    const res = await send('gmail.googleapis.com/gmail/v1/users/me/messages/send')
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'gmail/v1/users/me/drafts/../messages/send',
+    'gmail/v1/users/me/drafts/%2e%2E/messages/send',
+    'gmail/v1/users/me/drafts\\..\\messages/send',
+    'gmail/v1/users/me/messages%2Fsend',
+    'gmail/v1/users/me/messages/sen%64',
+  ])('an equivalent spelling of the blocked endpoint is still blocked: %s', async (path) => {
+    const res = await send(`gmail.googleapis.com/${path}`)
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', '/gmail/v1/users/me/messages/send', 'gmail.googleapis.com', null)
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'gmail/v1/users/me/drafts/%252e%252e/messages/send',
+    'gmail/v1/users/me/drafts/%252E./messages/send',
+    'gmail/v1/users/me/drafts%2F..%2Fmessages/send',
+    'gmail/v1/users/me/drafts%5C..%5Cmessages%5Csend',
+    'gmail/v1/users/me/messages/send%09',
+    'gmail/v1/users/me/messages/se%00nd',
+    'gmail/v1/users/me/messages//send',
+  ])('an ambiguous spelling is rejected before policy and never forwarded: %s', async (path) => {
+    const res = await send(`gmail.googleapis.com/${path}`)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toBe('invalid_target_path')
+    expect(body.message).toMatch(/^Invalid target path: /)
+    expect(mockMatchScopes).not.toHaveBeenCalled()
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+
+    expect(mockInsertValues).toHaveBeenCalledOnce()
+    const entry = mockInsertValues.mock.calls[0][0]
+    expect(entry.targetHost).toBe('gmail.googleapis.com')
+    expect(entry.targetPath).toBe(path)
+    expect(entry.errorMessage).toBe(body.message)
+  })
+
+  it.each(['send%3F', 'send%3Fx=1', 'send%23', 'send%20', '%20send'])(
+    'preserves encoded path data instead of rewriting it into /send: %s', async (ending) => {
+      const path = `gmail/v1/users/me/messages/${ending}`
+      const res = await send(`gmail.googleapis.com/${path}?q=%23`)
+      expect(res.status).toBe(200)
+      expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', `/${path}`, 'gmail.googleapis.com', null)
+      expect(mockResolveApiPolicy).toHaveBeenCalledWith(
+        'acc-123', expect.objectContaining({ matched: false, scopes: [] }), 'user-1', 'gmail',
+      )
+      const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+      expect(targetUrl).toBe(`https://gmail.googleapis.com/${path}?q=%23`)
+      const forwarded = new URL(targetUrl)
+      expect(forwarded.pathname).toBe(`/${path}`)
+      expect(forwarded.search).toBe('?q=%23')
+      expect(forwarded.hash).toBe('')
+      expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(path)
+    },
+  )
+
+  it.each([
+    ['C%23/Program.cs', 'C%23/Program.cs'],
+    ['question%3fmark.txt', 'question%3Fmark.txt'],
+    ['%20index.ts%20', '%20index.ts%20'],
+    ['C%2523%253F%2520', 'C%2523%253F%2520'],
+  ])('forwards a filename containing encoded path data: %s', async (file, canonicalFile) => {
+    useAccount('github')
+    const path = `repos/o/r/contents/${file}`
+    const canonicalPath = `repos/o/r/contents/${canonicalFile}`
+    const res = await send(`api.github.com/${path}?ref=main`, 'GET')
+    expect(res.status).toBe(200)
+    expect(mockMatchScopes).toHaveBeenCalledWith('github', 'GET', `/${canonicalPath}`, 'api.github.com', null)
+    expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe(`https://api.github.com/${path}?ref=main`)
+    expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(canonicalPath)
+  })
+
+  it('still applies a blocked scope to a filename containing encoded path data', async () => {
+    useAccount('github')
+    mockResolveApiPolicy.mockImplementation(async (_accountId: string, match: { scopes: string[] }) => ({
+      decision: match.scopes.includes('repo') ? 'block' : 'allow',
+      matchedScopes: match.scopes,
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    }))
+    const res = await send('api.github.com/repos/o/r/contents/%20C%23%20', 'GET')
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+
+  it('keeps delimiters and boundary whitespace escaped in review prompts', async () => {
+    useAccount('github')
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review', matchedScopes: ['repo'], scopeDescriptions: {}, resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('allow')
+    const path = 'repos/o/r/contents/%20C%23%3F%20'
+    const res = await send(`api.github.com/${path}`, 'GET')
+    expect(res.status).toBe(200)
+    expect(mockRequestReview.mock.calls[0][0].targetPath).toBe(path)
+    expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe(`https://api.github.com/${path}`)
+    expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(path)
+  })
+
+  it('forwards encoded characters as sent and matches them decoded', async () => {
+    useAccount('googlecalendar')
+    const res = await send('www.googleapis.com/calendar/v3/calendars/me%40example.com/events?maxResults=5', 'GET')
+    expect(res.status).toBe(200)
+    expect(mockMatchScopes).toHaveBeenCalledWith(
+      'googlecalendar', 'GET', '/calendar/v3/calendars/me@example.com/events', 'www.googleapis.com', null,
+    )
+    const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+    expect(targetUrl).toBe('https://www.googleapis.com/calendar/v3/calendars/me%40example.com/events?maxResults=5')
+
+    const entry = mockInsertValues.mock.calls[0][0]
+    expect(entry.targetPath).toBe('calendar/v3/calendars/me@example.com/events')
+  })
+
+  it('keeps a GitLab namespaced project id as one encoded segment', async () => {
+    useAccount('gitlab')
+    const res = await send('gitlab.com/api/v4/projects/group%2Fproject/issues', 'GET')
+    expect(res.status).toBe(200)
+    expect(mockMatchScopes).toHaveBeenCalledWith('gitlab', 'GET', '/api/v4/projects/group%2Fproject/issues', 'gitlab.com', null)
+    const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+    expect(targetUrl).toBe('https://gitlab.com/api/v4/projects/group%2Fproject/issues')
+  })
+
+  it.each([
+    ['GET', '', 'spreadsheets.readonly'],
+    ['PUT', '', 'spreadsheets'],
+    ['POST', ':append', 'spreadsheets'],
+    ['POST', ':clear', 'spreadsheets'],
+  ])('classifies and forwards Sheets %s range requests ending in %s', async (method, suffix, scope) => {
+    useAccount('googlesheets')
+    const path = `v4/spreadsheets/id/values/'October%2F2026'!A1%3AB2${suffix}`
+    const query = '?valueInputOption=RAW'
+    const res = await send(`sheets.googleapis.com/${path}${query}`, method)
+    expect(res.status).toBe(200)
+    const match = mockResolveApiPolicy.mock.calls[0][1]
+    expect(match.matched).toBe(true)
+    expect(match.scopes).toContain(scope)
+    expect(match.endpointDescription).toBeTruthy()
+    expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe(`https://sheets.googleapis.com/${path}${query}`)
+    expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(
+      `v4/spreadsheets/id/values/'October%2F2026'!A1:B2${suffix}`,
+    )
+  })
+
+  it('cannot bypass a Sheets scope policy with an encoded slash in the range', async () => {
+    useAccount('googlesheets')
+    // Unmatched calls are allowed here: losing the scope would incorrectly forward this write.
+    mockResolveApiPolicy.mockImplementation(async (_accountId: string, match: { matched: boolean; scopes: string[] }) => ({
+      decision: match.scopes.includes('spreadsheets') ? 'block' : 'allow',
+      matchedScopes: match.scopes,
+      scopeDescriptions: {},
+      resolvedFrom: match.matched ? 'scope_policy' : 'account_default',
+    }))
+    const res = await send("sheets.googleapis.com/v4/spreadsheets/id/values/'October%2F2026'!A1:B2:append")
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
   })
 })
 
@@ -1705,9 +2180,10 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
     })
   })
 
-  it('form-encoded body returns 415 (unsupported on managed connections)', async () => {
+  it('form-encoded body is forwarded as binary_body', async () => {
     const app = await getFreshApp()
     setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 200, data: { ok: true }, headers: {} })
 
     const res = await app.request(
       'http://localhost/api/proxy/my-agent/acc-r/slack.com/api/auth.test',
@@ -1721,10 +2197,14 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
       }
     )
 
-    expect(res.status).toBe(415)
-    expect(mockProxyExecute).not.toHaveBeenCalled()
-    const body = await res.json()
-    expect(body.error).toBe('unsupported_media_type')
+    expect(res.status).toBe(200)
+    expect(mockProxyExecute).toHaveBeenCalledTimes(1)
+    const arg = mockProxyExecute.mock.calls[0][0]
+    expect(arg.body).toBeUndefined()
+    expect(arg.binaryBody).toEqual({
+      base64: Buffer.from('foo=bar').toString('base64'),
+      content_type: 'application/x-www-form-urlencoded',
+    })
   })
 
   it('multipart body returns 415', async () => {
@@ -1889,5 +2369,111 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
       const queryParams = (arg.parameters as Array<{ type: string }>).filter((p) => p.type === 'query')
       expect(queryParams).toEqual([])
     }
+  })
+})
+
+describe('proxy session URL', () => {
+  let app: ReturnType<typeof createApp>
+  const SESSION_URL = '/api/proxy/my-agent/s/session-a/acc-123/gmail.googleapis.com/gmail/v1/messages'
+  const auth = { headers: { Authorization: 'Bearer synth_valid' } }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockInsertValues.mockResolvedValue(undefined)
+    mockGetConnection.mockResolvedValue({ id: 'mock-conn', status: 'ACTIVE' })
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.modify'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
+    mockRequestReauth.mockResolvedValue({ outcome: 'resumed' })
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+  })
+
+  // One account row per lookup: the first is the mapping check, the next the
+  // re-read after re-authentication.
+  function mapAccount(...statuses: Array<'active' | 'expired'>) {
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockReset()
+    for (const status of statuses) {
+      mockLimit.mockResolvedValueOnce([{ account: {
+        id: 'acc-123',
+        toolkitSlug: 'gmail',
+        providerConnectionId: 'comp-123',
+        providerName: 'composio',
+        status,
+      } }])
+    }
+    mockIsHostAllowed.mockReturnValue(true)
+  }
+
+  async function makeRequest(path: string, options?: RequestInit): Promise<Response> {
+    return app.request(`http://localhost${path}`, options)
+  }
+
+  it('forwards to the target that follows the session segment', async () => {
+    mapAccount('active')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockMakeApiCall).toHaveBeenCalledWith(expect.objectContaining({
+      targetUrl: 'https://gmail.googleapis.com/gmail/v1/messages',
+    }))
+  })
+
+  it('names the calling session when the call waits for re-authentication', async () => {
+    mapAccount('expired', 'active')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReauth).toHaveBeenCalledWith(
+      expect.objectContaining({ agentSlug: 'my-agent', accountId: 'acc-123', callerSessionId: 'session-a' }),
+      expect.anything(),
+    )
+  })
+
+  it('names the calling session when the call needs review', async () => {
+    mapAccount('active')
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('allow')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewType: 'api', accountId: 'acc-123', callerSessionId: 'session-a' }),
+      expect.anything(),
+    )
+  })
+
+  it('names no session on the plain proxy URL', async () => {
+    mapAccount('expired', 'active')
+
+    const res = await makeRequest('/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages', auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReauth.mock.calls[0][0].callerSessionId).toBeUndefined()
+  })
+
+  it('still requires the agent token', async () => {
+    mockValidateProxyToken.mockResolvedValue('other-agent')
+
+    const res = await makeRequest(SESSION_URL, { headers: { Authorization: 'Bearer synth_other' } })
+
+    expect(res.status).toBe(403)
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
   })
 })

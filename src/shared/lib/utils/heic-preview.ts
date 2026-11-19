@@ -1,0 +1,1 @@
+export const HEIC_PREVIEW_MAX_SOURCE_BYTES = 25 * 1024 * 1024

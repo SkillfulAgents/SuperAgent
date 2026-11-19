@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { GrokSubscriptionLlmProvider, GROK_CLIENT_HEADERS, GROK_SUBSCRIPTION_BASE_URL } from './grok-subscription-provider'
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}) }))
+vi.mock('../config/settings', () => ({ getSettings: async () => ({}) }))
 afterEach(() => vi.restoreAllMocks())
 const credential = { accessToken: 'old', refreshToken: 'secret-refresh', accountId: 'a', generation: 1, expiresAt: Date.now() + 3600000 }
 const prompt = { model: 'grok-4.7', max_tokens: 512, messages: [{ role: 'user' as const, content: 'Hi' }] }
@@ -8,12 +8,17 @@ const reply = { id: 'r', status: 'completed', output: [{ id: 'm', type: 'message
 function provider(resolveCredential = vi.fn().mockResolvedValue(credential)) {
   return new GrokSubscriptionLlmProvider({ apiKeys: {}, env: {}, oauth: credential, resolveCredential })
 }
+it('drops the API long-context price warning for subscription models', async () => {
+  const models = provider().getBuiltinCatalog()
+  expect(models.length).toBeGreaterThan(0)
+  expect(models.every(model => model.longContextPriceCliff === undefined)).toBe(true)
+})
 it('issues an access-only Responses proxy descriptor', async () => {
   const config = await provider().getContainerProxyConfig()
   expect(config).toMatchObject({ adapter: 'grok', format: 'responses', headers: GROK_CLIENT_HEADERS, credential: { accessToken: 'old' } })
   expect(JSON.stringify(config)).not.toContain('secret-refresh')
 })
-it('tells the agent to call the subscription media endpoints with the session credential', () => {
+it('tells the agent to call the subscription media endpoints with the session credential', async () => {
   const media = new GrokSubscriptionLlmProvider().mediaPrompt
   expect(media).toContain('"/llm-runtime/resolve"')
   for (const path of ['images/generations', 'images/edits', 'videos/generations', 'videos/<request_id>'])
@@ -22,7 +27,7 @@ it('tells the agent to call the subscription media endpoints with the session cr
 })
 it('translates host helper calls, thinking configuration, tools and usage through Responses', async () => {
   const upstream = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json(reply))
-  const result = await provider().createClient().messages.create({ ...prompt, thinking: { type: 'disabled' }, tools: [{ name: 'optional', input_schema: { type: 'object', properties: { value: { type: 'string' } } } }] })
+  const result = await (await provider().createClient()).messages.create({ ...prompt, thinking: { type: 'disabled' }, tools: [{ name: 'optional', input_schema: { type: 'object', properties: { value: { type: 'string' } } } }] })
   const [url, init] = upstream.mock.calls[0]
   expect(url).toBe('https://cli-chat-proxy.grok.com/v1/responses')
   expect(new Headers(init?.headers).get('authorization')).toBe('Bearer old')
@@ -37,7 +42,7 @@ it('retranslates after a 401 so another account cannot receive old reasoning', a
   const resolve = vi.fn().mockResolvedValue(credential)
   const source = { ...reply, output: [{ id: 'rs', type: 'reasoning', encrypted_content: 'account-a-reasoning', summary: [{ type: 'summary_text', text: 'thinking' }] }, ...reply.output] }
   const upstream = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(Response.json(source))
-  const client = provider(resolve).createClient().withOptions({ maxRetries: 0 })
+  const client = (await provider(resolve).createClient()).withOptions({ maxRetries: 0 })
   const first = await client.messages.create(prompt)
   upstream.mockResolvedValueOnce(Response.json({ error: { message: 'expired' } }, { status: 401 })).mockResolvedValueOnce(Response.json(reply))
   resolve.mockResolvedValueOnce(credential).mockResolvedValueOnce({ ...credential, accessToken: 'new', accountId: 'b', generation: 2 })
@@ -50,7 +55,7 @@ it('retranslates after a 401 so another account cannot receive old reasoning', a
 it('does not refresh for quota errors', async () => {
   const resolve = vi.fn().mockResolvedValue(credential)
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ error: { message: 'Quota exhausted' } }, { status: 429 }))
-  await expect(provider(resolve).createClient().withOptions({ maxRetries: 0 }).messages.create(prompt)).rejects.toThrow('Quota exhausted')
+  await expect((await provider(resolve).createClient()).withOptions({ maxRetries: 0 }).messages.create(prompt)).rejects.toThrow('Quota exhausted')
   expect(resolve).toHaveBeenCalledTimes(1)
 })
 it('adopts the minimum client version a 426 names, for this call and new sessions', async () => {
@@ -61,7 +66,7 @@ it('adopts the minimum client version a 426 names, for this call and new session
     return version === '9.9.9' ? Response.json(reply)
       : Response.json({ error: `Your Grok CLI version (${version}) is outdated. Please update to version 9.9.9 or later via \`grok update\`.` }, { status: 426 })
   })
-  const result = await provider().createClient().messages.create(prompt)
+  const result = await (await provider().createClient()).messages.create(prompt)
   expect(result.content).toContainEqual({ type: 'text', text: 'OK' })
   expect(versions).toEqual([GROK_CLIENT_HEADERS['x-grok-client-version'], '9.9.9'])
   expect((await provider().getContainerProxyConfig()).headers).toMatchObject({ 'x-grok-client-version': '9.9.9' })

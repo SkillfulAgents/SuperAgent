@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import { findCatalogModel } from '@renderer/components/messages/model-family-list'
-import { useSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
+import { useModelSettings, useSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import type { ModelDefinition, ProviderDefaultModelOption } from '@shared/lib/llm-provider'
 
 /**
@@ -26,16 +26,17 @@ export function findDefaultModelOption(
 
 export function ConfigureModelStep() {
   const { data: settings } = useSettings()
+  const { data: modelSettings } = useModelSettings()
   const updateSettings = useUpdateSettings()
   const queryClient = useQueryClient()
   const [showOther, setShowOther] = useState(false)
 
   const activeProvider = settings?.llmProvider ?? 'anthropic'
-  const provider = settings?.llmProviderStatus?.find((candidate) => candidate.id === activeProvider)
+  const provider = modelSettings?.llmProviderStatus?.find((candidate) => candidate.id === activeProvider)
   const options = provider?.defaultModelOptions ?? []
   const catalog = provider?.catalog ?? []
   // The provider default is the last-resort selection while settings load or
-  // when no global model has been persisted. Platform declares Grok here.
+  // when no global model has been persisted.
   const agentModel = settings?.models?.agentModel ?? provider?.defaultModels?.agent
   const matchedOption = findDefaultModelOption(agentModel, options, catalog)
   const otherSelected = showOther || (Boolean(agentModel) && !matchedOption)
@@ -93,7 +94,7 @@ export function ConfigureModelStep() {
           return (
             <div
               key={option.model}
-              className={`rounded-lg border text-left transition-colors ${
+              className={`rounded-card border text-left transition-colors ${
                 isSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
               }`}
             >
@@ -122,7 +123,7 @@ export function ConfigureModelStep() {
         })}
 
         <div
-          className={`rounded-lg border text-left transition-colors ${
+          className={`rounded-card border text-left transition-colors ${
             otherSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
           }`}
         >

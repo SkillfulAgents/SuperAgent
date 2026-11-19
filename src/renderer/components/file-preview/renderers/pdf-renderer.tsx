@@ -1,9 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { ChevronLeft, ChevronRight, Loader2, AlertCircle } from 'lucide-react'
-import { useTextSelection } from '../comments/use-text-selection'
-import { CommentOverlay } from '../comments/comment-overlay'
-import { selectionToAnchor } from '../comments/anchor'
+import { useCommentBox } from '../comments/use-comment-box'
 
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -23,7 +21,6 @@ interface PdfRendererProps {
   agentSlug: string
   pageNumber: number
   onPageChange: (page: number) => void
-  commentsEnabled?: boolean
 }
 
 export function PdfRenderer({
@@ -32,13 +29,11 @@ export function PdfRenderer({
   agentSlug,
   pageNumber,
   onPageChange,
-  commentsEnabled = true,
 }: PdfRendererProps) {
   const [numPages, setNumPages] = useState<number | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [pageWidth, setPageWidth] = useState(400)
   const containerRef = useRef<HTMLDivElement>(null)
-  const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
   const updateWidth = useCallback(() => {
     if (containerRef.current) {
@@ -57,6 +52,13 @@ export function PdfRenderer({
     ? null
     : Math.max(1, Math.min(pageNumber, numPages))
 
+  // The page's text has no source lines: a selection keeps its quote, anything else is the page.
+  const surface = useMemo(
+    () => ({ text: { blocks: containerRef }, part: currentPage === null ? undefined : { label: 'Page', value: currentPage } }),
+    [currentPage],
+  )
+  const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
+
   const handleLoadSuccess = ({ numPages: loadedPages }: { numPages: number }) => {
     setNumPages(loadedPages)
     setLoadError(false)
@@ -64,7 +66,7 @@ export function PdfRenderer({
   }
 
   return (
-    <div ref={containerRef} className="relative flex flex-col items-center">
+    <div ref={containerRef} data-testid="pdf-renderer" className="relative flex flex-col items-center">
       <Document
         file={url}
         onLoadSuccess={handleLoadSuccess}
@@ -102,7 +104,7 @@ export function PdfRenderer({
             onClick={() => onPageChange(Math.max(1, currentPage - 1))}
             disabled={currentPage <= 1}
             aria-label="Previous PDF page"
-            className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="p-1 rounded-icon hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
@@ -114,22 +116,14 @@ export function PdfRenderer({
             onClick={() => onPageChange(Math.min(numPages, currentPage + 1))}
             disabled={currentPage >= numPages}
             aria-label="Next PDF page"
-            className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="p-1 rounded-icon hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
       )}
 
-      {selection && (
-        <CommentOverlay
-          anchor={selectionToAnchor(selection)}
-          rect={selection.rect}
-          filePath={filePath}
-          agentSlug={agentSlug}
-          onClose={clearSelection}
-        />
-      )}
+      {box}
     </div>
   )
 }

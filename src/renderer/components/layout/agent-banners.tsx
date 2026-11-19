@@ -89,7 +89,7 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
           <div className="flex items-center gap-2 text-xs text-yellow-700 dark:text-yellow-400 select-text">
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span className="flex-1">
-              Not mounted: {mountWarning.notMounted.map((v) => `${v.name} (${v.reason})`).join(', ')}
+              Drive not available: {mountWarning.notMounted.map((v) => `${v.name} (${v.reason})`).join(', ')}
             </span>
             <button
               onClick={dismissMountWarning}

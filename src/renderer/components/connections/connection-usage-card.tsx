@@ -18,7 +18,7 @@ export function ConnectionUsageCard({ row, onViewLogs }: ConnectionUsageCardProp
   return (
     <section className="space-y-2 min-w-0">
       <h3 className="text-xs font-normal text-muted-foreground">Usage</h3>
-      <div className="rounded-xl border bg-background overflow-hidden" data-testid="connection-usage-card">
+      <div className="rounded-card border bg-background overflow-hidden" data-testid="connection-usage-card">
         <div className="p-4 pb-2">
           <div className="flex items-start justify-between gap-3 mb-2">
             <div>

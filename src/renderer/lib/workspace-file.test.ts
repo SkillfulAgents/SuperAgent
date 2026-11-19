@@ -15,6 +15,7 @@ describe('describeWorkspaceFile', () => {
       preview: 'pdf',
       previewable: true,
       isImage: false,
+      reloadsInPlace: false,
       apiPath: '/api/agents/acme/files/reports/q3.pdf',
       downloadUrl: 'http://api.test/api/agents/acme/files/reports/q3.pdf',
       inlineUrl: 'http://api.test/api/agents/acme/files/reports/q3.pdf?inline=true',
@@ -53,6 +54,14 @@ describe('describeWorkspaceFile', () => {
     })
   })
 
+  // A new URL restarts a video and resets a PDF or a page, so those wait to be reopened.
+  it('says which previews reload where they stand when the file changes', () => {
+    const reloads = (name: string) => describeWorkspaceFile(`/workspace/${name}`, 'acme').reloadsInPlace
+    expect(['notes.md', 'app.ts', 'rows.csv', 'shot.png'].map(reloads)).toEqual([true, true, true, true])
+    expect(['clip.mp4', 'talk.mp3', 'q3.pdf', 'page.html', 'bundle.zip', 'books.xlsx', 'out/'].map(reloads))
+      .toEqual([false, false, false, false, false, false, false])
+  })
+
   it('reports a file the drawer cannot render but can still hand over', () => {
     expect(describeWorkspaceFile('/workspace/books.xlsx', 'acme')).toMatchObject({
       category: 'spreadsheet',
@@ -68,6 +77,16 @@ describe('describeWorkspaceFile', () => {
       downloadUrl: 'http://api.test/api/agents/acme/files/a.png?v=7',
       inlineUrl: 'http://api.test/api/agents/acme/files/a.png?inline=true&v=7',
     })
+  })
+
+  it('addresses a drive file by its mount path, apart from any workspace folder named mounts', () => {
+    expect(describeWorkspaceFile('/mounts/Team Brain/a b.md', 'acme')).toMatchObject({
+      apiPath: '/api/agents/acme/mount-files/Team%20Brain/a%20b.md',
+      inlineUrl: 'http://api.test/api/agents/acme/mount-files/Team%20Brain/a%20b.md?inline=true',
+    })
+    expect(describeWorkspaceFile('/workspace/mounts/a.md', 'acme').apiPath).toBe('/api/agents/acme/files/mounts/a.md')
+    expect(describeWorkspaceFile('/mounts/A/../B/x.md', 'acme').apiPath).toBe('/api/agents/acme/mount-files/%2Fmounts%2FA%2F..%2FB%2Fx.md')
+    expect(describeWorkspaceFile('/mounts/..', 'acme').apiPath).toBe('/api/agents/acme/mount-files/%2Fmounts%2F..')
   })
 
   it('keeps the path it was handed as the identity, encoding only the URLs', () => {

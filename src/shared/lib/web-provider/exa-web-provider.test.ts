@@ -192,7 +192,7 @@ describe('mapExaContentsResponse', () => {
   })
 
   it('throws when the results array is empty (whole-request failure)', () => {
-    expect(() => mapExaContentsResponse({ results: [] }, AT)).toThrow()
+    expect(() => mapExaContentsResponse({ results: [] }, AT)).toThrow(/try curl from Bash/)
   })
 
   it('throws on a malformed response (boundary validation)', () => {

@@ -4,7 +4,8 @@ import path from 'path'
 import net from 'net'
 import os from 'os'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
+import { drivesUserChrome } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -229,7 +230,11 @@ export class ChromeProvider implements HostBrowserProvider {
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
-  detect(): HostBrowserProviderStatus {
+  async detect(): Promise<HostBrowserProviderStatus> {
+    // Unavailable rather than absent, so Settings says why.
+    if (!drivesUserChrome(getServerFacts())) {
+      return { id: this.id, name: this.name, available: false, reason: 'Not available in the Mac App Store edition' }
+    }
     const candidate = BROWSER_CANDIDATES[process.platform]
     if (!candidate) {
       return { id: this.id, name: this.name, available: false, reason: 'Unsupported platform' }
@@ -238,12 +243,7 @@ export class ChromeProvider implements HostBrowserProvider {
     for (const p of candidate.paths) {
       if (fs.existsSync(p)) {
         this.detectedPath = p
-        return {
-          id: this.id,
-          name: this.name,
-          available: true,
-          profiles: listChromeProfiles(),
-        }
+        return { id: this.id, name: this.name, available: true }
       }
     }
 
@@ -265,7 +265,7 @@ export class ChromeProvider implements HostBrowserProvider {
       await this.stop(instanceId)
     }
 
-    const status = this.detect()
+    const status = await this.detect()
     if (!status.available) {
       const err = new Error(`No supported browser detected: ${status.reason || 'unknown reason'}`)
       captureException(err, {
@@ -304,13 +304,12 @@ export class ChromeProvider implements HostBrowserProvider {
     await waitForBrowserProfileCleanup()
 
     const port = await this.findFreePort()
-    const profileId = options?.chromeProfileId
 
     // Chrome refuses to enable CDP on its default (real) data directory:
     //   "DevTools remote debugging requires a non-default data directory"
-    // So we always use a dedicated user-data-dir per instance. When a profile is
-    // selected, we copy session data (cookies, login data, etc.) from the real
-    // Chrome profile into our dedicated dir before launching.
+    // So every instance gets a dedicated user-data-dir. It starts empty and
+    // keeps only what the agent signs in to; nothing is read from the person's
+    // own Chrome profiles.
     const userDataDir = path.join(getDataDir(), 'host-browser-profiles', instanceId)
     fs.mkdirSync(userDataDir, { recursive: true })
 
@@ -321,17 +320,6 @@ export class ChromeProvider implements HostBrowserProvider {
     for (const lockName of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
       const lockPath = path.join(userDataDir, lockName)
       try { fs.rmSync(lockPath, { force: true }) } catch { /* ignore */ }
-    }
-
-    if (profileId) {
-      const destProfileDir = path.join(userDataDir, 'Default')
-      // Only copy the user's Chrome profile on first launch. Subsequent launches
-      // should keep the session data (cookies, local storage, etc.) that the
-      // agent accumulated during its browsing sessions.
-      const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
-      if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
-        console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
-      }
     }
 
     // Set Chrome download preferences so files go to the agent's workspace
@@ -549,7 +537,7 @@ export class ChromeProvider implements HostBrowserProvider {
     let proxyPort: number | null = null
     let proxyServer: net.Server | null = null
     let proxyHost: string | null = null
-    const bridgeIp = this.getHostBridgeIp(instanceId)
+    const bridgeIp = await this.getHostBridgeIp(instanceId)
     if (bridgeIp) {
       try {
         proxyPort = await this.findFreePort()
@@ -647,7 +635,6 @@ export class ChromeProvider implements HostBrowserProvider {
           stderr: stderr.slice(-2000),
           crashReport: collectRecentCrashReport(),
           userDataDir,
-          profileId,
           spawnArgs: [
             `--remote-debugging-port=${port}`,
             `--remote-debugging-address=${CDP_LOOPBACK_ADDRESS}`,
@@ -908,10 +895,10 @@ export class ChromeProvider implements HostBrowserProvider {
     }
   }
 
-  private getHostBridgeIp(instanceId: string): string | null {
+  private async getHostBridgeIp(instanceId: string): Promise<string | null> {
     let ip: string | null = null
     try {
-      ip = agentRegistry.get(instanceId).container.hostBridgeIp()
+      ip = await agentRegistry.get(instanceId).container.hostBridgeIp()
     } catch (error) {
       console.warn('[ChromeProvider] Could not resolve host bridge IP for CDP proxy:', error)
       return null

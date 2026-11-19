@@ -1,28 +1,50 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { routePath } from 'hono/route'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
+import { requestBodyPreview } from '@shared/lib/proxy/review-display'
+import { isPreviewableContentType } from '@shared/lib/proxy/body-translation'
+import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
-import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
+import { awaitReauth } from '@shared/lib/proxy/reauth-request'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
+import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
+import { getSettings } from '@shared/lib/config/settings'
 import { writeProxyAuditEntry, type ProxyAuditEntry } from '@shared/lib/proxy/audit'
+import { hasDotSegment } from '@shared/lib/proxy/rules/patterns'
+import { buildApiRuleInput } from '@shared/lib/proxy/rules/input'
+import {
+  auditRuleOutcomes,
+  decidingRuleVersionId,
+  evaluateRulesForRequest,
+  reportedRules,
+  reviewRuleOutcomes,
+  type GateResult,
+} from '@shared/lib/proxy/rules/gate'
 import { db } from '@shared/lib/db'
 import {
   connectedAccounts,
   agentConnectedAccounts,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 const proxy = new Hono()
 
-proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
+interface ProxyTarget {
+  agentSlug: string
+  accountId: string
+  rest: string
+  /** The session the call came from, when its URL named one. */
+  callerSessionId?: string
+}
+
+async function handleProxyRequest(c: Context, { agentSlug, accountId, rest, callerSessionId }: ProxyTarget) {
   const startTime = Date.now()
-  const agentSlug = c.req.param('agentSlug')
-  const accountId = c.req.param('accountId')
-  const rest = c.req.param('rest') || ''
 
   // Stamp elapsed time (request entry → now) onto every audit entry. Every exit
   // path logs through this, so the API Logs Duration column is always populated.
@@ -32,12 +54,29 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // Parse target host and path from rest: <host>/<path...>
   const firstSlash = rest.indexOf('/')
   const targetHost = firstSlash === -1 ? rest : rest.slice(0, firstSlash)
-  const targetPath = firstSlash === -1 ? '' : rest.slice(firstSlash + 1)
+  // The path is read from the raw request URL and canonicalised once: policy
+  // matching, review, audit and the forwarded URL all use this one value.
+  const target = canonicalizeTargetPath(rawRouteTail(c.req.url, routePath(c), 'rest'), targetHost)
+  const targetPath = target.ok ? target.path : target.rawPath
 
   const method = c.req.method
 
   if (!targetHost) {
     return c.json({ error: 'Missing target host in proxy URL' }, 400)
+  }
+
+  if (!target.ok) {
+    const message = `Invalid target path: ${target.error}`
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: '',
+      targetHost,
+      targetPath,
+      method,
+      errorMessage: message,
+    })
+    return c.json({ error: 'invalid_target_path', message }, 400)
   }
 
   // 1. Validate synthetic token
@@ -124,22 +163,17 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
 
   const holdForReauth = async (status: 'expired' | 'revoked'): Promise<ReauthResult> => {
-    try {
-      await agentRegistry.get(agentSlug).inputs.accountReauth.request({
-        accountId,
-        toolkit: account!.toolkitSlug,
-        accountStatus: status,
-      }, c.req.raw.signal)
-    } catch (error) {
-      const replacementAccountId = getReplacementAccountId(error)
-      if (replacementAccountId) return { ok: false, reason: 'replaced', replacementAccountId }
-      // A person pressing Dismiss and a five-minute timer both land here; only
-      // the first should read as a decision the agent must respect.
-      if (isReauthDismissed(error)) {
-        return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
-      }
-      return { ok: false, reason: 'timeout' }
-    }
+    const wait = await awaitReauth(agentRegistry.get(agentSlug).inputs.accountReauth, {
+      accountId,
+      toolkit: account!.toolkitSlug,
+      accountStatus: status,
+      callerSessionId,
+    }, c.req.raw.signal)
+    if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementAccountId: wait.replacementId }
+    // A person pressing Dismiss is a decision the agent must respect; a
+    // five-minute timer, an abort or a lost card are not.
+    if (wait.outcome === 'dismissed') return { ok: false, reason: 'dismissed', dismissReason: wait.reason }
+    if (wait.outcome !== 'resumed') return { ok: false, reason: 'timeout' }
 
     const refreshed = await loadMappedAccount()
     if (!refreshed) return { ok: false, reason: 'missing' }
@@ -172,7 +206,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     }
 
     if (result.reason === 'dismissed') {
-      const message = withDismissalReason(
+      const message = withUserReason(
         'A user dismissed the reconnection request, so this call was not made. '
         + 'Do not retry it until the connection is reconnected.',
         result.dismissReason,
@@ -189,7 +223,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       result.reason === 'missing' ? 404 : 502)
   }
 
-  // 3. Validate target host against toolkit allowlist
+  // 3. Validate target host against toolkit allowlist. Only a bare hostname
+  // passes, so the URL built in step 4 reaches exactly this host.
   if (!isHostAllowed(account.toolkitSlug, targetHost)) {
     await logAuditEntry({
       agentSlug,
@@ -208,16 +243,43 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     )
   }
 
-  // 3.5 Policy enforcement
-  let policyResult
-  try {
-    const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost)
-    const userId = account.userId ?? 'local'
-    policyResult = await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
-  } catch (policyError) {
-    console.error('[proxy] Policy enforcement failed, defaulting to review:', policyError)
-    policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
+  // 3.2 Reject dot segments. Hono decodes %2F before the scope matcher sees
+  // the path, and the forwarded URL then resolves `..`, so
+  // `drafts%2F..%2Fmessages/send` would be matched as one endpoint and sent
+  // to another.
+  if (hasDotSegment('/' + targetPath)) {
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method,
+      errorMessage: 'Path contains dot segments',
+    })
+    return c.json({ error: 'invalid_path', message: 'The request path must not contain "." or ".." segments.' }, 400)
   }
+
+  // The body is read at most once, shared by the matcher, the card, rules and the
+  // forwarder: text bodies before matching, others only when a rule or the forward needs them.
+  let bodyRead: Promise<ArrayBuffer | null> | null = null
+  const readBody = () => bodyRead ??= (method === 'GET' || method === 'HEAD')
+    ? Promise.resolve(null)
+    : c.req.arrayBuffer()
+  const textBody = isPreviewableContentType(c.req.header('content-type')) ? await readBody() : null
+
+  // 3.5 Policy enforcement
+  const resolvePolicy = async () => {
+    try {
+      const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost, textBody)
+      const userId = account.userId ?? 'local'
+      return await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
+    } catch (policyError) {
+      console.error('[proxy] Policy enforcement failed, defaulting to review:', policyError)
+      return { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
+    }
+  }
+  const policyResult = await resolvePolicy()
 
   if (policyResult.decision === 'block') {
     await logAuditEntry({
@@ -235,16 +297,62 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       message: 'This request was blocked by your API access policy.',
       scopes: policyResult.matchedScopes,
       toolkit: account.toolkitSlug,
-      settingsHint: 'You can adjust policies in Settings > Accounts > Policies',
+      settingsHint: `You can change this on the agent's Connections page: open ${getProviderDisplayName(account.toolkitSlug)} and edit its Permissions.`,
     }, 403)
   }
 
   // Track the precise outcome for audit logging
   let resolvedPolicyDecision: string = policyResult.decision // 'allow' or 'review'
 
-  if (policyResult.decision === 'review') {
+  // 3.6 Proxy rules: a require rule can send an allowed request to review; an
+  // allow rule can move a reviewed request to allow.
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const search = new URL(c.req.url).search
+  const runRules = (policy: 'allow' | 'review'): Promise<GateResult> => evaluateRulesForRequest(
+    { kind: 'api', targetId: accountId },
+    agentSlug,
+    policy,
+    { kind: 'api', method, path: '/' + targetPath },
+    async () => buildApiRuleInput({
+      method,
+      host: targetHost,
+      path: '/' + targetPath,
+      search,
+      headers: c.req.raw.headers,
+      body: await readBody(),
+    }),
+  )
+  const ruleGate = await runRules(policyResult.decision)
+  const ruleAudit = {
+    ruleVersionId: decidingRuleVersionId(ruleGate),
+    ruleOutcomes: auditRuleOutcomes(ruleGate.evaluations),
+  }
+  if (ruleGate.unavailable && policyResult.decision === 'allow') {
+    // No one can tell whether a require rule would hold this request. Answer
+    // now so the agent can retry, rather than parking an allowed request on
+    // a review card for minutes.
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method,
+      policyDecision: 'rules_unavailable',
+      matchedScopes: JSON.stringify(policyResult.matchedScopes),
+      errorMessage: 'Proxy rules could not be checked',
+    })
+    return c.json({ error: 'rules_unavailable', message: 'Proxy rules could not be checked. Try again shortly.' }, 503)
+  }
+  if (ruleGate.allowedBy) resolvedPolicyDecision = 'allowed_by_rule'
+  else if (ruleGate.decision === 'review') resolvedPolicyDecision = 'review'
+
+  if (resolvedPolicyDecision === 'review') {
+    const ruleOutcomes = reviewRuleOutcomes(ruleGate.evaluations)
+    const rules = reportedRules(ruleGate)
     try {
-      const decision = await agentRegistry.get(agentSlug).inputs.reviews.request({
+      const reviews = agentRegistry.get(agentSlug).inputs.reviews
+      const review = await awaitReview(reviews, (raise) => reviews.request({
         accountId,
         reviewType: 'api',
         toolkit: account.toolkitSlug,
@@ -253,8 +361,22 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
         endpointDescription: policyResult.endpointDescription,
-      }, c.req.raw.signal)
-      if (decision === 'deny') {
+        endpointAmbiguous: policyResult.endpointAmbiguous,
+        requestBody: requestBodyPreview(textBody),
+        ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
+        callerSessionId,
+      }, raise), {
+        signal: c.req.raw.signal,
+        // When an "always" decision on another card changes the policy, this
+        // request is decided again rather than released.
+        reevaluate: async () => {
+          const policy = await resolvePolicy()
+          if (policy.decision === 'block') return 'deny'
+          const gate = await runRules(policy.decision)
+          return gate.unavailable ? 'review' : gate.decision
+        },
+      })
+      if (review.decision === 'deny') {
         await logAuditEntry({
           agentSlug,
           accountId,
@@ -264,8 +386,9 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
           method,
           policyDecision: 'denied_by_user',
           matchedScopes: JSON.stringify(policyResult.matchedScopes),
+          ...ruleAudit,
         })
-        return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+        return c.json({ error: 'denied_by_user', message: withUserReason('Request denied by user.', review.reason), rules }, 403)
       }
       resolvedPolicyDecision = 'approved_by_user'
     } catch {
@@ -278,12 +401,14 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         method,
         policyDecision: 'review_timeout',
         matchedScopes: JSON.stringify(policyResult.matchedScopes),
+        ...ruleAudit,
       })
-      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
+      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.', rules }, 408)
     }
   }
 
-  // resolvedPolicyDecision is now 'allow' (auto) or 'approved_by_user' (manual)
+  // resolvedPolicyDecision is now 'allow' (auto), 'allowed_by_rule' or
+  // 'approved_by_user' (manual)
 
   // Audit helper: curried with all the context fields shared by every
   // post-policy audit entry. Caller supplies only what varies (statusCode,
@@ -301,6 +426,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       method,
       policyDecision: resolvedPolicyDecision,
       matchedScopes: JSON.stringify(policyResult.matchedScopes),
+      ...ruleAudit,
       ...extras,
     })
 
@@ -320,91 +446,102 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // 4. Build target URL
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const queryString = new URL(c.req.url).search
-  const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
+  const targetUrl = `https://${targetHost}/${target.encodedPath}${queryString}`
 
-  // 5. Verify remote connection status before forwarding
-  let provider = getAccountProviderByName(account.providerName)
-
-  let remoteConnection: Awaited<ReturnType<typeof provider.getConnection>> | null = null
-  try {
-    remoteConnection = await provider.getConnection(
-      account.providerConnectionId,
-      account.toolkitSlug,
-    )
-  } catch (statusCheckErr) {
-    console.warn('[proxy] Remote status check failed, proceeding with request:', statusCheckErr)
-  }
-
-  if (remoteConnection && remoteConnection.status !== 'ACTIVE') {
-    const newStatus = remoteConnection.status === 'EXPIRED' ? 'expired' as const : 'revoked' as const
-    try {
-      await db.update(connectedAccounts)
-        .set({ status: newStatus, updatedAt: new Date() })
-        .where(eq(connectedAccounts.id, accountId))
-    } catch (statusUpdateErr) {
-      console.warn('[proxy] Failed to persist non-active account status:', statusUpdateErr)
+  // 5-6 take the provider's credentials and the platform connection from one
+  // settings read: the status check and the forward both use them, under the
+  // account owner's attribution built from the same read. A wait for
+  // re-authentication (it can last minutes) takes them again.
+  const takeCallContext = async () => {
+    const settings = await getSettings()
+    const provider = getAccountProviderByName(account.providerName)
+    return {
+      provider,
+      credentials: provider.credentialsFrom(settings),
+      owner: await attribution.fromResourceCreator(account.userId, settings),
     }
-
-    const reauthResult = await holdForReauth(newStatus)
-    if (!reauthResult.ok) {
-      return reauthFailureResponse(reauthResult, newStatus, (errorMessage, statusCode) =>
-        audit({ statusCode, errorMessage }))
-    }
-    provider = getAccountProviderByName(account.providerName)
   }
+  let call = await takeCallContext()
 
-  // 6. Forward via account provider (handles token retrieval/proxy internally)
-  const requestBody = (method === 'GET' || method === 'HEAD')
-    ? null
-    : await c.req.arrayBuffer()
+  // 5. Forward via account provider (handles token retrieval/proxy internally)
+  const requestBody = await readBody()
 
   const forwardRequest = async () => runWithAttribution(
-      await attribution.fromResourceCreator(account.userId),
-      () => provider.makeApiCall({
+      call.owner,
+      () => call.provider.makeApiCall({
         providerConnectionId: account.providerConnectionId,
         toolkitSlug: account.toolkitSlug,
         targetUrl,
         method,
         headers: c.req.raw.headers,
         body: requestBody,
+        credentials: call.credentials,
       }),
     )
 
-  let response: Response
+  let response: Response | null = null
+  let forwardError: unknown
   try {
     response = await forwardRequest()
   } catch (error) {
-    const isTokenError = String(error).includes('token') || String(error).includes('Token')
+    forwardError = error
+  }
+
+  // 6. Verify remote connection status, only when the forward failed or the
+  // upstream refused the credentials: asking before every call cost one
+  // provider request per call for an answer that is nearly always "active".
+  if (!response || response.status === 401 || response.status === 403) {
+    const isTokenError = !response && (String(forwardError).includes('token') || String(forwardError).includes('Token'))
     const errorLabel = isTokenError ? 'Failed to fetch access token' : 'Proxy request failed'
 
-    if (isTokenError) {
+    let remoteConnection: Awaited<ReturnType<typeof call.provider.getConnection>> | null = null
+    try {
+      remoteConnection = await runWithAttribution(call.owner, () => call.provider.getConnection(
+        account.providerConnectionId,
+        account.toolkitSlug,
+        call.credentials,
+      ))
+    } catch (statusCheckErr) {
+      console.warn('[proxy] Remote status check failed:', statusCheckErr)
+    }
+
+    // A token that could not be fetched means an expired account when the
+    // provider does not say otherwise.
+    let newStatus: 'expired' | 'revoked' | null = isTokenError ? 'expired' : null
+    if (remoteConnection && remoteConnection.status !== 'ACTIVE') {
+      newStatus = remoteConnection.status === 'EXPIRED' ? 'expired' : 'revoked'
+    }
+
+    if (newStatus) {
+      // The refused answer is not sent: the call is made again after the reconnect.
+      await response?.body?.cancel().catch(() => {})
       try {
         await db.update(connectedAccounts)
-          .set({ status: 'expired', updatedAt: new Date() })
+          .set({ status: newStatus, updatedAt: new Date() })
           .where(eq(connectedAccounts.id, accountId))
       } catch (statusUpdateErr) {
-        console.warn('[proxy] Failed to persist expired account status:', statusUpdateErr)
+        console.warn('[proxy] Failed to persist non-active account status:', statusUpdateErr)
       }
 
-      const reauthResult = await holdForReauth('expired')
+      const reauthResult = await holdForReauth(newStatus)
       if (!reauthResult.ok) {
-        return reauthFailureResponse(reauthResult, 'expired', (errorMessage, statusCode) =>
+        return reauthFailureResponse(reauthResult, newStatus, (errorMessage, statusCode) =>
           audit({ statusCode, errorMessage }))
       }
-      provider = getAccountProviderByName(account.providerName)
+      call = await takeCallContext()
       try {
         response = await forwardRequest()
       } catch (retryError) {
         await audit({ errorMessage: `${errorLabel} after re-authentication: ${retryError}` })
         return c.json(
-          { error: errorLabel, details: String(retryError), accountStatus: 'expired' },
+          { error: errorLabel, details: String(retryError), accountStatus: newStatus },
           502,
         )
       }
-    } else {
-      await audit({ errorMessage: `${errorLabel}: ${error}` })
+    } else if (!response) {
+      await audit({ errorMessage: `${errorLabel}: ${forwardError}` })
       return c.json(
-        { error: errorLabel, details: String(error) },
+        { error: errorLabel, details: String(forwardError) },
         502
       )
     }
@@ -415,6 +552,24 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     ...(response.status >= 400 ? { errorMessage: `Upstream returned ${response.status}` } : {}),
   })
   return response
-})
+}
+
+// A container that knows which session made a call puts it in the path, so a
+// card the call raises (re-auth, API review) shows in that session only. The
+// session is not an auth input: the token and account checks are the same.
+// Registered before the route below, which would also match it with `s` read
+// as the account id.
+proxy.all('/:agentSlug/s/:sessionId/:accountId/:rest{.+}', (c) => handleProxyRequest(c, {
+  agentSlug: c.req.param('agentSlug'),
+  accountId: c.req.param('accountId'),
+  rest: c.req.param('rest'),
+  callerSessionId: c.req.param('sessionId'),
+}))
+
+proxy.all('/:agentSlug/:accountId/:rest{.+}', (c) => handleProxyRequest(c, {
+  agentSlug: c.req.param('agentSlug'),
+  accountId: c.req.param('accountId'),
+  rest: c.req.param('rest'),
+}))
 
 export default proxy

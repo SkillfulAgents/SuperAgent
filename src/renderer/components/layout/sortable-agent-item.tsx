@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
@@ -12,8 +12,13 @@ import { AgentMenuItem } from './app-sidebar'
  * here is referentially stable across those ticks, which is what lets the
  * heavy subtree skip the churn. Keep it that way — an inline object or
  * closure prop added here would silently defeat the memo.
+ *
+ * The shell is memoized too: the sidebar re-maps every section's agents on
+ * each agents refetch, and a refetch after another agent's session event
+ * leaves this agent's object (and so this row) unchanged. Drag ticks still
+ * reach it through dnd-kit's context.
  */
-export function SortableAgentMenuItem({ agent }: { agent: ApiAgent }) {
+export const SortableAgentMenuItem = memo(function SortableAgentMenuItem({ agent }: { agent: ApiAgent }) {
   const {
     attributes,
     listeners,
@@ -46,4 +51,4 @@ export function SortableAgentMenuItem({ agent }: { agent: ApiAgent }) {
       {...listeners}
     />
   )
-}
+})

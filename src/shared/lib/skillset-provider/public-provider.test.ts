@@ -181,7 +181,7 @@ describe('PublicSkillsetProvider.populateCache', () => {
     await provider.populateCache(destDir, makeRef('https://github.com/Org/repo.git'))
 
     const fetchCall = vi.mocked(fetch).mock.calls[0]
-    expect(fetchCall[0]).toBe('https://api.github.com/repos/Org/repo/zipball')
+    expect(fetchCall[0]).toBe('https://github.com/Org/repo/archive/HEAD.zip')
   })
 
   it('skips __MACOSX entries', async () => {
@@ -235,6 +235,17 @@ describe('PublicSkillsetProvider.populateCache', () => {
       provider.populateCache(destDir, makeRef('https://github.com/Org/repo')),
     ).rejects.toThrow(/rate limit/)
     mockFetchError(403)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/repo')),
+    ).rejects.toBeInstanceOf(NonRetryableError)
+  })
+
+  it('throws NonRetryableError on 429 with rate limit message', async () => {
+    mockFetchError(429)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache'), makeRef('https://github.com/Org/repo')),
+    ).rejects.toThrow(/rate limit/)
+    mockFetchError(429)
     await expect(
       provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/repo')),
     ).rejects.toBeInstanceOf(NonRetryableError)

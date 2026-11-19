@@ -158,6 +158,7 @@ export class ApplePasswordsProvider implements PairableCredentialProvider {
       if (error instanceof ApplePasswordsRuntimeError) {
         if (
           error.code === 'unsupported_platform' ||
+          error.code === 'app_sandbox' ||
           error.code === 'extension_not_found' ||
           error.code === 'native_host_missing' ||
           error.code === 'chrome_missing'
@@ -165,7 +166,7 @@ export class ApplePasswordsProvider implements PairableCredentialProvider {
           return {
             provider: this.id,
             providerLabel: this.label,
-            installable: error.code !== 'unsupported_platform',
+            installable: error.code !== 'unsupported_platform' && error.code !== 'app_sandbox',
             status: 'unavailable',
             message: error.message,
             remediation: remediationForRuntimeError(error),
@@ -206,6 +207,7 @@ export class ApplePasswordsProvider implements PairableCredentialProvider {
       if (error instanceof ApplePasswordsRuntimeError) {
         if (
           error.code === 'unsupported_platform' ||
+          error.code === 'app_sandbox' ||
           error.code === 'extension_not_found' ||
           error.code === 'native_host_missing' ||
           error.code === 'chrome_missing'

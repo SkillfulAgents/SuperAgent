@@ -39,8 +39,8 @@ afterEach(() => {
 })
 
 describe('startCloudBootPrefetch', () => {
-  it('asks the deployment for what a boot blocks on, on the app\'s authority', () => {
-    startCloudBootPrefetch()
+  it('asks the deployment for what a boot blocks on, on the app\'s authority', async () => {
+    await startCloudBootPrefetch()
 
     const urls = mockFetch.mock.calls.map(([url]) => url as string)
     expect(urls).toContain(`${TARGET.deploymentUrl}${SESSION}`)
@@ -51,9 +51,9 @@ describe('startCloudBootPrefetch', () => {
     expect(init.method).toBe('GET')
   })
 
-  it('does nothing when there is no workspace to prefetch from', () => {
+  it('does nothing when there is no workspace to prefetch from', async () => {
     mockResolveTarget.mockReturnValue(null)
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
@@ -63,7 +63,7 @@ describe('startCloudBootPrefetch', () => {
     // would keep a copy of the deployment's answers, fetched under a credential
     // that may since have been replaced, for the life of the process.
     vi.useFakeTimers()
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     expect(_heldCloudBootPrefetchCountForTest()).toBeGreaterThan(0)
 
     await vi.advanceTimersByTimeAsync(60_000)
@@ -71,27 +71,43 @@ describe('startCloudBootPrefetch', () => {
     expect(_heldCloudBootPrefetchCountForTest()).toBe(0)
   })
 
-  it('bounds the flight it starts, so a claimed one cannot hang the request', () => {
-    startCloudBootPrefetch()
+  it('bounds the flight it starts, so a claimed one cannot hang the request', async () => {
+    await startCloudBootPrefetch()
 
     const init = mockFetch.mock.calls[0][1] as RequestInit
     expect(init.signal).toBeInstanceOf(AbortSignal)
   })
 
-  it('does not take the boot down when the workspace record cannot be read', () => {
+  it('does not take the boot down when the workspace record cannot be read', async () => {
     // One caller is app startup, ahead of the window existing.
     mockResolveTarget.mockImplementation(() => {
       throw new Error('settings unreadable')
     })
 
-    expect(() => startCloudBootPrefetch()).not.toThrow()
+    await expect(startCloudBootPrefetch()).resolves.toBeUndefined()
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
+  it('lets only the latest of two overlapping starts fill the entries', async () => {
+    // The first start's workspace read finishes last; its (old) target must
+    // not replace what the later start fetched.
+    let resolveFirst: (target: unknown) => void = () => {}
+    mockResolveTarget.mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)))
+    const first = startCloudBootPrefetch()
+    const NEXT = { deploymentUrl: 'https://next.example.com', token: 'next-token' }
+    mockResolveTarget.mockReturnValue(NEXT)
+    await startCloudBootPrefetch()
+    resolveFirst(TARGET)
+    await first
+
+    expect(mockFetch.mock.calls.every(([url]) => (url as string).startsWith(NEXT.deploymentUrl))).toBe(true)
+    expect(await take(SESSION, NEXT)).not.toBeNull()
+  })
+
   it('drops entries from a previous run rather than letting them accumulate', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     mockResolveTarget.mockReturnValue(null)
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
 
     expect(await take(SESSION)).toBeNull()
   })
@@ -99,7 +115,7 @@ describe('startCloudBootPrefetch', () => {
 
 describe('takeCloudBootPrefetch', () => {
   it('hands the started request to the first caller that asks for it', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
 
     const prefetched = await take(SESSION)
 
@@ -108,32 +124,32 @@ describe('takeCloudBootPrefetch', () => {
   })
 
   it('answers only once, so a later refetch really refetches', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
 
     expect(await take(SESSION)).not.toBeNull()
     expect(await take(SESSION)).toBeNull()
   })
 
   it('does not answer a path nobody prefetched', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     expect(await take('/api/sessions/abc')).toBeNull()
   })
 
   it('refuses an entry started under a token that has since been replaced', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
 
     expect(await take(SESSION, { ...TARGET, token: 'refreshed-token' })).toBeNull()
   })
 
   it('refuses an entry started against a different deployment', async () => {
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
 
     expect(await take(SESSION, { ...TARGET, deploymentUrl: 'https://other.example.com' })).toBeNull()
   })
 
   it('expires, so a head start cannot outlive the switch that began it', async () => {
     vi.useFakeTimers()
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
     vi.advanceTimersByTime(60_000)
 
     expect(await take(SESSION)).toBeNull()
@@ -142,14 +158,14 @@ describe('takeCloudBootPrefetch', () => {
   it('declines a non-200 so the caller makes the request itself', async () => {
     // A 401 needs the proxy's refresh-and-retry; replaying this copy would skip it.
     mockFetch.mockImplementation(() => Promise.resolve(new Response('nope', { status: 401 })))
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
 
     expect(await take(SESSION)).toBeNull()
   })
 
   it('declines when the deployment could not be reached', async () => {
     mockFetch.mockImplementation(() => Promise.reject(new Error('ECONNREFUSED')))
-    startCloudBootPrefetch()
+    await startCloudBootPrefetch()
 
     expect(await take(SESSION)).toBeNull()
   })

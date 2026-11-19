@@ -1,12 +1,14 @@
 import { Menu, BrowserWindow, app, nativeImage } from 'electron'
 import path from 'path'
-import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
+import type { ApiTarget } from '@shared/lib/api-target'
+import type { ActivityStatus, AgentInfo } from './agent-status'
+import { agentStatusSource } from './agent-status-source'
+import { exportVaultKey } from './keys/vault-key-export'
 
 let mainWindowRef: BrowserWindow | null = null
-// A getter rather than a stored URL: in cloud mode the effective base is the
-// keyed proxy prefix, and which one is in force can change on a target switch.
-let getApiBaseUrlRef: (() => string) | null = null
-let updateInterval: NodeJS.Timeout | null = null
+// The Agents submenu draws the shared agent list (agent-status-source.ts) and
+// is told when it changes; the menu neither fetches nor polls.
+let unsubscribe: (() => void) | null = null
 
 /**
  * Menu commands that fired while the window was closed (app still in the
@@ -18,23 +20,23 @@ let updateInterval: NodeJS.Timeout | null = null
  * and the window opens but never navigates (SUP-264).
  */
 export type PendingMenuCommand =
-  | { channel: 'navigate-to-agent'; agentSlug: string }
+  | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
   | { channel: 'open-settings' }
   | { channel: 'open-create-agent' }
+  | { channel: 'switch-target'; target: ApiTarget }
 
 const pendingMenuCommands: PendingMenuCommand[] = []
 
-/** Translate a raw `sendToRenderer` call into a replayable command, if any. */
-function buildPendingCommand(channel: string, args: unknown[]): PendingMenuCommand | null {
-  switch (channel) {
+/** The arguments a command's live IPC event carries, after its channel. */
+function ipcArgs(command: PendingMenuCommand): unknown[] {
+  switch (command.channel) {
     case 'navigate-to-agent':
-      return { channel: 'navigate-to-agent', agentSlug: String(args[0] ?? '') }
+      return [command.agentSlug, command.sessionId ?? null]
+    case 'switch-target':
+      return [command.target]
     case 'open-settings':
-      return { channel: 'open-settings' }
     case 'open-create-agent':
-      return { channel: 'open-create-agent' }
-    default:
-      return null
+      return []
   }
 }
 
@@ -75,16 +77,16 @@ function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
 }
 
 /**
- * Send an IPC event to the renderer, ensuring the window exists
+ * Deliver a command to the main window's renderer, ensuring the window exists:
+ * live when it is listening, queued for its mount-time flush when the window is
+ * closed or still loading. Used by the menu and by Spotlight results.
  */
-function sendToRenderer(channel: string, ...args: unknown[]): void {
-  const command = buildPendingCommand(channel, args)
-
+export function sendMenuCommand(command: PendingMenuCommand): void {
   if (!mainWindowRef || mainWindowRef.isDestroyed()) {
     // Window closed (app still in tray/dock). Queue the command so the renderer
     // can replay it once it mounts, then recreate the window. Sending now would
     // be lost — the window doesn't exist yet (SUP-264).
-    if (command) queueMenuCommand(command)
+    queueMenuCommand(command)
     app.emit('activate')
     return
   }
@@ -96,30 +98,18 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
   // just recreated it). The IPC listeners attach on React mount, which hasn't
   // happened yet, so a live send would race them and be lost — queue instead
   // and let the mount-time flush deliver it.
-  if (command && mainWindowRef.webContents.isLoading()) {
+  if (mainWindowRef.webContents.isLoading()) {
     queueMenuCommand(command)
     return
   }
 
-  mainWindowRef.webContents.send(channel, ...args)
+  mainWindowRef.webContents.send(command.channel, ...ipcArgs(command))
 }
 
 /**
- * Builds overlap: the 30s poll and the target-switch refresh both come through
- * buildAppMenu, and the base URL is sampled before the await. Without this a
- * slow response from the previous target could land after the switch refresh
- * painted the new one and overwrite it. Last started wins.
+ * Build and set the application menu for an agent list
  */
-let buildGeneration = 0
-
-/**
- * Build and set the application menu
- */
-async function buildAppMenu(): Promise<void> {
-  const generation = ++buildGeneration
-  const agents = getApiBaseUrlRef ? await fetchAgentsWithStatus(getApiBaseUrlRef()) : []
-  if (generation !== buildGeneration) return
-
+function buildAppMenu(agents: AgentInfo[]): void {
   // Group agents by status
   const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
   const working = agents.filter(a => a.activityStatus === 'working')
@@ -135,7 +125,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('working'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
     agentsSubmenu.push({ type: 'separator' })
@@ -147,7 +137,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('working'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
     agentsSubmenu.push({ type: 'separator' })
@@ -159,7 +149,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('idle'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
     agentsSubmenu.push({ type: 'separator' })
@@ -171,7 +161,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('sleeping'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
   }
@@ -192,7 +182,7 @@ async function buildAppMenu(): Promise<void> {
         {
           label: 'Settings...',
           accelerator: 'CmdOrCtrl+,',
-          click: () => sendToRenderer('open-settings'),
+          click: () => sendMenuCommand({ channel: 'open-settings' }),
         },
         { type: 'separator' as const },
         // Explicit labels: `role` items interpolate app.name (kept 'SuperAgent' for
@@ -212,14 +202,24 @@ async function buildAppMenu(): Promise<void> {
         {
           label: 'New Agent',
           accelerator: 'CmdOrCtrl+N',
-          click: () => sendToRenderer('open-create-agent'),
+          click: () => sendMenuCommand({ channel: 'open-create-agent' }),
+        },
+        { type: 'separator' as const },
+        {
+          // Main process end to end: the key never reaches a renderer.
+          label: 'Export Browser Vault Key…',
+          click: () => {
+            exportVaultKey(mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null).catch((error) => {
+              console.error('[keys] Exporting the vault key failed:', error instanceof Error ? error.message : error)
+            })
+          },
         },
         ...(!isMac ? [
           { type: 'separator' as const },
           {
             label: 'Settings...',
             accelerator: 'CmdOrCtrl+,',
-            click: () => sendToRenderer('open-settings'),
+            click: () => sendMenuCommand({ channel: 'open-settings' }),
           },
         ] : []),
         { type: 'separator' },
@@ -276,33 +276,13 @@ async function buildAppMenu(): Promise<void> {
 }
 
 /**
- * Create the application menu and start periodic updates
+ * Create the application menu. It is built when the first agent list arrives
+ * (an unreachable API lists no agents), and again whenever the list changes.
  */
-export function createAppMenu(
-  mainWindow: BrowserWindow | null,
-  getApiBaseUrl: () => string
-): void {
+export function createAppMenu(mainWindow: BrowserWindow | null): void {
   mainWindowRef = mainWindow
-  getApiBaseUrlRef = getApiBaseUrl
-
-  // Initial build
-  refreshAppMenu()
-
-  // Update periodically to refresh agent list (every 30s, same as tray)
-  updateInterval = setInterval(() => {
-    refreshAppMenu()
-  }, 30000)
-}
-
-/**
- * Rebuild the menu now instead of waiting out the poll. Called on a target
- * switch, where the 30s interval would leave the previous Superagent's agents
- * in the Agents menu.
- */
-export function refreshAppMenu(): void {
-  buildAppMenu().catch((error) => {
-    console.error('Failed to build app menu:', error)
-  })
+  unsubscribe?.()
+  unsubscribe = agentStatusSource.subscribe(buildAppMenu)
 }
 
 /**
@@ -313,11 +293,9 @@ export function updateAppMenuWindow(mainWindow: BrowserWindow | null): void {
 }
 
 /**
- * Clean up the app menu update interval
+ * Stop following the agent list
  */
 export function destroyAppMenu(): void {
-  if (updateInterval) {
-    clearInterval(updateInterval)
-    updateInterval = null
-  }
+  unsubscribe?.()
+  unsubscribe = null
 }

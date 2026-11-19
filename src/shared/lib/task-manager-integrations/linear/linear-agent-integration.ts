@@ -1,6 +1,6 @@
 import { TaskManagerAgentIntegration } from '../task-manager-agent-integration'
-import type { AgentIntegrationRecord, IntegrationSessionContext } from '../../agent-integrations/types'
-import { getLinearConfig, updateLinearConfig } from './store'
+import type { AgentIntegrationRecord, IntegrationAccessCheck, IntegrationSessionContext } from '../../agent-integrations/types'
+import { getLinearConfig, linearConfigOf, updateLinearConfig } from './store'
 import { LinearAccessError, LinearClient } from './client'
 import { LinearTasks } from './tasks'
 import { LinearSubscriptions } from './subscriptions'
@@ -16,6 +16,7 @@ import { integrationMcpName } from '../../agent-integrations/mcp'
 import { checkLinearMcp } from './mcp'
 import { linearDefinition } from './definition'
 import { describeLinearIssue } from './message-display'
+import { background } from '../../background'
 
 /** What became of an event: the handoff's result, or nothing to hand off. */
 type ReceiveOutcome = IntegrationInputResult | 'ignored'
@@ -87,7 +88,7 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     if (relay) {
       this.relayAttachment = relay.host.attach(relay.binding,
         events => this.receiveRelayed(events, relay.secret, generation, config.authorizationVersion, identity.appUserId))
-      void checkLinearMcp(this.installation.id).catch(error => this.report(error, 'mcp-discovery'))
+      background(checkLinearMcp(this.installation.id).catch(error => this.report(error, 'mcp-discovery')), { name: 'linear-integration.check-mcp' })
       return
     }
     this.subscriptions = new LinearSubscriptions({ client: this.client,
@@ -106,7 +107,7 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     })
     this.subscriptions.start()
     // Publish outbound tool discovery once on connection, independently of events.
-    void checkLinearMcp(this.installation.id).catch(error => this.report(error, 'mcp-discovery'))
+    background(checkLinearMcp(this.installation.id).catch(error => this.report(error, 'mcp-discovery')), { name: 'linear-integration.check-mcp' })
   }
   async disconnect(): Promise<void> {
     this.connected = false
@@ -229,21 +230,24 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     }
     this.secretRejected = true
     this.relayAttachment?.detach()
-    void updateLinearConfig(this.installation.id, latest => latest.webhookSecret === secret && latest.webhookSecretStatus !== 'verified'
-      ? { ...latest, webhookSecretStatus: 'rejected' } : latest).catch(error => this.report(error, 'save-secret-status'))
+    background(updateLinearConfig(this.installation.id, latest => latest.webhookSecret === secret && latest.webhookSecretStatus !== 'verified'
+      ? { ...latest, webhookSecretStatus: 'rejected' } : latest).catch(error => this.report(error, 'save-secret-status')), { name: 'linear-integration.save-secret-status' })
     this.emitError(new Error(SECRET_MISMATCH))
     return 'retry'
   }
   private markSecretVerified(secret: string): void {
     this.secretVerified = true
-    void updateLinearConfig(this.installation.id, latest => latest.webhookSecret === secret && latest.webhookSecretStatus !== 'verified'
-      ? { ...latest, webhookSecretStatus: 'verified' } : latest).catch(error => this.report(error, 'save-secret-status'))
+    background(updateLinearConfig(this.installation.id, latest => latest.webhookSecret === secret && latest.webhookSecretStatus !== 'verified'
+      ? { ...latest, webhookSecretStatus: 'verified' } : latest).catch(error => this.report(error, 'save-secret-status')), { name: 'linear-integration.save-secret-status' })
   }
 
-  async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
+  async isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean> {
     if (!await super.isAllowed(context)) return false
     try {
-      const config = await getLinearConfig(this.installation.id)
+      // A row the caller read for this check is the row a read here would return.
+      const config = check?.current && context.integration.id === this.installation.id
+        ? linearConfigOf(context.integration)
+        : await getLinearConfig(this.installation.id)
       return !config.authorizationPending && !config.authorizationError && !!config.tokens && !!config.identity
     } catch { return false }
   }

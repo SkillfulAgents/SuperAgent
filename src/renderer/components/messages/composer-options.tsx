@@ -7,6 +7,14 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
+import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
+import { useModelLock } from '@renderer/hooks/use-model-lock'
+import { useModelAvailabilities } from '@renderer/hooks/use-provider-model-availability'
+import { useModelAvailabilityAction } from '@renderer/context/model-availability-action-context'
+import { announceModelFallback } from '@renderer/lib/model-fallback-notice'
+import type { ModelLock } from './model-family-list'
+import { clampEffortForDisplay } from '@shared/lib/container/runtime-options'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -41,6 +49,8 @@ export interface ComposerOptionsState {
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
+  /** Models the selected connection's provider says cannot run (e.g. a plan excludes them). */
+  modelLock?: ModelLock
   /**
    * Pluck the runtime-options bag for an API payload. UNTOUCHED knobs (no
    * explicit user pick, no session-seeded value) are OMITTED, not serialized:
@@ -49,7 +59,7 @@ export interface ComposerOptionsState {
    * a still-loading preferences query — and would override the actual model of
    * a session that carries none in its metadata (e.g. trigger-created).
    */
-  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }
+  toRuntimeOptions(): RuntimeOptions
 }
 
 /** Submit lifecycle used by composer hosts; presentation-only consumers only need the state above. */
@@ -60,7 +70,7 @@ export interface ComposerOptionsController extends ComposerOptionsState {
    * must not be overwritten by a session-detail refetch. Afterwards, newer
    * initial values are authoritative (another window may have spoken).
    */
-  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }): void
+  markSubmitted(options: RuntimeOptions): void
 }
 
 /**
@@ -80,21 +90,19 @@ export function findCatalogModel(
 }
 
 export interface UseComposerOptionsArgs {
-  initialLlmProviderId?: string | null
-  agentDefaultLlmProviderId?: string | null
   sessionId?: string
-  /** Effort last used on this session, seeds the selector if provided. */
-  initialEffort?: EffortLevel
-  /** Speed last used on this session, seeds the selector if provided. */
-  initialSpeed?: SpeedLevel
-  /** Authoritative model last used on this session. */
-  initialModel?: string
-  /** The agent's own default model, if set. Slots between a session's initial model and the app-wide default. */
-  agentDefaultModel?: string
-  /** The agent's own default effort, if set. Slots between a session's initial effort and the app-wide default. */
-  agentDefaultEffort?: EffortLevel
-  /** The agent's own default speed, if set. Slots between a session's initial speed and the built-in 'normal'. */
-  agentDefaultSpeed?: SpeedLevel
+  /**
+   * The authoritative runtime options to start from, e.g. the ones last used
+   * on this session; each knob it has seeds the picker. A `null` connection
+   * is a pick that names none, which is not the same as leaving it out.
+   */
+  initial?: RuntimeOptions
+  /**
+   * The agent's own defaults (see `agentDefaultRuntimeOptions`). Each knob
+   * slots between `initial` and the app-wide default; speed falls back to the
+   * built-in 'normal'.
+   */
+  agentDefault?: RuntimeOptions
   /**
    * Identity of the agent the defaults belong to. When it changes (quick-dispatch
    * switching agents) a locked, untouched selection unlocks and re-adopts the new
@@ -116,23 +124,24 @@ export interface UseComposerOptionsArgs {
    * where the two must visibly stay in sync.
    */
   followDefaults?: boolean
+  /** Offer only this connection: its models, and its own default when the pick cannot run. */
+  onlyLlmProviderId?: string
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
+  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false, onlyLlmProviderId } = args
   const {
-    initialEffort,
-    initialSpeed,
-    initialModel,
-    initialLlmProviderId,
-    agentDefaultLlmProviderId,
-    sessionId,
-    agentDefaultModel,
-    agentDefaultEffort,
-    agentDefaultSpeed,
-    agentKey,
-    agentDefaultsReady = true,
-    followDefaults = false,
-  } = args
+    effort: initialEffort,
+    speed: initialSpeed,
+    model: initialModel,
+    llmProviderId: initialLlmProviderId,
+  } = args.initial ?? {}
+  const {
+    llmProviderId: agentDefaultLlmProviderId,
+    model: agentDefaultModel,
+    effort: agentDefaultEffort,
+    speed: agentDefaultSpeed,
+  } = args.agentDefault ?? {}
 
   // Picker-safe endpoint — readable by non-admin users too, unlike the
   // admin-gated full settings (which would leave them an empty catalog).
@@ -141,7 +150,10 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialLlmProviderId)
   const [llmProviderId, setLlmProviderId] = useState<string | undefined>(initialLlmProviderId ?? undefined)
   const connectionDirty = useRef(false)
-  const connections = useMemo(() => connectionData?.connections ?? [], [connectionData])
+  const connections = useMemo(
+    () => (connectionData?.connections ?? []).filter((c) => !onlyLlmProviderId || c.id === onlyLlmProviderId),
+    [connectionData, onlyLlmProviderId],
+  )
   const [model, setModelState] = useState<string | undefined>(initialModel)
   const legacyLlmProviderId = connectionData?.legacyLlmProviderId
   const currentSelection = resolveSelection(initialModel && initialLlmProviderId !== null ? { model: initialModel, llmProviderId: initialLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
@@ -151,7 +163,32 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const localSelection = resolveSelection(llmProviderId && model ? { llmProviderId, model } : null, connections)
   // Validate the pair before falling back. Never combine a removed account's
   // model with another account merely because both happen to expose that ID.
-  const effectiveSelection = localSelection ?? inheritedSelection
+  const savedSelection = localSelection ?? inheritedSelection
+
+  // ---- Availability ----
+  // A model the provider says cannot run now (e.g. the plan excludes it) counts
+  // as unset, exactly as on the server: the list goes on to the chat's model,
+  // the agent default, the global default, then the global connection's own
+  // default and any model it can run. Derived, not stored: saved choices come
+  // back as soon as they can run. The pickers never offer a locked model, so
+  // only an inherited or saved one is ever substituted.
+  const availabilities = useModelAvailabilities(connections)
+  const globalSelection = resolveSelection(connectionData?.defaultSelection, connections)
+  const lockedReason = availabilities.reasonFor(savedSelection?.llmProviderId, savedSelection?.wireModel)
+  const runnable = (selection: typeof savedSelection): selection is NonNullable<typeof savedSelection> =>
+    !!selection && !availabilities.reasonFor(selection.llmProviderId, selection.wireModel)
+  const connectionDefault = (selection: typeof savedSelection) => {
+    const connection = selection && connections.find(c => c.id === selection.llmProviderId)
+    if (!connection) return null
+    const preferred = resolveSelection(connection.defaultModel ? { llmProviderId: connection.id, model: connection.defaultModel } : null, connections)
+    if (runnable(preferred)) return preferred
+    const best = bestAllowedModel(connection.catalog, m => !!availabilities.reasonFor(connection.id, m.id))
+    return best ? { llmProviderId: connection.id, model: best.id, wireModel: best.id } : null
+  }
+  const substituteSelection = lockedReason
+    ? [currentSelection, agentSelection, globalSelection].find(runnable) ?? connectionDefault(globalSelection ?? savedSelection)
+    : null
+  const effectiveSelection = substituteSelection ?? savedSelection
   const effectiveLlmProviderId = effectiveSelection?.llmProviderId
   const selectedConnection = connections.find(c => c.id === effectiveLlmProviderId)
   useEffect(() => {
@@ -263,7 +300,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [connections])
 
   const markSubmitted = useCallback(
-    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }) => {
+    (options: RuntimeOptions) => {
       if (options.llmProviderId === effectiveLlmProviderId) connectionDirty.current = false
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,
@@ -344,10 +381,50 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
+  // An untouched effort the model can't run is snapped for display only. The
+  // picker's clamp writes through setEffort, which would mark the snap as a
+  // user pick and block the default that is still loading.
+  const supportedEfforts = (
+    findCatalogModel(displayedModel, catalog) ?? findCatalogModel(fallbackModel, catalog) ?? catalog[0]
+  )?.supportedEfforts
+  const displayedEffort = effortSeededRef.current
+    ? effort
+    : clampEffortForDisplay(effort, supportedEfforts) ?? effort
+
+  // The selected connection's restrictions, for the picker's lock badges.
+  const modelLock = useModelLock(selectedConnection)
+  // Say once, in the provider's words, that a saved choice was passed over.
+  const openAvailabilityAction = useModelAvailabilityAction()
+  const lockedConnection = connections.find(c => c.id === savedSelection?.llmProviderId)
+  const lockedModel = lockedReason ? lockedConnection?.catalog.find(m => m.id === savedSelection?.wireModel) : undefined
+  const substituteModel = substituteSelection
+    ? connections.find(c => c.id === substituteSelection.llmProviderId)?.catalog.find(m => m.id === substituteSelection.wireModel)
+    : undefined
+  const lockedAction = lockedConnection ? availabilities.availabilityOf(lockedConnection.id)?.action ?? null : null
+  useEffect(() => {
+    if (!lockedModel || !substituteModel || !lockedReason) return
+    announceModelFallback({
+      locked: lockedModel,
+      fallback: substituteModel,
+      reason: lockedReason,
+      ...(lockedAction && {
+        action: {
+          label: lockedAction.label,
+          run: () => openAvailabilityAction({
+            action: lockedAction,
+            model: { id: lockedModel.id, label: lockedModel.label },
+            connectionId: lockedConnection?.id,
+          }),
+        },
+      }),
+    })
+  }, [lockedModel, substituteModel, lockedReason, lockedAction, lockedConnection?.id, openAvailabilityAction])
+
   const toRuntimeOptions = useCallback(
-    () => ({
+    (): RuntimeOptions => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
+      // An untouched new chat sends nothing: the server walks the same list.
       ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
     }),
     [effort, speed, displayedModel, effectiveLlmProviderId],
@@ -358,7 +435,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       llmProviderId: effectiveLlmProviderId,
       connections,
       setConnection,
-      effort,
+      effort: displayedEffort,
       setEffort,
       speed,
       setSpeed,
@@ -367,10 +444,11 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       catalog,
       defaultModel: fallbackModel,
       webProvider: settings?.webProvider,
+      modelLock,
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, displayedEffort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, modelLock, toRuntimeOptions, markSubmitted],
   )
 }
 
@@ -381,6 +459,10 @@ interface ComposerOptionsProps {
   includeEffort?: boolean
   /** Optional caller-owned content rendered after the picker sections. */
   footer?: ReactNode
+  /** The trigger's size: 34px tall ('default'), or 28px with 6px padding ('sm', the chat composers' action rows). */
+  size?: 'default' | 'sm'
+  /** Called when the person picks a model, effort or speed; never for the picker's own snaps. */
+  onUserChange?: () => void
 }
 
 /**
@@ -388,13 +470,15 @@ interface ComposerOptionsProps {
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
-export function ComposerOptions({ state, disabled, includeEffort, footer }: ComposerOptionsProps) {
+export function ComposerOptions({ state, disabled, includeEffort, footer, size, onUserChange }: ComposerOptionsProps) {
   return (
     <ComposerOptionsPopover
       state={state}
       disabled={disabled}
       includeEffort={includeEffort}
       footer={footer}
+      size={size}
+      onUserChange={onUserChange}
     />
   )
 }

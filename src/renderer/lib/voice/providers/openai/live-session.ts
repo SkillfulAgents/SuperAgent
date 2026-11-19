@@ -13,6 +13,7 @@ interface ConversationEvents {
   onReady: () => void
   onClosed?: () => void
   onError: (message: string) => void
+  onSpeech?: (piece: VoiceTranscriptEntry) => void
 }
 
 // Keep the speaking state through breaths and sentence gaps. Audio samples,
@@ -68,10 +69,12 @@ export class OpenAILiveConversation {
   private inputRequests: readonly VoiceInputRequest[] = []
   private announcedInputRequests = new Set<string>()
 
-  constructor(private events: ConversationEvents, private history: VoiceHistory = [], private agentSlug?: string) {
+  constructor(private events: ConversationEvents, private history: VoiceHistory = [], private agentSlug?: string, private agentSessionId?: string) {
     this.bridge = new OpenAILiveBridge({
       ...events,
-      onInputTranscript: (delta) => this.detectInputWords(delta),
+      onInputTranscript: (delta) => { this.detectInputWords(delta); this.events.onSpeech?.({ role: 'user', text: delta }) },
+      // Only what the room can hear: nothing the model says while its voice is muted.
+      onOutputTranscript: (delta) => { if (!this.outputMuted) this.events.onSpeech?.({ role: 'assistant', text: delta }) },
       send: (event, delivery) => this.send(event, delivery),
       map: async (input, signal) => {
         const res = await apiFetch('/api/voice/live/map', {
@@ -179,7 +182,8 @@ export class OpenAILiveConversation {
         : '/api/voice/live/session'
       const res = await apiFetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sdp, history: this.history }),
+        // The agent session id lets the host tell where the conversation is (a meeting, say); it adds no instructions itself.
+        body: JSON.stringify({ sdp, history: this.history, ...(this.agentSessionId ? { sessionId: this.agentSessionId } : {}) }),
       })
       const answer = await res.json().catch(() => null) as (LiveSessionAnswer & { error?: string; handle: string; expiresAt?: number }) | null
       if (!res.ok) throw new Error(answer?.error || `Could not connect OpenAI Live (${res.status}).`)
@@ -285,6 +289,11 @@ export class OpenAILiveConversation {
       this.announcedInputRequests.add(request.id)
       this.bridge.commentary(`Application input request: ${request.message}`)
     }
+  }
+
+  /** Standing guidance appended to the session's instructions, e.g. who is in the room. */
+  appendInstructions(text: string) {
+    if (!this.closed && text.trim()) this.bridge.instructions(text)
   }
 
   /** Silence the remote voice at the speaker; the call and its turn-taking carry on. */

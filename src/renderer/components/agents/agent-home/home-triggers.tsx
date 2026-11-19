@@ -40,8 +40,8 @@ import {
   type WebhookTrigger,
 } from '@renderer/hooks/use-webhook-triggers'
 import { formatDistanceToNow } from 'date-fns'
-import { HomeCollapsible } from './home-collapsible'
-import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
+import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
 import { ActivitySparkChart, ActivitySparkChartSkeleton, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
@@ -74,12 +74,20 @@ export function HomeTriggers({
   onSelectCompletedTasks,
   className,
 }: HomeTriggersProps) {
-  const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
-  const { data: cancelledWebhooksData } = useWebhookTriggers(agentSlug, 'cancelled')
+  const { data: webhookTriggersData } = useWebhookTriggers(agentSlug)
   const { data: cancelledTasksData } = useScheduledTasks(agentSlug, 'cancelled')
   const { data: completedSessionsData } = useCompletedOneTimeSessions(agentSlug)
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const [showDeleted, setShowDeleted] = useState(false)
+
+  // One read answers both lists. A failed trigger shows in neither.
+  const [liveWebhooks, cancelledWebhooks] = useMemo(() => {
+    const all = Array.isArray(webhookTriggersData) ? webhookTriggersData : []
+    return [
+      all.filter((trigger) => trigger.status === 'active' || trigger.status === 'paused'),
+      all.filter((trigger) => trigger.status === 'cancelled'),
+    ]
+  }, [webhookTriggersData])
 
   const items = useMemo<TriggerItem[]>(() => {
     const cronItems: TriggerItem[] = scheduledTasks.map((task) => ({
@@ -87,7 +95,7 @@ export function HomeTriggers({
       createdAtMs: new Date(task.createdAt).getTime(),
       task,
     }))
-    const webhookItems: TriggerItem[] = (webhookTriggersData ?? []).map((trigger) => ({
+    const webhookItems: TriggerItem[] = liveWebhooks.map((trigger) => ({
       kind: 'webhook',
       createdAtMs: new Date(trigger.createdAt).getTime(),
       trigger,
@@ -102,7 +110,7 @@ export function HomeTriggers({
       : []
     return [...cronItems, ...webhookItems, ...inboundItems]
       .sort((a, b) => b.createdAtMs - a.createdAtMs)
-  }, [scheduledTasks, webhookTriggersData, activityStats?.inboundXAgent])
+  }, [scheduledTasks, liveWebhooks, activityStats?.inboundXAgent])
 
   const deletedItems = useMemo<DeletableTriggerItem[]>(() => {
     const cronItems: DeletableTriggerItem[] = (Array.isArray(cancelledTasksData) ? cancelledTasksData : []).map((task) => ({
@@ -110,22 +118,22 @@ export function HomeTriggers({
       createdAtMs: new Date(task.createdAt).getTime(),
       task,
     }))
-    const webhookItems: DeletableTriggerItem[] = (Array.isArray(cancelledWebhooksData) ? cancelledWebhooksData : []).map((trigger) => ({
+    const webhookItems: DeletableTriggerItem[] = cancelledWebhooks.map((trigger) => ({
       kind: 'webhook',
       createdAtMs: new Date(trigger.createdAt).getTime(),
       trigger,
     }))
     return [...cronItems, ...webhookItems].sort((a, b) => b.createdAtMs - a.createdAtMs)
-  }, [cancelledTasksData, cancelledWebhooksData])
+  }, [cancelledTasksData, cancelledWebhooks])
 
   const completedCount = completedSessionsData?.length ?? 0
   const hasDeleted = deletedItems.length > 0
   const hasCompleted = completedCount > 0
 
   return (
-    <HomeCollapsible title="Triggers" className={className}>
+    <HomeCollapsible id="triggers" title="Triggers" count={webhookTriggersData ? items.length : undefined} className={className}>
       {items.length > 0 || hasDeleted || hasCompleted ? (
-        <div className="mt-2 divide-y divide-border/50">
+        <div className="mt-2">
           {items.map((item) =>
             item.kind === 'cron' ? (
               <CronRow
@@ -159,7 +167,7 @@ export function HomeTriggers({
             <>
               <button
                 type="button"
-                className="flex w-full items-center gap-1 py-2 px-4 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                className="flex w-full items-center gap-1 py-2 px-4 text-xs text-muted-foreground"
                 onClick={() => setShowDeleted((v) => !v)}
               >
                 <span>{showDeleted ? 'Hide deleted' : `Show ${deletedItems.length} deleted`}</span>
@@ -191,7 +199,7 @@ export function HomeTriggers({
           {hasCompleted && (
             <button
               type="button"
-              className="flex w-full items-center justify-between px-4 py-3 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              className="flex w-full items-center justify-between px-4 py-3 text-xs text-muted-foreground"
               onClick={onSelectCompletedTasks}
               aria-label={`View ${completedCount} completed one-time ${completedCount === 1 ? 'session' : 'sessions'}`}
             >
@@ -201,13 +209,7 @@ export function HomeTriggers({
           )}
         </div>
       ) : (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No triggers yet</p>
-          <p className="text-xs mt-1">
-            Triggers fire your agent — on a schedule (crons) or in response to events (webhooks).
-            Your agent will create them as needed.
-          </p>
-        </div>
+        <HomeEmptyState description="Triggers run your agent on a schedule or when an event arrives. Your agent creates them as needed." />
       )}
     </HomeCollapsible>
   )
@@ -267,6 +269,7 @@ function TriggerRow({
             icon={null}
             name={name}
             muted={isDeleted}
+            hoverFill={false}
             nameBadge={isPaused ? (
               <span className="inline-flex items-center gap-0.5 px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
                 <Pause className="h-2.5 w-2.5 fill-current" />
@@ -279,7 +282,6 @@ function TriggerRow({
             right={
               <>
                 {activityChart}
-                <RowHoverChevron />
               </>
             }
           />
@@ -371,11 +373,11 @@ function InboundXAgentRow({
         </span>
       }
       onActivate={onSelect}
+      hoverFill={false}
       data-testid="home-trigger-row-inbound-x-agent"
       right={
         <>
           <ActivitySparkChart label="Invocations" data={activity} />
-          <RowHoverChevron />
         </>
       }
     />

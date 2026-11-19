@@ -4,12 +4,12 @@
  * the same cases, so the contract is the tests rather than the prose.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { FileOps } from '../types'
+import type { StoreFileOps } from '../types'
 import { WorkspaceFileError } from '../workspace-path'
 import { readAllBytes } from './in-memory-file-ops'
 
 export interface FileOpsHarness {
-  files: FileOps
+  files: StoreFileOps
   dispose?: () => Promise<void> | void
 }
 
@@ -29,7 +29,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 export function describeFileOpsContract(name: string, make: () => Promise<FileOpsHarness> | FileOpsHarness): void {
   describe(`${name} — FileOps contract`, () => {
     let harness: FileOpsHarness
-    let files: FileOps
+    let files: StoreFileOps
 
     beforeEach(async () => {
       harness = await make()
@@ -182,6 +182,25 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect(await codeOf(files.open('missing.jsonl'))).toBe('not-found')
       await files.mkdir('dir')
       expect(await codeOf(files.open('dir').then((file) => file.size()))).toBe('not-a-file')
+    })
+
+    it('readSized gives the size and exactly those bytes, even when the file grows meanwhile', async () => {
+      await files.putDoc('t.jsonl', '0123456789')
+      const { size, stream } = await files.readSized('t.jsonl')
+      expect(size).toBe(10)
+      await files.append('t.jsonl', 'ab')
+      expect(decode(await readAllBytes(stream))).toBe('0123456789')
+
+      await files.putDoc('empty', '')
+      const empty = await files.readSized('empty')
+      expect(empty.size).toBe(0)
+      expect(decode(await readAllBytes(empty.stream))).toBe('')
+    })
+
+    it('readSized refuses what is not a file', async () => {
+      expect(await codeOf(files.readSized('missing.jsonl'))).toBe('not-found')
+      await files.mkdir('dir')
+      expect(await codeOf(files.readSized('dir'))).toBe('not-a-file')
     })
 
     it('list returns immediate children with kinds and their own paths', async () => {

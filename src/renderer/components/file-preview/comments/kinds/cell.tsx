@@ -1,5 +1,5 @@
 import type { RefObject } from 'react'
-import type { AnchorKindSpec, MarkerProps, PointerAt } from './types'
+import { quoted, type AnchorKindSpec, type MarkerProps, type PointerAt } from './types'
 
 export interface CellRef {
   /** 1-based data row index (header row excluded). */
@@ -19,16 +19,6 @@ export interface CellSurface {
   /** Cells inside it carry `data-comment-cell="row:col"`. */
   grid: RefObject<HTMLElement | null>
   cellAt: (row: number, col: number) => CellRef | undefined
-}
-
-/** Cap long cell values so a single comment can't bloat the prompt. */
-function truncateValue(value: string, max = 200): string {
-  return value.length > max ? value.slice(0, max) + '…' : value
-}
-
-/** Escape double quotes so a value containing `"` can't unbalance the wrapper. */
-function escapeQuotes(value: string): string {
-  return value.replace(/"/g, '\\"')
 }
 
 function cellUnder({ grid, cellAt }: CellSurface, at: PointerAt): CellAnchor | null {
@@ -62,7 +52,7 @@ export const cellKind: AnchorKindSpec<CellAnchor, CellSurface> = {
     const ref = `${row}:${column} (col ${col + 1}`
     if (value === undefined) return `At cell ${ref})`
     if (value === '') return `At cell ${ref}, empty cell)`
-    return `At cell ${ref}, value: "${escapeQuotes(truncateValue(value))}")`
+    return `At cell ${ref}, value: ${quoted(value)})`
   },
   locate: ({ grid }, { cell }) => {
     const host = grid.current?.querySelector(`[data-comment-cell="${cell.row}:${cell.col}"]`)

@@ -12,14 +12,23 @@ vi.mock('./use-voice-input', () => ({ useVoiceConversationEngine: () => mocks.en
 vi.mock('./use-message-stream', () => ({ useMessageStream: () => mocks.stream }))
 vi.mock('./use-messages', () => ({ useInterruptSession: () => ({ mutateAsync: vi.fn() }) }))
 vi.mock('@renderer/lib/voice/registry/conversation', () => ({ createVoiceConversation: mocks.create }))
+const transcripts = vi.hoisted(() => ({ instances: [] as Array<{ start: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn>; append: ReturnType<typeof vi.fn> }> }))
+vi.mock('@renderer/lib/voice/services/transcript-relay', () => ({ VoiceTranscriptRelay: class {
+  start = vi.fn(async (): Promise<{ path: string }> => ({ path: `/workspace/sessions/s1/transcript-${transcripts.instances.indexOf(this)}.md` }))
+  flush = vi.fn(async () => {})
+  append = vi.fn()
+  attach = () => () => {}
+  constructor() { transcripts.instances.push(this) }
+} }))
 import { useVoiceMode } from './use-voice-mode'
 
 beforeEach(() => {
   vi.useFakeTimers()
+  transcripts.instances.length = 0
   mocks.engine = 'openai-live'
   mocks.stream = { isActive: false, streamingMessage: null, activeStartTime: null, streamingToolUses: [], error: null }
   mocks.create.mockReset().mockImplementation(() => ({
-    capabilities: { speechSpeed: false, spokenTranscript: false }, analyser: null,
+    capabilities: { speechSpeed: false, spokenTranscript: false, transcript: 'agent-session' }, analyser: null,
     start: vi.fn(async () => {}), close: vi.fn(), setPaused: vi.fn(), setMicrophoneMuted: vi.fn(), setOutputMuted: vi.fn(), acceptAgentEvent: vi.fn(), pressMic: vi.fn(),
   }))
 })
@@ -96,4 +105,38 @@ describe('session voice engine selection', () => {
     unmount()
   })
 
+})
+
+describe('adapter transcript ownership', () => {
+  it('creates and announces a separate transcript based on capability, even for an engine with a different name', async () => {
+    mocks.engine = 'chained'
+    const factory = mocks.create.getMockImplementation()!
+    mocks.create.mockImplementation((...args) => ({ ...factory(...args), capabilities: { speechSpeed: false, spokenTranscript: true, transcript: 'separate' } }))
+    const notice = vi.fn(async () => {})
+    const send = vi.fn(async () => true)
+    const { rerender, unmount } = renderHook(({ active }) => useVoiceMode({ sessionId: 's1', agentSlug: 'a1', active, send, onStarted: notice }), { initialProps: { active: true }, wrapper: StrictMode })
+    await act(async () => {})
+    expect(transcripts.instances).toHaveLength(1)
+    expect(notice).toHaveBeenCalledExactlyOnceWith('/workspace/sessions/s1/transcript-0.md')
+    const events = mocks.create.mock.calls.at(-1)![2]
+    act(() => events.onSpeech({ role: 'user', text: 'Earlier context' }))
+    expect(transcripts.instances[0].append).toHaveBeenCalledWith({ role: 'user', text: 'Earlier context' })
+    await act(async () => { await events.onCommand({ type: 'submit', text: 'What did I say?' }) })
+    expect(transcripts.instances[0].flush.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0])
+    rerender({ active: false })
+    rerender({ active: true })
+    await act(async () => {})
+    expect(transcripts.instances).toHaveLength(2)
+    expect(notice).toHaveBeenLastCalledWith('/workspace/sessions/s1/transcript-1.md')
+    unmount()
+  })
+
+  it('creates no file and passes no path when the adapter uses the agent session transcript', async () => {
+    const notice = vi.fn(async () => {})
+    const { unmount } = renderHook(() => useVoiceMode({ sessionId: 's1', agentSlug: 'a1', active: true, send: async () => true, onStarted: notice }))
+    await act(async () => {})
+    expect(transcripts.instances).toHaveLength(0)
+    expect(notice).toHaveBeenCalledExactlyOnceWith(undefined)
+    unmount()
+  })
 })

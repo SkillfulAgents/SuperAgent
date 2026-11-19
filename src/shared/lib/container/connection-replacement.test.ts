@@ -1,28 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  sync: vi.fn(), active: vi.fn(), isActive: vi.fn(), interrupt: vi.fn(), markInterrupted: vi.fn(),
-  send: vi.fn(), withSend: vi.fn(), status: 'running', order: [] as string[],
+  sync: vi.fn(), active: vi.fn(), isActive: vi.fn(), stop: vi.fn(), deliver: vi.fn(),
+  status: 'running', order: [] as string[],
 }))
-vi.mock('./connection-runtime-sync', () => ({
-  syncAgentConnectionEnvironment: mocks.sync,
-}))
-vi.mock('./container-host', () => ({
-  containerHost: {
-    attachAgentWorkspaces: () => {},
-    runtime: () => ({
-      getCachedInfo: () => ({ status: mocks.status }),
-      getClient: () => ({ interruptSession: mocks.interrupt, sendMessage: mocks.send }),
-    }),
-  },
-}))
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    getActiveSessionIdsForAgent: mocks.active,
-    isSessionActive: mocks.isActive,
-    getTurnGeneration: () => 7,
-    markSessionInterrupted: mocks.markInterrupted,
-    withSessionSend: mocks.withSend,
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentRegistry: {
+    get: (slug: string) => {
+      mocks.order.push(`actor:${slug}`)
+      return {
+        live: async () => ({ activeSessionIds: mocks.active() }),
+        container: { syncConnectionEnvironment: mocks.sync, status: () => ({ status: mocks.status }) },
+        messages: { stop: mocks.stop, deliver: mocks.deliver },
+      }
+    },
   },
 }))
 
@@ -40,13 +31,16 @@ beforeEach(() => {
   mocks.active.mockReturnValue(['session-1', 'session-2'])
   mocks.isActive.mockReturnValue(true)
   mocks.sync.mockImplementation(async () => { mocks.order.push('refresh'); return true })
-  mocks.interrupt.mockImplementation(async (id: string) => {
-    mocks.order.push(`interrupt:${id}`)
-    return { interrupted: true, processKept: true }
+  // The stop marks the session itself, in the same op as the interrupt.
+  mocks.stop.mockImplementation(async (id: string, options: { ifActive?: boolean }) => {
+    if (options.ifActive && !mocks.isActive(id)) return { path: 'skipped-idle', interrupted: false, processKept: false, escalated: false }
+    mocks.order.push(`stop:${id}`)
+    return { path: 'interrupted', interrupted: true, processKept: true, escalated: false }
   })
-  mocks.markInterrupted.mockImplementation(async (_agent: string, id: string) => { mocks.order.push(`mark:${id}`) })
-  mocks.send.mockImplementation(async (id: string) => { mocks.order.push(`send:${id}`) })
-  mocks.withSend.mockImplementation(async (_agent: string, _id: string, _client: unknown, send: () => Promise<void>) => send())
+  mocks.deliver.mockImplementation(async (request: { sessionId: string }) => {
+    mocks.order.push(`send:${request.sessionId}`)
+    return { status: 'sent', queued: false }
+  })
   release.mockImplementation(() => { mocks.order.push('release') })
 })
 
@@ -54,36 +48,32 @@ describe('connection replacement notification', () => {
   it.each(['connected-accounts', 'remote-mcps'] as const)('refreshes and interrupts before notifying active sessions for %s', async (kind) => {
     expect(await finishConnectionReplacement({ ...change, kind }, release))
       .toEqual({ liveRefresh: true, sessionNotification: true })
-    expect(mocks.active).toHaveBeenCalledWith('shared-agent')
-    expect(mocks.sync).toHaveBeenCalledWith(
-      'shared-agent',
-      kind,
-      expect.objectContaining({ getCachedInfo: expect.any(Function), getClient: expect.any(Function) }),
-    )
+    expect(mocks.order[0]).toBe('actor:shared-agent')
+    expect(mocks.sync).toHaveBeenCalledWith(kind)
     for (const sessionId of ['session-1', 'session-2']) {
-      expect(mocks.interrupt).toHaveBeenCalledWith(sessionId, { scope: 'turn' })
-      expect(mocks.markInterrupted).toHaveBeenCalledWith('shared-agent', sessionId, {
-        processKept: true, turnGenerationBefore: 7,
-      })
-      expect(mocks.order.indexOf(`interrupt:${sessionId}`)).toBeGreaterThan(mocks.order.indexOf('refresh'))
-      expect(mocks.order.indexOf('release')).toBeGreaterThan(mocks.order.indexOf(`mark:${sessionId}`))
+      expect(mocks.stop).toHaveBeenCalledWith(sessionId, { scope: 'turn', ifActive: true, onlyIfConfirmed: true })
+      expect(mocks.order.indexOf(`stop:${sessionId}`)).toBeGreaterThan(mocks.order.indexOf('refresh'))
+      expect(mocks.order.indexOf('release')).toBeGreaterThan(mocks.order.indexOf(`stop:${sessionId}`))
       expect(mocks.order.indexOf(`send:${sessionId}`)).toBeGreaterThan(mocks.order.indexOf('release'))
-      expect(mocks.send).toHaveBeenCalledWith(sessionId,
-        expect.stringMatching(/^\[SYSTEM\] Connection to "Slack" was replaced\./),
-        expect.any(String), { shouldQuery: true })
+      expect(mocks.deliver).toHaveBeenCalledWith({
+        sessionId,
+        content: expect.stringMatching(/^\[SYSTEM\] Connection to "Slack" was replaced\./),
+        uuid: expect.any(String),
+        options: { shouldQuery: true },
+      })
     }
-    const message = mocks.send.mock.calls[0][1] as string
+    const message = mocks.deliver.mock.calls[0][0].content as string
     expect(message).toContain(kind === 'connected-accounts' ? 'Previous account ID: old. New account ID: new.' : 'Previous MCP ID: old. New MCP ID: new.')
     expect(message).toContain('Update scripts')
-    expect(mocks.withSend).toHaveBeenCalledTimes(2)
+    expect(mocks.deliver).toHaveBeenCalledTimes(2)
     expect(release).toHaveBeenCalledOnce()
   })
 
   it('keeps idle sessions asleep', async () => {
     mocks.active.mockReturnValue([])
     expect(await finishConnectionReplacement(change, release)).toEqual({ liveRefresh: true, sessionNotification: true })
-    expect(mocks.send).not.toHaveBeenCalled()
-    expect(mocks.interrupt).not.toHaveBeenCalled()
+    expect(mocks.deliver).not.toHaveBeenCalled()
+    expect(mocks.order.some((step) => step.startsWith('stop:'))).toBe(false)
     expect(release).toHaveBeenCalledOnce()
   })
 
@@ -93,15 +83,15 @@ describe('connection replacement notification', () => {
     mocks.status = 'running'
     mocks.isActive.mockReturnValue(false)
     await finishConnectionReplacement(change, release)
-    expect(mocks.send).not.toHaveBeenCalled()
-    expect(mocks.interrupt).not.toHaveBeenCalled()
+    expect(mocks.deliver).not.toHaveBeenCalled()
+    expect(mocks.order.some((step) => step.startsWith('stop:'))).toBe(false)
   })
 
   it('reports a failed refresh and releases the request without claiming tools are ready', async () => {
     mocks.sync.mockResolvedValue(false)
     expect(await finishConnectionReplacement(change, release)).toEqual({ liveRefresh: false, sessionNotification: false })
-    expect(mocks.send).not.toHaveBeenCalled()
-    expect(mocks.interrupt).not.toHaveBeenCalled()
+    expect(mocks.deliver).not.toHaveBeenCalled()
+    expect(mocks.order.some((step) => step.startsWith('stop:'))).toBe(false)
     expect(release).toHaveBeenCalledOnce()
   })
 
@@ -109,15 +99,15 @@ describe('connection replacement notification', () => {
     mocks.sync.mockRejectedValue(new Error('runtime unavailable'))
     expect(await finishConnectionReplacement(change, release)).toEqual({ liveRefresh: false, sessionNotification: false })
     expect(release).toHaveBeenCalledOnce()
-    expect(mocks.send).not.toHaveBeenCalled()
+    expect(mocks.deliver).not.toHaveBeenCalled()
   })
 
   it.each(['rejected', 'unacknowledged', 'send'] as const)('reports %s failures while notifying the other session', async (failure) => {
-    if (failure === 'rejected') mocks.interrupt.mockRejectedValueOnce(new Error('interrupt failed'))
-    if (failure === 'unacknowledged') mocks.interrupt.mockResolvedValueOnce({ interrupted: false, processKept: false })
-    if (failure === 'send') mocks.send.mockRejectedValueOnce(new Error('send failed'))
+    if (failure === 'rejected') mocks.stop.mockResolvedValueOnce({ path: 'interrupt-failed', interrupted: false, processKept: false, escalated: false })
+    if (failure === 'unacknowledged') mocks.stop.mockResolvedValueOnce({ path: 'interrupted', interrupted: false, processKept: false, escalated: false })
+    if (failure === 'send') mocks.deliver.mockRejectedValueOnce(new Error('send failed'))
     expect(await finishConnectionReplacement(change, release)).toEqual({ liveRefresh: true, sessionNotification: false })
-    expect(mocks.send).toHaveBeenCalledWith('session-2', expect.any(String), expect.any(String), { shouldQuery: true })
+    expect(mocks.deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-2', options: { shouldQuery: true } }))
     expect(release).toHaveBeenCalledOnce()
   })
 })

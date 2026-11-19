@@ -16,7 +16,7 @@ const CATALOG: ModelDefinition[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
-  // Speeds are catalog-declared per model: Opus 4.8 offers fast mode.
+  // Speeds are catalog-declared per model; this fixture's Opus offers fast mode.
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, supportedSpeeds: ['normal', 'fast'] },
 ]
 
@@ -37,6 +37,7 @@ interface HarnessProps {
   footer?: ReactNode
   connections?: ConnectionInfo[]
   llmProviderId?: string
+  onUserChange?: () => void
 }
 
 // Minimal real-state harness — the popover's auto-reset effect and any state
@@ -52,6 +53,7 @@ function Harness({
   footer,
   connections,
   llmProviderId,
+  onUserChange,
 }: HarnessProps) {
   const [effort, setEffort] = useState<EffortLevel>(initialEffort)
   const [speed, setSpeed] = useState<SpeedLevel>(initialSpeed)
@@ -70,10 +72,22 @@ function Harness({
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
-  return <ComposerOptionsPopover state={state} disabled={disabled} footer={footer} />
+  return <ComposerOptionsPopover state={state} disabled={disabled} footer={footer} onUserChange={onUserChange} />
 }
 
 describe('ComposerOptionsPopover', () => {
+  it('reports the person\'s choices, not its own snap of an effort the model lacks', async () => {
+    const user = userEvent.setup()
+    const onUserChange = vi.fn()
+    let effort: EffortLevel | undefined
+    render(<Harness initialModel="claude-haiku-4-5" initialEffort="max" onUserChange={onUserChange} onState={(state) => { effort = state.effort }} />)
+    expect(effort).not.toBe('max')
+    expect(onUserChange).not.toHaveBeenCalled()
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(screen.getByRole('button', { name: 'Low' }))
+    expect(onUserChange).toHaveBeenCalledOnce()
+  })
+
   it('renders the combined "Model · Effort" label, resolving a bare alias to its latest', () => {
     render(<Harness initialModel="opus" initialEffort="high" />)
     const trigger = screen.getByTestId('composer-options-trigger')

@@ -13,7 +13,10 @@ import { uploadFileChunked, UploadStalledError, UPLOAD_CHUNK_SIZE, UPLOAD_STALL_
 // Minimal XHR double: records sends, lets a test drive progress/load/error/abort.
 class FakeXHR {
   static instances: FakeXHR[] = []
-  upload = { onprogress: null as null | ((e: { lengthComputable: boolean; loaded: number; total: number }) => void) }
+  upload = {
+    onprogress: null as null | ((e: { lengthComputable: boolean; loaded: number; total: number }) => void),
+    onload: null as null | (() => void),
+  }
   onload: null | (() => void) = null
   onerror: null | (() => void) = null
   onabort: null | (() => void) = null
@@ -30,6 +33,7 @@ class FakeXHR {
   abort() { this.aborted = true; this.onabort?.() }
   // helpers
   progress(loaded: number, total: number) { this.upload.onprogress?.({ lengthComputable: true, loaded, total }) }
+  sentAll(total: number) { this.progress(total, total); this.upload.onload?.() }
   respond(status: number, json: unknown, headers: Record<string, string> = {}) {
     this.status = status
     this.responseText = JSON.stringify(json)
@@ -104,6 +108,16 @@ describe('uploadFileChunked (XHR transport)', () => {
     await rejected
   })
 
+  it('waits past stallMs for the answer once the whole body is sent', async () => {
+    const p = uploadFileChunked({ url: '/api/x', file: file(10), stallMs: UPLOAD_STALL_MS })
+    const xhr = FakeXHR.instances[0]
+    xhr.sentAll(10)
+    await vi.advanceTimersByTimeAsync(UPLOAD_STALL_MS * 10)
+    expect(xhr.aborted).toBe(false)
+    xhr.respond(200, { path: '/p' })
+    await expect(p).resolves.toEqual({ path: '/p' })
+  })
+
   it('never stalls when stallMs is 0', async () => {
     const p = uploadFileChunked({ url: '/api/x', file: file(10) })
     await vi.advanceTimersByTimeAsync(UPLOAD_STALL_MS * 10)
@@ -123,7 +137,7 @@ describe('uploadFileChunked (XHR transport)', () => {
   it('surfaces the backend error message on a non-2xx response', async () => {
     const p = uploadFileChunked({ url: '/api/x', file: file(10) })
     FakeXHR.instances[0].respond(413, { error: 'too big' })
-    await expect(p).rejects.toThrow('too big')
+    await expect(p).rejects.toMatchObject({ name: 'HttpError', status: 413, message: 'too big' })
   })
 
   it('uses the fallback message on a network error', async () => {

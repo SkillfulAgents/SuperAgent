@@ -90,7 +90,7 @@ export function RequestError({
         onKeyDown: handleKeyDown,
       } : {})}
       className={cn(
-        'mt-4 rounded-md px-3 py-2 text-xs',
+        'mt-4 rounded-item px-3 py-2 text-xs',
         tones.banner,
         'select-text [&_*]:select-text',
         expandable && 'group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

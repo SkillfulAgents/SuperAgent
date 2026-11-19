@@ -10,6 +10,8 @@ export interface Todo {
   content: string
   status: 'pending' | 'in_progress' | 'completed'
   activeForm: string
+  /** What the task involves (TaskCreate/TaskUpdate `description`); TodoWrite has none. */
+  description?: string
 }
 
 /**
@@ -23,7 +25,13 @@ export interface TaskSourceMessage {
     input: unknown
     result?: unknown
     isError?: boolean
+    /** TaskCreate's description as the CLI saved it (CLI 2.1.317+). */
+    taskDescription?: string
   }>
+}
+
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
 }
 
 /**
@@ -57,7 +65,7 @@ export function deriveTaskList(messages: TaskSourceMessage[] | undefined): {
       if (tc.name === 'TaskCreate') {
         taskCounter++
         if (tc.isError) continue
-        const input = tc.input as { subject?: string; activeForm?: string }
+        const input = tc.input as { subject?: string; activeForm?: string; description?: string }
         if (input?.subject) {
           // Key by the real task id when the result has landed; an in-flight
           // create (no result yet) gets a prefixed ordinal key so it can never
@@ -69,19 +77,27 @@ export function deriveTaskList(messages: TaskSourceMessage[] | undefined): {
           // must not reset the original task's status to pending.
           const key = parseCreatedTaskId(tc.result) ?? `pending:${taskCounter}`
           if (taskMap.has(key)) continue
+          // The saved description wins over the call's own: the CLI may have
+          // corrected the call, or a PreToolUse hook changed it. Older CLIs
+          // don't report one, and a create still in flight has no result.
+          const description = nonEmpty(tc.taskDescription) ?? nonEmpty(input.description)
           taskMap.set(key, {
             content: input.subject,
             status: 'pending',
             activeForm: input.activeForm || input.subject,
+            ...(description ? { description } : {}),
           })
         }
       } else if (tc.name === 'TaskUpdate') {
-        const input = tc.input as { taskId?: string; status?: string }
+        const input = tc.input as { taskId?: string; status?: string; description?: string }
         if (input?.taskId && taskMap.has(input.taskId)) {
           const task = taskMap.get(input.taskId)!
           if (input.status === 'completed' || input.status === 'in_progress' || input.status === 'pending') {
             task.status = input.status
           }
+          // A failed update changed nothing, so it must not change the tooltip.
+          const description = tc.isError ? undefined : nonEmpty(input.description)
+          if (description) task.description = description
         }
       }
     }

@@ -9,6 +9,9 @@
 
 import { z } from 'zod'
 
+import { normalizeDeniedModels } from '@shared/lib/llm-provider/platform-plan-policy'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+
 export const SkillProviderSchema = z.enum(['github', 'platform', 'public'])
 
 /**
@@ -40,6 +43,12 @@ export const SkillsetIndexAgentSchema = z.object({
   category: z.string().optional(),
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon: z.string().optional(),
+  /**
+   * The template's orb. A colour or shape this build doesn't know (a newer
+   * palette) drops to undefined, so the card falls back to a hashed avatar
+   * rather than the whole template being dropped.
+   */
+  avatar: agentAvatarSchema.optional().catch(undefined),
   tags: z.array(z.string()).optional(),
   /** Services the template connects to; `slug` matches our service-icon set. */
   works_with: z
@@ -247,6 +256,19 @@ export const PlatformAccountInfoSchema = z.object({
   role: z.string().nullish().transform((v) => v ?? null),
   userId: z.string(),
   email: z.string().nullish().transform((v) => v ?? null),
+  // The account's plan policy, sent with its identity by a proxy with plans
+  // (SUP-1124), in the shape `/v1/billing` uses. `deniedModels: null` means the
+  // proxy did not say (an older proxy, or billing was unreachable): unknown,
+  // which is not the same as nothing refused.
+  plan: z
+    .object({ id: z.string(), name: z.string() })
+    .nullish()
+    .catch(null)
+    .transform((v) => v ?? null),
+  deniedModels: z
+    .unknown()
+    .optional()
+    .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
 })
 export type ParsedPlatformAccountInfo = z.infer<typeof PlatformAccountInfoSchema>
 
@@ -287,8 +309,37 @@ export const PlatformBillingInfoSchema = z.object({
       reason: z.string(),
     })
     .optional(),
+  // The workspace's plan (SUP-1124); null when not subscribed or from an older
+  // proxy. `deniedModels` are canonical model-id prefixes the proxy refuses with
+  // 403 model_not_in_plan, normalized the way the proxy reads them. A malformed
+  // value reads as no plan rather than failing the whole snapshot.
+  plan: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      deniedModels: z.unknown().optional().transform(normalizeDeniedModels),
+    })
+    .nullish()
+    .catch(null)
+    .transform((v) => v ?? null),
+  // The models this workspace may not use, plan or not (an unsubscribed
+  // workspace gets the free tier's list). Null from a proxy that predates it.
+  deniedModels: z
+    .unknown()
+    .optional()
+    .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
+  // A plan switch scheduled for a later date (a downgrade applies at renewal).
+  pendingPlanChange: z
+    .object({
+      toPlan: z.object({ id: z.string(), name: z.string() }),
+      effectiveAt: z.string(),
+    })
+    .nullish()
+    .catch(null)
+    .transform((v) => v ?? null),
 })
 export type ParsedPlatformBillingInfo = z.infer<typeof PlatformBillingInfoSchema>
+export type ParsedPlatformPlan = NonNullable<ParsedPlatformBillingInfo['plan']>
 
 export type ParsedSkillsetConfig = z.infer<typeof SkillsetConfigSchema>
 export type ParsedInstalledSkillMetadata = z.infer<typeof InstalledSkillMetadataSchema>

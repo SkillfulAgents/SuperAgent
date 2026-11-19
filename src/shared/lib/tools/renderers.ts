@@ -1,6 +1,7 @@
 import type { ToolRenderer } from './renderer-types'
 import { getToolDefinition, getRegisteredDefinitionNames } from './registry'
 import { bashRenderer } from './bash/renderer'
+import { monitorRenderer } from './monitor/renderer'
 import { readRenderer } from './read/renderer'
 import { writeRenderer } from './write/renderer'
 import { globRenderer } from './glob/renderer'
@@ -11,6 +12,7 @@ import { todoWriteRenderer } from './todo-write/renderer'
 import { askUserQuestionRenderer } from './ask-user-question/renderer'
 import { requestSecretRenderer } from './request-secret/renderer'
 import { requestConnectedAccountRenderer } from './request-connected-account/renderer'
+import { requestIntegrationSetupRenderer } from './request-integration-setup/renderer'
 import { scheduleTaskRenderer } from './schedule-task/renderer'
 import { scheduleResumeRenderer } from './schedule-resume/renderer'
 import { deliverFileRenderer } from './deliver-file/renderer'
@@ -19,11 +21,14 @@ import { requestFileRenderer } from './request-file/renderer'
 import { requestRemoteMcpRenderer } from './request-remote-mcp/renderer'
 import { requestScriptRunRenderer } from './request-script-run/renderer'
 import { requestBrowserInputRenderer } from './request-browser-input/renderer'
+import { requestLoginRenderer } from './request-login/renderer'
 import { taskRenderer } from './task/renderer'
 import {
   browserOpenRenderer,
   browserCloseRenderer,
   browserSnapshotRenderer,
+  browserReadRenderer,
+  browserCaptureTrafficRenderer,
   browserClickRenderer,
   browserFillRenderer,
   browserScrollRenderer,
@@ -36,6 +41,8 @@ import {
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
 } from './browser-tools/renderer'
 import {
   createDashboardRenderer,
@@ -55,6 +62,7 @@ import {
   listChatProvidersRenderer,
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
   sendChatMessageRenderer,
 } from './chat-tools/renderer'
 import {
@@ -72,6 +80,7 @@ export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, Colla
 const toolRenderers = new Map([
   taskRenderer,
   bashRenderer,
+  monitorRenderer,
   readRenderer,
   writeRenderer,
   globRenderer,
@@ -85,6 +94,7 @@ const toolRenderers = new Map([
   askUserQuestionRenderer,
   requestSecretRenderer,
   requestConnectedAccountRenderer,
+  requestIntegrationSetupRenderer,
   scheduleTaskRenderer,
   scheduleResumeRenderer,
   deliverFileRenderer,
@@ -93,9 +103,12 @@ const toolRenderers = new Map([
   requestRemoteMcpRenderer,
   requestScriptRunRenderer,
   requestBrowserInputRenderer,
+  requestLoginRenderer,
   browserOpenRenderer,
   browserCloseRenderer,
   browserSnapshotRenderer,
+  browserReadRenderer,
+  browserCaptureTrafficRenderer,
   browserClickRenderer,
   browserFillRenderer,
   browserScrollRenderer,
@@ -108,6 +121,8 @@ const toolRenderers = new Map([
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
   createDashboardRenderer,
   startDashboardRenderer,
   listDashboardsRenderer,
@@ -121,15 +136,18 @@ const toolRenderers = new Map([
   listChatProvidersRenderer,
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
   sendChatMessageRenderer,
 ].map(renderer => [renderer.definition, renderer]))
 
 /**
- * Get the renderer for a specific tool, or undefined for fallback
+ * Get the renderer for a specific tool, or undefined for fallback.
+ * With the call's input, a renderer may narrow to a more specific one.
  */
-export function getToolRenderer(toolName: string): ToolRenderer | undefined {
+export function getToolRenderer(toolName: string, input?: unknown): ToolRenderer | undefined {
   const definition = getToolDefinition(toolName)
-  return definition ? toolRenderers.get(definition) : undefined
+  const renderer = definition ? toolRenderers.get(definition) : undefined
+  return (input !== undefined && renderer?.resolve?.(input)) || renderer
 }
 
 /**

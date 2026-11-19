@@ -1,4 +1,4 @@
-import { agentRegistry } from '@shared/lib/agent-actor'
+import { agentRegistry, updateConfigDoc } from '@shared/lib/agent-actor'
 import type { AgentHook, ClaudeHooksConfig, RemoveAgentHookTarget } from './agent-hooks-schema'
 
 /**
@@ -65,7 +65,7 @@ export async function removeAgentHook(
     (target.command === undefined || hook.command === target.command) &&
     (target.prompt === undefined || hook.prompt === target.prompt)
 
-  const updated = await agentRegistry.get(agentSlug).config.update('claudeSettings', (settings) => {
+  const updated = await updateConfigDoc(agentRegistry.get(agentSlug).config, 'claudeSettings', (settings) => {
     if (settings === null) throw new Error('Agent settings file not found')
     if (!settings.hooks) return settings
 

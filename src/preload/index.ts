@@ -2,7 +2,10 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
+import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
+import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
+import type { AgentStatusPush } from '../shared/lib/types/agent-status-push'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -20,6 +23,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Records the choice for subsequent boots; the caller reloads.
   setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
     return ipcRenderer.invoke('set-preferred-api-target', target)
+  },
+  // The facts this renderer gates on, for the target it settled (main/facts.ts).
+  getFacts: (target: ApiTarget): Promise<Facts> => {
+    return ipcRenderer.invoke('get-facts', target)
   },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
@@ -134,6 +141,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-external', url)
   },
 
+  // The Gamut sign-in in a sheet on the app's window (ASWebAuthenticationSession).
+  // Resolves when the sheet closes; 'browser' means there was no sheet to show
+  // and the URL went to the default browser instead.
+  // `withApple`: the native Sign in with Apple prompt runs first.
+  startPlatformSignIn: (url: string, withApple = false): Promise<'completed' | 'cancelled' | 'failed' | 'browser'> => {
+    return ipcRenderer.invoke('platform-sign-in-start', url, withApple)
+  },
+  cancelPlatformSignIn: (): Promise<void> => {
+    return ipcRenderer.invoke('platform-sign-in-cancel')
+  },
+
   openApplePasswordsExtension: (): Promise<void> => {
     return ipcRenderer.invoke('open-apple-passwords-extension')
   },
@@ -144,9 +162,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Navigation from tray menu or deep links.
-  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void): (() => void) => {
-    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown) =>
-      callback(agentSlug as string, sessionId as string | null | undefined)
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void): (() => void) => {
+    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown, messageUuid: unknown) =>
+      callback(agentSlug as string, sessionId as string | null | undefined, typeof messageUuid === 'string' ? messageUuid : undefined)
     ipcRenderer.on('navigate-to-agent', handler)
     return () => {
       ipcRenderer.removeListener('navigate-to-agent', handler)
@@ -184,6 +202,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Channel-wide reset — prefer the unsubscribe returned by onOpenCreateAgent.
   removeOpenCreateAgent: () => {
     ipcRenderer.removeAllListeners('open-create-agent')
+  },
+
+  // Main asking this window to switch Superagents (a Spotlight result from the
+  // other side). The renderer runs its own Local/Cloud checks before switching.
+  onSwitchTarget: (callback: (target: ApiTarget) => void): (() => void) => {
+    const handler = (_event: unknown, target: unknown) => callback(target === 'cloud' ? 'cloud' : 'local')
+    ipcRenderer.on('switch-target', handler)
+    return () => {
+      ipcRenderer.removeListener('switch-target', handler)
+    }
+  },
+  // The switch main asked for did not happen (refused, or one already under way).
+  declineTargetSwitch: () => {
+    ipcRenderer.send('target-switch-declined')
   },
 
   onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void): (() => void) => {
@@ -246,6 +278,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // True when the user turned off notifications for the app in macOS System Settings.
+  getOsNotificationsBlocked: (): Promise<boolean> => {
+    return ipcRenderer.invoke('get-os-notifications-blocked')
+  },
+
   // Pull events queued while the window was closed (main-process fallback
   // notifications). Renderer calls this once on mount so click/action
   // events captured before any IPC listener existed still get dispatched.
@@ -256,14 +293,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('flush-pending-notification-events')
   },
 
-  // Pull menu commands (Settings / New Agent / navigate-to-agent) queued while
-  // the window was closed. The renderer calls this once on mount so commands
-  // captured before its IPC listeners existed still get dispatched (SUP-264).
+  // Pull menu commands (Settings / New Agent / navigate-to-agent / switch-target)
+  // queued while the window was closed. The renderer calls this once on mount so
+  // commands captured before its IPC listeners existed still get dispatched (SUP-264).
   flushPendingMenuCommands: (): Promise<
     Array<
-      | { channel: 'navigate-to-agent'; agentSlug: string }
+      | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
       | { channel: 'open-settings' }
       | { channel: 'open-create-agent' }
+      | { channel: 'switch-target'; target: ApiTarget }
     >
   > => {
     return ipcRenderer.invoke('flush-pending-menu-commands')
@@ -272,6 +310,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Set dock badge count (macOS)
   setBadgeCount: (count: number): Promise<void> => {
     return ipcRenderer.invoke('set-badge-count', count)
+  },
+
+  // Hand main this window's agent list, for the tray and the Agents menu.
+  // Null withdraws it. Resolves to whether main is now using it.
+  pushAgentStatus: (payload: AgentStatusPush): Promise<boolean> => {
+    return ipcRenderer.invoke('push-agent-status', payload)
   },
 
   // Detect host browser availability
@@ -294,6 +338,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-dashboard-window', { agentSlug, dashboardSlug, dashboardName })
   },
 
+  // A PNG of a region of this window, in CSS pixels (a dashboard comment's screenshot)
+  captureRegion: (rect: { x: number; y: number; width: number; height: number }): Promise<Uint8Array | null> => {
+    return ipcRenderer.invoke('capture-region', rect)
+  },
+
   // Show the native emoji picker
   showEmojiPanel: (): Promise<void> => {
     return ipcRenderer.invoke('show-emoji-panel')
@@ -309,9 +358,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return webUtils.getPathForFile(file)
   },
 
-  // Open a native directory picker dialog
-  openDirectory: (): Promise<string | null> => {
-    return ipcRenderer.invoke('open-directory')
+  // Open a native directory picker dialog. In the Mac App Store build the pick
+  // also carries the security-scoped bookmark that reopens it after a relaunch.
+  // `startIn` opens the dialog in that folder.
+  openDirectory: (startIn?: string): Promise<{ path: string; bookmark?: string } | null> => {
+    return ipcRenderer.invoke('open-directory', startIn)
   },
 
   // Reveal a path in the OS file manager (Finder / Explorer / Files)
@@ -438,6 +489,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('quick-dispatch:attach-pending', handler)
     }
   },
+  // Computer-use toggle: screenshot the screen under the launcher (and play the
+  // shutter that carries it into the composer).
+  quickDispatchCaptureScreen: (): Promise<QuickDispatchCaptureResult> => ipcRenderer.invoke('quick-dispatch:capture-screen'),
+  // The pointer is on the toggle: get the shutter ready so the click answers at once.
+  quickDispatchCapturePrepare: () => {
+    ipcRenderer.send('quick-dispatch:capture-prepare')
+  },
+  // Where the screenshot's chip rendered, in the launcher's viewport (null: nowhere).
+  quickDispatchCaptureTarget: (rect: CaptureRect | null) => {
+    ipcRenderer.send('quick-dispatch:capture-target', rect)
+  },
+  // Main → launcher: the shutter landed (or ended) — show the chip it covered.
+  onQuickDispatchCaptureLanded: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:capture-landed', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:capture-landed', handler)
+    }
+  },
   // Main → launcher: the panel was hidden — reset transient state (attachments).
   onQuickDispatchReset: (callback: () => void): (() => void) => {
     const handler = () => callback()
@@ -484,6 +554,8 @@ declare global {
       // Optional: an older main process has no such handler (see env.ts).
       getApiTarget?: () => Promise<ResolvedApiTarget>
       setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
+      // Optional for the same reason as getApiTarget.
+      getFacts?: (target: ApiTarget) => Promise<Facts>
       platform: string
       osVersion: string
       desktopProtocol?: string
@@ -503,14 +575,18 @@ declare global {
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
+      startPlatformSignIn?: (url: string, withApple?: boolean) => Promise<'completed' | 'cancelled' | 'failed' | 'browser'>
+      cancelPlatformSignIn?: () => Promise<void>
       openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void) => () => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => () => void
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
+      onSwitchTarget?: (callback: (target: ApiTarget) => void) => () => void
+      declineTargetSwitch?: () => void
       onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
       removeHistoryNavigationCommand: () => void
       beginTargetSwitch: () => Promise<void>
@@ -525,26 +601,30 @@ declare global {
       onNotificationEvent: (
         callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
       ) => () => void
+      getOsNotificationsBlocked: () => Promise<boolean>
       flushPendingNotificationEvents: () => Promise<{
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>
       }>
       flushPendingMenuCommands: () => Promise<
         Array<
-          | { channel: 'navigate-to-agent'; agentSlug: string }
+          | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
           | { channel: 'open-settings' }
           | { channel: 'open-create-agent' }
+          | { channel: 'switch-target'; target: ApiTarget }
         >
       >
       setBadgeCount: (count: number) => Promise<void>
+      pushAgentStatus: (payload: AgentStatusPush) => Promise<boolean>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
       popupAppMenu: (x: number, y: number) => Promise<void>
       openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
+      captureRegion: (rect: { x: number; y: number; width: number; height: number }) => Promise<Uint8Array | null>
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
-      openDirectory: () => Promise<string | null>
+      openDirectory: (startIn?: string) => Promise<{ path: string; bookmark?: string } | null>
       showInFolder: (hostPath: string) => Promise<string | null>
       revealInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
@@ -571,6 +651,10 @@ declare global {
       onQuickDispatchToggleDictation: (callback: () => void) => () => void
       quickDispatchDrainAttach: () => Promise<string[]>
       onQuickDispatchAttachPending: (callback: () => void) => () => void
+      quickDispatchCaptureScreen: () => Promise<QuickDispatchCaptureResult>
+      quickDispatchCapturePrepare: () => void
+      quickDispatchCaptureTarget: (rect: CaptureRect | null) => void
+      onQuickDispatchCaptureLanded: (callback: () => void) => () => void
       onQuickDispatchReset: (callback: () => void) => () => void
       setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
       importPackagesDrain: () => Promise<ClassifiedImportPackage[]>

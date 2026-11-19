@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockWhere = vi.fn()
 const mockSync = vi.fn()
+const mockCompleteConnection = vi.fn()
+const mockCompleteAccount = vi.fn()
 
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -26,11 +28,17 @@ vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
     get: (slug: string) => ({
       container: { syncConnectionEnvironment: (kind: string) => mockSync(slug, kind) },
+      inputs: {
+        mcpReauth: { completeConnection: (mcpId: string) => mockCompleteConnection(slug, mcpId) },
+        accountReauth: { completeAccount: (accountId: string) => mockCompleteAccount(slug, accountId) },
+      },
     }),
   },
 }))
 
 import {
+  resumeAccountReauthWaits,
+  resumeMcpReauthWaits,
   syncAgentsAssignedConnectedAccount,
   syncAgentsAssignedRemoteMcp,
   syncRemoteMcpAgents,
@@ -77,5 +85,25 @@ describe('connection sync fan-out', () => {
       ['x', 'remote-mcps'],
       ['y', 'remote-mcps'],
     ])
+  })
+})
+
+// Which agents are resumed is tested over a real database (connection-sync-service.resume.test.ts).
+describe('resuming the calls parked on a reconnected connection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('never fails the reconnect it follows: a failed lookup or resume is logged, and the calls time out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockWhere.mockRejectedValueOnce(new Error('db down'))
+    await expect(resumeMcpReauthWaits('mcp-1')).resolves.toBeUndefined()
+
+    mockWhere.mockResolvedValue([{ agentSlug: 'a' }])
+    mockCompleteAccount.mockRejectedValueOnce(new Error('actor gone'))
+    await expect(resumeAccountReauthWaits('acct-1')).resolves.toBeUndefined()
+
+    expect(warn).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
   })
 })

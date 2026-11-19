@@ -6,10 +6,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // queued instead and replayed by the renderer on mount. These tests exercise
 // that queueing through the real menu click handlers.
 
-const { fetchAgentsWithStatus } = vi.hoisted(() => ({
-  fetchAgentsWithStatus: vi.fn(),
+// The menu is drawn from the shared agent list; here the list is whatever the
+// test says, handed over when the menu subscribes.
+const { agentList } = vi.hoisted(() => ({
+  agentList: { value: [] as Array<{ slug: string; name: string; activityStatus: string }> },
 }))
-vi.mock('./agent-status', () => ({ fetchAgentsWithStatus }))
+vi.mock('./agent-status-source', () => ({
+  agentStatusSource: {
+    subscribe: (listener: (agents: typeof agentList.value) => void) => {
+      listener(agentList.value)
+      return () => {}
+    },
+  },
+}))
 
 const { buildFromTemplate, setApplicationMenu, appEmit } = vi.hoisted(() => ({
   buildFromTemplate: vi.fn((template: unknown) => ({ template })),
@@ -23,7 +32,7 @@ vi.mock('electron', () => ({
   nativeImage: { createFromPath: vi.fn(() => ({})) },
 }))
 
-import { createAppMenu, destroyAppMenu, flushPendingMenuCommands } from './app-menu'
+import { createAppMenu, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand, updateAppMenuWindow } from './app-menu'
 
 interface TemplateItem {
   label?: string
@@ -42,11 +51,11 @@ function findItem(items: TemplateItem[], label: string): TemplateItem | undefine
   return undefined
 }
 
-// createAppMenu kicks off the async buildAppMenu (fire-and-forget); wait for it
-// to finish, then return the captured menu template.
+// createAppMenu builds the menu when the agent list is handed over; return the
+// captured menu template.
 async function buildMenuWithNoWindow(): Promise<TemplateItem[]> {
-  createAppMenu(null, () => 'http://localhost:0')
-  await vi.waitFor(() => expect(setApplicationMenu).toHaveBeenCalled())
+  createAppMenu(null)
+  expect(setApplicationMenu).toHaveBeenCalled()
   const lastCall = buildFromTemplate.mock.calls.at(-1)
   return (lastCall?.[0] ?? []) as TemplateItem[]
 }
@@ -60,7 +69,7 @@ describe('SUP-264: menu commands queue while the window is closed', () => {
     buildFromTemplate.mockClear()
     setApplicationMenu.mockClear()
     appEmit.mockClear()
-    fetchAgentsWithStatus.mockReset()
+    agentList.value = []
     flushPendingMenuCommands() // drain any leftover from a prior test
   })
 
@@ -71,7 +80,7 @@ describe('SUP-264: menu commands queue while the window is closed', () => {
   })
 
   it('queues open-settings and recreates the window instead of sending live', async () => {
-    fetchAgentsWithStatus.mockResolvedValue([])
+    agentList.value = []
     const template = await buildMenuWithNoWindow()
 
     findItem(template, 'Settings...')!.click!()
@@ -83,9 +92,9 @@ describe('SUP-264: menu commands queue while the window is closed', () => {
   })
 
   it('queues navigate-to-agent with the clicked agent slug', async () => {
-    fetchAgentsWithStatus.mockResolvedValue([
+    agentList.value = [
       { slug: 'alpha', name: 'Alpha', activityStatus: 'idle' },
-    ])
+    ]
     const template = await buildMenuWithNoWindow()
 
     findItem(template, 'Alpha')!.click!()
@@ -96,10 +105,10 @@ describe('SUP-264: menu commands queue while the window is closed', () => {
   })
 
   it('keeps only the latest command per channel (no duplicate dialogs/agents)', async () => {
-    fetchAgentsWithStatus.mockResolvedValue([
+    agentList.value = [
       { slug: 'alpha', name: 'Alpha', activityStatus: 'idle' },
       { slug: 'beta', name: 'Beta', activityStatus: 'idle' },
-    ])
+    ]
     const template = await buildMenuWithNoWindow()
 
     findItem(template, 'New Agent')!.click!()
@@ -111,5 +120,49 @@ describe('SUP-264: menu commands queue while the window is closed', () => {
       { channel: 'open-create-agent' },
       { channel: 'navigate-to-agent', agentSlug: 'beta' },
     ])
+  })
+})
+
+describe('sendMenuCommand', () => {
+  beforeEach(() => {
+    appEmit.mockClear()
+    flushPendingMenuCommands()
+  })
+
+  afterEach(() => {
+    destroyAppMenu()
+  })
+
+  it('queues a target switch and a session navigation while the window is closed', () => {
+    updateAppMenuWindow(null)
+    sendMenuCommand({ channel: 'switch-target', target: 'cloud' })
+    sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: 'alpha', sessionId: 's1' })
+
+    expect(appEmit).toHaveBeenCalledWith('activate')
+    expect(flushPendingMenuCommands()).toEqual([
+      { channel: 'switch-target', target: 'cloud' },
+      { channel: 'navigate-to-agent', agentSlug: 'alpha', sessionId: 's1' },
+    ])
+  })
+
+  it('queues while the window is still loading, and sends live once it has loaded', () => {
+    const send = vi.fn()
+    let loading = true
+    const win = {
+      isDestroyed: () => false,
+      show: vi.fn(),
+      focus: vi.fn(),
+      webContents: { isLoading: () => loading, send },
+    }
+    updateAppMenuWindow(win as unknown as Parameters<typeof updateAppMenuWindow>[0])
+
+    sendMenuCommand({ channel: 'switch-target', target: 'local' })
+    expect(send).not.toHaveBeenCalled()
+    expect(flushPendingMenuCommands()).toEqual([{ channel: 'switch-target', target: 'local' }])
+
+    loading = false
+    sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: 'alpha', sessionId: null })
+    expect(send).toHaveBeenCalledWith('navigate-to-agent', 'alpha', null)
+    expect(flushPendingMenuCommands()).toEqual([])
   })
 })

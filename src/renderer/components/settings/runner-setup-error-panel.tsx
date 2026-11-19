@@ -48,7 +48,7 @@ export function RunnerSetupErrorPanel({ error, className }: RunnerSetupErrorPane
   }
 
   return (
-    <div className={`rounded-lg border border-destructive/30 bg-destructive/5 p-4 ${className ?? ''}`}>
+    <div className={`rounded-card border border-destructive/30 bg-destructive/5 p-4 ${className ?? ''}`}>
       <div className="flex items-start gap-3">
         <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0 space-y-3">
@@ -64,7 +64,7 @@ export function RunnerSetupErrorPanel({ error, className }: RunnerSetupErrorPane
                   <span>{step.label}</span>
                   {step.command && (
                     <div className="mt-1 ml-4 flex items-center gap-2">
-                      <code className="flex-1 rounded bg-muted px-2 py-1 text-xs font-mono break-all">
+                      <code className="flex-1 rounded-item bg-muted px-2 py-1 text-xs font-mono break-all">
                         {step.command}
                       </code>
                       {step.elevated && (
@@ -101,7 +101,7 @@ export function RunnerSetupErrorPanel({ error, className }: RunnerSetupErrorPane
           {payload.originalStderr && (
             <details className="text-xs text-muted-foreground">
               <summary className="cursor-pointer select-none">Technical details</summary>
-              <pre className="mt-2 whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-[11px]">
+              <pre className="mt-2 whitespace-pre-wrap break-words rounded-card bg-muted p-2 font-mono text-[11px]">
                 {payload.originalStderr}
               </pre>
             </details>

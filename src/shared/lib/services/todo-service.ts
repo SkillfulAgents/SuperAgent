@@ -69,6 +69,7 @@ export async function createTodo(userId: string, input: CreateTodoInput): Promis
     updatedAt: now,
     startedAt: null,
     completedAt: null,
+    attachments: '[]',
   }
   await db.insert(todos).values(row).run()
   return row
@@ -103,6 +104,7 @@ export async function addSessionTodo(userId: string, input: AddSessionTodoInput)
     updatedAt: now,
     startedAt: now,
     completedAt: null,
+    attachments: '[]',
   }
   const onBoard = and(eq(todos.userId, userId), eq(todos.agentSlug, input.agentSlug), eq(todos.sessionId, input.sessionId))
   const result = await insertWhere(todos, row, notExists(db.select({ id: todos.id }).from(todos).where(onBoard))).run()
@@ -124,9 +126,11 @@ async function reread(userId: string, id: string): Promise<TodoWriteResult> {
 
 /**
  * Edits a draft. Once started, the brief is what the agent was sent and
- * stays as it was; while starting, it is being sent.
+ * stays as it was; while starting, it is being sent. Attachments live in the
+ * agent's workspace, so the agent changes only while there are none. A new
+ * list applies only over the stored one it was checked against.
  */
-export async function updateDraft(userId: string, id: string, patch: UpdateTodoInput): Promise<TodoWriteResult> {
+export async function updateDraft(userId: string, id: string, patch: UpdateTodoInput, checkedAttachments?: string): Promise<TodoWriteResult> {
   const now = new Date()
   const result = await db
     .update(todos)
@@ -141,9 +145,21 @@ export async function updateDraft(userId: string, id: string, patch: UpdateTodoI
       ...(patch.llmProviderId !== undefined ? { llmProviderId: patch.llmProviderId } : {}),
       ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
       ...(patch.speed !== undefined ? { speed: patch.speed } : {}),
+      ...(patch.attachments !== undefined ? { attachments: JSON.stringify(patch.attachments) } : {}),
       updatedAt: now,
     })
-    .where(and(eq(todos.id, id), eq(todos.userId, userId), eq(todos.status, 'draft'), unclaimed(now)))
+    .where(and(
+      eq(todos.id, id),
+      eq(todos.userId, userId),
+      eq(todos.status, 'draft'),
+      unclaimed(now),
+      ...(checkedAttachments !== undefined ? [eq(todos.attachments, checkedAttachments)] : []),
+      ...(patch.newAgent
+        ? [eq(todos.attachments, '[]')]
+        : patch.agentSlug !== undefined
+          ? [or(eq(todos.attachments, '[]'), patch.agentSlug ? eq(todos.agentSlug, patch.agentSlug) : isNull(todos.agentSlug))]
+          : []),
+    ))
     .run()
   return changesOf(result) > 0 ? reread(userId, id) : failure(userId, id)
 }
@@ -302,11 +318,12 @@ export async function unlinkTodosFromSessions(agentSlug: string, sessionIds: str
 
 /**
  * The statements for a deleted agent: its sessions go (as above), then every
- * item loses the agent, so a draft waits to be given to someone else.
+ * item loses the agent and the attachments that lived in its workspace, so a
+ * draft waits to be given to someone else.
  */
 export function unlinkAgentStatements(agentSlug: string) {
   return [
     ...unlinkSessionStatements(agentSlug),
-    db.update(todos).set({ agentSlug: null, updatedAt: new Date() }).where(eq(todos.agentSlug, agentSlug)),
+    db.update(todos).set({ agentSlug: null, attachments: '[]', updatedAt: new Date() }).where(eq(todos.agentSlug, agentSlug)),
   ] as const
 }

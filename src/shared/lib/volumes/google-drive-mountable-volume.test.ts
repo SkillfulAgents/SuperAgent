@@ -80,6 +80,11 @@ beforeEach(() => {
 })
 
 describe('Google Drive filesystem', () => {
+  it('tells the agent that saving a converted copy rewrites the Google file', () => {
+    expect(volume().agentNote).toBe('Google Drive drives show Google Docs, Sheets and Slides as .md, .xlsx and .pptx copies. ' +
+      'Saving one updates the original Google file, and saving a Doc drops its fonts, colors and alignment.')
+  })
+
   it('deletes what the folder holds now: never a cached name renamed in Drive since, and finds the new name', async () => {
     serve({ folders: { root1: [blob('n', 'notes.txt')] } })
     await volume().stat('notes.txt')
@@ -515,5 +520,24 @@ describe('Google Drive filesystem', () => {
     expect(await prepareGoogleDriveVolume({ ...config, folderId: 'shared1' }, { userId: 'alice' })).toMatchObject({ name: 'Gamut', config: { folderName: 'Gamut', driveName: 'Gamut' } })
     serve({ root: folder('root1', 'Team', { trashed: true }) })
     await expect(prepareGoogleDriveVolume(config, { userId: 'alice' })).rejects.toMatchObject({ code: 'not-a-directory' })
+  })
+})
+
+describe('Google Drive setup folder creation', () => {
+  it('makes the folder inside the one the picker is in and answers with what Drive made', async () => {
+    serve({ folders: { parent1: [folder('x', 'Existing')] }, root: folder('parent1', 'Parent') })
+    await expect(GoogleDriveMountableVolume.createFolder({ accountId: 'account', folderId: 'parent1', name: ' Scratch ' }, { userId: 'alice' }))
+      .resolves.toEqual({ folder: { id: 'made', name: 'Scratch' } })
+    const post = request.mock.calls.find(([, req]) => req.method === 'POST')?.[1]
+    expect(post?.json).toEqual({ name: 'Scratch', mimeType: FOLDER, parents: ['parent1'] })
+    expect(requireAccount).toHaveBeenCalledWith('account', { userId: 'alice' })
+  })
+
+  it('refuses a name already in the folder, saying which, and a name with a slash, without writing', async () => {
+    serve({ folders: { parent1: [folder('x', 'Existing')] }, root: folder('parent1', 'Parent') })
+    await expect(GoogleDriveMountableVolume.createFolder({ accountId: 'account', folderId: 'parent1', name: 'Existing' }, { userId: 'alice' }))
+      .rejects.toMatchObject({ status: 409, message: '“Existing” is already used here.' })
+    await expect(GoogleDriveMountableVolume.createFolder({ accountId: 'account', folderId: 'parent1', name: 'a/b' }, { userId: 'alice' })).rejects.toMatchObject({ name: 'ZodError' })
+    expect(calls().filter(call => call.startsWith('POST'))).toEqual([])
   })
 })

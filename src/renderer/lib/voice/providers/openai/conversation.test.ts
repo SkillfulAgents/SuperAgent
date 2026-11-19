@@ -48,3 +48,16 @@ describe('Live audio ownership', () => {
     expect(mocks.release).toHaveBeenCalledOnce()
   })
 })
+
+describe('Live speech', () => {
+  it('passes each piece of the conversation speech on until the conversation closes', () => {
+    const onSpeech = vi.fn()
+    const adapter = new OpenAILiveConversationAdapter({ sessionId: 'session', agentSlug: 'agent', history: [] }, { onCommand: vi.fn(), onSnapshot: vi.fn(), onError: vi.fn(), onSpeech })
+    const live = mocks.callbacks as unknown as { onSpeech(piece: { role: 'user' | 'assistant'; text: string }): void }
+    live.onSpeech({ role: 'user', text: 'We ship' })
+    live.onSpeech({ role: 'assistant', text: 'Noted.' })
+    adapter.close()
+    live.onSpeech({ role: 'user', text: 'Too late' })
+    expect(onSpeech.mock.calls).toEqual([[{ role: 'user', text: 'We ship' }], [{ role: 'assistant', text: 'Noted.' }]])
+  })
+})

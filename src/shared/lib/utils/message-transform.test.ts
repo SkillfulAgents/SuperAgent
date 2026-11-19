@@ -1083,6 +1083,118 @@ describe('transformMessages', () => {
     })
   })
 
+  describe('TaskCreate saved description', () => {
+    const taskCreateEntries = (toolUseResult: unknown): JsonlMessageEntry[] => [
+      createAssistantMessage('uuid-1', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'TaskCreate', input: { subject: 'Draft the plan', description: 'as sent' } },
+      ]),
+      createUserMessage(
+        'uuid-2',
+        [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Task #1 created successfully: Draft the plan' }],
+        '2026-01-24T10:00:02.000Z',
+        { toolUseResult: toolUseResult as JsonlMessageEntry['toolUseResult'] }
+      ),
+    ]
+
+    it('carries the description the CLI saved (CLI 2.1.317+)', () => {
+      const toolCall = asMessage(transformMessages(taskCreateEntries({ task: { id: '1', subject: 'Draft the plan', description: 'as saved' } }))[0]).toolCalls[0]
+      expect(toolCall.taskDescription).toBe('as saved')
+      expect(toolCall.result).toBe('Task #1 created successfully: Draft the plan')
+    })
+
+    it('omits the field when an older CLI leaves it out of the result', () => {
+      const toolCall = asMessage(transformMessages(taskCreateEntries({ task: { id: '1', subject: 'Draft the plan' } }))[0]).toolCalls[0]
+      expect(toolCall).not.toHaveProperty('taskDescription')
+    })
+  })
+
+  describe('AskUserQuestion unanswered annotations', () => {
+    // Result shape from a live CLI 2.1.318 run answered with an annotation.
+    const askEntries = (annotations: unknown): JsonlMessageEntry[] => [
+      createAssistantMessage('uuid-1', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'AskUserQuestion', input: { questions: [{ question: 'Which color?', header: 'Color' }, { question: 'Which size?', header: 'Size' }] } },
+      ]),
+      createUserMessage(
+        'uuid-2',
+        [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'The user answered: "Which color?"="Not now". "Which size?"="Large".' }],
+        '2026-01-24T10:00:02.000Z',
+        { toolUseResult: { answers: { 'Which color?': 'Not now', 'Which size?': 'Large' }, annotations } as unknown as JsonlMessageEntry['toolUseResult'] }
+      ),
+    ]
+
+    it('names the questions that ended unanswered, and how', () => {
+      const toolCall = asMessage(transformMessages(askEntries({ 'Which color?': { unanswered: 'skipped' }, 'Which size?': { notes: 'x' } }))[0]).toolCalls[0]
+      expect(toolCall.unansweredQuestions).toEqual({ 'Which color?': 'skipped' })
+    })
+
+    it('treats an unknown unanswered value as absent, and omits the field when nothing is left', () => {
+      const toolCall = asMessage(transformMessages(askEntries({ 'Which color?': { unanswered: 'shrugged' } }))[0]).toolCalls[0]
+      expect(toolCall).not.toHaveProperty('unansweredQuestions')
+    })
+  })
+
+  describe('Monitor watches', () => {
+    // Shapes from a live CLI 2.1.303 session: the call, its result naming the
+    // watch, an event batch, then the batch that ends it.
+    const monitorEntries = (): JsonlMessageEntry[] => [
+      createAssistantMessage('uuid-1', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Monitor', input: { description: 'probe ticks', timeout_ms: 120000, command: 'for i in 1 2 3; do sleep 6; echo tick-$i; done' } },
+      ]),
+      createUserMessage(
+        'uuid-2',
+        [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Monitor started (task b8ezoj4kh, expires in 2m unless the source ends first).' }],
+        '2026-01-24T10:00:02.000Z',
+        { toolUseResult: { taskId: 'b8ezoj4kh', timeoutMs: 120000, persistent: false } as unknown as JsonlMessageEntry['toolUseResult'] }
+      ),
+      createAssistantMessage('uuid-3', 'msg-2', [{ type: 'text', text: 'armed' }], '2026-01-24T10:00:03.000Z'),
+      createUserMessage(
+        'uuid-4',
+        '<task-notification>\n<task-id>b8ezoj4kh</task-id>\n<summary>Monitor event: "probe ticks"</summary>\n<event>tick-1</event>\n</task-notification>',
+        '2026-01-24T10:00:09.000Z',
+        { origin: { kind: 'task-notification', producer: 'session-task' } }
+      ),
+      createAssistantMessage('uuid-5', 'msg-3', [{ type: 'text', text: 'tick-1' }], '2026-01-24T10:00:10.000Z'),
+      createUserMessage(
+        'uuid-6',
+        '<task-notification>\n<task-id>b8ezoj4kh</task-id>\n<tool-use-id>tool-1</tool-use-id>\n<output-file>/tmp/b8ezoj4kh.output</output-file>\n<status>completed</status>\n<summary>Monitor "probe ticks" stream ended</summary>\n<event>tick-3</event>\n</task-notification>',
+        '2026-01-24T10:00:21.000Z',
+        { origin: { kind: 'task-notification', producer: 'session-task' } }
+      ),
+    ]
+
+    it('names the watch on the Monitor call', () => {
+      const toolCall = asMessage(transformMessages(monitorEntries())[0]).toolCalls[0]
+      expect(toolCall.backgroundTaskId).toBe('b8ezoj4kh')
+      expect(toolCall.result).toMatch(/^Monitor started/)
+    })
+
+    it('shows each delivered batch in place, as a monitor_event item', () => {
+      const items = transformMessages(monitorEntries())
+      expect(items.map((item) => item.type)).toEqual(['assistant', 'assistant', 'monitor_event', 'assistant', 'monitor_event'])
+      expect(items[2]).toMatchObject({
+        id: 'uuid-4',
+        type: 'monitor_event',
+        taskId: 'b8ezoj4kh',
+        description: 'probe ticks',
+        events: ['tick-1'],
+        status: null,
+      })
+      expect(items[4]).toMatchObject({ events: ['tick-3'], status: 'completed', endReason: 'stream ended' })
+    })
+
+    it('still hides every other task notification', () => {
+      const entries = [
+        createUserMessage(
+          'uuid-1',
+          '<task-notification>\n<task-id>bg1</task-id>\n<status>completed</status>\n<summary>Background command "x" completed (exit code 0)</summary>\n</task-notification>',
+          '2026-01-24T10:00:00.000Z',
+          { origin: { kind: 'task-notification' } }
+        ),
+      ]
+      expect(transformMessages(entries)).toEqual([])
+    })
+  })
+
   describe('subagent metadata extraction', () => {
     it('extracts subagent metadata from Task tool result with agentId', () => {
       const entries: JsonlMessageEntry[] = [
@@ -1979,6 +2091,130 @@ describe('replayed duplicate entries (resume history replay)', () => {
     ])
     expect(result.filter((r) => r.type === 'compact_boundary')).toHaveLength(1)
     expect(result).toHaveLength(2)
+  })
+
+  describe('system rows written before a replayed row', () => {
+    const system = (uuid: string, subtype: 'informational' | 'memory_recall' | 'compact_boundary'): JsonlSystemEntry => ({
+      uuid,
+      type: 'system',
+      subtype,
+      content: subtype === 'informational' ? `note ${uuid}` : '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      ...(subtype === 'memory_recall' && { memory_paths: ['memory/a.md'] }),
+      ...(subtype === 'compact_boundary' && { compactMetadata: { trigger: 'auto', preTokens: 1000 } }),
+    })
+    const answer = (uuid: string) => createAssistantMessage(uuid, `msg-${uuid}`, [{ type: 'text', text: uuid }])
+    const ids = (entries: (JsonlMessageEntry | JsonlSystemEntry)[]) => transformMessages(entries).map((item) => item.id)
+
+    it('shows them before the next new message, not before the replayed row\'s original', () => {
+      // A banner written after turn 2, then a replay of turn 1's rows, then
+      // turn 3. Keyed on the replayed `q1`, it would show above turn 1.
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          createUserMessage('q2', 'two'), answer('a2'),
+          system('note', 'informational'),
+          createUserMessage('q1', 'one'), answer('a1'),
+          createUserMessage('q3', 'three'), answer('a3'),
+        ])
+      ).toEqual(['q1', 'a1', 'q2', 'a2', 'note', 'q3', 'a3'])
+    })
+
+    it('shows them after the last message when only replayed rows follow', () => {
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          createUserMessage('q2', 'two'), answer('a2'),
+          system('recall', 'memory_recall'),
+          system('note', 'informational'),
+          createUserMessage('q1', 'one'), answer('a1'),
+        ])
+      ).toEqual(['q1', 'a1', 'q2', 'a2', 'recall', 'note'])
+    })
+
+    it('keeps them when the replayed row is a later row of a merged response', () => {
+      // The response's item goes by its first row's uuid (`a1-text`), so a
+      // row keyed on the replayed `a1-tool` matched no item and was dropped.
+      const text = () => createAssistantMessage('a1-text', 'msg-1', [{ type: 'text', text: 'Working' }])
+      const tool = () => createAssistantMessage('a1-tool', 'msg-1', [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} }])
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(), tool(),
+          system('note', 'informational'),
+          tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(['q1', 'a1-text', 'note', 'q2'])
+    })
+
+    it('shows them before a response when the next new row is a later row of it', () => {
+      // `a1-tool` merges into the item that goes by `a1-text`, so a run keyed
+      // on `a1-tool` matched no item and was dropped.
+      const text = () => createAssistantMessage('a1-text', 'msg-1', [{ type: 'text', text: 'Working' }])
+      const tool = () => createAssistantMessage('a1-tool', 'msg-1', [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} }])
+      const shown = ['q1', 'note', 'a1-text', 'q2']
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(),
+          system('note', 'informational'),
+          text(), tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(shown)
+      // The same with no replayed row between the banner and `a1-tool`.
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(),
+          system('note', 'informational'),
+          tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(shown)
+    })
+
+    it('keeps the runs on either side of a replayed row apart, in file order', () => {
+      // One run would show its recalls first: `late` above `early`. A page
+      // window that holds the replayed row without its original shows it as a
+      // message between the two, so the whole transcript reads the same way.
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          system('early', 'informational'),
+          createUserMessage('q1', 'one'),
+          system('late', 'memory_recall'),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(['q1', 'a1', 'early', 'late', 'q2'])
+    })
+
+    it('shows a boundary on each side of a replayed row', () => {
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          system('first', 'compact_boundary'),
+          createUserMessage('q2', 'two'),
+          system('second', 'compact_boundary'),
+          createUserMessage('q2', 'two'),
+          createUserMessage('q3', 'three'),
+        ])
+      ).toEqual(['q1', 'a1', 'first', 'q2', 'second', 'q3'])
+    })
+
+    it('leaves a run with no replayed row after it as it was', () => {
+      expect(
+        ids([
+          createUserMessage('q1', 'one'),
+          system('note', 'informational'),
+          system('older', 'compact_boundary'),
+          system('newer', 'compact_boundary'),
+          system('recall', 'memory_recall'),
+          answer('a1'),
+          system('end-1', 'compact_boundary'),
+          system('end-2', 'compact_boundary'),
+        ])
+      ).toEqual(['q1', 'recall', 'newer', 'note', 'a1', 'end-1', 'end-2'])
+    })
   })
 })
 

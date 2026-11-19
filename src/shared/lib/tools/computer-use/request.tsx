@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Monitor, ShieldAlert, ExternalLink, ChevronDown } from 'lucide-react'
+import { Monitor, ShieldAlert, ExternalLink } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -10,13 +10,20 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@renderer/components/ui/dialog'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { PERMISSION_LEVEL_LABELS } from '@shared/lib/computer-use/types'
-import { DeclineButton } from '../requests/decline-button'
+import { SYSTEM_TARGETS } from '@shared/lib/computer-use/commands'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
+import { ApprovalActions } from '../requests/approval-actions'
+
+/** How the prompt names a target that is not an app. */
+const SYSTEM_TARGET_PHRASES: Record<string, string> = {
+  [SYSTEM_TARGETS.clipboard]: 'the clipboard',
+  [SYSTEM_TARGETS.screen]: 'the entire screen',
+  [SYSTEM_TARGETS.notifications]: 'your notifications',
+}
 
 interface ComputerUseRequestItemProps {
   toolUseId: string
@@ -32,16 +39,34 @@ interface ComputerUseRequestItemProps {
 
 type RequestStatus = 'pending' | 'submitting' | 'executed' | 'denied'
 
+/** What an approval grants: this call alone, what the call needs, or every app. */
+interface Approval {
+  grantType: 'once' | 'timed' | 'always'
+  /** Grant every app (`use_any_application`) instead of what this call needs. */
+  anyApp?: boolean
+}
+
+const ANY_APP_HINT = 'any app, the clipboard and the screen, but not shell scripts'
+
 const PERMISSION_LABELS: Record<string, string> = PERMISSION_LEVEL_LABELS
 
-function formatParams(params: Record<string, unknown>): string {
+/** An argument as a shell would need it written: quoted when it holds spaces or quotes. */
+function shellWord(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+/** The command as the user would type it: `agent-desktop click @s1:e5`. */
+function formatCommand(method: string, params: Record<string, unknown>): string {
+  if (Array.isArray(params.argv)) {
+    return ['agent-desktop', method, ...params.argv.map((word) => shellWord(String(word)))].join(' ')
+  }
   const parts: string[] = []
   for (const [key, val] of Object.entries(params)) {
     if (val !== undefined && val !== null && val !== '') {
       parts.push(`${key}: ${typeof val === 'string' ? val : JSON.stringify(val)}`)
     }
   }
-  return parts.join(', ')
+  return `${method}(${parts.join(', ')})`
 }
 
 export function ComputerUseRequestItem({
@@ -58,11 +83,11 @@ export function ComputerUseRequestItem({
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [missingPermissions, setMissingPermissions] = useState<{ accessibility: boolean; screen_recording: boolean } | null>(null)
-  const [pendingGrantType, setPendingGrantType] = useState<'once' | 'timed' | 'always' | null>(null)
-  const [allowMenuOpen, setAllowMenuOpen] = useState(false)
-  const paramStr = formatParams(params)
+  const [pendingApproval, setPendingApproval] = useState<Approval | null>(null)
+  const commandText = formatCommand(method, params)
 
-  const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
+  const handleApprove = async (approval: Approval) => {
+    const { grantType, anyApp } = approval
     setStatus('submitting')
     setError(null)
 
@@ -72,7 +97,7 @@ export function ComputerUseRequestItem({
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toolUseId, method, params, permissionLevel, appName, grantType }),
+          body: JSON.stringify({ toolUseId, method, params, permissionLevel, appName, grantType, ...(anyApp && { grantAnyApp: true }) }),
         }
       )
 
@@ -80,7 +105,7 @@ export function ComputerUseRequestItem({
 
       if (data.missingPermissions) {
         setMissingPermissions(data.missingPermissions)
-        setPendingGrantType(grantType)
+        setPendingApproval(approval)
         setStatus('pending')
         return
       }
@@ -119,8 +144,8 @@ export function ComputerUseRequestItem({
 
   const retryAfterPermissions = () => {
     setMissingPermissions(null)
-    if (pendingGrantType) {
-      handleApprove(pendingGrantType)
+    if (pendingApproval) {
+      handleApprove(pendingApproval)
     }
   }
 
@@ -157,19 +182,43 @@ export function ComputerUseRequestItem({
 
   const isCompleted = status === 'executed' || status === 'denied'
 
-  const descriptionText = appName
-    ? `Allow the agent to use ${appName}?`
-    : `Allow the agent to ${PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')}?`
+  const levelText = PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')
+  // Only a use_application grant is limited to one app.
+  const appPhrase = appName ? SYSTEM_TARGET_PHRASES[appName] ?? appName : undefined
+  const grantScope = permissionLevel === 'use_application' && appPhrase ? `use ${appPhrase}` : levelText
+  // The app this call acts in could not be told (a click at a screen point
+  // with several windows behind it, say). No grant for one app can cover it,
+  // so the card offers this call alone or every app.
+  const unplaced = permissionLevel === 'use_application' && !appName
+  const descriptionText = appPhrase
+    ? `Allow this agent to use ${appPhrase}?`
+    : unplaced
+      ? 'Allow this agent to act on your computer?'
+      : `Allow this agent to ${levelText}?`
+  const anyAppOptions = [
+    {
+      label: 'Any app for 15 min',
+      hint: `For 15 minutes this agent can use ${ANY_APP_HINT}, without asking`,
+      onSelect: () => handleApprove({ grantType: 'timed', anyApp: true }),
+      testId: 'computer-use-any-app-timed-option',
+    },
+    {
+      label: 'Always allow any app',
+      hint: `This agent can always use ${ANY_APP_HINT}, without asking`,
+      onSelect: () => handleApprove({ grantType: 'always', anyApp: true }),
+      testId: 'computer-use-any-app-always-option',
+    },
+  ]
 
   const codeBlock = (
     <div className="pt-4">
-      <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
+      <div className="overflow-hidden rounded-card border border-border bg-white dark:bg-background">
         <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 text-xs font-mono text-foreground/75">
           <code>
-            <span className="mr-2 inline-flex h-6 items-center rounded-md bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
+            <span className="mr-2 inline-flex h-6 items-center rounded-control bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
               {PERMISSION_LABELS[permissionLevel] || permissionLevel}
             </span>
-            {method}{paramStr ? `(${paramStr})` : '()'}
+            {commandText}
           </code>
         </pre>
       </div>
@@ -179,7 +228,9 @@ export function ComputerUseRequestItem({
   return (
     <RequestItemShell
       title={descriptionText}
-      subtitle="Review carefully before allowing. This will control your actual computer with your user permissions."
+      subtitle={unplaced
+        ? 'The app this acts in could not be determined, so it cannot be allowed for one app. Review carefully: this will control your actual computer with your user permissions.'
+        : 'Review carefully before allowing. This will control your actual computer with your user permissions.'}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -213,64 +264,28 @@ export function ComputerUseRequestItem({
       {codeBlock}
 
       <RequestItemActions>
-        <DeclineButton
-          onDecline={handleDeny}
+        <ApprovalActions
+          testIdPrefix="computer-use"
           disabled={status === 'submitting'}
-          label="Deny"
-          showIcon={false}
-          className="border-border text-foreground hover:bg-muted"
-          data-testid="computer-use-deny-btn"
+          onDeny={handleDeny}
+          allowLabel={unplaced ? 'Allow Once' : 'Allow 15 min'}
+          onAllow={() => handleApprove({ grantType: unplaced ? 'once' : 'timed' })}
+          expanded={unplaced
+            ? { label: 'Allow Any App', options: anyAppOptions }
+            : {
+                label: 'Always Allow',
+                options: [
+                  {
+                    label: `Always allow: ${grantScope}`,
+                    hint: `This agent can always ${grantScope} without asking`,
+                    onSelect: () => handleApprove({ grantType: 'always' }),
+                    testId: 'computer-use-always-allow-option',
+                  },
+                  // The any-app grant never covers a shell script.
+                  ...(permissionLevel === 'use_host_shell' ? [] : anyAppOptions),
+                ],
+              }}
         />
-
-        <div className="flex items-stretch">
-          <Button
-            onClick={() => handleApprove('timed')}
-            loading={status === 'submitting'}
-            size="xs"
-            className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
-            data-testid="computer-use-allow-timed-btn"
-          >
-            Allow 15 min
-          </Button>
-          <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                disabled={status === 'submitting'}
-                size="xs"
-                className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
-                data-testid="computer-use-allow-timed-btn-chevron"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-44 p-1">
-              <Button
-                onClick={() => {
-                  setAllowMenuOpen(false)
-                  handleApprove('once')
-                }}
-                variant="ghost"
-                size="xs"
-                className="w-full justify-start text-foreground hover:bg-muted"
-                data-testid="computer-use-allow-once-btn"
-              >
-                Allow Once
-              </Button>
-              <Button
-                onClick={() => {
-                  setAllowMenuOpen(false)
-                  handleApprove('always')
-                }}
-                variant="ghost"
-                size="xs"
-                className="w-full justify-start text-foreground hover:bg-muted"
-                data-testid="computer-use-allow-always-btn"
-              >
-                Always Allow
-              </Button>
-            </PopoverContent>
-          </Popover>
-        </div>
       </RequestItemActions>
 
       <Dialog open={!!missingPermissions} onOpenChange={(open) => { if (!open) setMissingPermissions(null) }}>
@@ -288,7 +303,7 @@ export function ComputerUseRequestItem({
 
           <div className="space-y-3 py-2">
             {missingPermissions && !missingPermissions.accessibility && (
-              <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="flex items-center justify-between rounded-card border p-3">
                 <div>
                   <p className="font-medium text-sm">Accessibility</p>
                   <p className="text-xs text-muted-foreground">Required to interact with UI elements</p>
@@ -302,7 +317,7 @@ export function ComputerUseRequestItem({
               </div>
             )}
             {missingPermissions && !missingPermissions.screen_recording && (
-              <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="flex items-center justify-between rounded-card border p-3">
                 <div>
                   <p className="font-medium text-sm">Screen Recording</p>
                   <p className="text-xs text-muted-foreground">Required to capture screen content</p>

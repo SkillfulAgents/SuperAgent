@@ -2,6 +2,8 @@ import { powerSaveBlocker, dialog } from 'electron'
 import { exec, execFile, execFileSync } from 'child_process'
 import fs from 'fs'
 import { runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
+import { runsInAppSandbox } from '@shared/lib/facts/capabilities'
+import { desktopClientFacts } from './facts'
 
 let powerSaveBlockerId: number | null = null
 let disableSleepActive = false
@@ -10,6 +12,16 @@ let operationInProgress: Promise<void> | null = null
 const SUDOERS_PATH = '/etc/sudoers.d/superagent-pmset'
 const SUDOERS_RULE =
   '%admin ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1'
+
+/**
+ * Whether Keep Awake also stops a Mac sleeping with its lid closed: `pmset`
+ * under sudo, which the App Sandbox can't run. Settings offers Keep Awake only
+ * where this holds (`keepsMacAwake()`), so elsewhere only the power-save blocker
+ * is left.
+ */
+function controlsSystemSleep(): boolean {
+  return process.platform === 'darwin' && !runsInAppSandbox(desktopClientFacts())
+}
 
 function hasSudoersRule(): boolean {
   try {
@@ -66,7 +78,7 @@ async function doEnable(): Promise<void> {
     powerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension')
   }
 
-  if (process.platform === 'darwin') {
+  if (controlsSystemSleep()) {
     try {
       await runPmset('1')
       disableSleepActive = true
@@ -86,7 +98,7 @@ async function doDisable(): Promise<void> {
     powerSaveBlockerId = null
   }
 
-  if (process.platform === 'darwin' && disableSleepActive) {
+  if (controlsSystemSleep() && disableSleepActive) {
     await runPmset('0')
     disableSleepActive = false
   }
@@ -112,7 +124,7 @@ export function cleanupKeepAwake(): void {
     powerSaveBlockerId = null
   }
 
-  if (disableSleepActive && process.platform === 'darwin' && hasSudoersRule()) {
+  if (disableSleepActive && controlsSystemSleep() && hasSudoersRule()) {
     try {
       execFileSync('sudo', ['/usr/bin/pmset', '-a', 'disablesleep', '0'], { timeout: 5000 })
     } catch {
@@ -123,7 +135,7 @@ export function cleanupKeepAwake(): void {
 }
 
 export async function restoreKeepAwakeOnStartup(enabled: boolean): Promise<void> {
-  if (process.platform !== 'darwin') return
+  if (!controlsSystemSleep()) return
 
   const stale = await isDisableSleepOn()
 

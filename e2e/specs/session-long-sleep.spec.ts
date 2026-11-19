@@ -1,13 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
+import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
-
-function getCurrentAgentSlug(page: Page) {
-  const match = page.url().match(/\/agents\/([^/?#]+)/)
-  expect(match).toBeTruthy()
-  return match![1]
-}
 
 function getCurrentSessionId(page: Page) {
   const match = page.url().match(/\/sessions\/([^/?#]+)/)
@@ -96,7 +90,7 @@ test.describe('Session long sleep (schedule_resume)', () => {
 
     await gotoSession(page, agentSlug, sessionId)
 
-    // The auto-resume banner shows above the composer with the note + actions
+    // The auto-resume banner shows the user-facing summary above the composer.
     const banner = page.locator('[data-testid="pending-wake-banner"]')
     await expect(banner).toBeVisible({ timeout: 15000 })
     await expect(banner).toContainText('Auto-resumes')

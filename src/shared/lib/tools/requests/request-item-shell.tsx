@@ -15,7 +15,7 @@ export const THEME_CLASSES: Record<RequestTheme, { waitBadge: string }> = {
 
 // Pending requests sit on top of the scrolling transcript. Keep every shell
 // fully opaque so message content cannot bleed through interactive controls.
-const REQUEST_CARD_CLASS = 'border rounded-[12px] bg-card shadow-md text-sm'
+const REQUEST_CARD_CLASS = 'border rounded-dialog bg-card shadow-md text-sm'
 
 // When the title and the header controls do not fit on one line, the controls wrap above the title.
 // With the wrap reversed, items-end is the top edge, so a single line still aligns to the top.
@@ -143,7 +143,7 @@ export function RequestItemShell({
         disabled={pagination.currentIndex === 0}
         data-testid="request-stack-prev"
         className={cn(
-          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+          'inline-flex h-5 w-5 items-center justify-center rounded-control transition-colors',
           pagination.currentIndex === 0 ? 'cursor-not-allowed opacity-40' : 'hover:bg-muted'
         )}
       >
@@ -158,7 +158,7 @@ export function RequestItemShell({
         disabled={pagination.currentIndex === pagination.count - 1}
         data-testid="request-stack-next"
         className={cn(
-          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+          'inline-flex h-5 w-5 items-center justify-center rounded-control transition-colors',
           pagination.currentIndex === pagination.count - 1 ? 'cursor-not-allowed opacity-40' : 'hover:bg-muted'
         )}
       >

@@ -8,6 +8,8 @@ import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-ru
  * Mounted at /api/agent-integrations with /api/chat-integrations as a legacy alias.
  */
 
+import { html } from 'hono/html'
+import { randomUUID } from 'node:crypto'
 import { Hono, type MiddlewareHandler, type Context } from 'hono'
 import { z } from 'zod'
 import {
@@ -27,19 +29,22 @@ import {
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
-import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
+import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, getAgentIntegrationSessionBySessionId, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
-import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
+import { assertIntegrationAvailable, decodeIcon, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
+import { completeAgentAppInstall, findProvisioner, provisionedAppOf, startAgentAppInstall, updateAgentApp } from '@shared/lib/team-directory/provisioning'
 import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { IntegrationPolicyError } from '@shared/lib/agent-integrations/errors'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { SPEED_LEVELS } from '@shared/lib/container/types'
 
 const SENTRY_TAGS = { component: 'agent-integration' } as const
@@ -52,10 +57,15 @@ const agentIntegrationsRouter = new Hono()
 async function completeAuthorization(c: Context) {
   c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer')
   try {
-    const callback = getIntegrationSetup(c.req.param('provider') ?? '').callback
+    const provider = c.req.param('provider') ?? ''
+    const callback = getIntegrationSetup(provider).callback
     const state = c.req.query('state')
-    if (!callback || !state) return c.html('<h1>Authorization unavailable</h1><p>Return to Gamut to try again.</p>', 400)
-    const result = await callback({ state, code: c.req.query('code'), error: c.req.query('error') })
+    if (!state) return c.html('<h1>Authorization unavailable</h1><p>Return to Gamut to try again.</p>', 400)
+    // An app a team directory created is installed by the host, for any provider.
+    const result = await completeAgentAppInstall(provider, { state, code: c.req.query('code'), error: c.req.query('error') })
+      ?? (callback ? await callback({ state, code: c.req.query('code'), error: c.req.query('error'), parameters: c.req.query() }) : null)
+    if (!result) return c.html('<h1>Authorization expired</h1><p>Return to Gamut to try again.</p>', 400)
+    if (result.redirectUrl) return c.redirect(result.redirectUrl)
     if (result.cancelled || !result.integrationId) return c.html('<h1>Authorization cancelled</h1><p>Return to Gamut to try again.</p>', 400)
     const installed = await getAgentIntegration(result.integrationId)
     if (installed?.provider !== c.req.param('provider')) throw new Error('Authorization belongs to another provider')
@@ -70,6 +80,26 @@ async function completeAuthorization(c: Context) {
     return c.html('<h1>Could not authorize account</h1><p>Return to Gamut and check the app credentials, workspace and permissions.</p>', 400)
   }
 }
+agentIntegrationsRouter.get('/providers/:provider/launch', async c => {
+  c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer')
+  try {
+    await assertIntegrationAvailable(c.req.param('provider'))
+    const launch = getIntegrationSetup(c.req.param('provider')).launch
+    const state = c.req.query('state')
+    if (!launch || !state) return c.html('<p>Return to Gamut to start setup.</p>', 400)
+    const form = await launch(state)
+    const target = new URL(form.url)
+    if (target.protocol !== 'https:') throw new Error('Provider setup requires HTTPS')
+    const nonce = randomUUID()
+    c.header('Content-Security-Policy', `default-src 'none'; form-action ${target.origin}; script-src 'nonce-${nonce}'; frame-ancestors 'none'; base-uri 'none'`)
+    return c.html(html`<!doctype html><html><head><title>Connect integration</title></head><body>
+      <form method="post" action="${form.url}">${Object.entries(form.fields).map(([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`)}<button type="submit">Continue to provider</button></form>
+      <script nonce="${nonce}">document.forms[0].submit()</script></body></html>`)
+  } catch (error) {
+    if (!setupError(error)) captureException(error, { tags: { component: 'agent-integration', operation: 'setup-launch' } })
+    return c.html('<p>Setup expired or is unavailable. Return to Gamut to try again.</p>', 400)
+  }
+})
 agentIntegrationsRouter.get('/providers/:provider/callback', completeAuthorization)
 // Existing installed apps may retain this shorter callback URL.
 agentIntegrationsRouter.get('/:provider/callback', async (c, next) => {
@@ -79,7 +109,22 @@ agentIntegrationsRouter.get('/:provider/callback', async (c, next) => {
   return completeAuthorization(c)
 })
 agentIntegrationsRouter.use('*', Authenticated())
+agentIntegrationsRouter.get('/providers', async c => {
+  c.header('Cache-Control', 'no-store')
+  return c.json(await agentIntegrationRegistry.listAvailableDefinitions())
+})
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
+
+// GET /api/agent-integrations/agents/:id/sessions/:sessionId - Which integration (if any) owns an agent session
+agentIntegrationsRouter.get('/agents/:id/sessions/:sessionId', ResolveAgent(), AgentRead(), async (c) => {
+  try {
+    const mapping = await getAgentIntegrationSessionBySessionId(getAgentId(c), c.req.param('sessionId'))
+    return c.json({ integrationId: mapping?.integrationId ?? null })
+  } catch (error) {
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'session-integration' }, extra: { sessionId: c.req.param('sessionId') } })
+    return c.json({ error: 'Failed to resolve session integration' }, 500)
+  }
+})
 
 const IntegrationAgentRole = EntityAgentRole({
   paramName: 'integrationId',
@@ -148,11 +193,14 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
   c.header('Cache-Control', 'no-store')
   try {
     const provider = c.req.param('provider')
+    await assertIntegrationAvailable(provider)
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
-    const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
+    const context = await integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
     const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
-    return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
+    // A connected team directory that can create this provider's apps; they receive through webhooks.
+    const provisioning = transports.includes('relay') ? await findProvisioner(provider) : null
+    return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports, ...(provisioning ? { provisioning } : {}) }))
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
@@ -180,9 +228,8 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
-
     await assertConnectionSelectionAccess(llmProviderId)
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
     // Get the authenticated user ID if available
     const user = c.get('user' as never) as { id: string } | undefined
@@ -197,7 +244,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
         config: prepared.config,
         status: prepared.status,
         showToolCalls: showToolCalls ?? false,
-        sessionTimeout: sessionTimeout ?? null,
+        sessionTimeout,
         ...parsedRuntime.data,
         model: parsedRuntime.data.model ?? null,
         effort: parsedRuntime.data.effort ?? null,
@@ -239,7 +286,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error. Not awaited either — the upload has its
     // own 30s timeout and setup must not block on it.
-    void agentIntegrationManager.integrationCreated(id)
+    background(agentIntegrationManager.integrationCreated(id), { name: 'agent-integrations-route.integration-created' })
 
     const integration = await getAgentIntegration(id)
     if (!integration) throw new Error('Agent integration disappeared after creation')
@@ -259,10 +306,18 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
 agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('user'), RequireProviderManagement, async c => {
   const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
   try {
+    await assertIntegrationAvailable(row.provider)
+    const context = await integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c))
+    // An app a team directory created installs through the host, whatever the provider.
+    const provisioned = provisionedAppOf(row.config)
+    if (provisioned) {
+      if (provisioned.installed) return c.json({ error: 'This app is already installed' }, 409)
+      return c.json(await startAgentAppInstall(row, context.callbackUrl))
+    }
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())
-    const result = await authorization.run(row, input, integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
+    const result = await authorization.run(row, input, context)
     // Validation, credential lookup and attempt persistence may fail. Keep the
     // current account running until the provider has a usable authorization URL.
     await agentIntegrationManager.pauseIntegration(row.id)
@@ -272,6 +327,59 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'agent-integration', operation: 'authorize' } })
     return c.json({ error: 'Could not authorize integration' }, 500)
+  }
+})
+
+// POST /api/agent-integrations/:integrationId/app - Rename the app a team
+// directory created for this installation (name and handle) and/or give it a
+// new icon (`icon`: the agent's avatar as a square PNG, base64).
+const appUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  icon: z.string().max(4_000_000).optional(),
+}).refine((input) => input.name || input.icon, 'Give a name or an icon')
+agentIntegrationsRouter.post('/:integrationId/app', IntegrationAgentRole('user'), RequireProviderManagement, async c => {
+  const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+  try {
+    const input = appUpdateSchema.parse(await c.req.json())
+    await updateAgentApp(row.id, row.config, { ...(input.name ? { name: input.name } : {}), ...(input.icon ? { icon: decodeIcon(input.icon) } : {}) })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: row.id, action: 'updated', details: { app: { renamed: !!input.name, icon: !!input.icon } } })
+    const updated = await getAgentIntegration(row.id)
+    return c.json(updated ? toPublicAgentIntegration(updated) : { ok: true })
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { component: 'agent-integration', operation: 'update-app' } })
+    return c.json({ error: 'Could not update the app' }, 500)
+  }
+})
+
+// POST /api/agent-integrations/:integrationId/tools/:tool - Invoke an integration
+// tool on the managing person's behalf. Only tools the family exposes to
+// management are reachable; the agent's own path is the x-agent routes.
+const toolInvocationSchema = z.object({ input: z.unknown().optional() })
+agentIntegrationsRouter.post('/:integrationId/tools/:tool', IntegrationAgentRole('user'), RequireProviderManagement, async (c) => {
+  const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+  const toolName = c.req.param('tool')
+  try {
+    const parsed = toolInvocationSchema.safeParse(await c.req.json().catch(() => ({})))
+    if (!parsed.success) return c.json({ error: 'Invalid tool input' }, 400)
+    if (integration.status === 'paused') return c.json({ error: 'This integration is paused' }, 409)
+    let connector = agentIntegrationManager.getConnector(integration.id)
+    if (!connector) {
+      try { await agentIntegrationManager.addIntegration(integration.id) } catch { /* reported by the manager */ }
+      connector = agentIntegrationManager.getConnector(integration.id)
+    }
+    if (!connector) return c.json({ error: 'This integration is not connected' }, 409)
+    const tool = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === toolName)
+    if (!tool || (tool.exposure !== 'management' && tool.exposure !== 'both')) return c.json({ error: 'Unknown tool' }, 404)
+    const result = await tool.execute(parsed.data.input, { source: 'management', userId: getCurrentUserId(c) })
+    return c.json({ result: result ?? null })
+  } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid tool input' }, 400)
+    // A refusal the family explains is the person's to act on; anything else is a fault.
+    if (error instanceof IntegrationPolicyError) return c.json({ error: error.message }, 400)
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'invoke-tool' }, extra: { integrationId: integration.id, tool: toolName } })
+    return c.json({ error: error instanceof Error ? error.message : 'Tool invocation failed' }, 500)
   }
 })
 
@@ -540,7 +648,7 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
       const ok = await accessActions[verb](accessId, getCurrentUserId(c))
       if (ok) {
         await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
-        if (verb === 'approve') void agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId)
+        if (verb === 'approve') background(agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId), { name: 'agent-integrations-route.notify-access-approved' })
         if (verb === 'revoke' || verb === 'deny') await agentIntegrationManager.releaseExternalSession(integrationId, row.externalChatId)
       }
       return c.json({ ok })

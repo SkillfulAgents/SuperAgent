@@ -1,8 +1,8 @@
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
-import { UserAvatar } from '@renderer/components/ui/user-avatar'
-import { forwardRef, useEffect, useImperativeHandle, useState, useRef, type ReactNode } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { AgentShareRows } from './agent-share-rows'
+import { forwardRef, useImperativeHandle, useState, useRef, type ReactNode } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
@@ -32,7 +32,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
-import { cn } from '@shared/lib/utils'
+import { formatFileSize } from '@shared/lib/utils/format-file-size'
 import {
   useAgentTemplateStatus,
   useExportAgentTemplate,
@@ -42,6 +42,8 @@ import {
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
 import { AgentTemplateStatus } from '@renderer/components/agents/agent-template-status'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { useAgent } from '@renderer/hooks/use-agents'
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -50,16 +52,9 @@ import {
   Loader2,
   Lock,
   User,
-  X,
 } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
-
-interface SearchUser {
-  id: string
-  name: string
-  email: string
-  image?: string | null
-}
+import { AccessInvitePicker } from '@renderer/components/sharing/access-invite-picker'
 
 interface AgentSharePopoverProps {
   agentSlug: string
@@ -87,7 +82,7 @@ const ROLE_LABELS: Record<AgentRole, string> = Object.fromEntries(
 const REMOVE_SENTINEL = '__remove__'
 
 /** Two-line role items (label + permission description) shared by both selects. */
-function RoleSelectItems() {
+export function RoleSelectItems() {
   return (
     <>
       {ROLE_OPTIONS.map((role) => (
@@ -102,103 +97,27 @@ function RoleSelectItems() {
   )
 }
 
-/** Placeholder people rows behind the local-mode Invite explainer. */
-const GHOST_MEMBERS = [
-  { name: 'A', nameWidth: 'w-24', emailWidth: 'w-36' },
-  { name: 'M', nameWidth: 'w-20', emailWidth: 'w-32' },
-  { name: 'J', nameWidth: 'w-28', emailWidth: 'w-40' },
-]
-
-/**
- * Invite pane outside auth mode: there is no per-user ACL on a local agent,
- * so instead of hiding the tab we show the invite UI in a disabled state and
- * point at Cloud, where it works.
- */
-function InviteEducationPane() {
-  return (
-    <div data-testid="agent-invite-education-pane">
-      {/* Why it is off. Same hero typography as the Publish pane's title
-          + subtitle. */}
-      <div className="space-y-1 px-3 pt-5 text-center">
-        <p className="text-sm font-medium">Switch to Gamut Cloud to invite team members.</p>
-        <p className="text-xs text-muted-foreground">
-          Local agents run on this computer, so only you can use them.
-        </p>
-      </div>
-
-      {/* Disabled replica of the real Invite pane. Real controls (not
-          pictures) so it reads as the feature itself, just switched off.
-          It fades into the background at the bottom rather than ending at
-          a hard edge. */}
-      <div className="relative pointer-events-none select-none" aria-hidden="true">
-        <div className="opacity-50">
-          <div className="space-y-2 px-3 pb-4 pt-6">
-            <div className="flex items-start gap-2">
-              <div className="flex min-h-8 min-w-0 flex-1 items-start gap-1 rounded-md border bg-transparent px-1.5 py-0.5">
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-                  <input
-                    disabled
-                    tabIndex={-1}
-                    placeholder="Invite by name or email..."
-                    className="h-6 min-w-20 flex-1 bg-transparent px-1 text-[11px] outline-none placeholder:text-muted-foreground"
-                  />
-                </div>
-                <span className="flex h-6 shrink-0 items-center px-1 text-[11px] text-muted-foreground">
-                  {ROLE_LABELS.user}
-                </span>
-              </div>
-              <Button size="sm" className="h-8 shrink-0 text-[11px]" disabled tabIndex={-1}>
-                Invite
-              </Button>
-            </div>
-          </div>
-
-          <div className="px-1 pb-2">
-            <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
-              Members with access
-            </p>
-            {GHOST_MEMBERS.map((m) => (
-              <div key={m.name} className="flex items-center gap-2 rounded-md px-2 py-1.5">
-                <UserAvatar user={{ id: m.name, name: m.name }} />
-                <div className="min-w-0 flex-1 space-y-1.5 py-0.5">
-                  <div className={cn('h-2 rounded-full bg-muted-foreground/30', m.nameWidth)} />
-                  <div className={cn('h-2 rounded-full bg-muted-foreground/20', m.emailWidth)} />
-                </div>
-                <span className="px-1.5 text-[11px] text-muted-foreground">{ROLE_LABELS.user}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        {/* After the content in the DOM: the half-opacity block is its own
-            stacking context, so an earlier sibling would paint beneath it. */}
-        <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background to-transparent" />
-      </div>
-    </div>
-  )
-}
-
 /**
  * Share button + popover for the agent header, with Notion-style panes:
  * Invite (per-user ACL, auth mode only — the /access endpoints are
  * AgentAdmin()-guarded), Publish (template export + skillset publishing,
  * moved here from the settings General tab) and Export. Rendered for agent
- * owners; in non-auth deployments everyone is an owner and the Invite tab
- * becomes a disabled preview pointing at Cloud instead of disappearing.
+ * owners. Local agents can manage agent access in the same pane.
  */
 export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentSharePopoverProps>(
   function AgentSharePopover({ agentSlug, agentName, trigger }, ref) {
   const queryClient = useQueryClient()
-  const { user, isAuthMode } = useUser()
+  const { isAuthMode } = useUser()
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'share' | 'publish' | 'export'>('share')
-  const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [selectedUsers, setSelectedUsers] = useState<SearchUser[]>([])
   const [inviteRole, setInviteRole] = useState<AgentRole>('user')
   const [publishFlowOpen, setPublishFlowOpen] = useState(false)
   const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
   const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
+  const [fullExportBytes, setFullExportBytes] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const { data: agent } = useAgent(open ? agentSlug : null)
 
   useImperativeHandle(ref, () => ({
     openExport: () => {
@@ -225,8 +144,6 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   const canPublish = templateStatus?.type === 'local' && templateStatus.publishable !== false
 
   const resetInvite = () => {
-    setSelectedUsers([])
-    setSearchQuery('')
     setInviteRole('user')
     setError(null)
     // Closing the popover also abandons an in-progress publish flow and
@@ -244,66 +161,6 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   }
 
   const { data: accessList, isLoading, isError: membersError, refetch: refetchMembers } = useAgentMembers(agentSlug, open)
-
-  // The server caps results at 50 users, so client-side filtering alone can't
-  // find everyone in a larger workspace — re-query with the typed text
-  // (debounced) so the server searches the full user table.
-  const [debouncedQuery, setDebouncedQuery] = useState('')
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 200)
-    return () => clearTimeout(timer)
-  }, [searchQuery])
-
-  // Invitable users (workspace members minus current access holders): the
-  // first 50 as suggestions when idle, server-side search results while typing.
-  const { data: candidates } = useQuery<SearchUser[]>({
-    queryKey: ['agent-invite-candidates', agentSlug, debouncedQuery],
-    queryFn: async () => {
-      const qs = debouncedQuery ? `?q=${encodeURIComponent(debouncedQuery)}` : ''
-      const res = await apiFetch(`/api/agents/${agentSlug}/access/search-users${qs}`)
-      if (!res.ok) return []
-      return res.json()
-    },
-    enabled: open && isAuthMode,
-    // Keep the previous list on screen while the next query's fetch lands,
-    // so typing filters instantly instead of flashing empty.
-    placeholderData: (prev) => prev,
-  })
-
-  // Invite the selected batch. Runs each grant individually so one failure
-  // doesn't sink the rest; succeeded users leave the chip row, failures stay.
-  const inviteUsers = useMutation({
-    meta: { skipGlobalErrorToast: true },
-    mutationFn: async ({ users, role }: { users: SearchUser[]; role: AgentRole }) => {
-      const succeeded = new Set<string>()
-      const failures: string[] = []
-      for (const u of users) {
-        const res = await apiFetch(`/api/agents/${agentSlug}/access`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: u.id, role }),
-        })
-        if (res.ok) {
-          succeeded.add(u.id)
-        } else {
-          const data = await res.json().catch(() => ({}))
-          failures.push(`${u.name}: ${data.error || 'Failed to invite user'}`)
-        }
-      }
-      return { succeeded, failures }
-    },
-    onMutate: () => setError(null),
-    onSuccess: ({ succeeded, failures }) => {
-      invalidateAccess()
-      if (failures.length) {
-        setSelectedUsers((prev) => prev.filter((u) => !succeeded.has(u.id)))
-        setError(failures.join('; '))
-      } else {
-        resetInvite()
-      }
-    },
-    onError: (err: Error) => setError(err.message),
-  })
 
   // Change role
   const changeRole = useMutation({
@@ -343,98 +200,55 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
 
   const ownerCount = accessList?.filter((e) => e.role === 'owner').length ?? 0
 
-  const selectedIds = new Set(selectedUsers.map((u) => u.id))
-  const accessIds = new Set(accessList?.map((e) => e.id) ?? [])
-  const filter = searchQuery.trim().toLowerCase()
-  // Candidates are already ACL-filtered server-side; re-filter here so the list
-  // updates instantly after an invite (before the refetch lands).
-  const suggested = (candidates ?? []).filter(
-    (u) =>
-      !accessIds.has(u.id) &&
-      (!filter || u.name.toLowerCase().includes(filter) || u.email.toLowerCase().includes(filter))
-  )
-
-  // Access holders matching the typed query — the "Already shared with"
-  // section while searching.
-  const matchedAccess = filter
-    ? (accessList ?? []).filter(
-        (e) => e.name.toLowerCase().includes(filter) || e.email.toLowerCase().includes(filter)
-      )
-    : []
-
-  const toggleUser = (u: SearchUser) => {
-    setSelectedUsers((prev) =>
-      prev.some((s) => s.id === u.id) ? prev.filter((s) => s.id !== u.id) : [...prev, u]
-    )
-    setSearchQuery('')
-    searchInputRef.current?.focus()
-  }
-
-  // Shared by the default people list and the "Already shared with" section.
-  const renderAgentMember = (entry: AgentMember) => {
+  const renderMemberAction = (entry: AgentMember) => {
     const isLastOwner = entry.role === 'owner' && ownerCount <= 1
-    const isSelf = entry.id === user?.id
     return (
-      <div
-        key={entry.id}
-        className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
-        data-testid={`access-entry-${entry.id}`}
-      >
-        <UserAvatar user={entry} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[11px]">
-            {entry.name}
-            {isSelf && <span className="text-muted-foreground"> (You)</span>}
-          </div>
-          <div className="truncate text-[11px] text-muted-foreground">{entry.email}</div>
-        </div>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span>
-                {/* Remove lives inside the role dropdown (Notion-style);
-                    the sentinel value routes to the delete mutation. */}
-                <Select
-                  value={entry.role}
-                  onValueChange={(role) => {
-                    if (role === REMOVE_SENTINEL) {
-                      removeAccess.mutate(entry.id)
-                    } else {
-                      changeRole.mutate({ userId: entry.id, role: role as AgentRole })
-                    }
-                  }}
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>
+              {/* Remove lives inside the role dropdown (Notion-style);
+                  the sentinel value routes to the delete mutation. */}
+              <Select
+                value={entry.role}
+                onValueChange={(role) => {
+                  if (role === REMOVE_SENTINEL) {
+                    removeAccess.mutate(entry.id)
+                  } else {
+                    changeRole.mutate({ userId: entry.id, role: role as AgentRole })
+                  }
+                }}
+              >
+                <SelectTrigger
+                  className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
+                  data-testid={`access-role-${entry.id}`}
                 >
-                  <SelectTrigger
-                    className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
-                    data-testid={`access-role-${entry.id}`}
+                  <SelectValue>{ROLE_LABELS[entry.role]}</SelectValue>
+                </SelectTrigger>
+                <SelectContent align="end" className="w-64">
+                  <RoleSelectItems />
+                  <SelectSeparator />
+                  {/* Only Remove is guarded for the last owner — the role
+                      options stay viewable; demotion is server-guarded. */}
+                  <SelectItem
+                    value={REMOVE_SENTINEL}
+                    disabled={isLastOwner}
+                    className="pr-8 text-[11px] text-destructive focus:text-destructive"
+                    data-testid={`access-remove-${entry.id}`}
                   >
-                    <SelectValue>{ROLE_LABELS[entry.role]}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent align="end" className="w-64">
-                    <RoleSelectItems />
-                    <SelectSeparator />
-                    {/* Only Remove is guarded for the last owner — the role
-                        options stay viewable; demotion is server-guarded. */}
-                    <SelectItem
-                      value={REMOVE_SENTINEL}
-                      disabled={isLastOwner}
-                      className="pr-8 text-[11px] text-destructive focus:text-destructive"
-                      data-testid={`access-remove-${entry.id}`}
-                    >
-                      Remove
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </span>
-            </TooltipTrigger>
-            {isLastOwner && (
-              <TooltipContent>
-                Cannot remove the last owner
-              </TooltipContent>
-            )}
-          </Tooltip>
-        </TooltipProvider>
-      </div>
+                    Remove
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </span>
+          </TooltipTrigger>
+          {isLastOwner && (
+            <TooltipContent>
+              Cannot remove the last owner
+            </TooltipContent>
+          )}
+        </Tooltip>
+      </TooltipProvider>
     )
   }
 
@@ -540,7 +354,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                   {/* Fixed 416x224 coordinate system: user centers sit on a
                       75px radius around the cloud center (208,116) at 0° and
                       ±50°/±95° from vertical, so all five are equidistant. */}
-                  <div className="relative h-60 overflow-hidden rounded-lg bg-gradient-to-b from-muted/70 to-transparent" aria-hidden="true">
+                  <div className="relative h-60 overflow-hidden rounded-item bg-gradient-to-b from-muted/70 to-transparent" aria-hidden="true">
                     {/* Dashed arrows: pill → cloud, cloud → each teammate.
                         Painted first so the circles sit on top. */}
                     <svg className="absolute inset-0 h-full w-full text-foreground" viewBox="0 0 416 240" preserveAspectRatio="none">
@@ -608,15 +422,17 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     </div>
 
                     {/* The skillset in the cloud */}
-                    <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-xl border bg-background shadow-md">
+                    <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-control border bg-background shadow-md">
                       <LibraryBig className="h-5 w-5 text-foreground/70" />
                     </div>
 
                     {/* The agent, Manus-pill style */}
-                    <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2 rounded-xl border bg-background py-2 pl-3 pr-4 shadow-sm">
-                      {/* The activity card's thought orb as the agent's avatar */}
+                    <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2 rounded-card border bg-background py-2 pl-3 pr-4 shadow-sm">
+                      {/* The agent's avatar, or the thought orb when it has none */}
                       <div className="shrink-0">
-                        <ActivityOrb state="spinning" size={28} />
+                        {agent?.avatar
+                          ? <AgentAvatar agent={agent} state="idle" size={28} />
+                          : <ActivityOrb state="spinning" size={28} />}
                       </div>
                       <p className="min-w-0 truncate text-sm font-medium">{agentName}</p>
                     </div>
@@ -677,7 +493,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     type="button"
                     role="radio"
                     aria-checked={isSelected}
-                    className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
+                    className="flex w-full items-center gap-3 rounded-item px-2 py-2 text-left hover:bg-accent"
                     onClick={() => setExportChoice(option.id)}
                     data-testid={`export-option-${option.id}`}
                   >
@@ -724,172 +540,48 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
         )}
 
         {tab === 'share' && !isAuthMode && (
-          /* ── Invite pane, local mode: the real UI switched off, pointing at Cloud ── */
-          <InviteEducationPane />
+          <div className="max-h-80 overflow-y-auto px-2 pb-2 pt-4" data-testid="agent-invite-education-pane">
+            <p className="px-2 pb-3 text-xs text-muted-foreground">Switch to Gamut Cloud to invite team members.</p>
+            <AgentShareRows agentSlug={agentSlug} />
+          </div>
         )}
 
-        {tab === 'share' && isAuthMode && (
-          <>
-        {/* Invite row: chip box + batch role + Add */}
-        <div className="space-y-2 px-3 pb-4 pt-5">
-          <div className="flex items-start gap-2">
-            {/* label: clicking anywhere in the chip box natively focuses the input.
-                The role select sits inside the box, pinned top-right (Notion-style). */}
-            <label className="flex min-h-8 min-w-0 flex-1 cursor-text items-start gap-1 rounded-md border bg-transparent px-1.5 py-0.5 has-[input:focus]:ring-1 has-[input:focus]:ring-ring">
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-                {selectedUsers.map((u) => (
-                  <span
-                    key={u.id}
-                    className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px]"
-                    data-testid={`invite-chip-${u.id}`}
-                  >
-                    <UserAvatar user={u} size={16} />
-                    <span className="max-w-32 truncate">{u.name}</span>
-                    <button
-                      type="button"
-                      className="text-muted-foreground hover:text-foreground"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setSelectedUsers((prev) => prev.filter((s) => s.id !== u.id))
-                      }}
-                      aria-label={`Remove ${u.name} from invite`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-                <input
-                  ref={searchInputRef}
-                  placeholder={selectedUsers.length ? '' : 'Invite by name or email...'}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Backspace' && !searchQuery && selectedUsers.length) {
-                      setSelectedUsers((prev) => prev.slice(0, -1))
-                    }
-                  }}
-                  className="h-6 min-w-20 flex-1 bg-transparent px-1 text-[11px] outline-none placeholder:text-muted-foreground"
-                  data-testid="invite-search-input"
-                />
-              </div>
-              <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as AgentRole)}>
-                <SelectTrigger
-                  className="h-6 w-auto shrink-0 gap-1 border-none bg-transparent px-1 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
-                  data-testid="invite-role-select"
-                >
+        {isAuthMode && (
+          <div hidden={tab !== 'share'}>
+            <AccessInvitePicker key={agentSlug}
+              target={{ kind: 'agent', id: agentSlug }} members={accessList ?? []} renderMemberAction={renderMemberAction}
+              additionalMembers={tab === 'share' && <AgentShareRows agentSlug={agentSlug} />}
+              role={inviteRole} inputRef={searchInputRef} onGranted={invalidateAccess} onComplete={resetInvite} error={error}
+              membersStatus={isLoading ? (
+                <div className="flex items-center justify-center py-6"><Loader2 aria-label="Loading members" className="size-4 animate-spin text-muted-foreground" /></div>
+              ) : membersError ? (
+                <div className="px-2 py-4 text-center text-xs text-muted-foreground">
+                  Could not load members. <button type="button" className="underline" onClick={() => void refetchMembers()}>Try again</button>
+                </div>
+              ) : undefined}
+              roleControl={<Select value={inviteRole} onValueChange={v => setInviteRole(v as AgentRole)}>
+                <SelectTrigger className="h-6 w-auto shrink-0 gap-1 border-none bg-transparent px-1 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
+                  aria-label="Invite role" data-testid="invite-role-select">
                   <SelectValue>{ROLE_LABELS[inviteRole]}</SelectValue>
                 </SelectTrigger>
-                <SelectContent align="end" className="w-64">
-                  <RoleSelectItems />
-                </SelectContent>
-              </Select>
-            </label>
-            <Button
-              size="sm"
-              className="h-8 shrink-0 text-[11px]"
-              onClick={() => {
-                if (inviteUsers.isPending) return
-                // No disabled state: with nothing selected, just refocus the input
-                if (!selectedUsers.length) {
-                  searchInputRef.current?.focus()
-                  return
-                }
-                inviteUsers.mutate({ users: selectedUsers, role: inviteRole })
-              }}
-              data-testid="invite-add-button"
-            >
-              {inviteUsers.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Invite'}
-            </Button>
+                <SelectContent align="end" className="w-64"><RoleSelectItems /></SelectContent>
+              </Select>}
+            />
           </div>
-
-          {error && <p className="px-1 text-[11px] text-destructive">{error}</p>}
-        </div>
-
-        {/* People list. While typing it becomes two filtered sections,
-            Notion-style: access holders ("Already shared with") and
-            invitable candidates ("Not shared with"). */}
-        <div className="max-h-72 overflow-y-auto px-1 pb-2">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-6">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            </div>
-          ) : membersError ? (
-            <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-              Could not load members. <button className="underline" onClick={() => void refetchMembers()}>Try again</button>
-            </div>
-          ) : filter ? (
-            <>
-              {matchedAccess.length > 0 && (
-                <>
-                  <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
-                    Already shared with
-                  </p>
-                  {matchedAccess.map(renderAgentMember)}
-                </>
-              )}
-              {suggested.length > 0 && (
-                <>
-                  <p className={cn('px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground', matchedAccess.length > 0 && 'pt-2')}>
-                    Not shared with
-                  </p>
-                  {suggested.map((u) => {
-                    const isSelected = selectedIds.has(u.id)
-                    return (
-                      <button
-                        key={u.id}
-                        type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-accent"
-                        onClick={() => toggleUser(u)}
-                        role="checkbox"
-                        aria-checked={isSelected}
-                        data-testid={`invite-user-result-${u.id}`}
-                      >
-                        <UserAvatar user={u} />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate">{u.name}</div>
-                          <div className="truncate text-[11px] text-muted-foreground">{u.email}</div>
-                        </div>
-                        {/* Visual-only checkbox (the row is the control) — mirrors ui/checkbox */}
-                        <span
-                          className={cn(
-                            'flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border border-primary shadow',
-                            isSelected && 'bg-primary text-primary-foreground'
-                          )}
-                        >
-                          {isSelected && <Check className="h-3 w-3" />}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </>
-              )}
-              {matchedAccess.length === 0 && suggested.length === 0 && (
-                <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
-                  No users found
-                </div>
-              )}
-            </>
-          ) : !accessList?.length ? (
-            <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
-              No users have access to this agent.
-            </div>
-          ) : (
-            <>
-              <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
-                Members with access
-              </p>
-              {accessList.map(renderAgentMember)}
-            </>
-          )}
-        </div>
-          </>
         )}
       </PopoverContent>
     </Popover>
 
     {/* Full-agent exports bundle env vars, API keys, and session data —
         keep an explicit confirmation in front of the download. */}
-    <AlertDialog open={confirmFullExportOpen} onOpenChange={setConfirmFullExportOpen}>
+    <AlertDialog
+      open={confirmFullExportOpen}
+      onOpenChange={(next) => {
+        // Stay open until the download lands so the user can see it running.
+        if (!next && exportFull.isPending) return
+        setConfirmFullExportOpen(next)
+      }}
+    >
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Export Full Agent</AlertDialogTitle>
@@ -899,14 +591,40 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
             this file with people you trust.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {exportFull.isPending && (
+          <div className="space-y-1.5" data-testid="full-export-progress">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-2/5 rounded-full bg-primary animate-progress-indeterminate motion-reduce:animate-none" />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {fullExportBytes > 0
+                ? `${formatFileSize(fullExportBytes)} downloaded`
+                : 'Preparing export…'}
+            </p>
+          </div>
+        )}
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={exportFull.isPending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             disabled={exportPending}
-            onClick={() => exportFull.mutate({ agentSlug, agentName })}
+            onClick={(event) => {
+              event.preventDefault()
+              setFullExportBytes(0)
+              exportFull.mutate(
+                { agentSlug, agentName, onProgress: setFullExportBytes },
+                { onSettled: () => setConfirmFullExportOpen(false) },
+              )
+            }}
             data-testid="confirm-full-export-button"
           >
-            Export
+            {exportFull.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Exporting…
+              </>
+            ) : (
+              'Export'
+            )}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

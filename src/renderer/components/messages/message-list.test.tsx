@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
+import { appendMentions } from '@shared/lib/utils/mentions'
+import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { MessageList } from './message-list'
 // Resolves to the mocked module's class below — the one the component's
 // instanceof check sees.
@@ -37,18 +39,13 @@ const mockDeleteToolCall = vi.fn()
 // Cancel mutation mock: invokes the mutate() callbacks synchronously with a
 // configurable result so tests can exercise both race outcomes.
 let mockCancelResult: { cancelled: boolean } = { cancelled: true }
-const mockCancelQueued = vi.fn(
-  (_vars: unknown, opts?: { onSuccess?: (r: { cancelled: boolean }) => void; onSettled?: () => void }) => {
-    opts?.onSuccess?.(mockCancelResult)
-    opts?.onSettled?.()
-  }
-)
+const mockCancelQueued = vi.fn(async (_vars: unknown) => mockCancelResult)
 
 vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => mockMessagesData,
   useDeleteMessage: () => ({ mutate: mockDeleteMessage }),
   useDeleteToolCall: () => ({ mutate: mockDeleteToolCall }),
-  useCancelQueuedMessage: () => ({ mutate: mockCancelQueued }),
+  useCancelQueuedMessage: () => ({ mutateAsync: mockCancelQueued }),
   // Real class so `error instanceof TranscriptNotFoundError` works in the component.
   TranscriptNotFoundError: class TranscriptNotFoundError extends Error {
     constructor() {
@@ -138,9 +135,13 @@ vi.mock('@renderer/lib/env', () => ({
   getPlatform: () => 'web',
 }))
 
+// Names of tool rows rendered, to check which rows re-render.
+const mockToolRenders: string[] = []
+
 // Mock child components that are complex
 vi.mock('./tool-call-item', () => ({
   ToolCallItem: ({ toolCall, isSessionActive }: any) => (
+    mockToolRenders.push(toolCall.name),
     <div data-testid={`tool-call-${toolCall.name}`} data-running={isSessionActive ? 'true' : 'false'}>{toolCall.name}</div>
   ),
   StreamingToolCallItem: ({ name }: any) => <div data-testid="streaming-tool-call">{name}</div>,
@@ -148,7 +149,10 @@ vi.mock('./tool-call-item', () => ({
 }))
 
 vi.mock('./subagent-block', () => ({
-  SubAgentBlock: ({ toolCall }: any) => <div data-testid="subagent-block">{toolCall.name}</div>,
+  SubAgentBlock: ({ toolCall }: any) => (
+    mockToolRenders.push(toolCall.name),
+    <div data-testid="subagent-block">{toolCall.name}</div>
+  ),
 }))
 
 vi.mock('./informational-item', () => ({
@@ -215,6 +219,38 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
     expect(container.querySelector('.animate-spin')).toBeTruthy()
+  })
+
+  it('re-renders only rows with subagent calls when subagent state changes', () => {
+    mockToolRenders.length = 0
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Look around the repo' } }),
+      createAssistantMessage({ content: { text: 'Listing files' }, toolCalls: [createToolCall({ id: 'tc-bash', name: 'Bash' })] }),
+      createAssistantMessage({ content: { text: 'Delegating' }, toolCalls: [createToolCall({ id: 'tc-agent', name: 'Agent' })] }),
+    ]
+    // Re-render from inside the providers: renderWithProviders' rerender builds a new
+    // QueryClient, which would re-render every row regardless of props.
+    let rerenderList = () => {}
+    function Harness() {
+      const [, setTick] = useState(0)
+      rerenderList = () => setTick((n) => n + 1)
+      return <MessageList sessionId="s-1" agentSlug="agent-1" />
+    }
+    renderWithProviders(<Harness />)
+    expect(mockToolRenders).toEqual(expect.arrayContaining(['Bash', 'Agent']))
+
+    mockToolRenders.length = 0
+    mockStreamState.activeSubagents = [{
+      agentId: 'sub-1',
+      parentToolId: 'tc-agent',
+      subagentType: 'Explore',
+      description: 'Explore workspace structure',
+    }]
+    act(() => rerenderList())
+
+    expect(mockToolRenders).toContain('Agent')
+    expect(mockToolRenders).not.toContain('Bash')
   })
 
   it('renders messages', () => {
@@ -312,135 +348,6 @@ describe('MessageList', () => {
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.queryByTestId('session-transcript-not-found')).not.toBeInTheDocument()
       expect(screen.getByTestId('message-list')).toBeInTheDocument()
-    })
-  })
-
-  describe('session time flags', () => {
-    it('renders a flag immediately before the first actual user message', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: '[SYSTEM] Hidden setup message' },
-          createdAt: new Date(2026, 7, 17, 8, 59, 0),
-        }),
-        createUserMessage({
-          content: { text: 'First actual prompt' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'First response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-      ]
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      expect(screen.queryByText('[SYSTEM] Hidden setup message')).not.toBeInTheDocument()
-      const flag = screen.getByTestId('session-time-flag')
-      const firstUserMessage = screen.getByText('First actual prompt')
-      expect(
-        flag.compareDocumentPosition(firstUserMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).not.toBe(0)
-    })
-
-    it('renders another flag when the user replies more than 15 minutes after the latest assistant response', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: 'Initial prompt' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Interim response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Latest response' },
-          createdAt: new Date(2026, 7, 17, 9, 10, 0),
-        }),
-        {
-          id: 'notice-between-response-and-reply',
-          type: 'informational',
-          content: 'Background notice',
-          createdAt: new Date(2026, 7, 17, 9, 11, 0),
-        },
-        createUserMessage({
-          content: { text: 'Delayed follow-up' },
-          createdAt: new Date(2026, 7, 17, 9, 25, 1),
-        }),
-      ]
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      const flags = screen.getAllByTestId('session-time-flag')
-      expect(flags).toHaveLength(2)
-      expect(
-        flags[1].compareDocumentPosition(screen.getByText('Delayed follow-up')) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-      ).not.toBe(0)
-    })
-
-    it('does not render another flag at exactly 15 minutes from the latest assistant response', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: 'Initial prompt' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Older response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Latest response' },
-          createdAt: new Date(2026, 7, 17, 9, 15, 0),
-        }),
-        createUserMessage({
-          content: { text: 'Exactly-on-the-boundary follow-up' },
-          createdAt: new Date(2026, 7, 17, 9, 30, 0),
-        }),
-      ]
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      expect(screen.getAllByTestId('session-time-flag')).toHaveLength(1)
-    })
-
-    it('does not treat the first loaded user message as the session start when older messages exist', () => {
-      mockMessagesData.data = [
-        createUserMessage({
-          content: { text: 'First message in the loaded page' },
-          createdAt: new Date(2026, 7, 17, 9, 0, 0),
-        }),
-        createAssistantMessage({
-          content: { text: 'Loaded response' },
-          createdAt: new Date(2026, 7, 17, 9, 1, 0),
-        }),
-      ]
-      mockMessagesData.hasOlder = true
-
-      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-
-      expect(screen.queryByTestId('session-time-flag')).not.toBeInTheDocument()
-    })
-
-    it('shows the first-user flag immediately for an optimistic message', () => {
-      mockMessagesData.data = []
-
-      renderWithProviders(
-        <MessageList
-          sessionId="s-1"
-          agentSlug="agent-1"
-          pendingUserMessages={[{
-            localId: 'pending-first-user',
-            text: 'Optimistic first prompt',
-            sentAt: new Date(2026, 7, 17, 9, 0, 0).getTime(),
-          }]}
-        />
-      )
-
-      const flag = screen.getByTestId('session-time-flag')
-      const pendingMessage = screen.getByText('Optimistic first prompt')
-      expect(
-        flag.compareDocumentPosition(pendingMessage) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).not.toBe(0)
     })
   })
 
@@ -1059,6 +966,30 @@ describe('MessageList', () => {
     expect(onAppeared).toHaveBeenCalledWith('uuid-1')
   })
 
+  // The owner drops the ghost only after the effect above reports it, a commit later:
+  // until then the persisted copy alone is drawn, not the message twice.
+  it.each([false, true])('draws a ghost whose uuid is already in the transcript only once (queued: %s)', (queued) => {
+    mockMessagesData.data = [
+      createUserMessage({
+        id: 'uuid-1',
+        content: { text: 'My message' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'local-1', uuid: 'uuid-1', text: 'My message', sentAt: new Date('2025-01-01T00:00:00Z').getTime(), queued }]}
+        onPendingMessageAppeared={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByText('My message')).toHaveLength(1)
+    expect(screen.queryByTestId(queued ? 'queued-user-message' : 'pending-user-message')).not.toBeInTheDocument()
+  })
+
   // The second transcript is a shared agent's, where the agent received the sender prefix.
   it.each(['My message', '\\[Ann]: My message'])('falls back to text+time matching when the uuid differs (queued/steering messages): %s', (transcriptText) => {
     // The CLI re-ids messages sent mid-turn (queued_command attachments), so
@@ -1356,7 +1287,7 @@ describe('MessageList', () => {
     expect(onAppeared).toHaveBeenCalledWith('l1')
   })
 
-  it('restores an undelivered queued message to the composer at idle and removes the ghost', async () => {
+  it('keeps a queued message pending at idle until the host says it never ran', async () => {
     vi.useFakeTimers()
     try {
       const onAppeared = vi.fn()
@@ -1385,21 +1316,21 @@ describe('MessageList', () => {
       expect(onAppeared).not.toHaveBeenCalled()
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
 
-      // After the post-idle grace, the un-picked-up text returns to the composer
-      // draft and the ghost is removed.
+      // Idle without the message is no proof it was lost: nothing comes back.
       await act(async () => {
         vi.advanceTimersByTime(1500)
       })
 
-      expect(onAppeared).toHaveBeenCalledWith('l1')
-      expect(screen.getByTestId('draft-probe')).toHaveTextContent('lost message')
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('queued-user-message')).toHaveTextContent('lost message')
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
     } finally {
       vi.useRealTimers()
     }
   })
 
   it('rescues a queued ghost immediately when the runtime reports its command discarded', async () => {
-    // Deterministic path: a command_lifecycle discarded/cancelled frame named
+    // Deterministic path: a command_lifecycle discarded frame named
     // this uuid (e.g. killed by Stop). No idle, no grace timer — the session
     // is even still ACTIVE — the rescue must fire right away.
     const onAppeared = vi.fn()
@@ -1494,10 +1425,9 @@ describe('MessageList', () => {
     }
   })
 
-  it('still restores a non-queued pending that was accepted (uuid) but never materialized', async () => {
-    // The POST succeeded but the message never showed up in the transcript by
-    // idle (e.g. an interrupt raced the CLI before it persisted the entry) —
-    // this is genuinely lost work, so the restore must still fire.
+  it('keeps an accepted message pending past the idle grace while the transcript lags, then shows it as sent', async () => {
+    // The agent has the message, but every transcript read is still in flight
+    // when the session reads idle. Only its id in the transcript resolves it.
     vi.useFakeTimers()
     try {
       const onAppeared = vi.fn()
@@ -1508,25 +1438,31 @@ describe('MessageList', () => {
         const [draft] = useDraft<string>('session:s-1')
         return <div data-testid="draft-probe">{draft ?? ''}</div>
       }
+      const pending = [{ localId: 'l1', uuid: 'server-uuid', text: 'delivered late', sentAt: Date.now() }]
 
-      renderWithProviders(
+      const { rerender } = renderWithProviders(
         <>
-          <MessageList
-            sessionId="s-1"
-            agentSlug="agent-1"
-            pendingUserMessages={[{ localId: 'l1', uuid: 'server-uuid', text: 'accepted then dropped', sentAt: Date.now() }]}
-            onPendingMessageAppeared={onAppeared}
-          />
+          <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={pending} onPendingMessageAppeared={onAppeared} />
           <DraftProbe />
         </>
       )
 
       await act(async () => {
-        vi.advanceTimersByTime(1500)
+        vi.advanceTimersByTime(60_000)
       })
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
+
+      mockMessagesData.data = [createUserMessage({ id: 'server-uuid', content: { text: 'delivered late' } })]
+      rerender(
+        <>
+          <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={pending} onPendingMessageAppeared={onAppeared} />
+          <DraftProbe />
+        </>
+      )
 
       expect(onAppeared).toHaveBeenCalledWith('l1')
-      expect(screen.getByTestId('draft-probe')).toHaveTextContent('accepted then dropped')
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
     } finally {
       vi.useRealTimers()
     }
@@ -1558,49 +1494,181 @@ describe('MessageList', () => {
     expect(screen.getByTestId('cancel-queued-message')).toBeInTheDocument()
   })
 
-  it('cancelling a queued ghost removes it on success', () => {
+  it('cancelling a queued ghost removes it and returns its text on success', async () => {
     mockCancelResult = { cancelled: true }
     const onAppeared = vi.fn()
     mockMessagesData.data = []
     mockStreamState.isActive = true
 
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
     renderWithProviders(
-      <MessageList
-        sessionId="s-1"
-        agentSlug="agent-1"
-        pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
-        onPendingMessageAppeared={onAppeared}
-      />
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
+          onPendingMessageAppeared={onAppeared}
+        />
+        <DraftProbe />
+      </>
     )
 
     fireEvent.click(screen.getByTestId('cancel-queued-message'))
 
-    expect(mockCancelQueued).toHaveBeenCalledWith(
-      { sessionId: 's-1', agentSlug: 'agent-1', uuid: 'srv-1' },
-      expect.anything()
-    )
-    expect(onAppeared).toHaveBeenCalledWith('l1')
+    expect(mockCancelQueued).toHaveBeenCalledWith({ sessionId: 's-1', agentSlug: 'agent-1', uuid: 'srv-1' })
+    await waitFor(() => expect(onAppeared).toHaveBeenCalledWith('l1'))
+    expect(screen.getByTestId('draft-probe')).toHaveTextContent('queued msg')
   })
 
-  it('leaves the ghost in place when cancellation lost the race to pickup', () => {
+  it('returns a cancelled message that tags someone with its chip, not its mentions list', async () => {
+    mockCancelResult = { cancelled: true }
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+    const sent = appendMentions('ask @Mike Smith', [{ kind: 'user', id: 'mike-id', name: 'Mike Smith' }])
+
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
+    renderWithProviders(
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: sent, sentAt: Date.now(), queued: true }]}
+          onPendingMessageAppeared={vi.fn()}
+        />
+        <DraftProbe />
+      </>
+    )
+
+    fireEvent.click(screen.getByTestId('cancel-queued-message'))
+
+    const chip = formatChipMarker({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
+    await waitFor(() => expect(screen.getByTestId('draft-probe').textContent).toBe(`ask ${chip}`))
+  })
+
+  it('returns both texts when two queued ghosts are cancelled before either answer lands', async () => {
+    const answers: Array<(r: { cancelled: boolean }) => void> = []
+    const deferred = () => new Promise<{ cancelled: boolean }>((resolve) => answers.push(resolve))
+    mockCancelQueued.mockImplementationOnce(deferred).mockImplementationOnce(deferred)
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
+    renderWithProviders(
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[
+            { localId: 'l1', uuid: 'srv-1', text: 'first queued', sentAt: Date.now(), queued: true },
+            { localId: 'l2', uuid: 'srv-2', text: 'second queued', sentAt: Date.now(), queued: true },
+          ]}
+          onPendingMessageAppeared={onAppeared}
+        />
+        <DraftProbe />
+      </>
+    )
+
+    const [first, second] = screen.getAllByTestId('cancel-queued-message')
+    fireEvent.click(first)
+    fireEvent.click(second)
+    await act(async () => {
+      answers[1]({ cancelled: true })
+      answers[0]({ cancelled: true })
+    })
+
+    expect(onAppeared).toHaveBeenCalledWith('l1')
+    expect(onAppeared).toHaveBeenCalledWith('l2')
+    expect(screen.getByTestId('draft-probe')).toHaveTextContent('first queued')
+    expect(screen.getByTestId('draft-probe')).toHaveTextContent('second queued')
+  })
+
+  it('returns only the removed ghost text when one of two cancels fails', async () => {
+    const answers: Array<{ resolve: (r: { cancelled: boolean }) => void; reject: (e: Error) => void }> = []
+    const deferred = () => new Promise<{ cancelled: boolean }>((resolve, reject) => answers.push({ resolve, reject }))
+    mockCancelQueued.mockImplementationOnce(deferred).mockImplementationOnce(deferred)
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
+    renderWithProviders(
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[
+            { localId: 'l1', uuid: 'srv-1', text: 'removed one', sentAt: Date.now(), queued: true },
+            { localId: 'l2', uuid: 'srv-2', text: 'kept one', sentAt: Date.now(), queued: true },
+          ]}
+          onPendingMessageAppeared={onAppeared}
+        />
+        <DraftProbe />
+      </>
+    )
+
+    const [first, second] = screen.getAllByTestId('cancel-queued-message')
+    fireEvent.click(first)
+    fireEvent.click(second)
+    await act(async () => {
+      answers[1].reject(new Error('Failed to cancel queued message'))
+      answers[0].resolve({ cancelled: true })
+    })
+
+    expect(onAppeared).toHaveBeenCalledWith('l1')
+    expect(onAppeared).not.toHaveBeenCalledWith('l2')
+    expect(screen.getByTestId('draft-probe')).toHaveTextContent('removed one')
+    expect(screen.getByTestId('draft-probe')).not.toHaveTextContent('kept one')
+    // The failed one can be cancelled again
+    expect(screen.getAllByTestId('cancel-queued-message')).toHaveLength(2)
+  })
+
+  it('leaves the ghost in place when cancellation lost the race to pickup', async () => {
     mockCancelResult = { cancelled: false }
     const onAppeared = vi.fn()
     mockMessagesData.data = []
     mockStreamState.isActive = true
 
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
     renderWithProviders(
-      <MessageList
-        sessionId="s-1"
-        agentSlug="agent-1"
-        pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
-        onPendingMessageAppeared={onAppeared}
-      />
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
+          onPendingMessageAppeared={onAppeared}
+        />
+        <DraftProbe />
+      </>
     )
 
-    fireEvent.click(screen.getByTestId('cancel-queued-message'))
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('cancel-queued-message'))
+    })
 
-    // Too late — the ghost stays and will materialize normally
+    // Too late — the ghost stays and will materialize normally, its text not returned
     expect(onAppeared).not.toHaveBeenCalled()
+    expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
     expect(screen.getByTestId('queued-user-message')).toBeInTheDocument()
   })
 
@@ -2038,6 +2106,46 @@ describe('MessageList', () => {
     expect(images.querySelector('img')).toHaveAttribute('alt', 'chart.png')
   })
 
+  // The agent rewrote chart.png and delivered it again. The browser reuses an
+  // image it already decoded for a URL in this page, even under no-store, so
+  // each delivery needs its own URL or the second shows the first's picture.
+  it('gives each delivery of the same image path its own URL', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Make a chart' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+      createAssistantMessage({
+        content: { text: 'Here it is' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [createToolCall({
+          id: 'toolu_first',
+          name: 'mcp__user-input__deliver_file',
+          input: { filePath: '/workspace/chart.png' },
+          result: 'File delivered',
+        })],
+      }),
+      createUserMessage({ content: { text: 'Use other colors' }, createdAt: new Date('2025-01-01T00:01:00Z') }),
+      createAssistantMessage({
+        content: { text: 'Recolored' },
+        createdAt: new Date('2025-01-01T00:01:30Z'),
+        toolCalls: [createToolCall({
+          id: 'toolu_second',
+          name: 'mcp__user-input__deliver_file',
+          input: { filePath: '/workspace/chart.png' },
+          result: 'File delivered',
+        })],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const sources = screen.getAllByTestId('delivered-images').map((block) => block.querySelector('img')?.getAttribute('src'))
+    expect(sources).toEqual([
+      'http://test-api/api/agents/agent-1/files/chart.png?inline=true&v=toolu_first',
+      'http://test-api/api/agents/agent-1/files/chart.png?inline=true&v=toolu_second',
+    ])
+  })
+
   it('keeps delivered files visible when user sends a new message (pendingUserMessage)', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [
@@ -2341,6 +2449,28 @@ describe('MessageList', () => {
       expect(screen.queryByText(/raw model context/)).not.toBeInTheDocument()
     })
 
+    it('clears other viewers ghosts once the session is idle', async () => {
+      vi.useFakeTimers()
+      try {
+        mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
+        mockMessagesData.data = []
+        mockStreamState.isActive = false
+        Object.assign(mockStreamState, {
+          peerUserMessages: [{ uuid: 'peer-1', receivedAt: Date.now(), content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } }],
+        })
+
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        expect(mockClearPeerUserMessages).not.toHaveBeenCalled()
+
+        await act(async () => {
+          vi.advanceTimersByTime(1500)
+        })
+        expect(mockClearPeerUserMessages).toHaveBeenCalledWith('s-1')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('renders queued peer messages as ghosts with a Queued label', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
       mockMessagesData.data = []
@@ -2542,6 +2672,112 @@ describe('MessageList', () => {
     })
   })
 
+  describe('landing on a message', () => {
+    const rows = (n: number, prefix = 'm'): ApiMessageOrBoundary[] =>
+      Array.from({ length: n }, (_, i) => createUserMessage({ id: `${prefix}${i}`, content: { text: `${prefix}${i}` } }))
+    const target = (id: string) => ({ id, onSettled: vi.fn() })
+    const row = (id: string) => document.querySelector(`[data-message-id="${id}"]`)
+
+    beforeEach(() => {
+      mockFetchOlder.mockResolvedValue(true)
+    })
+
+    it('lands on a loaded message, rings it, and lets go of the live edge', () => {
+      mockMessagesData.data = rows(50)
+      const t = target('m10')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+      expect(row('m10')?.querySelector('.ring-2')).toBeInTheDocument()
+      // Released follow: a reply arriving next does not carry the reader away.
+      expect(screen.getByRole('button', { name: /scroll to bottom/i })).toBeInTheDocument()
+    })
+
+    it('grows the rendered window to a loaded message above it', () => {
+      mockMessagesData.data = rows(305)
+      const t = target('m0')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(screen.getByText('m0')).toBeInTheDocument()
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+    })
+
+    it('pages back for a message not loaded yet, then lands on it', () => {
+      mockMessagesData.data = rows(50)
+      mockMessagesData.hasOlder = true
+      const t = target('old7')
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(mockFetchOlder).toHaveBeenCalled()
+      expect(t.onSettled).not.toHaveBeenCalled()
+      mockMessagesData.data = [...rows(10, 'old'), ...rows(50)]
+      mockMessagesData.hasOlder = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+    })
+
+    it('stops where the reader is when the message is not in the history', () => {
+      mockMessagesData.data = rows(50)
+      const t = target('gone')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('stopped')
+    })
+
+    it('stops when an older page it asked for adds nothing', async () => {
+      mockMessagesData.data = rows(50)
+      mockMessagesData.hasOlder = true
+      mockFetchOlder.mockResolvedValue(false)
+      const t = target('old7')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      await waitFor(() => expect(t.onSettled).toHaveBeenCalledWith('stopped'))
+    })
+
+    it('writes the scroll position that centers the message', () => {
+      mockMessagesData.data = rows(50)
+      const top = new WeakMap<Element, number>()
+      const proto = HTMLElement.prototype
+      const saved = { rect: proto.getBoundingClientRect, ch: Object.getOwnPropertyDescriptor(proto, 'clientHeight'), sh: Object.getOwnPropertyDescriptor(proto, 'scrollHeight'), st: Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop') }
+      const isList = (el: HTMLElement) => el.dataset?.testid === 'message-list'
+      proto.getBoundingClientRect = function (this: HTMLElement) {
+        const box = this.dataset?.messageId === 'm10' ? { top: -3000, height: 100 } : { top: 0, height: isList(this) ? 500 : 0 }
+        return { ...box, bottom: box.top + box.height, left: 0, right: 0, width: 0, x: 0, y: box.top, toJSON: () => box } as DOMRect
+      }
+      Object.defineProperty(proto, 'clientHeight', { configurable: true, get(this: HTMLElement) { return isList(this) ? 500 : 0 } })
+      Object.defineProperty(proto, 'scrollHeight', { configurable: true, get(this: HTMLElement) { return isList(this) ? 5000 : 0 } })
+      Object.defineProperty(Element.prototype, 'scrollTop', { configurable: true, get(this: Element) { return top.get(this) ?? 0 }, set(this: Element, v: number) { top.set(this, v) } })
+      try {
+        const t = target('m10')
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+        expect(t.onSettled).toHaveBeenCalledWith('landed')
+        // Pinned to the live edge first (4499), then the row 3000 above the view top is centered in 500.
+        expect(screen.getByTestId('message-list').scrollTop).toBe(4499 - 3000 - 200)
+      } finally {
+        proto.getBoundingClientRect = saved.rect
+        for (const [o, k, d] of [[proto, 'clientHeight', saved.ch], [proto, 'scrollHeight', saved.sh], [Element.prototype, 'scrollTop', saved.st]] as const) {
+          if (d) Object.defineProperty(o, k, d); else delete (o as unknown as Record<string, unknown>)[k]
+        }
+      }
+    })
+
+    it("opens a completed turn's folded work to land on a message in it, and keeps it open", () => {
+      mockMessagesData.data = [
+        createUserMessage({ id: 'ask', content: { text: 'Who decides?' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+        createAssistantMessage({ id: 'mid', content: { text: '@Mike please decide' }, createdAt: new Date('2025-01-01T00:00:10Z'), toolCalls: [createToolCall({ name: 'Bash' })] }),
+        createAssistantMessage({ id: 'answer', content: { text: 'Done.' }, createdAt: new Date('2025-01-01T00:00:30Z') }),
+      ]
+      const t = target('mid')
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+      // The request leaves the URL; the turn stays open.
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+      // Folded again by the reader, the same mention opens it again.
+      fireEvent.click(screen.getByTestId('turn-summary'))
+      expect(screen.queryByText('@Mike please decide')).not.toBeInTheDocument()
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={target('mid')} />)
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+    })
+  })
+
   describe('windowing (long threads)', () => {
     // BASE_WINDOW=300, LOAD_STEP=200 in use-message-list-scroll.ts. Each message renders a
     // bubble whose exact text is `m{i}`, so getByText/queryByText tells us precisely
@@ -2684,6 +2920,37 @@ describe('MessageList', () => {
       // the user was reading stays put: 50 + (5000 - 3000) = 2050.
       expect(screen.getByText('old0')).toBeInTheDocument()
       expect(el.scrollTop).toBe(2050)
+    })
+
+    it('compensates a prepend for a reader who let go of following near the bottom', () => {
+      const base = Array.from({ length: 300 }, (_, i) => createUserMessage({ id: `row${i}`, content: { text: `row${i}` } }))
+      mockMessagesData.data = base
+      mockMessagesData.hasOlder = true
+      let onBeforePrepend: (() => void) | undefined
+      mockFetchOlder.mockImplementation((cb?: () => void) => { onBeforePrepend = cb; return new Promise(() => {}) })
+      const t = { id: 'old5', onSettled: vi.fn() }
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      const el = screen.getByTestId('message-list')
+      let top = 2415 // 85px from the bottom: past the 70px re-attach, inside the 100px the distance rule skips
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => (el.textContent?.match(/(?:row|old)\d+/g)?.length ?? 0) * 10 })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v } })
+      expect(onBeforePrepend).toBeDefined()
+      fireEvent.scroll(el)
+
+      // The reader nudges up: following lets go.
+      fireEvent.wheel(el, { deltaY: -40 })
+      fireEvent.scroll(el)
+
+      const older = Array.from({ length: 200 }, (_, i) => createUserMessage({ id: `old${i}`, content: { text: `old${i}` } }))
+      act(() => {
+        onBeforePrepend!()
+        mockMessagesData.data = [...older, ...base]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      })
+      // 200 rows (2000px) mounted above; the reader's content stays put, and the landing ends where they are.
+      expect(el.scrollTop).toBe(2415 + 2000)
+      expect(t.onSettled).toHaveBeenCalledWith('stopped')
     })
 
     it('keeps the top of the window stable when a message arrives while scrolled up', async () => {

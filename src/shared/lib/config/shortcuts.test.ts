@@ -86,11 +86,13 @@ describe('eventToAccelerator', () => {
 
 describe('formatAccelerator', () => {
   it('renders symbol chips on mac', () => {
+    expect(formatAccelerator(DEFAULT_GLOBAL_DISPATCH_SHORTCUT, 'darwin')).toBe('⌃ ⇧ Space')
     expect(formatAccelerator('CommandOrControl+Shift+Space', 'darwin')).toBe('⌘ ⇧ Space')
     expect(formatAccelerator('Control+Alt+K', 'darwin')).toBe('⌃ ⌥ K')
   })
 
   it('renders +-joined tokens off mac', () => {
+    expect(formatAccelerator(DEFAULT_GLOBAL_DISPATCH_SHORTCUT, 'win32')).toBe('Ctrl+Shift+Space')
     expect(formatAccelerator('CommandOrControl+Shift+Space', 'win32')).toBe('Ctrl+Shift+Space')
     expect(formatAccelerator('Super+K', 'win32')).toBe('Win+K')
   })

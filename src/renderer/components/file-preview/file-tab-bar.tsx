@@ -88,7 +88,7 @@ export function FileTabBar<T extends FileBrowserTab>({
               aria-label={`Close ${tab.displayName}`}
               onClick={() => onCloseTab(getTabKey(tab))}
               className={cn(
-                'shrink-0 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-muted-foreground/20 hover:text-foreground group-hover:opacity-100 touch:opacity-100',
+                'shrink-0 rounded-icon p-0.5 text-muted-foreground transition-opacity hover:bg-muted-foreground/20 hover:text-foreground group-hover:opacity-100 touch:opacity-100',
                 // the selected tab keeps its close visible; the rest reveal it on hover
                 index === activeIndex ? 'opacity-100' : 'opacity-0',
               )}

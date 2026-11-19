@@ -1,5 +1,7 @@
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import {
   getPlatformAuthStatus,
   refreshStoredPlatformAccount,
@@ -9,6 +11,9 @@ import {
 } from '@shared/lib/services/platform-billing-service'
 import { refreshCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
+import { actingPlanCacheKey } from '@shared/lib/llm-provider/platform-plan-account'
+import { billingPlanPolicy } from '@shared/lib/llm-provider/platform-plan-policy'
 
 /**
  * Boot-time service that keeps the connected platform account's info + billing
@@ -23,9 +28,9 @@ import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schem
  * per-user and served live per request; caching it in this shared singleton
  * would leak one user's seat balance to another.
  */
-class PlatformService {
-  private startupTimeoutId: ReturnType<typeof setTimeout> | null = null
-  private cloudWorkspaceTimer: ReturnType<typeof setInterval> | null = null
+class PlatformService implements Service {
+  readonly id = 'platform'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private startupDelayMs = 10_000
@@ -35,42 +40,34 @@ class PlatformService {
   private cloudWorkspaceIntervalMs = 30 * 60_000
   private cachedBilling: ParsedPlatformBillingInfo | null = null
   private lastRefreshedAt: string | null = null
+  // refresh() is self-guarding (no-op when disconnected) and never rejects.
+  private readonly refreshTask = new PassTask('platform.refresh', () => this.refresh())
+  // Self-gates (Electron + connected) and never throws.
+  private readonly cloudWorkspaceTask = new PassTask('platform.cloud-workspace', () => refreshCloudWorkspace())
+  readonly tasks = [this.refreshTask, this.cloudWorkspaceTask]
 
   start(): void {
     if (this.isRunning) return
     this.isRunning = true
     // Defer the first refresh so we don't compete with the rest of boot.
-    // refresh() is self-guarding (no-op when disconnected) and never rejects.
-    this.startupTimeoutId = setTimeout(() => {
-      this.startupTimeoutId = null
-      void this.refresh()
-    }, this.startupDelayMs)
+    background(taskManager().at(Date.now() + this.startupDelayMs, this.refreshTask.type, this.refreshTask.spec), { name: 'platform-service.schedule-refresh' })
     // Keep the cloud-workspace deployment token fresh even when the app is left
-    // running and the Account tab is never opened. Self-gates (Electron +
-    // connected) and never throws.
-    this.cloudWorkspaceTimer = setInterval(() => {
-      void refreshCloudWorkspace()
-    }, this.cloudWorkspaceIntervalMs)
+    // running and the Account tab is never opened.
+    background(taskManager().ensureEvery(this.cloudWorkspaceTask.type, this.cloudWorkspaceTask.spec, { intervalMs: this.cloudWorkspaceIntervalMs }), { name: 'platform-service.schedule-cloud-workspace' })
     // Positive start signal — every service launched by startup.ts logs one
     // so a silent-dead service is distinguishable from a healthy idle one.
     console.log(`[PlatformService] Started (first refresh in ${Math.round(this.startupDelayMs / 1000)}s)`)
   }
 
   stop(): void {
-    if (this.startupTimeoutId) {
-      clearTimeout(this.startupTimeoutId)
-      this.startupTimeoutId = null
-    }
-    if (this.cloudWorkspaceTimer) {
-      clearInterval(this.cloudWorkspaceTimer)
-      this.cloudWorkspaceTimer = null
-    }
+    background(taskManager().cancel(this.refreshTask.type), { name: 'platform-service.cancel-refresh' })
+    background(taskManager().cancel(this.cloudWorkspaceTask.type), { name: 'platform-service.cancel-cloud-workspace' })
     this.isRunning = false
   }
 
-  /** Connect → refresh; disconnect → clear the cache. */
+  /** Connect → refresh; disconnect → clear the cache. Either way the account changed. */
   onAuthChanged(connected: boolean): void {
-    if (connected) void this.refresh()
+    if (connected) background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
     else this.clearCache()
   }
 
@@ -99,6 +96,10 @@ class PlatformService {
       this.cachedBilling = billing
       this.lastRefreshedAt = new Date().toISOString()
     }
+    // The snapshot carries the acting account's plan policy too: a billing
+    // view after an upgrade unlocks models without waiting for the cache.
+    const policy = billingPlanPolicy(billing)
+    if (policy) await platformPlanCache.remember(await actingPlanCacheKey(), policy)
     return billing
   }
 
@@ -110,12 +111,14 @@ class PlatformService {
   async refresh(): Promise<void> {
     try {
       if (this.isProcessing) return
-      if (!getPlatformAuthStatus().connected) {
-        this.clearCache()
-        return
-      }
+      // Claimed before the auth read, so a second refresh() cannot slip in
+      // while it is in flight.
       this.isProcessing = true
       try {
+        if (!(await getPlatformAuthStatus()).connected) {
+          this.clearCache()
+          return
+        }
         await refreshStoredPlatformAccount().catch((error) =>
           captureException(error, { tags: { area: 'platform-service', op: 'refresh-account' } }),
         )

@@ -5,6 +5,8 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { mockSpeech } from '../helpers/speech'
+import { strToU8, zipSync } from 'fflate'
+import { openHomeAdvancedSettings } from '../helpers/agent-home'
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
 
@@ -110,6 +112,31 @@ test.describe('File Preview', () => {
     expect(Math.abs(homeBox!.x + homeBox!.width - (drawerBox!.x + drawerBox!.width))).toBeLessThanOrEqual(1)
   })
 
+  test('a comment on a file opened from agent home goes into the home composer', async ({ page }) => {
+    await agentPage.createAgent(`HomeFileComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report\n\nShipped the export.\n')
+    const bookmarksResponse = await page.request.put(`/api/agents/${agentSlug}/bookmarks`, {
+      data: [{ name: 'Daily report', file: '/workspace/reports/daily.md' }],
+    })
+    expect(bookmarksResponse.ok()).toBeTruthy()
+
+    await page.reload()
+    await page.getByRole('button', { name: 'Daily report' }).click()
+    const line = markdown(page).getByText('Shipped the export.')
+    await expect(line).toBeVisible({ timeout: 10000 })
+    await line.hover()
+    await page.keyboard.press('c')
+    await page.getByPlaceholder('Add your comment...').fill('Say which export')
+    await page.locator('[data-comment-overlay]').getByRole('button', { name: 'Add' }).click()
+    await page.getByTestId('file-preview-tray').getByRole('button', { name: 'Submit' }).click()
+
+    const composer = page.getByTestId('home-message-input')
+    await expect(composer).toContainText('File feedback on daily.md:')
+    await expect(composer).toContainText('Say which export')
+    await expect(composer).toBeFocused()
+  })
+
   test('folder bookmark traverses lazily and opens files while preserving tree state', async ({ page }) => {
     await agentPage.createAgent(`FolderPreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
@@ -126,6 +153,7 @@ test.describe('File Preview', () => {
 
     // The Agent Directory uses the same built-in folder browser on web and
     // Electron; it no longer delegates to an OS-level directory action.
+    await openHomeAdvancedSettings(page)
     await page.getByTestId('home-agent-directory-open-browser').click()
     await expect(page.locator(
       '[data-testid="folder-entry"][data-entry-path="/workspace/reports"]',
@@ -235,6 +263,22 @@ test.describe('File Preview', () => {
     await expect(trayHeader).not.toBeVisible({ timeout: 5000 })
   })
 
+  test('an open file reloads when it changes on disk', async ({ page }) => {
+    await agentPage.createAgent(`FileReload ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+
+    // Written with no message sent and nothing clicked, like a job the agent left running.
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nNew line, longer.\n')
+    await expect(markdown(page).getByText('New line, longer.')).toBeVisible({ timeout: 10000 })
+    await expect(markdown(page).getByText('Old line.')).toHaveCount(0)
+  })
+
   test('re-delivering same file refreshes content', async ({ page }) => {
     await agentPage.createAgent(`FileRedeliver ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
@@ -259,6 +303,34 @@ test.describe('File Preview', () => {
     await secondPill.click()
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 2' })).toBeVisible({ timeout: 10000 })
+  })
+
+  test('highlights what changed in an open file since the last turn, behind a Show changes toggle', async ({ page }) => {
+    await agentPage.createAgent(`FileEdits ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+    const showEdits = page.getByTestId('file-preview-show-edits')
+    await expect(showEdits).toHaveCount(0)
+
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nNew line.\n')
+    const changed = markdown(page).locator('[data-edit="changed"]')
+    await expect(changed).toHaveText('New line.', { timeout: 10000 })
+    await expect(showEdits).toHaveAttribute('aria-pressed', 'true')
+
+    // A new turn starts a new highlight at the next change: the earlier one is no longer tinted.
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nNew line.\n\nAdded line.\n')
+    await expect(changed).toHaveText('Added line.', { timeout: 10000 })
+
+    await showEdits.click()
+    await expect(changed).toHaveCount(0)
+    await expect(markdown(page).getByText('Added line.')).toBeVisible()
   })
 
   test('renders CSV as a table and supports the raw toggle', async ({ page }) => {
@@ -372,7 +444,7 @@ test.describe('File Preview', () => {
     await page.setViewportSize({ width: 1100, height: 800 })
     await page.evaluate(() => localStorage.setItem('tray_drawer_width', '400'))
     // Voice configured, so the row carries the voice-mode button as it does for users who set it up.
-    // Without it the left group is ~40px wider and the label stage would pass a cutoff that
+    // Without it the left group is wider and the label stage would pass a cutoff that
     // collapses the picker for those users.
     await page.route('**/api/voice/configured', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, supportsTts: true }) }),
@@ -389,16 +461,27 @@ test.describe('File Preview', () => {
     await getDeliveredFileRow(page, 'report.md').first().click()
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
 
+    const picker = page.getByTestId('composer-options-trigger')
+    const controls = [
+      page.getByRole('button', { name: 'Add files' }),
+      picker,
+      page.getByTestId('voice-input-button'),
+      page.getByTestId('voice-mode-button'),
+      page.getByTestId('send-button'),
+    ]
     const toolbar = async () => {
-      const [attachBox, pickerBox, sendBox] = await Promise.all([
-        page.getByRole('button', { name: 'Add files' }).boundingBox(),
-        page.getByTestId('composer-options-trigger').boundingBox(),
-        page.getByTestId('send-button').boundingBox(),
-      ])
+      const boxes = await Promise.all(controls.map(control => control.boundingBox()))
+      const chat = await page.getByTestId('session-thread-main').boundingBox()
+      if (!chat || boxes.some(box => !box)) return null
+      const [attachBox, pickerBox, , , sendBox] = boxes
       return {
-        pickerWidth: pickerBox?.width,
-        labelShown: (pickerBox?.width ?? 0) > 34,
-        sendBelowAttach: !!attachBox && !!sendBox && sendBox.y >= attachBox.y + attachBox.height,
+        labelShown: pickerBox!.width > 34,
+        sendBelowAttach: sendBox!.y >= attachBox!.y + attachBox!.height,
+        insideChat: boxes.every(box => box!.x >= chat.x && box!.x + box!.width <= chat.x + chat.width),
+        controlsApart: boxes.every((box, i) => boxes.slice(i + 1).every(other =>
+          box!.x + box!.width <= other!.x || other!.x + other!.width <= box!.x
+          || box!.y + box!.height <= other!.y || other!.y + other!.height <= box!.y,
+        )),
       }
     }
     const drawerWidth = async () => (await page.getByTestId('tray-drawer').boundingBox())?.width
@@ -406,16 +489,26 @@ test.describe('File Preview', () => {
     // The chat is narrower than the window, but the row still leaves the picker room for its label.
     await expect(page.getByTestId('voice-mode-button')).toBeVisible()
     await expect.poll(drawerWidth).toBe(400)
-    await expect.poll(toolbar).toMatchObject({ labelShown: true, sendBelowAttach: false })
+    await expect.poll(toolbar).toMatchObject({ labelShown: true, sendBelowAttach: false, insideChat: true, controlsApart: true })
+    // Trial clicks prove all five controls are reachable without sending a message or
+    // starting voice. The model picker also remains keyboard accessible.
+    await sessionPage.getMessageInput().fill('Toolbar access check')
+    for (const control of controls) await control.click({ trial: true })
+    await picker.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
 
-    // Squeezed further, the drawer slides over the chat at 240px. The right-hand buttons wrap
-    // to their own line, leaving the picker enough room to keep its label.
+    // Squeezed further, the drawer slides over the chat at 240px. The compact controls fit
+    // on one line and the model picker becomes an icon; no button may overlap or escape the chat.
     await page.evaluate(() => localStorage.setItem('tray_drawer_width', '620'))
     await appPage.reload()
     await getDeliveredFileRow(page, 'report.md').first().click()
     await expect.poll(drawerWidth).toBe(620)
     await expect.poll(async () => (await page.getByTestId('session-thread-main').boundingBox())?.width).toBe(240)
-    await expect.poll(toolbar).toMatchObject({ labelShown: true, sendBelowAttach: true })
+    await expect.poll(toolbar).toMatchObject({ labelShown: false, sendBelowAttach: false, insideChat: true, controlsApart: true })
+    // Even without a visible label, assistive technology can still identify the model.
+    await expect(picker).toHaveAccessibleName(/Model and effort: .+\. Click to change\./)
   })
 
   test('renders a video and pins a timestamped comment via the Add Comment button', async ({ page }) => {
@@ -636,7 +729,7 @@ test.describe('File Preview', () => {
         const response = await route.fetch()
         const session = await response.json()
         session.lastActivityAt = new Date(Date.now() - 7 * 3600_000).toISOString()
-        session.lastUsage = { inputTokens: 150_000, outputTokens: 1_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200_000 }
+        session.lastUsage = { totalTokens: 150_000, contextWindow: 200_000 }
         session.pendingWakeAt = new Date(Date.now() + 3 * 3600_000).toISOString()
         session.pendingWakeTaskId = 'task-wake'
         // A long note, so the banner's two-line limit is what holds when it resumes in view.
@@ -666,13 +759,13 @@ test.describe('File Preview', () => {
       await agentPage.createAgent(`SlideOver ${Date.now()}`)
       const agentSlug = await getLatestAgentSlug(page)
       seedWorkspaceFile(agentSlug, 'output/report.md', '# Report')
-      seedWorkspaceFile(agentSlug, 'output/bundle.zip', Buffer.alloc(64))
+      seedWorkspaceFile(agentSlug, 'output/bundle.tar', Buffer.alloc(64))
 
       await sessionPage.sendMessage('deliver archive')
       await sessionPage.waitForResponse(15000)
       await sessionPage.sendMessage('deliver file')
       await sessionPage.waitForResponse(15000)
-      const downloadLabel = getDeliveredFileRow(page, 'bundle.zip').getByText('Download', { exact: true })
+      const downloadLabel = getDeliveredFileRow(page, 'bundle.tar').getByText('Download', { exact: true })
       await expect(downloadLabel).toBeVisible()
       await getDeliveredFileRow(page, 'report.md').first().click()
 
@@ -859,8 +952,16 @@ test.describe('File Preview', () => {
     await page.getByTestId('delivered-images').getByRole('button', { name: 'chart.png', exact: true }).click()
     const image = page.getByTestId('tray-drawer').getByRole('img', { name: 'chart.png', exact: true })
     await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth), { timeout: 10000 }).toBe(400)
-    // The drawer grows in: measure the image once it has its size.
-    await expect.poll(async () => (await image.boundingBox())?.width).toBeGreaterThan(300)
+    // The drawer grows in: click only once the image's box holds still, or a
+    // click measured mid-animation lands a point or two off the expected spot.
+    let lastBox = ''
+    await expect.poll(async () => {
+      const box = await image.boundingBox()
+      const key = box && box.width > 300 ? JSON.stringify(box) : ''
+      const held = key !== '' && key === lastBox
+      lastBox = key
+      return held
+    }).toBe(true)
     const at = async (x: number, y: number) => {
       const b = (await image.boundingBox())!
       await page.mouse.click(b.x + b.width * x, b.y + b.height * y)
@@ -876,6 +977,70 @@ test.describe('File Preview', () => {
     await overlay.getByRole('button', { name: 'Add' }).click()
 
     await expect(page.getByTestId('file-preview-tray').getByText('At position (75%, 15%)')).toBeVisible()
+  })
+
+  test('comments on markdown by selecting text and with C, each on its own lines', async ({ page }) => {
+    await agentPage.createAgent(`MarkdownComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Release notes\n\nThe build is green.\n\nShip it.\n\n## Later\n\nShip it.\n')
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    const doc = markdown(page)
+    await expect(doc.getByRole('heading', { name: 'Later' })).toBeVisible({ timeout: 10000 })
+    const overlay = page.locator('[data-comment-overlay]')
+    const tray = page.getByTestId('file-preview-tray')
+
+    // Selecting shows the chip first, so copying is not interrupted.
+    await doc.getByText('The build is green.').click({ clickCount: 3 })
+    await overlay.getByRole('button', { name: 'Comment' }).click()
+    await expect(overlay.getByText('Line 3: > "The build is green."')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Link the run')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    // C over the second "Ship it." points at that one, not the first.
+    await doc.getByText('Ship it.').nth(1).hover()
+    await page.keyboard.press('c')
+    await expect(overlay.getByText('Line 9: > "Ship it."')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Not yet')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    await expect(tray.getByText('Line 3: > "The build is green."')).toBeVisible()
+    await expect(tray.getByText('Line 9: > "Ship it."')).toBeVisible()
+    await expect(doc.getByText('1', { exact: true })).toBeVisible()
+    await expect(doc.getByText('2', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(true)
+
+    await tray.getByRole('button', { name: 'Submit' }).click()
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toContainText('Line 3: > "The build is green."')
+    await expect(composer).toContainText('Line 9: > "Ship it."')
+    await expect.poll(() => page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(false)
+  })
+
+  test('browses a zip and opens a file inside it, with HTML kept in its sandbox', async ({ page }) => {
+    await agentPage.createAgent(`ZipBrowse ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/bundle.zip', Buffer.from(zipSync({
+      'notes/summary.md': strToU8('# Summary\n\nRevenue up 12%.'),
+      'site/index.html': strToU8('<p id="probe"></p><script>try { probe.textContent = parent.document.title } catch (e) { probe.textContent = e.name }</script>'),
+    })))
+    await sessionPage.sendMessage('deliver zip')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'bundle.zip').first().click()
+    const zip = page.getByTestId('archive-renderer')
+
+    // The zip lists no folder entries, so the list adds them.
+    await zip.locator('[data-entry-path="notes"]').click()
+    await zip.locator('[data-entry-path="notes/summary.md"]').click()
+    await expect(zip.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible({ timeout: 10000 })
+
+    await zip.getByTestId('file-tab-select').filter({ hasText: 'Files' }).click()
+    await zip.locator('[data-entry-path="site"]').click()
+    await zip.locator('[data-entry-path="site/index.html"]').click()
+    await expect(zip.frameLocator('iframe').locator('#probe')).toHaveText('SecurityError', { timeout: 10000 })
+    // Opened in a tab of its own, the page still cannot run as the app: a data: URL has no origin, a blob: URL has the app's.
+    await expect(zip.locator('iframe')).toHaveAttribute('src', /^data:text\/html;/)
   })
 
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {

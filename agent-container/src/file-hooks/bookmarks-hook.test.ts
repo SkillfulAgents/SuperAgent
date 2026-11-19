@@ -227,6 +227,10 @@ describe('resolveToolFilePath', () => {
     expect(result).toMatch(/bookmarks\.json$/)
   })
 
+  it('normalizes dot segments in an absolute path', () => {
+    expect(resolveToolFilePath({ file_path: '/mounts/notes/./x/../INDEX.md' }, '/workspace')).toBe('/mounts/notes/INDEX.md')
+  })
+
   it('returns null when file_path is missing', () => {
     const result = resolveToolFilePath({}, '/workspace')
     expect(result).toBeNull()

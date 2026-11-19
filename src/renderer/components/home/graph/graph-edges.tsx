@@ -602,7 +602,7 @@ function EdgeToolbar({
   return (
     <EdgeLabelRenderer>
       <div
-        className="nodrag nopan absolute flex items-center gap-0.5 rounded-md border border-border/60 bg-card p-0.5 shadow-sm"
+        className="nodrag nopan absolute flex items-center gap-0.5 rounded-item border border-border/60 bg-card p-0.5 shadow-sm"
         style={{
           transform: `translate(-50%, -50%) translate(${geometry.labelX + dx}px, ${geometry.labelY + dy}px)`,
           pointerEvents: 'all',
@@ -613,7 +613,7 @@ function EdgeToolbar({
           <button
             type="button"
             title="Edit permissions"
-            className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="rounded-icon p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             onClick={() => data.onEditPermissions?.(id)}
             data-testid="graph-edge-edit"
           >
@@ -624,7 +624,7 @@ function EdgeToolbar({
           <button
             type="button"
             title="Remove connection"
-            className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-red-500"
+            className="rounded-icon p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-red-500"
             onClick={() => data.onDelete?.(id)}
             data-testid="graph-edge-delete"
           >

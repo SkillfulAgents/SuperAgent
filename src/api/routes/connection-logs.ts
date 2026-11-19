@@ -12,6 +12,7 @@ import {
   normalizeMcpRequestLog,
   normalizeProxyRequestLog,
 } from '@shared/lib/types/request-log'
+import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
 import { Authenticated } from '../middleware/auth'
 import { parsePagination } from '../pagination'
 
@@ -60,7 +61,7 @@ connectionLogsRouter.get('/:kind/:id', async (c) => {
       ])
 
       return c.json({
-        entries: entries.map(normalizeProxyRequestLog),
+        entries: await withRuleNames(entries.map(normalizeProxyRequestLog)),
         total: totalResult[0]?.count ?? 0,
       })
     }
@@ -91,7 +92,7 @@ connectionLogsRouter.get('/:kind/:id', async (c) => {
     ])
 
     return c.json({
-      entries: entries.map(normalizeMcpRequestLog),
+      entries: await withRuleNames(entries.map(normalizeMcpRequestLog)),
       total: totalResult[0]?.count ?? 0,
     })
   } catch (error) {

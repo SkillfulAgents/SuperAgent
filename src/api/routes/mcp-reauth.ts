@@ -18,7 +18,7 @@ const replacementSchema = z.object({ remoteMcpIds: z.array(z.string().min(1)).le
 
 async function loadRequestedMcp(requestId: string, agentSlug: string) {
   // The actor only hands back this agent's requests; another agent's reads as absent.
-  const request = agentRegistry.get(agentSlug).inputs.get(requestId)
+  const request = await agentRegistry.get(agentSlug).inputs.get(requestId)
   if (request?.kind !== 'mcp_reauth_required' || !request.payload.mcpId) return null
   return (await db.select({ mapping: agentRemoteMcps, mcp: remoteMcpServers })
     .from(agentRemoteMcps).innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
@@ -77,13 +77,8 @@ mcpReauth.post('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), async 
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.previousId, action: 'unassigned', details: { agentSlug } })
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.replacementId, action: 'assigned', details: { agentSlug } })
-    const recovery = await finishConnectionReplacement({ agentSlug, kind: 'remote-mcps', ...result }, () => {
-      const actor = agentRegistry.get(agentSlug)
-      if (!actor.inputs.mcpReauth.replace(requestId, result.replacementId)) {
-        actor.inputs.resolve(requestId, 'answered')
-        actor.sessions.syncAwaiting()
-      }
-    })
+    const recovery = await finishConnectionReplacement({ agentSlug, kind: 'remote-mcps', ...result }, () =>
+      agentRegistry.get(agentSlug).inputs.mcpReauth.settleReplaced(requestId, result.replacementId))
     return c.json({ success: true, ...recovery })
   } catch (error) {
     console.error('Failed to replace MCP connection:', error)

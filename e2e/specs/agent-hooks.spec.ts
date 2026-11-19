@@ -4,6 +4,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { openHomeSection } from '../helpers/agent-home'
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
 
@@ -75,12 +76,14 @@ test.describe('Agent hooks', () => {
     await page.reload()
     await expect(page.getByText('Hooks', { exact: true })).toBeVisible({ timeout: 15000 })
 
+    await openHomeSection(page, 'Hooks')
     const rows = page.getByTestId('home-hooks-row')
     await expect(rows).toHaveCount(2)
     await expect(rows.filter({ hasText: 'UserPromptSubmit' })).toContainText('gate.py')
     await expect(rows.filter({ hasText: 'PreToolUse' })).toContainText('echo pre-bash-check')
 
     // UserPromptSubmit hooks can block all input — the section must warn.
+    await openHomeSection(page, 'Hooks')
     await expect(page.getByTestId('home-hooks-warning')).toBeVisible()
   })
 
@@ -90,6 +93,7 @@ test.describe('Agent hooks', () => {
     seedClaudeSettings(agentSlug, SEEDED_SETTINGS)
     await page.reload()
 
+    await openHomeSection(page, 'Hooks')
     const promptRow = page.getByTestId('home-hooks-row').filter({ hasText: 'UserPromptSubmit' })
     await expect(promptRow).toBeVisible({ timeout: 15000 })
 
@@ -98,6 +102,7 @@ test.describe('Agent hooks', () => {
     await page.getByRole('button', { name: 'Remove Hook' }).click()
     await page.getByRole('alertdialog').getByRole('button', { name: 'Remove Hook' }).click()
 
+    await openHomeSection(page, 'Hooks')
     await expect(page.getByTestId('home-hooks-row')).toHaveCount(1, { timeout: 10000 })
     await expect(page.getByTestId('home-hooks-warning')).not.toBeVisible()
 

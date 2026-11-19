@@ -3,6 +3,7 @@ import {
   translateProxyBody,
   isJsonContentType,
   isBinaryContentType,
+  isPreviewableContentType,
   MAX_PROXY_BINARY_BYTES,
 } from './body-translation'
 
@@ -37,15 +38,10 @@ describe('isJsonContentType', () => {
     'application/octet-stream',
     'application/x-www-form-urlencoded',
     'multipart/form-data',
-    'application/jsonsomething', // doesn't end at +json or boundary — but our regex is permissive
+    'application/jsonsomething',
+    'application/octet-stream; name=application/json',
   ])('returns false for %j', (ct) => {
-    if (ct === 'application/jsonsomething') {
-      // Our impl uses substring match for application/json, so this still matches.
-      // Skip this case from the false expectation — keep it documented.
-      expect(isJsonContentType(ct)).toBe(true)
-    } else {
-      expect(isJsonContentType(ct)).toBe(false)
-    }
+    expect(isJsonContentType(ct)).toBe(false)
   })
 })
 
@@ -62,6 +58,7 @@ describe('isBinaryContentType', () => {
     'application/octet-stream; charset=binary',
     'multipart/related; boundary=Upload_123',
     'MULTIPART/RELATED; boundary=Upload_123',
+    'application/octet-stream; name=application/json',
   ])('returns true for %j', (ct) => {
     expect(isBinaryContentType(ct)).toBe(true)
   })
@@ -80,6 +77,31 @@ describe('isBinaryContentType', () => {
     'MULTIPART/FORM-DATA',
   ])('returns false for %j', (ct) => {
     expect(isBinaryContentType(ct)).toBe(false)
+  })
+})
+
+describe('isPreviewableContentType', () => {
+  it.each([
+    'application/json',
+    'TEXT/PLAIN;charset=utf-8',
+    'application/vnd.api+json; charset=utf-8',
+    'application/x-ndjson',
+    'application/x-www-form-urlencoded',
+    'application/graphql',
+    'application/atom+xml',
+    'image/svg+xml',
+  ])('returns true for %j', (ct) => {
+    expect(isPreviewableContentType(ct)).toBe(true)
+  })
+
+  it.each([
+    undefined,
+    '',
+    'application/octet-stream; name=data.json',
+    'multipart/form-data; boundary=json',
+    'image/png; name=text/plain',
+  ])('returns false for %j', (ct) => {
+    expect(isPreviewableContentType(ct)).toBe(false)
   })
 })
 
@@ -259,23 +281,23 @@ describe('translateProxyBody', () => {
     })
   })
 
-  describe('unsupported media types (415)', () => {
+  describe('form-encoded bodies', () => {
     it.each([
-      ['application/x-www-form-urlencoded', 'foo=bar&baz=qux'],
-      [
-        'application/x-www-form-urlencoded; charset=utf-8',
-        'token=xyz',
-      ],
-    ])('rejects form-encoded %j with 415', (ct, body) => {
-      const r = translateProxyBody('POST', ct, bufFromString(body))
-      expect(r).toMatchObject({
-        ok: false,
-        status: 415,
-        errorCode: 'unsupported_media_type',
+      'application/x-www-form-urlencoded',
+      'application/x-www-form-urlencoded; charset=utf-8',
+    ])('forwards %j as binary_body with its content type', (ct) => {
+      const r = translateProxyBody('POST', ct, bufFromString('channel=general&text=hello'))
+      expect(r).toEqual({
+        ok: true,
+        binaryBody: {
+          base64: Buffer.from('channel=general&text=hello').toString('base64'),
+          content_type: ct,
+        },
       })
-      if (!r.ok) expect(r.message).toContain(ct)
     })
+  })
 
+  describe('unsupported media types (415)', () => {
     it('rejects multipart/form-data with 415', () => {
       const ct = 'multipart/form-data; boundary=----xyz'
       const body = '------xyz\r\nContent-Disposition: form-data; name="x"\r\n\r\n1\r\n------xyz--\r\n'
@@ -318,8 +340,8 @@ describe('translateProxyBody', () => {
     it('error message guides the user toward custom auth config', () => {
       const r = translateProxyBody(
         'POST',
-        'application/x-www-form-urlencoded',
-        bufFromString('a=b')
+        'text/plain',
+        bufFromString('hello')
       )
       expect(r.ok).toBe(false)
       if (!r.ok) {

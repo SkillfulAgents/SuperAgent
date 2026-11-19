@@ -2,13 +2,18 @@
  * agent-preferences.json hardening: serialized + atomic writes, and
  * never persist a `{}` synthesized from a parse error (which would drop all prefs).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { updateAgentPreferences, readAgentPreferences } from './agent-preferences-service'
 
 let tmpDir: string
+// Settings (read alongside the preferences) are in the app database: a fresh test database per test.
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 function prefsPath(slug: string): string {
   return path.join(tmpDir, 'agents', slug, 'workspace', 'agent-preferences.json')
@@ -17,12 +22,15 @@ function makeAgent(slug: string): void {
   fs.mkdirSync(path.dirname(prefsPath(slug)), { recursive: true })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-prefs-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
+  handle = await createTestDatabase()
+  testDb = handle.db
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await handle.close()
   fs.rmSync(tmpDir, { recursive: true, force: true })
   delete process.env.SUPERAGENT_DATA_DIR
 })

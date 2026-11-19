@@ -14,7 +14,7 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
@@ -98,15 +98,19 @@ const MAX_SET_POLICY_ATTEMPTS = 5
  * read, or insert only while no row holds the key (the NULL-safe unique
  * index from migration 0044 makes a global, null-target key conflict too);
  * zero changes means read again and swap against what the other writer left.
+ *
+ * With keepBlock, a stored Block is left in place and reported as
+ * previousDecision 'block': nothing was written.
  */
 export function setPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
   decision: XAgentDecision,
+  { keepBlock = false }: { keepBlock?: boolean } = {},
 ): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   return serializeByKey(`x-agent-policy:${callerSlug}\u0000${operation}\u0000${targetSlug ?? ''}`, () =>
-    compareAndSetPolicy(callerSlug, operation, targetSlug, decision),
+    compareAndSetPolicy(callerSlug, operation, targetSlug, decision, keepBlock),
   )
 }
 
@@ -115,6 +119,7 @@ async function compareAndSetPolicy(
   operation: XAgentOperation,
   targetSlug: string | null,
   decision: XAgentDecision,
+  keepBlock: boolean,
 ): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   const now = new Date()
   const key = and(
@@ -129,6 +134,8 @@ async function compareAndSetPolicy(
       .where(key)
       .get()
     if (existing) {
+      // Leaves a Block in place and reports it, so the caller can refuse.
+      if (keepBlock && existing.decision === 'block') return { created: false, previousDecision: 'block' }
       const updated = await db
         .update(xAgentPolicies)
         .set({ decision, updatedAt: now })
@@ -174,34 +181,14 @@ export async function deletePolicy(
   return changesOf(result)
 }
 
-/**
- * Delete the specific-target policy rows for (caller, operation, target).
- * With `preserveBlock`, 'block' rows survive: revoking a granted edge must
- * not silently lift an explicit block (that would ESCALATE access — the
- * effective decision would fall back to a global allow, if one exists).
- * Returns the number of rows removed.
- */
-export async function deleteTargetPolicy(
-  callerSlug: string,
-  operation: XAgentOperation,
-  targetSlug: string,
-  options?: { preserveBlock?: boolean },
-): Promise<number> {
-  if (!options?.preserveBlock) {
-    return deletePolicy(callerSlug, operation, targetSlug)
-  }
-  const conditions = [
+/** Remove a granted graph edge. Revoking an edge must preserve any review or block override. */
+export async function deleteTargetGrant(callerSlug: string, operation: XAgentOperation, targetSlug: string): Promise<number> {
+  const result = await db.delete(xAgentPolicies).where(and(
     eq(xAgentPolicies.callerAgentSlug, callerSlug),
     eq(xAgentPolicies.operation, operation),
     eq(xAgentPolicies.targetAgentSlug, targetSlug),
-  ]
-  if (options?.preserveBlock) {
-    conditions.push(ne(xAgentPolicies.decision, 'block'))
-  }
-  const result = await db
-    .delete(xAgentPolicies)
-    .where(and(...conditions))
-    .run()
+    eq(xAgentPolicies.decision, 'allow'),
+  )).run()
   return changesOf(result)
 }
 
@@ -223,19 +210,35 @@ export async function deleteTargetPolicy(
  * Note: invoke_agent's sync=true response (which echoes the target's reply) is
  * part of the invoke contract and does not require 'read' — 'read' only gates
  * browsing existing sessions via get_agent_sessions / get_agent_session_transcript.
+ *
+ * One statement either way: both candidate rows are read together and the
+ * specific-target one sorts first, so the row that comes back is the one the
+ * precedence above picks.
  */
 export async function evaluate(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
 ): Promise<XAgentDecision> {
-  if (targetSlug !== null) {
-    const exact = await getPolicy(callerSlug, operation, targetSlug)
-    if (exact) return exact.decision
+  if (targetSlug === null) {
+    return (await getPolicy(callerSlug, operation, null))?.decision ?? 'review'
   }
-  const global = await getPolicy(callerSlug, operation, null)
-  if (global) return global.decision
-  return 'review'
+  const rows = await db
+    .select({ decision: xAgentPolicies.decision })
+    .from(xAgentPolicies)
+    .where(
+      and(
+        eq(xAgentPolicies.callerAgentSlug, callerSlug),
+        eq(xAgentPolicies.operation, operation),
+        or(eq(xAgentPolicies.targetAgentSlug, targetSlug), isNull(xAgentPolicies.targetAgentSlug)),
+      ),
+    )
+    // The specific-target row before the global one; among duplicates of
+    // either (see getPolicy), the latest write.
+    .orderBy(sql`${xAgentPolicies.targetAgentSlug} is null`, desc(xAgentPolicies.updatedAt))
+    .limit(1)
+    .all()
+  return rows[0]?.decision ?? 'review'
 }
 
 /**

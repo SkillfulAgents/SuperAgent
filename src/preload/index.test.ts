@@ -38,6 +38,7 @@ type ExposedApi = {
   revealInFolder: (hostPath: string) => Promise<string | null>
   createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
   getPathForFile: (file: File) => string
+  pushAgentStatus: (payload: unknown) => Promise<boolean>
   showNotification: (
     title: string,
     body: string,
@@ -122,6 +123,13 @@ describe('preload electronAPI bridge', () => {
       iconPng: [1, 2, 3],
     })
 
+    const agentStatus = { target: 'local', agents: [{ slug: 'agent-one', name: 'One', activityStatus: 'working' }] }
+    electronMocks.invoke.mockResolvedValueOnce(true)
+    await expect(api.pushAgentStatus(agentStatus)).resolves.toBe(true)
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith('push-agent-status', agentStatus)
+    await api.pushAgentStatus(null)
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith('push-agent-status', null)
+
     expect(api.platform).toBe(process.platform)
     expect(api.osVersion).toBe('14.4.1')
     expect(api).not.toHaveProperty('ipcRenderer')
@@ -144,12 +152,15 @@ describe('preload electronAPI bridge', () => {
     api.onNavigateToAgent(callback)
 
     const handler = electronMocks.on.mock.calls.find(([channel]) => channel === 'navigate-to-agent')?.[1] as
-      | ((event: unknown, agentSlug: string, sessionId?: string | null) => void)
+      | ((event: unknown, agentSlug: string, sessionId?: string | null, messageUuid?: unknown) => void)
       | undefined
     expect(handler).toBeDefined()
 
     handler?.({}, 'agent-one', 'session-one')
-    expect(callback).toHaveBeenCalledWith('agent-one', 'session-one')
+    expect(callback).toHaveBeenCalledWith('agent-one', 'session-one', undefined)
+    // A mention banner also names the message to land on.
+    handler?.({}, 'agent-one', 'session-one', 'msg-7')
+    expect(callback).toHaveBeenLastCalledWith('agent-one', 'session-one', 'msg-7')
 
     api.removeNavigateToAgent()
     expect(electronMocks.removeAllListeners).toHaveBeenCalledWith('navigate-to-agent')

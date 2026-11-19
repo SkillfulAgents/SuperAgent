@@ -39,7 +39,7 @@ To get strated with Superagent, you need:
 # Getting Started
 
 ## Desktop App
-Download the latest release from the links above, or visit the [releases page](https://github.com/SkillfulAgents/SuperAgent/releases/latest).
+Download the latest release from the links above, or visit the [releases page](https://github.com/SkillfulAgents/Gamut/releases/latest).
 
 ## Running with Docker
 
@@ -119,6 +119,7 @@ Superagent can run in **auth mode** for multi-user deployments with role-based a
 
 - The first user to sign up is automatically promoted to **admin**.
 - Subsequent users sign up as regular users.
+- On a Platform-managed deployment, members join through Platform instead, and each member's first sign-in gives them their Platform role (owners and admins become **admin**, members become **user**) rather than promoting whoever arrives first. It is set at that sign-in only, so a role changed later in Settings > Users stays.
 - Admins can manage users and access global settings (LLM keys, runtime config).
 - Each agent has an **owner** (the creator) who can invite other users as **user** (can chat) or **viewer** (read-only).
 - Auth mode is **web-only** — the Electron desktop app always runs in single-user mode.
@@ -167,10 +168,13 @@ Both regular and auth-enabled images are published on every push to `main` and o
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `BETTER_AUTH_SECRET` | Secret key for signing session cookies (min 32 chars). If not set, a secret is auto-generated and persisted to `$SUPERAGENT_DATA_DIR/.auth-secret`. | Auto-generated |
+| `SUPERAGENT_VAULT_KEY` / `SUPERAGENT_VAULT_KEY_FILE` | The Browser Vault's encryption key (32 random bytes, base64), or the path of a mounted secret file that holds it. Set one. Unlike `BETTER_AUTH_SECRET`, it cannot be changed once logins are saved. If neither is set, the key is made on first use and kept in `$SUPERAGENT_DATA_DIR/.vault-key`. See [Browser Vault § Key custody](docs/browser-vault.md#key-custody). | `$SUPERAGENT_DATA_DIR/.vault-key` |
 | `TRUSTED_ORIGINS` | Comma-separated list of allowed origins for CORS and CSRF protection. The first origin is also used as the app's base URL for OAuth callbacks. Example: `https://superagent.example.com` | None (permissive CORS) |
 | `HOST` | Server hostname, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `localhost` |
 | `PORT` | Server port, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `47891` |
 | `USE_HTTPS` | Use `https` protocol in the auth base URL when `TRUSTED_ORIGINS` is not set. | `false` |
+| `HOST_PUBLIC_URL` | The public https address of the app, for links and pages handed to outside services (OAuth callbacks, the meeting bot's camera page). Features that need the internet to reach the app, such as [meetings](docs/meeting-integrations.md), are offered only when this is set to a non-private https URL. | First `TRUSTED_ORIGINS` entry (links only) |
+| `RECALL_API_KEY` / `RECALL_REGION` | Self-hosted alternative to the platform proxy for meeting bots: a Recall.ai key and its region (`us-west-2` default). Not needed when the platform is connected. | None |
 
 ### Example: production deployment
 
@@ -231,7 +235,7 @@ ANTHROPIC_API_KEY=your-api-key-here
 ### Distribution
 | Script | Description |
 |--------|-------------|
-| `npm run dist:mac` | Package Electron app for macOS |
+| `npm run dist:mac` | Package Electron app for macOS. Building the built-in runtime's VM image needs Docker running (`scripts/build-lima-image.sh`); without it the app ships Alpine's stock image, whose first boot downloads sudo and reboots once |
 | `npm run dist:win` | Package Electron app for Windows |
 | `npm run preview` | Build and run production server locally |
 
@@ -251,6 +255,38 @@ ANTHROPIC_API_KEY=your-api-key-here
 | `npm run db:generate` | Generate new migration |
 | `npm run db:studio` | Open Drizzle Studio |
 | `npm run db:reset` | Reset database |
+
+## On-demand PR desktop builds
+
+To build signed macOS and Windows installers for a PR, open **Actions → PR Build →
+Run workflow**, leave the workflow branch as `main`, and enter the PR number.
+You can also trigger it from this checkout with GitHub CLI:
+
+```sh
+gh workflow run pr-build.yml --ref main -f pr_number=1477
+```
+
+Replace `1477` with the PR to build. The workflow resolves its current head commit
+once and uses it for both platforms. It posts the commit and artifact download
+links in a PR comment; artifacts are retained for 14 days. Signed builds require
+a PR branch in this repository, because they use repository signing secrets.
+
+For the Mac App Store package as well, tick **Also build the Mac App Store
+package** (or add `-f mas=true`). App Store Connect validates it, and it is
+never uploaded. It needs the Store's signing secrets (see
+`.github/workflows/build-mas.yml`); without them the comment says it was skipped.
+
+The manual trigger becomes available once this workflow change is merged into
+`main`. PR pushes run tests without automatically packaging desktop apps; builds
+on `main` pushes and version-tag releases still run automatically. The Mac App
+Store package is built only by releases, and on demand for a PR. A release
+uploads it to App Store Connect and adds it to the TestFlight groups: Team at
+once, and Beta after Beta App Review. Every release of a version shares one
+TestFlight version (0.6.0-rc.1, rc.2 and 0.6.0 are all 0.6.0), so only its
+first build needs a full review. A full release also leaves the macOS App Store
+version ready to submit: the version being prepared takes its number and build,
+or a new version is made, with the last one's listing, once the last is out.
+Submitting it for review is a click in App Store Connect.
 
 ## Architecture
 

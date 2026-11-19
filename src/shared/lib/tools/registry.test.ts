@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import { formatToolName } from './types'
 import { getToolDefinition, getRegisteredDefinitionNames } from './registry'
 import { getRegisteredRendererNames, getToolRenderer } from './renderers'
@@ -202,6 +204,22 @@ describe('tool definition getSummary', () => {
     })
   })
 
+  describe('browser_get_state', () => {
+    it('returns null for the default call', () => {
+      expect(summary('mcp__browser__browser_get_state', {})).toBeNull()
+    })
+
+    it('describes scope and a skipped screenshot', () => {
+      expect(summary('mcp__browser__browser_get_state', { scope: '#main', screenshot: false })).toBe('#main · no screenshot')
+    })
+  })
+
+  describe('browser_upload', () => {
+    it('returns the file name', () => {
+      expect(summary('mcp__browser__browser_upload', { filePath: '/workspace/uploads/cv.pdf' })).toBe('cv.pdf')
+    })
+  })
+
   describe('unknown tools', () => {
     it('returns null via registry', () => {
       expect(summary('UnknownTool', { foo: 'bar' })).toBeNull()
@@ -227,6 +245,14 @@ describe('registry completeness', () => {
     expect(missingRenderers).toEqual([])
   })
 
+  it('every browser tool the container exposes has a definition and renderer', () => {
+    const source = readFileSync(resolve(__dirname, '../../../../agent-container/src/tools/browser.ts'), 'utf8')
+    const containerTools = [...source.matchAll(/tool\(\s*'(browser_[a-z_]+)'/g)].map((m) => `mcp__browser__${m[1]}`)
+    expect(containerTools.length).toBeGreaterThan(0)
+    expect(containerTools.filter((name) => !definitionNames.has(name))).toEqual([])
+    expect(containerTools.filter((name) => !rendererNames.has(name))).toEqual([])
+  })
+
   it.each([
     ['WebSearch', 'mcp__web__web_search'],
     ['WebFetch', 'mcp__web__web_fetch'],
@@ -245,4 +271,29 @@ describe('registry completeness', () => {
 it('registers unified integration discovery in host definitions and renderers', () => {
   expect(getToolDefinition('mcp__chat__list_agent_integrations')?.displayName).toBe('List Agent Integrations')
   expect(getRegisteredRendererNames()).toContain('mcp__chat__list_agent_integrations')
+})
+
+// ── Bash service-call variants ───────────────────────────────────────
+
+describe('getToolRenderer with input', () => {
+  it('narrows a Bash call to a platform service to that service', () => {
+    const renderer = getToolRenderer('Bash', { command: 'curl "$PROXY_BASE_URL/a/api.github.com/user"', description: 'Who am I' })
+    expect(renderer?.displayName).toBe('GitHub')
+    expect(renderer?.getSummary?.({ description: 'Who am I' })).toBe('Who am I')
+    expect(renderer?.ExpandedView).toBe(getToolRenderer('Bash')?.ExpandedView)
+  })
+
+  it('keeps the terminal for any other Bash call, and is stable across calls', () => {
+    expect(getToolRenderer('Bash', { command: 'ls' })).toBe(getToolRenderer('Bash'))
+    expect(getToolRenderer('Bash', { command: 42, description: 'Malformed' })).toBe(getToolRenderer('Bash'))
+    const input = { command: 'curl "$PLATFORM_BASE_URL/v1/apollo/people/match"' }
+    expect(getToolRenderer('Bash', input)).toBe(getToolRenderer('Bash', { ...input }))
+  })
+
+  it('keeps a direct curl a Bash row, with the site icon after the description', () => {
+    const renderer = getToolRenderer('Bash', { command: 'curl -sS https://arxiv.org/abs/2401.1' })
+    expect(renderer?.displayName).toBe('Bash')
+    expect(renderer?.icon).toBe(getToolRenderer('Bash')?.icon)
+    expect(renderer?.CollapsedContent).toBeDefined()
+  })
 })

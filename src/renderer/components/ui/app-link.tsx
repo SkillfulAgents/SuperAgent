@@ -3,6 +3,7 @@ import {
   forwardRef,
   type KeyboardEventHandler,
   type MouseEventHandler,
+  type PointerEventHandler,
   type ReactNode,
 } from 'react'
 import { cn } from '@shared/lib/utils/cn'
@@ -15,6 +16,7 @@ type AppLinkProps = LinkProps & {
   /** Bake in `app-no-drag` for header/breadcrumb links sitting in the drag region. */
   noDrag?: boolean
   children?: ReactNode
+  onPointerDown?: PointerEventHandler<HTMLAnchorElement>
   onClick?: MouseEventHandler<HTMLAnchorElement>
   onDoubleClick?: MouseEventHandler<HTMLAnchorElement>
   onKeyDown?: KeyboardEventHandler<HTMLAnchorElement>

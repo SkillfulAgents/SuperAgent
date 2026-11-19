@@ -114,4 +114,66 @@ describe('S3 object-store filesystem behavior', () => {
     await expect(f.volume().write('collision', new Blob(['replace']).stream())).rejects.toMatchObject({ code: 'not-a-file' })
     expect(f.bytes('collision')).toEqual(bytes('keep')); expect(f.bytes('collision/file')).toEqual(bytes('also keep'))
   })
+
+  it('answers lookups of new names from a warm listing and keeps it warm through its own changes', async () => {
+    const f = s3Fixture(); const volume = f.volume()
+    await volume.list('')
+    const before = f.requests.length
+    await expect(volume.stat('new.txt')).rejects.toMatchObject({ code: 'not-found' })
+    expect(f.requests.length).toBe(before)
+    await volume.write('new.txt', new Blob(['hello']).stream())
+    await volume.mkdir('dir')
+    const settled = f.requests.length
+    expect((await volume.list('')).find(entry => entry.name === 'new.txt')).toMatchObject({ kind: 'file', size: 5 })
+    expect(await volume.list('dir')).toEqual([])
+    await expect(volume.stat('dir/missing')).rejects.toMatchObject({ code: 'not-found' })
+    expect(f.requests.length).toBe(settled)
+    await volume.delete('new.txt')
+    const deleted = f.requests.length
+    expect((await volume.list('')).some(entry => entry.name === 'new.txt')).toBe(false)
+    expect(f.requests.length).toBe(deleted)
+  })
+
+  it('reads a warm listing again after a change fails', async () => {
+    const f = s3Fixture(); const volume = f.volume()
+    await volume.list('')
+    f.failWrite()
+    await expect(volume.write('new.txt', new Blob(['hello']).stream())).rejects.toBeTruthy()
+    const lists = f.count('list', '')
+    await volume.list('')
+    expect(f.count('list', '')).toBe(lists + 1)
+  })
+
+  it('does not let a listing read before a write hide that write', async () => {
+    const f = s3Fixture(); const volume = f.volume()
+    const original = f.transport.getMockImplementation()!
+    let held = false, release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.transport.mockImplementation(async (...args) => {
+      const response = await original(...args)
+      if (!held && args[0].query?.delimiter) { held = true; await gate }
+      return response
+    })
+    const reading = volume.list('')
+    await vi.waitFor(() => expect(held).toBe(true))
+    await volume.write('new.txt', new Blob(['hello']).stream())
+    release()
+    await reading
+    expect(await volume.stat('new.txt')).toMatchObject({ kind: 'file', size: 5 })
+  })
+
+  it('checks the parent afresh even when its listing is warm', async () => {
+    const f = s3Fixture(); const volume = f.volume()
+    f.mkdir('dir'); await volume.list('dir')
+    f.putObject('mounted/dir', bytes('a file with the folder name'))
+    await expect(volume.write('dir/child', new Blob(['x']).stream())).rejects.toBeTruthy()
+    expect(f.objects.has('mounted/dir/child')).toBe(false)
+  })
+
+  it('deletes a file with one lookup of it', async () => {
+    const f = s3Fixture(); f.put('gone.txt', bytes('gone'))
+    await f.volume().delete('gone.txt')
+    expect(f.requests.filter(request => request.method === 'HEAD' && request.key === 'mounted/gone.txt')).toHaveLength(1)
+    expect(f.exists('gone.txt')).toBe(false)
+  })
 })

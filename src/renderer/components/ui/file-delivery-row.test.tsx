@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { MAX_ZIP_BYTES } from '@renderer/lib/file-types'
 import { FileDeliveryRow } from './file-delivery-row'
 
 const openFile = vi.fn()
@@ -48,7 +49,7 @@ describe('FileDeliveryRow', () => {
 
   // The drawer can render these, so the row points at it instead of offering a
   // download the user would have to open from disk.
-  it.each(['report.md', 'data.csv', 'chart.png', 'clip.mp4', 'report.pdf', 'notes.txt', 'app.ts'])(
+  it.each(['report.md', 'data.csv', 'chart.png', 'clip.mp4', 'report.pdf', 'notes.txt', 'app.ts', 'bundle.zip'])(
     'points %s at the preview drawer',
     (name) => {
       render(<FileDeliveryRow filePath={`/workspace/output/${name}`} agentSlug="test-agent" />)
@@ -58,7 +59,7 @@ describe('FileDeliveryRow', () => {
   )
 
   // Nothing to show for these, so downloading is the only useful action.
-  it.each(['sheet.xlsx', 'bundle.zip', 'deck.pptx', 'Inter.ttf', 'part.stl'])(
+  it.each(['sheet.xlsx', 'deck.pptx', 'Inter.ttf', 'part.stl'])(
     'offers a download for %s',
     (name) => {
       render(<FileDeliveryRow filePath={`/workspace/output/${name}`} agentSlug="test-agent" />)
@@ -69,6 +70,12 @@ describe('FileDeliveryRow', () => {
       )
     }
   )
+
+  it('offers a download for a zip past the preview limit', () => {
+    render(<FileDeliveryRow filePath="/workspace/output/bundle.zip" agentSlug="test-agent" sizeBytes={MAX_ZIP_BYTES + 1} />)
+    expect(screen.getByTestId('file-delivery-row')).toHaveAttribute('data-file-action', 'download')
+    expect(screen.getByRole('link', { name: 'Download bundle.zip' })).toBeInTheDocument()
+  })
 
   it('opens the file preview on click, but not from the download link', () => {
     render(<FileDeliveryRow filePath="/workspace/output/sheet.xlsx" agentSlug="test-agent" description="Numbers" />)

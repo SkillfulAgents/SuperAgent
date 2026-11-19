@@ -54,6 +54,13 @@ describe('SessionThread footer layout', () => {
     vi.unstubAllGlobals()
   })
 
+  it('renders only the composer shell before the first send', () => {
+    renderWithProviders(<SessionThread sessionId={null} agentSlug="agent-1" footer={<div>Composer</div>} overlayFooter />)
+    expect(screen.getByText('Composer')).toBeVisible()
+    expect(screen.queryByTestId('message-list')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('activity-indicator')).not.toBeInTheDocument()
+  })
+
   it('overlays the footer and keeps measured clearance beneath the live edge', () => {
     renderWithProviders(
       <SessionThread

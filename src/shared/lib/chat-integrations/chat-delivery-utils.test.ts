@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveDisplayName, shouldHideToolStatusInChat, isDisplayNameFallback } from './chat-delivery'
+import { deriveDisplayName, friendlyErrorMessage, shouldHideToolStatusInChat, isDisplayNameFallback } from './chat-delivery'
 import { buildSessionName } from './chat-policy'
 
 // ── deriveDisplayName ───────────────────────────────────────────────────
@@ -188,5 +188,21 @@ describe('buildSessionName', () => {
   it('does NOT append timestamp when timeout is 0', () => {
     const name = buildSessionName('My Bot', 'telegram', 'Alice', 0)
     expect(name).toBe('My Bot — Alice')
+  })
+})
+
+// ── friendlyErrorMessage ────────────────────────────────────────────────
+
+describe('friendlyErrorMessage', () => {
+  it('uses the session provider\'s chat wording over the code-based message', () => {
+    // The CLI may tag a plan's 403 as an auth failure; the provider recognized it.
+    const presentation = { severity: 'warning', icon: 'lock', message: '**Fable 5.1 isn\'t included in your plan**', chatText: '⚠️ Fable 5.1 isn\'t included in your workspace\'s plan.' }
+    expect(friendlyErrorMessage('authentication_failed', presentation)).toBe("⚠️ Fable 5.1 isn't included in your workspace's plan.")
+  })
+
+  it('keeps the code-based message when the provider has no chat wording', () => {
+    expect(friendlyErrorMessage('authentication_failed', { severity: 'error', icon: 'info', message: '**LLM Provider Error:** 401' })).toContain('could not authenticate')
+    expect(friendlyErrorMessage('authentication_failed', null)).toContain('could not authenticate')
+    expect(friendlyErrorMessage('rate_limit')).toContain('rate limit')
   })
 })

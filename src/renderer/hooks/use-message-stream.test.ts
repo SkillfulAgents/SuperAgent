@@ -39,6 +39,13 @@ class MockEventSource {
       this.onerror()
     }
   }
+
+  // Helper to simulate the connection (re)opening
+  simulateOpen() {
+    if (this.onopen) {
+      this.onopen()
+    }
+  }
 }
 
 // Mock the environment
@@ -349,6 +356,193 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
     // streamingMessage is preserved until persisted data arrives
     expect(result.current.streamingMessage).toBe('Hello world!')
+  })
+
+  it('re-renders a caller that selects fields only when one of them changes', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    let fullRenders = 0
+    let selectedRenders = 0
+    const full = renderHook(() => {
+      fullRenders++
+      return useMessageStream('session-1', 'agent-1')
+    }, { wrapper })
+    const selected = renderHook(() => {
+      selectedRenders++
+      return useMessageStream('session-1', 'agent-1', ['isStreaming', 'slashCommands'])
+    }, { wrapper })
+    const es = MockEventSource.instances[0]
+
+    act(() => {
+      es.simulateMessage({ type: 'connected', isActive: true })
+      es.simulateMessage({ type: 'session_active' })
+      es.simulateMessage({ type: 'stream_start' })
+    })
+    expect(selected.result.current.isStreaming).toBe(true)
+    const fullBefore = fullRenders
+    const selectedBefore = selectedRenders
+
+    for (const text of ['Hello ', 'there, ', 'world!']) {
+      act(() => {
+        es.simulateMessage({ type: 'stream_delta', text })
+      })
+    }
+    expect(full.result.current.streamingMessage).toBe('Hello there, world!')
+    expect(fullRenders - fullBefore).toBe(3)
+    expect(selectedRenders).toBe(selectedBefore)
+
+    act(() => {
+      es.simulateMessage({ type: 'stream_end' })
+    })
+    expect(selected.result.current.isStreaming).toBe(false)
+    expect(selectedRenders).toBe(selectedBefore + 1)
+  })
+
+  describe('readyStreamingToolUses', () => {
+    // The field list usePendingRequests selects, in the parent of the session column.
+    const PENDING_REQUEST_FIELDS = ['isActive', 'readyStreamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'] as const
+    const DELTAS = 25
+
+    async function setup() {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const counts = { ready: 0, perDelta: 0 }
+      const ready = renderHook(() => {
+        counts.ready++
+        return useMessageStream('session-1', 'agent-1', PENDING_REQUEST_FIELDS)
+      }, { wrapper })
+      // The selection usePendingRequests made before: one render per delta.
+      const perDelta = renderHook(() => {
+        counts.perDelta++
+        return useMessageStream('session-1', 'agent-1', ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
+      }, { wrapper })
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+        es.simulateMessage({ type: 'session_active' })
+        es.simulateMessage({ type: 'stream_start' })
+      })
+      return { ready, perDelta, counts, es }
+    }
+
+    function streamInput(es: MockEventSource, toolId: string, toolName: string, deltas: number) {
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_start', toolId, toolName, partialInput: '' })
+      })
+      let partialInput = ''
+      for (let i = 0; i < deltas; i++) {
+        partialInput += 'x'
+        act(() => {
+          es.simulateMessage({ type: 'tool_use_streaming', toolId, toolName, partialInput })
+        })
+      }
+      return partialInput
+    }
+
+    it('does not re-render its selector on tool-input deltas', async () => {
+      const { ready, perDelta, counts, es } = await setup()
+      const readyBefore = counts.ready
+      const perDeltaBefore = counts.perDelta
+      const identityBefore = ready.result.current.readyStreamingToolUses
+
+      streamInput(es, 'tc-1', 'AskUserQuestion', DELTAS)
+
+      expect(perDelta.result.current.streamingToolUses).toHaveLength(1)
+      expect(counts.perDelta - perDeltaBefore).toBe(DELTAS + 1)
+      expect(counts.ready).toBe(readyBefore)
+      expect(ready.result.current.readyStreamingToolUses).toBe(identityBefore)
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it('updates once on tool_use_ready, with the complete input', async () => {
+      const { ready, counts, es } = await setup()
+      const partialInput = streamInput(es, 'tc-1', 'AskUserQuestion', 3)
+      const readyBefore = counts.ready
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+
+      expect(counts.ready).toBe(readyBefore + 1)
+      expect(ready.result.current.readyStreamingToolUses).toEqual([
+        { id: 'tc-1', name: 'AskUserQuestion', partialInput, ready: true },
+      ])
+    })
+
+    it('keeps its identity while another tool streams, and lists both once that one is ready', async () => {
+      const { ready, counts, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 2)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      const readyBefore = counts.ready
+      const identityBefore = ready.result.current.readyStreamingToolUses
+
+      streamInput(es, 'tc-2', 'Bash', DELTAS)
+      expect(counts.ready).toBe(readyBefore)
+      expect(ready.result.current.readyStreamingToolUses).toBe(identityBefore)
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-2', toolName: 'Bash' })
+      })
+      expect(counts.ready).toBe(readyBefore + 1)
+      expect(ready.result.current.readyStreamingToolUses.map((tool) => tool.id)).toEqual(['tc-1', 'tc-2'])
+    })
+
+    it('drops a ready tool whose input streams again', async () => {
+      const { ready, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toHaveLength(1)
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_streaming', toolId: 'tc-1', toolName: 'AskUserQuestion', partialInput: '{}' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it.each([
+      ['session_idle', (es: MockEventSource) => es.simulateMessage({ type: 'session_idle' })],
+      ['session_error', (es: MockEventSource) => es.simulateMessage({ type: 'session_error', error: 'boom' })],
+      ['stream_start', (es: MockEventSource) => es.simulateMessage({ type: 'stream_start' })],
+      ['a reconnect', (es: MockEventSource) => es.simulateMessage({ type: 'connected', isActive: true })],
+      ['a connection error', (es: MockEventSource) => es.simulateError()],
+    ])('is emptied by %s, like streamingToolUses', async (_name, clear) => {
+      const { ready, perDelta, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toHaveLength(1)
+
+      act(() => {
+        clear(es)
+      })
+      expect(perDelta.result.current.streamingToolUses).toEqual([])
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it('is empty for a caller that switches to another session', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result, rerender } = renderHook(
+        ({ sessionId }: { sessionId: string }) => useMessageStream(sessionId, 'agent-1', PENDING_REQUEST_FIELDS),
+        { wrapper: createWrapper(), initialProps: { sessionId: 'session-1' } },
+      )
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(result.current.readyStreamingToolUses).toHaveLength(1)
+
+      rerender({ sessionId: 'session-2' })
+      expect(result.current.readyStreamingToolUses).toEqual([])
+    })
   })
 
   it('handles session_idle event', async () => {
@@ -831,31 +1025,48 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({
         type: 'context_usage',
-        inputTokens: 1000,
-        outputTokens: 500,
-        cacheCreationInputTokens: 100,
-        cacheReadInputTokens: 200,
+        totalTokens: 1800,
         contextWindow: 200000,
       })
     })
 
-    expect(result.current.contextUsage).toEqual({
-      inputTokens: 1000,
-      outputTokens: 500,
-      cacheCreationInputTokens: 100,
-      cacheReadInputTokens: 200,
-      contextWindow: 200000,
-    })
+    expect(result.current.contextUsage).toEqual({ totalTokens: 1800, contextWindow: 200000 })
   })
 
   // ---- Additional request event types ----
 
+  it('reports a session stream as open only while its connection is open', async () => {
+    const { useMessageStream, isSessionStreamOpen } = await getHookModule()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+
+    expect(isSessionStreamOpen('session-1')).toBe(true)
+    expect(isSessionStreamOpen('session-2')).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].close()
+    })
+
+    expect(isSessionStreamOpen('session-1')).toBe(false)
+  })
+
   // ---- Query invalidation ----
 
-  it('invalidates sessions query on session_active', async () => {
+  // The global stream gets every lifecycle event too and refetches the session
+  // lists itself. This stream only echoes the status into the cached rows.
+  function seedSessionLists(queryClient: QueryClient, isActive: boolean) {
+    const own = ['sessions', 'agent-1']
+    const other = ['sessions', 'agent-2']
+    queryClient.setQueryData(own, [{ id: 'session-1', agentSlug: 'agent-1', name: 'Morning check-in', isActive }])
+    queryClient.setQueryData(other, [{ id: 'session-9', agentSlug: 'agent-2', name: 'Weekly report', isActive: false }])
+    const rowIsActive = () => queryClient.getQueryData<Array<{ isActive?: boolean }>>(own)?.[0]?.isActive
+    const invalidated = (key: string[]) => queryClient.getQueryState(key)?.isInvalidated
+    return { own, other, rowIsActive, invalidated }
+  }
+
+  it('echoes session_active into the cached row without refetching session lists', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    const lists = seedSessionLists(wrapper.queryClient, false)
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
       { wrapper }
@@ -864,20 +1075,22 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
     })
-    spy.mockClear()
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(lists.rowIsActive()).toBe(true)
+    expect(lists.invalidated(lists.own)).toBe(false)
+    expect(lists.invalidated(lists.other)).toBe(false)
   })
 
-  it('invalidates messages (trailing-throttled) and sessions on session_idle', async () => {
+  it('invalidates messages (trailing-throttled) and echoes the status on session_idle', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -893,8 +1106,9 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
       })
 
-      // The sessions invalidation is not throttled.
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.rowIsActive()).toBe(false)
+      expect(lists.invalidated(lists.own)).toBe(false)
+      expect(lists.invalidated(lists.other)).toBe(false)
       // The messages refetch collapses into the throttle's trailing edge —
       // 'connected' consumed the leading edge moments earlier.
       expect(spy).not.toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
@@ -1033,6 +1247,175 @@ describe('useMessageStream', () => {
 
     // Leading edge: the reconnect catch-up refetch fires immediately.
     expect(countMessageInvalidations(spy)).toBe(1)
+  })
+
+  const completedOutcome = { id: 't1', status: 'completed', responseText: 'Final answer', error: null }
+
+  it('a late join to a just-completed turn reconciles until the transcript has the reply', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      // The connect-time refetch read the transcript before the turn's lines landed.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], { messages: [], nextCursor: null })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false, turnOutcome: completedOutcome })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // No session_idle will follow, so the reconcile loop is the only retry:
+      // 250 / 750 / 1500, then it stops.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(2)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a late join does not reconcile when the reply is already persisted, or the turn is still running', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+          { id: 'a1', type: 'assistant', content: { text: 'Final answer' }, toolCalls: [], createdAt: '2026-01-01T00:00:01Z' },
+        ],
+        nextCursor: null,
+      })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false, turnOutcome: completedOutcome })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // A running turn's live events drive its own refetches.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], { messages: [], nextCursor: null })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, turnOutcome: completedOutcome })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A quick turn that launched a background task ends into waiting on it: the
+  // session stays active, no session_idle follows, and the turn records no
+  // outcome, so there is no reply text to reconcile against.
+  const backgroundTasks = [{ taskId: 'bg-1', startedAt: 1 }]
+  const launchedTurn = {
+    messages: [
+      { id: 'u1', type: 'user', content: { text: 'run background slowly' }, createdAt: '2026-01-01T00:00:00Z' },
+      {
+        id: 'a1', type: 'assistant', content: { text: 'Started background task bg-1.' }, createdAt: '2026-01-01T00:00:01Z',
+        toolCalls: [{ id: 'tool-1', name: 'Bash', input: { command: 'sleep 10 && echo done', run_in_background: true }, backgroundTaskId: 'bg-1' }],
+      },
+    ],
+    nextCursor: null,
+  }
+
+  it('a late join to a turn that ended into waiting on background reconciles until the transcript has the turn', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      // The connect-time refetch read the transcript before the turn's lines landed.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [launchedTurn.messages[0]],
+        nextCursor: null,
+      })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'connected', isActive: true, isWaitingBackground: true, turnOutcome: null, backgroundTasks,
+        })
+      })
+      expect(result.current.isWaitingBackground).toBe(true)
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(2)
+
+      // The next retry brings the turn in, and the loop stops there.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], launchedTurn)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a late join to a session waiting on background does not reconcile once the turn is persisted, or while a turn streams beside the task', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], launchedTurn)
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'connected', isActive: true, isWaitingBackground: true, turnOutcome: null, backgroundTasks,
+        })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // A task in the list while the turn is still streaming — even with an
+      // earlier turn's completed outcome on the frame: the turn's own events
+      // drive its refetches.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [launchedTurn.messages[0]],
+        nextCursor: null,
+      })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'connected', isActive: true, isWaitingBackground: false, turnOutcome: completedOutcome, backgroundTasks,
+        })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a burst of SSE events collapses into one leading + one trailing messages refetch', async () => {
@@ -1298,11 +1681,12 @@ describe('useMessageStream', () => {
     expect(countFor('session-2')).toBe(1)
   })
 
-  it('invalidates messages (trailing-throttled) and sessions on session_error', async () => {
+  it('invalidates messages (trailing-throttled) and echoes the status on session_error', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -1318,7 +1702,9 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'session_error', error: 'boom' })
       })
 
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.rowIsActive()).toBe(false)
+      expect(lists.invalidated(lists.own)).toBe(false)
+      expect(lists.invalidated(lists.other)).toBe(false)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
       })
@@ -1503,10 +1889,12 @@ describe('useMessageStream', () => {
     expect(result.current.browserActive).toBe(false)
   })
 
-  it('handles session_updated event — invalidates session queries', async () => {
+  it('leaves session_updated to the global stream, which gets it too', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    const lists = seedSessionLists(wrapper.queryClient, false)
+    const detail = ['session', 'session-1', 'agent-1']
+    wrapper.queryClient.setQueryData(detail, { id: 'session-1', agentSlug: 'agent-1', name: 'Morning check-in' })
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
       { wrapper }
@@ -1515,14 +1903,14 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
     })
-    spy.mockClear()
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_updated' })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['session', 'session-1'] })
+    expect(lists.invalidated(lists.own)).toBe(false)
+    expect(lists.invalidated(lists.other)).toBe(false)
+    expect(lists.invalidated(detail)).toBe(false)
   })
 
   it('handles scheduled_task_created event — invalidates scheduled tasks', async () => {
@@ -1580,9 +1968,10 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(true)
   })
 
-  it('invalidates status queries when a blocking user-input tool becomes ready', async () => {
+  it('invalidates this agent\'s session lists and the agents when a blocking user-input tool becomes ready', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
+    const lists = seedSessionLists(wrapper.queryClient, true)
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -1611,7 +2000,8 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(lists.invalidated(lists.own)).toBe(true)
+    expect(lists.invalidated(lists.other)).toBe(false)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['agents'] })
   })
 
@@ -1937,6 +2327,72 @@ describe('useMessageStream', () => {
     expect(result.current.browserActive).toBe(false)
   })
 
+  // ---- Reconnects ----
+
+  describe('a connection that reopens', () => {
+    const browserStatus = (status: { active: boolean; sessionId?: string }) =>
+      vi.mocked(globalThis.fetch).mockResolvedValue({ json: () => Promise.resolve(status) } as Response)
+    const browserStatusCalls = () =>
+      vi.mocked(globalThis.fetch).mock.calls.filter(([url]) => String(url).endsWith('/browser/status')).length
+
+    it('resumed with a replay (no snapshot) checks the browser again and keeps the streamed text', async () => {
+      const { useMessageStream, clearBrowserActive } = await getHookModule()
+      const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+        es.simulateMessage({ type: 'browser_active', active: true })
+        es.simulateMessage({ type: 'stream_start' })
+        es.simulateMessage({ type: 'stream_delta', text: 'Hel' })
+      })
+
+      // The connection drops; the browser stream drops with it and clears the preview.
+      act(() => {
+        es.simulateError()
+        clearBrowserActive('session-1')
+      })
+      expect(result.current.browserActive).toBe(false)
+
+      // The server resumes it: the missed frames, no 'connected'.
+      browserStatus({ active: true, sessionId: 'session-1' })
+      await act(async () => {
+        es.simulateOpen()
+        es.simulateMessage({ type: 'stream_delta', text: 'lo' })
+        await Promise.resolve()
+      })
+
+      await vi.waitFor(() => expect(result.current.browserActive).toBe(true))
+      expect(result.current.streamingMessage).toBe('Hello')
+    })
+
+    it('started over with a snapshot checks once, not twice', async () => {
+      const { useMessageStream } = await getHookModule()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+      act(() => es.simulateMessage({ type: 'connected', isActive: false }))
+      const before = browserStatusCalls()
+
+      act(() => {
+        es.simulateError()
+        es.simulateOpen()
+        es.simulateMessage({ type: 'connected', isActive: false })
+      })
+
+      expect(browserStatusCalls()).toBe(before + 1)
+    })
+
+    it('opening for the first time leaves the check to the snapshot', async () => {
+      const { useMessageStream } = await getHookModule()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+
+      act(() => es.simulateOpen())
+      expect(browserStatusCalls()).toBe(0)
+      act(() => es.simulateMessage({ type: 'connected', isActive: false }))
+      expect(browserStatusCalls()).toBe(1)
+    })
+  })
+
   // ---- State transition edge cases ----
 
   it('session_active clears previous error', async () => {
@@ -2198,11 +2654,12 @@ describe('useMessageStream', () => {
     expect(result.current.completedSubagents?.has('pt-2')).toBe(true)
   })
 
-  it('ping invalidates messages (trailing-throttled) and sessions when correcting active state', async () => {
+  it('ping invalidates messages (trailing-throttled) and this agent\'s session lists when correcting active state', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -2221,7 +2678,8 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: false })
       })
 
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.invalidated(lists.own)).toBe(true)
+      expect(lists.invalidated(lists.other)).toBe(false)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
       })
@@ -2534,17 +2992,18 @@ describe('useMessageStream', () => {
       return { mod, result, es, queryClient: wrapper.queryClient }
     }
 
-    it('accumulates terminal-dead command uuids (discarded/cancelled), deduped', async () => {
+    it('accumulates discarded command uuids, deduped, and treats cancelled as no answer', async () => {
       const { result, es } = await setupHook('cmd-s1')
 
       act(() => {
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
+        // Stop cancels the running command too, so cancelled proves nothing
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u2', state: 'cancelled' })
         // Redelivery must not double up
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
       })
 
-      expect(result.current.discardedCommandUuids).toEqual(['u1', 'u2'])
+      expect(result.current.discardedCommandUuids).toEqual(['u1'])
     })
 
     it('does not treat non-terminal states or malformed frames as discarded', async () => {
@@ -3677,4 +4136,21 @@ describe('typing leases', () => {
       vi.useRealTimers()
     }
   })
+
+  it('counts a turn when one starts or the stream takes a snapshot, not when a message is queued mid-turn', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { useSessionTurn } = await import('@renderer/lib/session-turns')
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    const { result } = renderHook(() => useSessionTurn('session-1'))
+    const es = MockEventSource.instances[0]
+    const start = result.current
+
+    act(() => es.simulateMessage({ type: 'session_active', queuedMidTurn: true }))
+    expect(result.current).toBe(start)
+    act(() => es.simulateMessage({ type: 'session_active' }))
+    expect(result.current).toBe(start + 1)
+    act(() => es.simulateMessage({ type: 'connected', isActive: true }))
+    expect(result.current).toBe(start + 2)
+  })
+
 })

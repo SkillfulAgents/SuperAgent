@@ -11,6 +11,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import Database from 'better-sqlite3'
+import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
@@ -42,13 +43,19 @@ vi.mock('@shared/lib/auth/config', () => ({
   getCurrentUserId: () => currentUserId,
 }))
 
-vi.mock('../middleware/auth', () => {
+let currentGlobalRole: string | undefined
+vi.mock('../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../middleware/auth')>()
   const passthrough = () => async (_c: unknown, next: () => Promise<void>) => next()
   return {
+    // The real ACL check, against the in-memory database.
+    canUseAgent: actual.canUseAgent,
+    getReadableAgentIds: actual.getReadableAgentIds,
     Authenticated: passthrough,
     AgentRead: passthrough,
-    AgentUser: passthrough,
-    AgentAdmin: passthrough,
+    // The real role gates, so a test of who may write a link runs them.
+    AgentUser: actual.AgentUser,
+    AgentAdmin: actual.AgentAdmin,
     ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
     getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
     EntityAgentRole: () => () => passthrough(),
@@ -100,29 +107,15 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
-      return send()
-    },
-    isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false),
-    hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false),
-    isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(),
-    markSessionActive: vi.fn(),
-    setSlashCommands: vi.fn(),
-    broadcastGlobal: vi.fn(),
-    broadcastSessionUpdate: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-  },
-}))
-
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { getPendingReviewsForAgent: vi.fn(() => []) },
 }))
+
+// Pass-through, so a test can stage a Block that lands after the route's own check.
+vi.mock('@shared/lib/services/x-agent-policy-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/services/x-agent-policy-service')>()
+  return { ...actual, evaluate: vi.fn(actual.evaluate) }
+})
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   revokeProxyToken: vi.fn(),
@@ -135,6 +128,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 
 import agentsRouter from './agents'
 import {
+  evaluate,
   setPolicy,
   getPolicy,
   listPoliciesForCaller,
@@ -159,6 +153,7 @@ beforeEach(async () => {
 
   authModeEnabled = false
   currentUserId = 'user-default'
+  currentGlobalRole = undefined
   vi.clearAllMocks()
   mockGetAgent.mockImplementation(async (slug: string) => ({
     slug,
@@ -167,6 +162,7 @@ beforeEach(async () => {
   }))
 
   app = new Hono()
+  app.use('*', async (c, next) => { c.set('user' as never, { id: currentUserId, role: currentGlobalRole } as never); return next() })
   app.route('/api/agents', agentsRouter)
 })
 
@@ -496,6 +492,25 @@ describe('atomic single invoke policy endpoints', () => {
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))).toBeNull()
   })
 
+  it('sets and removes a read grant the same way, apart from the invoke one', async () => {
+    const readUrl = `/api/agents/${CALLER}/x-agent-policies/read/${TARGET_A}`
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    await app.request(readUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('allow')
+    await app.request(readUrl, { method: 'DELETE' })
+    expect(await getPolicy(CALLER, 'read', TARGET_A)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+
+  it('rejects any operation but invoke and read, so a near-miss never writes an invoke row', async () => {
+    for (const operation of ['list', 'XXread', 'invokeZZ']) {
+      const url = `/api/agents/${CALLER}/x-agent-policies/${operation}/${TARGET_A}`
+      expect((await app.request(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })).status).toBe(400)
+      expect((await app.request(url, { method: 'DELETE' })).status).toBe(400)
+    }
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
   it('DELETE PRESERVES an explicit block (no silent escalation)', async () => {
     await setPolicy(CALLER, 'invoke', TARGET_A, 'block')
     const res = await app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' })
@@ -524,22 +539,288 @@ describe('atomic single invoke policy endpoints', () => {
     expect((await getPolicy(CALLER, 'invoke', TARGET_B))).toBeNull()
   })
 
-  it('in auth mode, PUT toward a visible target succeeds', async () => {
-    authModeEnabled = true
-    currentUserId = 'user-viewer'
-    await testDb.insert(schema.user).values([
-      { id: 'user-viewer', name: 'V', email: 'v@t', emailVerified: false },
-    ])
-    await testDb.insert(schema.agentAcl).values([
-      { id: 'acl-c', userId: 'user-viewer', agentSlug: CALLER, role: 'owner', createdAt: new Date() },
-      { id: 'acl-t', userId: 'user-viewer', agentSlug: TARGET_A, role: 'viewer', createdAt: new Date() },
-    ])
-    const res = await app.request(invokeUrl(CALLER, TARGET_A), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'allow' }),
+  describe('in auth mode, every link write needs a User or Owner of both agents', () => {
+    async function seed(targetRole: 'user' | 'viewer') {
+      authModeEnabled = true
+      currentUserId = 'user-1'
+      await testDb.insert(schema.user).values([{ id: 'user-1', name: 'U', email: 'u@t', emailVerified: false }])
+      await testDb.insert(schema.agentAcl).values([
+        { id: 'acl-c', userId: 'user-1', agentSlug: CALLER, role: 'user', createdAt: new Date() },
+        { id: 'acl-t', userId: 'user-1', agentSlug: TARGET_A, role: targetRole, createdAt: new Date() },
+      ])
+    }
+    const json = { 'Content-Type': 'application/json' }
+    const writes = {
+      PATCH: () => app.request(`/api/agents/${CALLER}/x-agent-policies`, { method: 'PATCH', headers: json, body: JSON.stringify({ operation: 'invoke', targetSlug: TARGET_A, decision: 'allow' }) }),
+      'PUT one': () => app.request(invokeUrl(CALLER, TARGET_A), { method: 'PUT', headers: json, body: JSON.stringify({ decision: 'allow' }) }),
+      'DELETE one': () => app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' }),
+    }
+
+    it.each(Object.keys(writes) as Array<keyof typeof writes>)('refuses %s from someone who only views the target', async (name) => {
+      await seed('viewer')
+      await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+      const res = await writes[name]()
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can change this connection.' })
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
     })
-    expect(res.status).toBe(200)
+
+    it('refuses DELETE one from someone with no role on the target', async () => {
+      await seed('viewer')
+      await testDb.delete(schema.agentAcl).where(eq(schema.agentAcl.id, 'acl-t'))
+      await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+      expect((await writes['DELETE one']()).status).toBe(403)
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+    })
+
+    it.each([
+      ['adds a link to', () => setPolicy(CALLER, 'list', null, 'allow'), [{ operation: 'invoke', targetSlug: TARGET_A, decision: 'allow' }]],
+      ['removes a link to', () => setPolicy(CALLER, 'invoke', TARGET_A, 'block'), []],
+    ] as const)('refuses a batch replace that %s an agent they only view', async (_name, existing, policies) => {
+      await seed('viewer')
+      await testDb.update(schema.agentAcl).set({ role: 'owner' }).where(eq(schema.agentAcl.id, 'acl-c'))
+      await existing()
+      const before = await listPoliciesForCaller(CALLER)
+      const res = await app.request(`/api/agents/${CALLER}/x-agent-policies`, { method: 'PUT', headers: json, body: JSON.stringify({ policies }) })
+      expect(res.status).toBe(403)
+      expect(await listPoliciesForCaller(CALLER)).toEqual(before)
+    })
+
+    it('lets a workspace admin with no role on the target add a link, as on the request card', async () => {
+      await seed('viewer')
+      await testDb.delete(schema.agentAcl).where(eq(schema.agentAcl.id, 'acl-t'))
+      currentGlobalRole = 'admin'
+      expect((await writes['PUT one']()).status).toBe(200)
+      expect((await writes.PATCH()).status).toBe(200)
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+      const { policies } = await (await app.request(`/api/agents/${CALLER}/x-agent-policies`)).json() as { policies: Array<{ targetAgentSlug: string | null }> }
+      expect(policies.map((p) => p.targetAgentSlug)).toContain(TARGET_A)
+    })
+
+    it('lets a User, not an Owner, of both agents add and remove a link', async () => {
+      await seed('user')
+      expect((await writes['PUT one']()).status).toBe(200)
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+      expect((await writes['DELETE one']()).status).toBe(200)
+      expect(await getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+    })
+
+    it('lets a User of the agent change its every-agent setting', async () => {
+      await seed('viewer')
+      const res = await app.request(`/api/agents/${CALLER}/x-agent-policies`, { method: 'PATCH', headers: json, body: JSON.stringify({ operation: 'read', targetSlug: null, decision: 'allow' }) })
+      expect(res.status).toBe(200)
+      expect((await getPolicy(CALLER, 'read', null))?.decision).toBe('allow')
+    })
+  })
+})
+
+describe('"Always allow" never overwrites a Block', () => {
+  const always = (operation: 'read' | 'invoke', targetSlug: string | null) =>
+    app.request(`/api/agents/${CALLER}/proxy-review/review-1/always`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow', scope: `${operation}:${targetSlug ?? '*'}`, accountId: targetSlug, reviewType: 'xagent', xAgent: { operation, targetSlug } }),
+    })
+
+  beforeEach(async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    Object.assign(reviewManager, { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() })
+  })
+
+  it.each([
+    ['a Block on the target', TARGET_A],
+    ['"Block all agents"', null],
+  ])('refuses it over %s and keeps the Block', async (_name, blockTarget) => {
+    await setPolicy(CALLER, 'read', blockTarget, 'block')
+    const res = await always('read', TARGET_A)
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'Forbidden: this agent link is blocked', blocked: true })
+    expect((await listPoliciesForCaller(CALLER)).map((p) => [p.targetAgentSlug, p.decision])).toEqual([[blockTarget, 'block']])
+  })
+
+  it('keeps a Block written between the route\'s check and the save', async () => {
+    await setPolicy(CALLER, 'read', TARGET_A, 'block')
+    vi.mocked(evaluate).mockResolvedValueOnce('review')
+    expect((await always('read', TARGET_A)).status).toBe(403)
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('block')
+  })
+
+  it('checks the card\'s own link, so "all agents" cannot pass a Block on the card\'s target', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReturnValueOnce([{ id: 'review-1', agentSlug: CALLER, xAgent: { targetAgentSlug: TARGET_A, targetAgentName: TARGET_A, operation: 'read' } }] as never)
+    await setPolicy(CALLER, 'read', TARGET_A, 'block')
+    expect((await always('read', null)).status).toBe(403)
+    expect(await getPolicy(CALLER, 'read', null)).toBeNull()
+  })
+
+  it('saves from a file card', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReturnValueOnce([{ id: 'review-1', agentSlug: CALLER, xAgent: { targetAgentSlug: TARGET_A, targetAgentName: TARGET_A, operation: 'read', fileTransfer: { kind: 'download', filename: 'report.pdf' } } }] as never)
+    expect((await always('read', TARGET_A)).status).toBe(200)
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('allow')
+  })
+
+  it('still saves when no Block is set', async () => {
+    expect((await always('invoke', TARGET_A)).status).toBe(200)
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+})
+
+describe('"Always allow" with a model picked on the card', () => {
+  const invokeCard = { targetAgentSlug: TARGET_A, targetAgentName: 'Target A', operation: 'invoke', runtime: { model: 'claude-sonnet-5-5', llmProviderId: 'platform', label: 'Sonnet 5.5' } }
+  const always = (pick: object) => app.request(`/api/agents/${CALLER}/proxy-review/review-1/always`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision: 'allow', scope: `invoke:${TARGET_A}`, accountId: TARGET_A, reviewType: 'xagent', xAgent: { operation: 'invoke', targetSlug: TARGET_A }, pick }),
+  })
+
+  const spies: { mockRestore(): void }[] = []
+  beforeEach(async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    spies.push(
+      vi.spyOn(connections, 'getConnection').mockImplementation(async (id) => (id === 'platform' ? { id, provider: 'platform', modelOverrides: '[]' } : null) as never),
+      vi.spyOn(preferences, 'readAgentPreferences').mockImplementation(async () => ({ defaultLlmProviderId: 'platform' }) as never),
+    )
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(((slug: string) => slug === CALLER ? [{ id: 'review-1', agentSlug: CALLER, xAgent: invokeCard }] : []) as never)
+    Object.assign(reviewManager, { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() })
+  })
+  afterEach(async () => {
+    spies.splice(0).forEach((spy) => spy.mockRestore())
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(() => [])
+  })
+
+  it('saves the grant and applies the pick to this call', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    expect((await always({ model: 'claude-opus-5-5', effort: 'max', speed: 'fast' })).status).toBe(200)
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'allow', { pick: { model: 'claude-opus-5-5', effort: 'max', speed: 'fast', llmProviderId: 'platform' } })
+  })
+
+  it('saves no grant when the pick is refused', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    expect((await always({ model: 'not-a-model' })).status).toBe(409)
+    expect(await getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+  })
+})
+
+describe('allowing an agent request needs someone who uses both agents', () => {
+  const readCard = { targetAgentSlug: TARGET_A, targetAgentName: 'Target A', operation: 'read' }
+  let xAgent: object = readCard
+  const post = (path: string, body: unknown) => app.request(`/api/agents/${CALLER}/proxy-review/review-1${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  const once = (decision: 'allow' | 'deny') => post('', { decision })
+  const always = (decision: 'allow' | 'deny', targetSlug: string | null = TARGET_A) =>
+    post('/always', { decision, scope: `read:${targetSlug ?? '*'}`, accountId: targetSlug, reviewType: 'xagent', xAgent: { operation: 'read', targetSlug } })
+  async function seed(roles: ReadonlyArray<readonly [string, 'owner' | 'user' | 'viewer']>, globalRole?: string) {
+    authModeEnabled = true
+    currentUserId = 'ana'
+    currentGlobalRole = globalRole
+    await testDb.insert(schema.user).values({ id: 'ana', name: 'Ana', email: 'ana@t', emailVerified: false })
+    if (roles.length) await testDb.insert(schema.agentAcl).values(roles.map(([agentSlug, role]) => ({ id: `ana-${agentSlug}`, userId: 'ana', agentSlug, role, createdAt: new Date() })))
+  }
+
+  beforeEach(async () => {
+    xAgent = readCard
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(((slug: string) => slug === CALLER ? [{ id: 'review-1', agentSlug: CALLER, xAgent }] : []) as never)
+    Object.assign(reviewManager, { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() })
+  })
+  afterEach(async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(() => [])
+  })
+
+  it('refuses Allow from a User of the caller who has no role on the target, and lets them Deny', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    await seed([[CALLER, 'user']])
+    const res = await once('allow')
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can allow this request.' })
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+    expect((await once('deny')).status).toBe(200)
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'deny', { reason: undefined })
+  })
+
+  it.each([
+    ['every agent', { scope: 'read:*', accountId: null, reviewType: 'xagent', xAgent: { operation: 'read', targetSlug: null } }],
+    ['their own account', { scope: '*', accountId: 'acct-ana', reviewType: 'api' }],
+    ['their own MCP server', { scope: 'search', accountId: 'mcp-ana', reviewType: 'mcp' }],
+  ])('refuses that User "Always allow" naming %s, and the request stays pending', async (_name, body) => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    await seed([[CALLER, 'user']])
+    await testDb.insert(schema.connectedAccounts).values({ id: 'acct-ana', providerConnectionId: 'conn-ana', toolkitSlug: 'gmail', displayName: 'Ana', userId: 'ana', createdAt: new Date(), updatedAt: new Date() })
+    await testDb.insert(schema.remoteMcpServers).values({ id: 'mcp-ana', name: 'Ana MCP', url: 'https://mcp.example', userId: 'ana', createdAt: new Date(), updatedAt: new Date() })
+    const res = await post('/always', { decision: 'allow', ...body })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can allow this request.' })
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+    expect(reviewManager.resolveMatchingPending).not.toHaveBeenCalled()
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+    expect(testDb.select().from(schema.apiScopePolicies).all()).toEqual([])
+    expect(testDb.select().from(schema.mcpToolPolicies).all()).toEqual([])
+  })
+
+  it.each(['allow', 'deny'] as const)('refuses a User of both agents "Always %s" naming a third agent they do not use', async (decision) => {
+    await seed([[CALLER, 'user'], [TARGET_A, 'user']])
+    const res = await always(decision, TARGET_B)
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can change this connection.' })
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
+  it.each([
+    ['a User of the caller only, on a file download', [[CALLER, 'user']], undefined, { ...readCard, fileTransfer: { kind: 'download', filename: 'report.pdf' } }],
+    ['a User of the caller only, on a message sending files', [[CALLER, 'user']], undefined, { ...readCard, operation: 'invoke', fileTransfer: { kind: 'send', paths: ['/workspace/a.pdf'] } }],
+    ['a User of the caller only, on a read request with no target', [[CALLER, 'user']], undefined, { ...readCard, targetAgentSlug: '' }],
+    ['a User of the caller only, on a message request with no target', [[CALLER, 'user']], undefined, { ...readCard, operation: 'invoke', targetAgentSlug: '' }],
+  ] as const)('refuses %s on every path', async (_name, roles, globalRole, card) => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    xAgent = card
+    await seed(roles, globalRole)
+    expect((await once('allow')).status).toBe(403)
+    expect((await always('allow')).status).toBe(403)
+    expect((await always('deny')).status).toBe(403)
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
+  it.each([
+    ['list', { targetAgentSlug: '', targetAgentName: '', operation: 'list' }],
+    ['create', { targetAgentSlug: 'new-agent', targetAgentName: 'new-agent', operation: 'create' }],
+  ] as const)('lets a User of the caller only allow a %s request, which names no other agent', async (operation, card) => {
+    xAgent = card
+    await seed([[CALLER, 'user']])
+    expect((await once('allow')).status).toBe(200)
+    if (operation === 'list') {
+      expect((await post('/always', { decision: 'allow', scope: 'list', accountId: null, reviewType: 'xagent', xAgent: { operation: 'list', targetSlug: null } })).status).toBe(200)
+      expect((await getPolicy(CALLER, 'list', null))?.decision).toBe('allow')
+    }
+  })
+
+  it('lets a User of both agents allow once, always allow and always deny', async () => {
+    await seed([[CALLER, 'user'], [TARGET_A, 'user']])
+    expect((await once('allow')).status).toBe(200)
+    expect((await always('allow')).status).toBe(200)
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('allow')
+    expect((await always('deny')).status).toBe(200)
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('block')
+  })
+
+  it('lets a User of both agents always allow reading every agent from the request, checked on its target', async () => {
+    await seed([[CALLER, 'user'], [TARGET_A, 'user']])
+    expect((await always('allow', null)).status).toBe(200)
+    expect((await getPolicy(CALLER, 'read', null))?.decision).toBe('allow')
+  })
+
+  it('leaves the desktop app unchanged on every path', async () => {
+    expect((await once('allow')).status).toBe(200)
+    expect((await always('allow')).status).toBe(200)
+    expect((await always('deny')).status).toBe(200)
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('block')
   })
 })

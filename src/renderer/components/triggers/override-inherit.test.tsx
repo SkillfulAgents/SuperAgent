@@ -12,6 +12,9 @@ import { RuntimeOptionsCard } from './runtime-options-card'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
 
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
+
 const STD: EffortLevel[] = ['low', 'medium', 'high']
 const CATALOG: ModelDefinition[] = [
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
@@ -53,9 +56,7 @@ function cronCard(onUpdate = vi.fn()) {
   return (
     <RuntimeOptionsCard
       agentSlug="a"
-      model={null}
-      effort={null}
-      speed={null}
+      stored={{ llmProviderId: null, model: null, effort: null, speed: null }}
       onUpdate={onUpdate}
     />
   )
@@ -163,9 +164,7 @@ describe('override-card inherit', () => {
     render(
       <RuntimeOptionsCard
         agentSlug="a"
-        model="claude-opus-4-8"
-        effort="high"
-        speed={null}
+        stored={{ llmProviderId: null, model: 'claude-opus-4-8', effort: 'high', speed: null }}
         onUpdate={onUpdate}
       />,
     )

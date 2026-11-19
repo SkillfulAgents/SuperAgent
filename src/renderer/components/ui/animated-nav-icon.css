@@ -1,0 +1,5 @@
+.animated-nav-icon,
+.animated-nav-icon > * {
+  transform-box: fill-box;
+  transform-origin: center;
+}

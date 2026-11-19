@@ -1,7 +1,6 @@
 import { MessageNotAcceptedError } from './message-dispatch-error'
 import { getSettings } from '../config/settings'
-import { resolveSelectionHierarchy, storedSelection } from '../llm-provider/connections'
-import { isQueuedSessionSend } from './session-send-context'
+import { resolveSelectionHierarchyFrom, storedSelection } from '../llm-provider/connections'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -16,6 +15,7 @@ import type {
   ContainerStats,
   CreateSessionOptions,
   SendMessageOptions,
+  SendMessageResult,
   StartOptions,
   StopOptions,
   StreamMessage,
@@ -24,8 +24,11 @@ import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
+import { matchScopes } from '../proxy/scope-matcher'
+import { withUserReason } from '../proxy/user-reason'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
+import { background } from '../background'
 
 export const MOCK_ACCOUNT_ID = 'mock-account-id'
 
@@ -107,7 +110,7 @@ export interface MockScenario {
 
 /**
  * Simple text response scenario - streams text in chunks
- * Event format matches what MessagePersister expects from the real container
+ * Event format matches what the host's live sessions expect from the real container
  */
 export class SimpleTextResponseScenario implements MockScenario {
   constructor(private responseText: string) {}
@@ -117,7 +120,7 @@ export class SimpleTextResponseScenario implements MockScenario {
     const finalDelay = 60 + words.length * 5
 
     // Start assistant message - wrapped in stream_event
-    // The content needs a 'type' field that MessagePersister.handleMessage switches on
+    // The content needs a 'type' field that LiveSession.frame switches on
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
@@ -588,7 +591,7 @@ export class SlowCompactionScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     // Echo the turn-starting message first, so its optimistic ghost materializes
-    // before compaction opens. Order matters: the persister ends compaction at
+    // before compaction opens. Order matters: the live session ends compaction at
     // the first user message that follows the compacting status.
     setTimeout(() => {
       client.writeJsonlEntry(sessionId, {
@@ -602,7 +605,7 @@ export class SlowCompactionScenario implements MockScenario {
       })
     }, 10)
 
-    // Well clear of the echo above (the persister ends compaction at the first
+    // Well clear of the echo above (the live session ends compaction at the first
     // user message that FOLLOWS the compacting status) and of any subscribe
     // hand-off: compact_start is one-shot, so a client that is not listening
     // yet never learns compaction began.
@@ -629,7 +632,7 @@ export class SlowCompactionScenario implements MockScenario {
         timestamp: new Date().toISOString(),
       })
       // The summary on the stream is what ends compaction host-side (the
-      // persister clears isCompacting on the first user message after the
+      // live session clears isCompacting on the first user message after the
       // compacting status and broadcasts compact_complete).
       client.emitStreamMessage(sessionId, {
         type: 'user',
@@ -744,7 +747,7 @@ export class DelayedTextResponseScenario implements MockScenario {
  * settings-file hook (e.g. UserPromptSubmit) blocks a prompt: a warning-level
  * `informational` system message with prevent_continuation, then a success
  * result with num_turns 0 and no API time. Crucially, the CLI writes NOTHING
- * to the transcript JSONL for a blocked prompt — the host's message-persister
+ * to the transcript JSONL for a blocked prompt — the host's live session
  * is responsible for persisting the banner.
  */
 export class HookBlockScenario implements MockScenario {
@@ -775,8 +778,96 @@ export class HookBlockScenario implements MockScenario {
 }
 
 /**
+ * A question the person declined, as the real container ends it on a CLI with
+ * `ask_user_question_unanswered_v1`: an answer carrying the reason, annotated
+ * `unanswered`. Null for any other input or rejection.
+ */
+function mockSkippedQuestionResult(
+  pending: { inputType: string; input?: Record<string, unknown> } | undefined,
+  init: RequestInit | undefined,
+): { content: string; toolUseResult: Record<string, unknown> } | null {
+  if (pending?.inputType !== 'question' || typeof init?.body !== 'string') return null
+  let body: { reason?: unknown; unanswered?: unknown }
+  try {
+    body = JSON.parse(init.body) as typeof body
+  } catch {
+    return null
+  }
+  const questions = pending.input?.questions
+  if (typeof body.unanswered !== 'string' || !Array.isArray(questions)) return null
+  const reason = typeof body.reason === 'string' && body.reason ? body.reason : 'User declined to answer'
+  const texts = questions.map((q) => String((q as { question?: unknown }).question ?? ''))
+  return {
+    content: `The user answered: ${texts.map((t) => `"${t}"="${reason}"`).join(', ')}. Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.`,
+    toolUseResult: {
+      questions,
+      answers: Object.fromEntries(texts.map((t) => [t, reason])),
+      annotations: Object.fromEntries(texts.map((t) => [t, { unanswered: body.unanswered }])),
+    },
+  }
+}
+
+/**
+ * A planned task list: TaskCreate calls whose results carry the saved
+ * description (CLI 2.1.317+), the first task in progress, and the turn held
+ * open so the activity card shows the plan.
+ */
+export class TaskPlanScenario implements MockScenario {
+  constructor(
+    private tasks: Array<{ subject: string; description: string; activeForm: string }>,
+    private holdMs: number,
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const at = stepsInOrder()
+    const stamp = Date.now()
+    const ids = this.tasks.map((_, i) => `tool_task_${stamp}_${i}`)
+    const updateId = `tool_task_${stamp}_update`
+    at(10, () => {
+      client.writeJsonlEntry(sessionId, { type: 'user', message: { content: userMessage }, timestamp: new Date().toISOString() })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          content: [
+            ...this.tasks.map((task, i) => ({ type: 'tool_use', id: ids[i], name: 'TaskCreate', input: task })),
+            { type: 'tool_use', id: updateId, name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      this.tasks.forEach((task, i) => {
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: ids[i], content: `Task #${i + 1} created successfully: ${task.subject}` }] },
+          timestamp: new Date().toISOString(),
+          toolUseResult: { task: { id: String(i + 1), subject: task.subject, description: task.description } },
+        })
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: updateId, content: 'Updated task #1 status' }] },
+        timestamp: new Date().toISOString(),
+      })
+      // The live session refetches the transcript on a user frame.
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: updateId, content: 'Updated task #1 status' }] } },
+      })
+    })
+    at(this.holdMs, () => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'The plan is ready.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, { type: 'result', content: { type: 'result', subtype: 'success' } })
+    })
+  }
+}
+
+/**
  * Tool use scenario - simulates a tool call with result
- * Event format matches what MessagePersister expects from the real container
+ * Event format matches what the host's live sessions expect from the real container
  */
 export class ToolUseScenario implements MockScenario {
   constructor(
@@ -943,6 +1034,69 @@ export class ToolUseScenario implements MockScenario {
   }
 }
 
+/** The sign-in form the mock browser "located" for request_login. */
+const MOCK_LOGIN_CONTEXT = {
+  origin: 'https://example.com',
+  url: 'https://example.com/login',
+  topOrigin: 'https://example.com',
+  submit: true,
+  fields: [
+    { kind: 'username', label: 'Email address', inputType: 'email', inputMode: '', autocomplete: 'username', maxLength: -1 },
+    { kind: 'password', label: 'Password', inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
+  ],
+  held: [] as Array<{ kind: string; label: string }>,
+  providers: [] as string[],
+}
+
+/** How the mock page's inputs of each kind look, as the real container would describe them. */
+const MOCK_FIELD_SHAPES: Record<string, { inputType: string; inputMode: string; autocomplete: string; maxLength: number }> = {
+  username: { inputType: 'email', inputMode: '', autocomplete: 'username', maxLength: -1 },
+  password: { inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
+  otp: { inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6 },
+  text: { inputType: 'text', inputMode: '', autocomplete: 'off', maxLength: -1 },
+}
+
+/**
+ * The form the mock browser "located" for a request_login call: its fields
+ * with a ref are on the page, the rest are held for a later step, and its
+ * providers are the page's, as the real container reports them. The fixed
+ * form when the call is unknown.
+ */
+function mockLoginContext(input: Record<string, unknown> | undefined) {
+  if (!input || !Array.isArray(input.fields)) return MOCK_LOGIN_CONTEXT
+  const fields = input.fields as Array<{ ref?: string; kind: string; label: string }>
+  return {
+    ...MOCK_LOGIN_CONTEXT,
+    submit: typeof input.submit === 'string',
+    fields: fields.filter((field) => field.ref).map(({ kind, label }) => ({ kind, label, ...MOCK_FIELD_SHAPES[kind] })),
+    held: fields.filter((field) => !field.ref).map(({ kind, label }) => ({ kind, label })),
+    providers: Array.isArray(input.providers) ? input.providers.filter((id): id is string => typeof id === 'string') : [],
+  }
+}
+
+/**
+ * Steps at their offsets from now, run strictly in the order they were added.
+ * One setTimeout per step is not enough: when the event loop lags, Node runs
+ * every expired timer of one duration before those of the next, so a 40 ms
+ * content_block_stop can overtake its 20 ms content_block_start, and the host,
+ * which never saw the block start, drops the tool call.
+ */
+export function stepsInOrder(): (delayMs: number, step: () => void) => void {
+  const start = Date.now()
+  let tail = Promise.resolve()
+  return (delayMs, step) => {
+    tail = tail.then(() => new Promise<void>((resolve) => {
+      setTimeout(() => {
+        try {
+          step()
+        } finally {
+          resolve()
+        }
+      }, Math.max(0, start + delayMs - Date.now()))
+    }))
+  }
+}
+
 /**
  * User input request scenario - simulates the agent emitting tool calls that
  * request user input (secrets, questions, etc.). The session stays active until
@@ -963,6 +1117,7 @@ export class UserInputRequestScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     let delay = 10
+    const at = stepsInOrder()
     const tools = this.tools.map((tool) => ({
       name: tool.name,
       input: typeof tool.input === 'function' ? tool.input(userMessage) : tool.input,
@@ -978,6 +1133,8 @@ export class UserInputRequestScenario implements MockScenario {
     // resolve/reject calls from the API can find and decrement the count.
     client.registerPendingInputs(sessionId, tools.length, {
       holdResultsUntilAll: this.opts?.holdResultsUntilAll,
+      // AskUserQuestion parks as 'question'; the others keep their tool name here.
+      inputs: tools.map((tool, i) => ({ toolUseId: toolIds[i], inputType: tool.name === 'AskUserQuestion' ? 'question' : tool.name, input: tool.input })),
     })
 
     // Write the user message entry immediately so the JSONL file exists on disk.
@@ -990,12 +1147,12 @@ export class UserInputRequestScenario implements MockScenario {
     })
 
     // Start assistant message
-    setTimeout(() => {
+    at(delay, () => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_start' } },
       })
-    }, delay)
+    })
     delay += 10
 
     // Emit each tool use block
@@ -1003,7 +1160,7 @@ export class UserInputRequestScenario implements MockScenario {
       const tool = tools[toolIndex]
       const capturedToolId = toolIds[toolIndex]
       const capturedTool = tool
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: {
@@ -1018,11 +1175,11 @@ export class UserInputRequestScenario implements MockScenario {
             },
           },
         })
-      }, delay)
+      })
       delay += 10
 
       // content_block_delta (input_json_delta)
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: {
@@ -1036,26 +1193,26 @@ export class UserInputRequestScenario implements MockScenario {
             },
           },
         })
-      }, delay)
+      })
       delay += 10
 
-      // content_block_stop — triggers MessagePersister to detect user input tools
-      setTimeout(() => {
+      // content_block_stop — triggers the live session to detect user input tools
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: { type: 'stream_event', event: { type: 'content_block_stop' } },
         })
-      }, delay)
+      })
       delay += 50
     }
 
     // message_stop
-    setTimeout(() => {
+    at(delay, () => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
-    }, delay)
+    })
     delay += 10
 
     // Write assistant JSONL entry after streaming completes (user message was
@@ -1063,7 +1220,7 @@ export class UserInputRequestScenario implements MockScenario {
     const capturedToolIds = [...toolIds]
     const capturedTools = [...tools]
     const finalDelay = delay
-    setTimeout(() => {
+    at(finalDelay, () => {
       const assistantContent = capturedTools.map((tool, i) => ({
         type: 'tool_use',
         id: capturedToolIds[i],
@@ -1075,7 +1232,7 @@ export class UserInputRequestScenario implements MockScenario {
         message: { content: assistantContent },
         timestamp: new Date().toISOString(),
       })
-      // Emit the completed assistant message through the stream so MessagePersister
+      // Emit the completed assistant message through the stream so the live session
       // broadcasts `messages_updated` (the real Claude Agent SDK emits this; a direct
       // JSONL write alone does not). Without it, a client that joined after the
       // one-shot `*_request` broadcasts has NO signal to refetch the transcript and
@@ -1085,7 +1242,7 @@ export class UserInputRequestScenario implements MockScenario {
         type: 'assistant',
         content: { type: 'assistant', message: { content: assistantContent } },
       })
-    }, finalDelay)
+    })
   }
 }
 
@@ -1240,7 +1397,7 @@ export class SkillSubagentLifecycleScenario implements MockScenario {
  * stays open: the request arrives as a sidechain assistant message
  * (parent_tool_use_id set), not on the main stream. The card must appear AND
  * the agent-level status must flip to awaiting_input — the sidebar/header
- * orange dot reads the persister's awaiting flag, which only the main-stream
+ * orange dot reads the live session's awaiting flag, which only the main-stream
  * path used to set. Replicates the stuck "working" session with an
  * unanswerable browser card.
  */
@@ -1484,20 +1641,25 @@ export class ProxyReviewScenario implements MockScenario {
     // policies each own a distinct account and don't race on the shared
     // MOCK_ACCOUNT_ID scope-policy rows across workers.
     const accountId = getMessageParam(userMessage, 'account_id') ?? MOCK_ACCOUNT_ID
+    // `scope=session` raises the review as a call from this session's
+    // proxy URL does; without it the review is agent-wide.
+    const callerSessionId = getMessageParam(userMessage, 'scope') === 'session' ? sessionId : undefined
     const capturedDelay = delay
-    setTimeout(async () => {
+    setTimeout(() => background(async () => {
       await seedMockConnectedAccount(accountId)
       // Fire-and-forget — the promise resolves when the user decides
-      reviewManager.requestReview({
+      background(reviewManager.requestReview({
         agentSlug,
         accountId,
+        callerSessionId,
         reviewType: 'api',
         toolkit: this.toolkit,
         method: this.method,
         targetPath: this.targetPath,
         matchedScopes: this.matchedScopes,
         scopeDescriptions: this.scopeDescriptions,
-      }).then((decision) => {
+        endpointDescription: matchScopes(this.toolkit, this.method, '/' + this.targetPath).endpointDescription,
+      }).then((review) => {
         // Write JSONL and complete the session after the user decides
         client.writeJsonlEntry(sessionId, {
           type: 'user',
@@ -1506,7 +1668,7 @@ export class ProxyReviewScenario implements MockScenario {
         })
         client.writeJsonlEntry(sessionId, {
           type: 'assistant',
-          message: { content: [{ type: 'text', text: `API request ${decision === 'allow' ? 'approved' : 'denied'} by user.` }] },
+          message: { content: [{ type: 'text', text: review.decision === 'allow' ? 'API request approved by user.' : withUserReason('API request denied by user.', review.reason) }] },
           timestamp: new Date().toISOString(),
         })
         client.emitStreamMessage(sessionId, {
@@ -1519,16 +1681,16 @@ export class ProxyReviewScenario implements MockScenario {
           type: 'result',
           content: { type: 'result', subtype: 'success' },
         })
-      })
-    }, capturedDelay)
+      }), { name: 'mock-proxy-review-scenario.request-review' })
+    }, { name: 'mock-proxy-review-scenario.seed-account' }), capturedDelay)
   }
 }
 
 /**
  * Mixed cross-store pending requests: two container-side input asks (secret +
  * question) stream in one turn while an agent-scoped proxy review parks in
- * the real ReviewManager. The three waits live in DIFFERENT stores (persister
- * pendingInputRequests × 2, ReviewManager pending × 1), so this scenario
+ * the real ReviewManager. The three waits live in DIFFERENT stores (the agent's
+ * 'stream' requests × 2, its 'review' requests × 1), so this scenario
  * exercises the aggregation no single-store scenario can: the pending-request
  * stack must show all three, and the awaiting indicator must survive until
  * the LAST wait of either store resolves. The review decision deliberately
@@ -1564,9 +1726,9 @@ export class MixedPendingRequestsScenario implements MockScenario {
     // Kick the review after the input tool stream has finished (its delay
     // budget is ~200ms for two tools); exact ordering is not load-bearing —
     // specs wait for all three cards independently.
-    setTimeout(async () => {
+    setTimeout(() => background(async () => {
       await seedMockConnectedAccount(accountId)
-      reviewManager.requestReview({
+      background(reviewManager.requestReview({
         agentSlug,
         accountId,
         reviewType: 'api',
@@ -1578,8 +1740,8 @@ export class MixedPendingRequestsScenario implements MockScenario {
       }).catch(() => {
         // Denied or timed out — the turn lifecycle is owned by the input
         // machinery, so nothing to do here.
-      })
-    }, 400)
+      }), { name: 'mock-mixed-pending-requests-scenario.request-review' })
+    }, { name: 'mock-mixed-pending-requests-scenario.seed-account' }), 400)
   }
 }
 
@@ -1637,12 +1799,12 @@ export class XAgentReviewScenario implements MockScenario {
 
     const capturedDelay = delay
     setTimeout(() => {
-      reviewManager.requestXAgentReview(
+      background(reviewManager.requestXAgentReview(
         agentSlug,
         this.targetAgentSlug,
         this.targetAgentName,
         this.operation,
-      ).then((decision) => {
+      ).then(({ decision }) => {
         client.writeJsonlEntry(sessionId, {
           type: 'user',
           message: { content: userMessage },
@@ -1662,7 +1824,7 @@ export class XAgentReviewScenario implements MockScenario {
           type: 'result',
           content: { type: 'result', subtype: 'success' },
         })
-      })
+      }), { name: 'mock-x-agent-review-scenario.request-review' })
     }, capturedDelay)
   }
 }
@@ -1866,8 +2028,8 @@ export class BackgroundBashScenario implements MockScenario {
     // After delay, the background command finishes. The SDK delivers the completion
     // as a `task_updated` state patch (the busy-path shape: the task settled while
     // the agent had moved on, so there is no in-band `task_notification` carrying this
-    // task's id — only a state change). The persister clears the task from this.
-    // See message-persister.ts `task_updated` handling and the
+    // task's id — only a state change). The live session clears the task from this.
+    // See live-session.ts `task_updated` handling and the
     // background-bash-busy-completion replay fixture.
     const notificationDelay = firstResultDelay + this.delayMs
     setTimeout(() => {
@@ -1998,11 +2160,11 @@ let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
 
 // Register browser scenario only when E2E_CHROMIUM_PATH is available
 if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
-  void import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
+  background(import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
     MockContainerClient.scenarios.set('browse ', new BrowserScenario())
     cleanupBrowserSessionFn = cleanupBrowserSession
     console.log('[MockContainerClient] Registered BrowserScenario (E2E_CHROMIUM_PATH available)')
-  })
+  }), { name: 'mock-container-client.register-browser-scenario' })
 }
 
 export class MockContainerClient extends EventEmitter implements ContainerClient {
@@ -2010,6 +2172,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Wide enough to fork a running turn before it finishes, even on a slow runner
+    ['work very slowly', new SlowWorkScenario(12000)],
     // Long compaction window: queue a message while the session is compacting
     ['compact slowly', new SlowCompactionScenario(10000)],
     // Onboarding sessions start on a cold agent, so their transcript lands
@@ -2070,6 +2234,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Persist while active with deliberately divergent live text — regression
     // for completed thinking cards stranding at the transcript tail.
     ['think with missing deltas', new ActiveDivergentThinkingScenario()],
+    // A Bash call through the connected-account proxy: the row names the service
+    ['check github through proxy', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS "$PROXY_BASE_URL/acct/api.github.com/user" -H "Authorization: Bearer $PROXY_TOKEN"', description: 'Check the signed-in profile' },
+      '{"login":"octocat"}',
+      'You are signed in as octocat.'
+    )],
+    // A direct curl to a host Gamut ships an icon for: the row stays Bash and shows that icon
+    ['query linear directly', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -d @query.json', description: 'Query open issues' },
+      '{"data":{"issues":{"nodes":[]}}}',
+      'No open issues.'
+    )],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',
@@ -2087,6 +2265,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
     // A task only the runtime's task list names (a subagent started it)
     ['leave a preview server', new SnapshotOnlyBackgroundScenario()],
+    // A planned task list whose tasks carry descriptions, held mid-turn
+    ['plan the work', new TaskPlanScenario([
+      { subject: 'Collect last quarter\'s numbers', description: 'Pull revenue, churn and new accounts per month from the billing export.\nFlag any month with missing rows.', activeForm: 'Collecting last quarter\'s numbers' },
+      { subject: 'Draft the summary', description: 'One page: three headline numbers, what moved them, and what to watch next quarter.', activeForm: 'Drafting the summary' },
+      { subject: 'Send it for review', description: 'Share the draft with the finance channel and ask for corrections by Friday.', activeForm: 'Sending it for review' },
+    ], 120_000)],
     // A workspace hook blocking the prompt before the model sees it
     ['trip the breaker', new HookBlockScenario('Circuit breaker: too many messages without operator input')],
     // Register a slow response scenario for cross-session tests
@@ -2108,6 +2292,69 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'The quick brown fox jumps over the lazy dog while the transcript keeps growing line after line without pause. '.repeat(70),
     )],
     // Register user input request scenarios for E2E testing
+    ['ask login', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          fields: [
+            { ref: '@e4', kind: 'username', label: 'Email address' },
+            { ref: '@e5', kind: 'password', label: 'Password' },
+          ],
+          submit: '@e6',
+        },
+      },
+    ])],
+    // The vault's states of the sign-in card: a later step's password asked
+    // with the email, a code a saved account cannot give, and a page that
+    // offers only "Continue with …".
+    ['vault login email first', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          fields: [
+            { ref: '@e4', kind: 'username', label: 'Email address' },
+            { kind: 'password', label: 'Password' },
+          ],
+          submit: '@e6',
+        },
+      },
+    ])],
+    ['vault login code', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          fields: [{ ref: '@e7', kind: 'otp', label: 'Verification code' }],
+          submit: '@e8',
+        },
+      },
+    ])],
+    ['vault login social', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: { message: 'Sign in to Example so the agent can check the order status.', fields: [], providers: ['google', 'apple', 'facebook'] },
+      },
+    ])],
+    // The site rejected the saved password: the agent asks again, saying why.
+    ['vault login retry', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          ask_user: true,
+          reason: 'The page says "Incorrect username or password."',
+          fields: [
+            { ref: '@e4', kind: 'username', label: 'Email address' },
+            { ref: '@e5', kind: 'password', label: 'Password' },
+          ],
+          submit: '@e6',
+        },
+      },
+    ])],
     ['ask secret', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_secret',
@@ -2211,7 +2458,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       },
     ])],
     // Script type must be valid for the host platform (VALID_SCRIPT_TYPES in
-    // settings.ts) or the persister auto-rejects before the card ever pends.
+    // settings.ts) or the live session auto-rejects before the card ever pends.
     ['ask script', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_script_run',
@@ -2222,8 +2469,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ])],
     ['use computer', new UserInputRequestScenario([
       {
-        name: 'mcp__computer-use__computer_apps',
-        input: { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+        name: 'mcp__agent-desktop__computer_list_apps',
+        input: {},
       },
     ])],
     // Same request pair as 'ask parallel' below, but with real-CLI parallel
@@ -2273,7 +2520,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       },
     ])],
     // Capability review scenarios: the streamed Task/Workflow tool_use flows
-    // through the real MessagePersister policy gate (workflows default to
+    // through the real live-session policy gate (workflows default to
     // review, subagents to allow), and the decision route answers via the
     // mock's /inputs resolve/reject just like the real container.
     ['launch workflow', new UserInputRequestScenario([
@@ -2367,6 +2614,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       ].join('\n'),
       'Here are the search results.'
     )],
+    // Integration setup handed to the user
+    ['ask integration setup', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_integration_setup',
+        input: { provider: 'linear', prefill: { name: 'Support Triage' }, reason: 'Finish setting up my Linear app, so the team can delegate support issues to me' },
+      },
+    ])],
     // Connected account request scenario
     ['ask account', new UserInputRequestScenario([
       {
@@ -2406,6 +2660,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'File "output/clip.mp4" (4096 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":4096}',
       'Here is the demo clip.'
     )],
+    ['deliver zip', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/bundle.zip', description: 'Report bundle' },
+      'File "output/bundle.zip" (1024 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":1024}',
+      'Here is the report bundle.'
+    )],
     ['deliver audio', new ToolUseScenario(
       'mcp__user-input__deliver_file',
       { filePath: '/workspace/output/voice-note.mp3', description: 'Voice note' },
@@ -2416,8 +2676,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // pointing at the preview. The other deliver scenarios are all previewable.
     ['deliver archive', new ToolUseScenario(
       'mcp__user-input__deliver_file',
-      { filePath: '/workspace/output/bundle.zip', description: 'Project archive' },
-      'File "output/bundle.zip" (8192 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":8192}',
+      { filePath: '/workspace/output/bundle.tar', description: 'Project archive' },
+      'File "output/bundle.tar" (8192 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":8192}',
       'Here is the project archive.'
     )],
     // API error scenarios
@@ -2532,6 +2792,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private sessionToApiSession: Map<string, string> = new Map()
   // Track pending user input requests per session for auto-completion
   private pendingInputCounts: Map<string, number> = new Map()
+  // The parked requests themselves, for GET /inputs/pending
+  private pendingInputs: Map<string, { sessionId: string; inputType: string; input?: Record<string, unknown> }> = new Map()
   // Delay between the last input resolving and the turn-ending 'result', per
   // session (default 50ms). Scenarios that must expose the post-resolve window
   // (agent resumed, not yet settled) register a longer one.
@@ -2543,7 +2805,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private heldToolResults: Map<string, Array<Record<string, unknown>>> = new Map()
   // toolUseId → parent_tool_use_id for input requests that a SUBAGENT issued.
   // The real SDK returns their tool_results on the sidechain (parent id set),
-  // which the persister routes through handleSidechainMessage — a top-level
+  // which the live session routes through sidechainFrame — a top-level
   // result here would exercise the wrong production path.
   private sidechainToolParents: Map<string, string> = new Map()
 
@@ -2661,9 +2923,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   registerPendingInputs(
     sessionId: string,
     count: number,
-    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean },
+    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean; inputs?: Array<{ toolUseId: string; inputType: string; input?: Record<string, unknown> }> },
   ): void {
     this.pendingInputCounts.set(sessionId, count)
+    for (const input of opts?.inputs ?? []) this.pendingInputs.set(input.toolUseId, { sessionId, inputType: input.inputType, input: input.input })
     if (opts?.completionDelayMs !== undefined) {
       this.inputCompletionDelays.set(sessionId, opts.completionDelayMs)
     }
@@ -2813,13 +3076,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
   }
 
+  async isDefinitelyStopped(): Promise<boolean> {
+    return !this.running
+  }
+
   async getInfo(): Promise<ContainerInfo> {
     return this.getInfoFromRuntime()
   }
 
-  getHostAuthHeaders(): Record<string, string> {
+  async getHostAuthHeaders(): Promise<Record<string, string>> {
     return {}
   }
+
+  /** request_login fills in progress, refused a second time like the real container does. */
+  private readonly loginFillsInFlight = new Set<string>()
 
   async fetch(fetchPath: string, init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
@@ -3059,6 +3329,57 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
+    // request_login: the real container locates the mapped fields in the page
+    // and writes the user's values over CDP. The mock serves one fixed form and
+    // records each fill, so specs can check exactly what crossed the boundary.
+    const loginContextMatch = fetchPath.match(/^\/browser\/login\/context\?toolUseId=(.+)$/)
+    if (loginContextMatch) {
+      let loginToolUseId = loginContextMatch[1]
+      try {
+        loginToolUseId = decodeURIComponent(loginToolUseId)
+      } catch {
+        // Malformed escape: mock tool ids are alphanumeric anyway.
+      }
+      const pending = this.pendingInputs.get(loginToolUseId)
+      if (pending?.inputType !== 'mcp__user-input__request_login') {
+        return new Response(JSON.stringify({ error: 'No sign-in request is being prepared under this id' }), { status: 404, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(mockLoginContext(pending.input)), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (fetchPath === '/browser/login/fill' && init?.method === 'POST') {
+      let body: { sessionId: string; toolUseId: string; expectedOrigin: string; values: string[] }
+      try {
+        body = JSON.parse(String(init.body))
+      } catch {
+        return new Response(JSON.stringify({ error: 'Invalid sign-in fill request' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (!this.pendingInputs.has(body.toolUseId)) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is no longer open' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      // The real container's checks, in its order.
+      if (body.expectedOrigin !== MOCK_LOGIN_CONTEXT.origin) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is for a different site' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (body.values.length !== mockLoginContext(this.pendingInputs.get(body.toolUseId)?.input).fields.length || !body.values.some(Boolean)) {
+        return new Response(JSON.stringify({ error: 'One value per field is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (this.loginFillsInFlight.has(body.toolUseId)) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is already being filled' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      this.loginFillsInFlight.add(body.toolUseId)
+      this.writeMockRecord({ type: 'loginFill', agentSlug: this.config.agentId, toolUseId: body.toolUseId, origin: body.expectedOrigin, values: body.values })
+      await this.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, { method: 'POST', body: '{}' })
+      this.loginFillsInFlight.delete(body.toolUseId)
+      const filled = body.values.filter(Boolean).length
+      const outcomes = body.values.map((value: string) => (value ? 'filled' : 'skipped'))
+      return new Response(JSON.stringify({ success: true, filled, failed: 0, outcomes, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+
+    if (fetchPath === '/inputs/pending') {
+      const pending = [...this.pendingInputs].map(([toolUseId, input]) => ({ toolUseId, ...input, createdAt: new Date() }))
+      return new Response(JSON.stringify(pending), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+
     // Handle input resolve/reject — decrement pending count and complete session when all done
     const resolveMatch = fetchPath.match(/^\/inputs\/([^/]+)\/(resolve|reject)$/)
     if (resolveMatch) {
@@ -3069,6 +3390,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // Malformed escape — keep the raw path segment (mock tool ids are alphanumeric anyway)
       }
       console.log(`[MockContainerClient] Input ${resolveMatch[2]}: ${fetchPath}`)
+      const pendingInput = this.pendingInputs.get(toolUseId)
+      this.pendingInputs.delete(toolUseId)
+      const skippedQuestion = resolveMatch[2] === 'reject' ? mockSkippedQuestionResult(pendingInput, init) : null
       // Find the session with pending inputs (we only have one active at a time in tests)
       for (const [sessionId, count] of this.pendingInputCounts) {
         if (count > 0) {
@@ -3077,12 +3401,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           console.log(`[MockContainerClient] Session ${sessionId}: ${remaining} pending inputs remaining`)
           // The real SDK surfaces each resolved/rejected input as a 'user' message
           // carrying the tool_result block — persisted to the transcript and
-          // streamed so MessagePersister broadcasts `tool_result` to every SSE
+          // streamed so the live session broadcasts `tool_result` to every SSE
           // client (this is what lets other tabs drop the resolved card).
           const toolResultBlocks = [{
             type: 'tool_result',
             tool_use_id: toolUseId,
-            content: resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request',
+            content: skippedQuestion?.content
+              ?? (resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request'),
           }]
           const sidechainParent = this.sidechainToolParents.get(toolUseId)
           if (sidechainParent) {
@@ -3125,10 +3450,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
               type: 'user',
               message: { content: toolResultBlocks },
               timestamp: new Date().toISOString(),
+              ...(skippedQuestion ? { toolUseResult: skippedQuestion.toolUseResult } : {}),
             })
             this.emitStreamMessage(sessionId, {
               type: 'user',
-              content: { type: 'user', message: { content: toolResultBlocks } },
+              content: {
+                type: 'user',
+                message: { content: toolResultBlocks },
+                ...(skippedQuestion ? { tool_use_result: skippedQuestion.toolUseResult } : {}),
+              },
             })
           }
           if (remaining === 0) {
@@ -3222,7 +3552,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     if (!options.initialMessage) throw new Error('initialMessage is required')
     // Resolve the selection exactly as the real container client does, so E2E
     // assertions see the concrete wire id the SDK would receive.
-    const model = resolveContainerModel(options.model, 'agent')
+    const model = await resolveContainerModel(options.model, 'agent')
     // Record for E2E test assertions
     MockContainerClient.lastCreateSessionCall = {
       effort: options.effort,
@@ -3317,8 +3647,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const existed = this.sessions.has(sessionId)
+    await this.releaseSession(sessionId)
     this.sessions.delete(sessionId)
+    console.log(`[MockContainerClient] Deleted session ${sessionId}`)
+    return true
+  }
+
+  async releaseSession(sessionId: string): Promise<boolean> {
     this.streamCallbacks.delete(sessionId)
     this.pendingUserMessageUuids.delete(sessionId)
     this.busySessions.delete(sessionId)
@@ -3327,9 +3662,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       for (const timer of timers.values()) clearTimeout(timer)
       this.queuedSteeringTimers.delete(sessionId)
     }
-    this.interruptEpochs.delete(sessionId)
-    console.log(`[MockContainerClient] Deleted session ${sessionId}`)
-    return existed
+    // As an interrupt does: the deleted session's pending scenario writes become no-ops.
+    this.interruptEpochs.set(sessionId, (this.interruptEpochs.get(sessionId) ?? 0) + 1)
+    return true
   }
 
   /**
@@ -3377,23 +3712,48 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return { id: newId }
   }
 
+  /**
+   * Pre-resume in mock mode: there is no CLI to resume, so this only records
+   * the call (E2E specs read the recorder to prove a start carried a session
+   * through to the container client) and reports whether the session exists.
+   */
+  async warmSession(sessionId: string): Promise<boolean> {
+    this.writeMockRecord({
+      type: 'warmSession',
+      agentSlug: this.config.agentId,
+      sessionId,
+      timestamp: new Date().toISOString(),
+    })
+    return this.sessions.has(sessionId)
+  }
+
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     // Resolve like the real container client so E2E sees the concrete wire id.
-    let model = resolveContainerModel(options?.model, 'agent')
-    if (getSettings().llmDefault && !options?.preserveRuntime && !isQueuedSessionSend(this.config.agentId, sessionId)) {
+    let model = await resolveContainerModel(options?.model, 'agent')
+    // One read for the message, as the real client makes.
+    const settings = await getSettings()
+    const result: SendMessageResult = { llmDefault: Boolean(settings.llmDefault) }
+    if (settings.llmDefault && !options?.preserveRuntime) {
       const { agentRegistry } = await import('../agent-actor')
       const actor = agentRegistry.get(this.config.agentId)
-      const metadata = await actor.sessions.metadata(sessionId)
-      const preferences = await actor.config.get('preferences')
-      const selected = await resolveSelectionHierarchy(
-        storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
-        storedSelection(metadata?.model, metadata?.llmProviderId),
-        storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
+      const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
+      const selected = await resolveSelectionHierarchyFrom(
+        settings,
+        await storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId, settings),
+        await storedSelection(metadata?.model, metadata?.llmProviderId, settings),
+        async () => {
+          const preferences = await actor.config.get('preferences')
+          return storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId, settings)
+        },
       )
       model = selected.wireModel
-      await actor.sessions.updateMetadata(sessionId, { model: selected.model, llmProviderId: selected.llmProviderId })
+      result.selection = { llmProviderId: selected.llmProviderId, model: selected.model }
+      if (metadata?.llmProviderId !== selected.llmProviderId || metadata?.model !== selected.model) {
+        await actor.sessions.updateMetadata(sessionId, { ...options?.metadataUpdates, ...result.selection })
+        result.metadataWritten = true
+      }
     }
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {
@@ -3438,7 +3798,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         message: { role: 'user', content },
         timestamp: new Date().toISOString(),
       })
-      return
+      return result
     }
 
     // Mid-turn send — mirror the real CLI's steering behavior: no user entry
@@ -3457,8 +3817,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const timer = setTimeout(() => {
         this.queuedSteeringTimers.get(sessionId)?.delete(steeringUuid)
         // The drain signal: the real CLI emits status 'requesting' when it
-        // picks queued messages up — the persister clears its pending-queued
-        // set and broadcasts a refetch on it.
+        // picks queued messages up — the live session broadcasts a refetch
+        // on it.
         this.emitStreamMessage(sessionId, {
           type: 'system',
           content: { type: 'system', subtype: 'status', status: 'requesting' },
@@ -3493,7 +3853,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const timers = this.queuedSteeringTimers.get(sessionId) ?? new Map()
       timers.set(steeringUuid, timer)
       this.queuedSteeringTimers.set(sessionId, timers)
-      return
+      return result
     }
 
     // Remember the uuid so the scenario's JSONL echo of this message gets it
@@ -3525,6 +3885,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.add(sessionId)
     this.emitSessionState(sessionId, 'running')
     scenario.execute(sessionId, this.scenarioView(sessionId), content)
+    return result
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
@@ -3565,7 +3926,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   /**
    * Stop one background task. Mirrors the real CLI's answer to a stop_task
    * control request: a task_notification of status 'stopped' on the stream,
-   * which is what retires the task in the persister and the UI. The task's
+   * which is what retires the task in the live session and the UI. The task's
    * own scheduled completion becomes a no-op (already cleared).
    */
   async stopTask(sessionId: string, taskId: string): Promise<boolean> {
@@ -3687,7 +4048,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Subscribed to stream for session ${sessionId}`)
 
     // Mirror the real container's WS hello: announce the stream contract
-    // before any relayed message so the persister treats state events as the
+    // before any relayed message so the live session treats state events as the
     // idle authority from the first turn (the mock emits them — see
     // emitSessionState).
     // process_instance is STABLE per session here: the mock never replaces a
@@ -3720,7 +4081,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
 // Recording-only scenario; ordinary E2E runs keep the default registry.
 if (process.env.E2E_MOCK === 'true' && process.env.E2E_CONNECTION_REPLACEMENT_DEMO === 'true') {
-  void import('./mock-connection-replacement-scenario').then(({ registerConnectionReplacementDemo }) => {
+  background(import('./mock-connection-replacement-scenario').then(({ registerConnectionReplacementDemo }) => {
     registerConnectionReplacementDemo()
-  })
+  }), { name: 'mock-container-client.register-connection-replacement-demo' })
 }

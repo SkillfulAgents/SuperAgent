@@ -21,7 +21,6 @@ const { createAuthClient, baseUrl, remote } = vi.hoisted(() => ({
 vi.mock('better-auth/react', () => ({ createAuthClient }))
 vi.mock('better-auth/client/plugins', () => ({
   adminClient: () => ({ id: 'admin' }),
-  genericOAuthClient: () => ({ id: 'oauth' }),
 }))
 vi.mock('./env', () => ({ getApiBaseUrl: () => baseUrl.value }))
 vi.mock('./api-target', () => ({ targetIsRemote: () => remote.value }))

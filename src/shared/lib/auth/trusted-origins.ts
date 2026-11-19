@@ -1,14 +1,14 @@
-import { getSettings } from '@shared/lib/config/settings'
+import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 
 /**
- * Get trusted origins, env-first.
+ * Trusted origins, env-first, from settings already read.
  *
  * The TRUSTED_ORIGINS env var is the documented deployment interface (README:
  * "the first origin is also used as the app's base URL"), so it must win over
- * settings.json — it feeds Better Auth's baseURL/CSRF config and the audience
- * the RFC 7523 token endpoint verifies grants against.
+ * settings — it feeds Better Auth's baseURL/CSRF config and the audience the
+ * RFC 7523 token endpoint verifies grants against.
  */
-export function getTrustedOrigins(): string[] {
+export function trustedOriginsFrom(settings: Pick<AppSettings, 'auth'>): string[] {
   const fromEnv = (process.env.TRUSTED_ORIGINS ?? '')
     .split(',')
     .map((origin) => origin.trim())
@@ -16,7 +16,10 @@ export function getTrustedOrigins(): string[] {
   if (fromEnv.length > 0) {
     return fromEnv
   }
-  const settings = getSettings()
   return settings.auth?.trustedOrigins ?? []
 }
 
+/** Trusted origins from the current settings (see {@link trustedOriginsFrom}). */
+export async function getTrustedOrigins(): Promise<string[]> {
+  return trustedOriginsFrom(await getSettings())
+}

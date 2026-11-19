@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react'
-import { useEffect } from 'react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
@@ -269,6 +269,22 @@ describe('ProviderErrorPlacement', () => {
     mockMessages.push(errorMessage(composerError))
     mount()
     expect(screen.getByTestId('recovery')).toHaveTextContent('a/s')
+  })
+
+  it('lets the user dismiss the current error and get the children back', () => {
+    const Blocking = ({ onDisplaceChildren, dismissible }: ProviderErrorComponentProps) => {
+      const [dismissed, setDismissed] = useState(false)
+      useEffect(() => { onDisplaceChildren?.(!dismissed) }, [dismissed, onDisplaceChildren])
+      if (dismissed) return null
+      return dismissible ? <button onClick={() => setDismissed(true)}>Dismiss</button> : null
+    }
+    mockedRegistry.mockReturnValue({ Component: Blocking, placement: 'composer' })
+    mockMessages.push(createUserMessage(), errorMessage(composerError))
+    mount()
+    expect(screen.getByTestId('composer')).not.toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('tells function children when they are displaced, and when they are not', () => {

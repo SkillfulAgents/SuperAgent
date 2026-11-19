@@ -8,7 +8,7 @@
  *   const actor = createFakeAgentActor('a', {
  *     sessions: { exists: vi.fn().mockResolvedValue(true) },
  *   })
- *   expect(actor.messages.send).toHaveBeenCalledWith('s1', 'hi')
+ *   expect(actor.messages.deliver).toHaveBeenCalledWith({ sessionId: 's1', content: 'hi' })
  *
  * `createFakeRegistry(actors)` returns an `AgentRegistry` that hands those
  * out and fabricates a fake for any slug it has not seen. Mock the registry
@@ -40,6 +40,10 @@ export type FakeAgentActor = {
   readonly files: FakeOps<AgentActor['files']>
   readonly memories: FakeOps<AgentActor['memories']>
   readonly config: FakeOps<AgentActor['config']>
+  readonly locks: FakeOps<AgentActor['locks']>
+  readonly widgets: FakeOps<AgentActor['widgets']>
+  readonly mcpSessions: FakeOps<AgentActor['mcpSessions']>
+  readonly volumeUploads: FakeOps<AgentActor['volumeUploads']>
 }
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends Fn ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] }
@@ -101,22 +105,21 @@ export function createFakeAgentActor(slug: AgentSlug, overrides: FakeActorOverri
     files: fakeGroup(overrides.files as Record<string, unknown>) as FakeAgentActor['files'],
     memories: fakeGroup(overrides.memories as Record<string, unknown>) as FakeAgentActor['memories'],
     config: fakeGroup(overrides.config as Record<string, unknown>) as FakeAgentActor['config'],
+    locks: fakeGroup(overrides.locks as Record<string, unknown>) as FakeAgentActor['locks'],
+    widgets: fakeGroup(overrides.widgets as Record<string, unknown>) as FakeAgentActor['widgets'],
+    mcpSessions: fakeGroup(overrides.mcpSessions as Record<string, unknown>) as FakeAgentActor['mcpSessions'],
+    volumeUploads: fakeGroup(overrides.volumeUploads as Record<string, unknown>) as FakeAgentActor['volumeUploads'],
   }
 }
 
 export interface FakeRegistry extends AgentRegistry {
   /** The fakes handed out so far, by slug. */
   readonly actors: Map<AgentSlug, FakeAgentActor>
-  /** Which slugs `running()` reports; defaults to none. */
-  runningSlugs: AgentSlug[]
   /** The fake for a slug, typed as a fake (creating it if needed). */
   fake(slug: AgentSlug): FakeAgentActor
 }
 
-export function createFakeRegistry(
-  seed: FakeAgentActor[] = [],
-  options: { runningSlugs?: AgentSlug[] } = {},
-): FakeRegistry {
+export function createFakeRegistry(seed: FakeAgentActor[] = []): FakeRegistry {
   const actors = new Map<AgentSlug, FakeAgentActor>(seed.map((actor) => [actor.slug, actor]))
   const fake = (slug: AgentSlug): FakeAgentActor => {
     let actor = actors.get(slug)
@@ -128,15 +131,12 @@ export function createFakeRegistry(
   }
   const registry: FakeRegistry = {
     actors,
-    runningSlugs: options.runningSlugs ?? [],
     fake,
     get: (slug) => fake(slug) as unknown as AgentActor,
-    peek: (slug) => actors.get(slug) as unknown as AgentActor | undefined,
-    running: () => registry.runningSlugs.map((slug) => fake(slug) as unknown as AgentActor),
-    evict: (slug) => {
+    evict: async (slug) => {
       actors.delete(slug)
     },
-    evictAll: () => {
+    evictAll: async () => {
       actors.clear()
     },
   }

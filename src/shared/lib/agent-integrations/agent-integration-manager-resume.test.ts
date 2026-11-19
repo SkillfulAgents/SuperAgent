@@ -49,13 +49,6 @@ vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
   markNoticeSent: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    addGlobalNotificationClient: vi.fn().mockReturnValue(() => {}),
-    getSessionActivity: vi.fn(),
-  },
-}))
-
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
   addErrorBreadcrumb: vi.fn(),
@@ -68,6 +61,9 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import {
   listStartupAgentIntegrations,
   getAgentIntegration,

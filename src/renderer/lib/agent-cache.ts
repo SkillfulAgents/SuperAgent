@@ -1,4 +1,4 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { Query, QueryClient, QueryKey } from '@tanstack/react-query'
 import type { ApiAgent, ApiAgentWidget, ApiSession } from '@shared/lib/types/api'
 import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
@@ -47,6 +47,10 @@ export function updateAgentRuntimeCache(
     // start after a silent host-side stop corrects itself on the next list fetch.
     ...(status === 'stopped' ? { stale: undefined } : {}),
   }))
+  // The global settings carry `hasRunningAgents`, which locks Settings →
+  // Runtime. Mark them stale without a request, so the next screen that opens
+  // them reads again instead of trusting the cache for its staleTime.
+  void queryClient.invalidateQueries({ queryKey: ['settings'], exact: true, refetchType: 'none' })
 }
 
 /** All slugs an agent's per-agent queries may be keyed by (canonical + decorative). */
@@ -69,6 +73,11 @@ function agentSlugAliases(queryClient: QueryClient, slug: string): Set<string> {
     addAliases(agent)
   }
   return aliases
+}
+
+/** The keys one agent's detail may be cached under: its canonical id and decorative route aliases. */
+export function agentDetailQueryKeys(queryClient: QueryClient, slug: string): QueryKey[] {
+  return [...agentSlugAliases(queryClient, slug)].map((alias) => ['agents', alias])
 }
 
 /** Invalidate artifact queries for one agent, including decorative route aliases. */
@@ -114,10 +123,11 @@ const SESSION_ROLLUP_FLAGS = [
   ['isActive', 'hasActiveSessions'],
   ['isAwaitingInput', 'hasSessionsAwaitingInput'],
   ['hasUnreadNotifications', 'hasUnreadNotifications'],
+  ['hasUnreadMention', 'hasUnreadMention'],
 ] as const
 
 export type SessionStatusPatch = Partial<
-  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications'>
+  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications' | 'hasUnreadMention'>
 >
 
 // Identity-preserving apply. Change detection iterates the PATCH's own keys —
@@ -133,6 +143,175 @@ function isAgentSessionListKey(queryKey: readonly unknown[], aliases: Set<string
   return queryKey[0] === 'sessions'
     && typeof queryKey[1] === 'string'
     && aliases.has(queryKey[1])
+}
+
+/**
+ * How many sessions the sidebar asks for: the five an agent's row shows, and
+ * one more so a reply cut at the limit is told apart from the whole list.
+ */
+export const RECENT_SESSIONS_LIMIT = 6
+
+/**
+ * The sidebar's slice of an agent's sessions: the newest few, in the full
+ * list's order. Under the ['sessions', slug] prefix like every other session
+ * list, so the invalidations and the patches below reach it.
+ */
+export function recentSessionsKey(agentSlug: string | null): QueryKey {
+  return ['sessions', agentSlug, 'recent', RECENT_SESSIONS_LIMIT]
+}
+
+/** How many sessions the agent lists in all, as the last recent-slice read reported it. */
+export function sessionTotalKey(agentSlug: string | null): QueryKey {
+  return ['session-total', agentSlug]
+}
+
+function isRecentSessionsKey(queryKey: readonly unknown[]): boolean {
+  return queryKey.length === 4 && queryKey[2] === 'recent'
+}
+
+/**
+ * Put a session this tab just created at the head of the agent's cached recent
+ * slice, as the create mutation does for the full list, so its sidebar row is
+ * there at once; the refetch behind it stays authoritative.
+ */
+export function seedCreatedSessionInRecent(queryClient: QueryClient, agentSlug: string, created: ApiSession): void {
+  let added = false
+  queryClient.setQueryData<ApiSession[]>(recentSessionsKey(agentSlug), (sessions) => {
+    if (!sessions || sessions.some((session) => session.id === created.id)) return sessions
+    added = true
+    return [created, ...sessions].slice(0, RECENT_SESSIONS_LIMIT)
+  })
+  if (added) {
+    queryClient.setQueryData<number>(sessionTotalKey(agentSlug), (total) => (total === undefined ? total : total + 1))
+  }
+}
+
+/**
+ * Carry a read of the agent's full list into its cached recent slice and count.
+ * While a view that lists every session is open, the slice does not read for
+ * itself (`useRecentSessions`): the full list's reads keep it current, so when
+ * that view closes the row goes on from the newest rows the tab has, not from
+ * the slice's own older read. Only a slice that is already cached is written
+ * (the row that shows it makes it), and a count only where the server reports
+ * one: without it the row counts the full list instead.
+ */
+export function writeFullListToRecent(queryClient: QueryClient, agentSlug: string, sessions: ApiSession[]): void {
+  queryClient.setQueryData<ApiSession[]>(recentSessionsKey(agentSlug), (recent) => (
+    recent === undefined ? undefined : sessions.slice(0, RECENT_SESSIONS_LIMIT)
+  ))
+  queryClient.setQueryData<number>(sessionTotalKey(agentSlug), (total) => (total === undefined ? undefined : sessions.length))
+}
+
+/**
+ * The cached lists that can vouch for clearing an agent rollup, as the rows
+ * each holds: no session outside them can still carry the flag.
+ *
+ * - The full list (['sessions', <alias>], no further key segments).
+ * - A recent slice shorter than its limit: nothing was cut, so it is the full
+ *   list.
+ * - A notable slice shorter than its limit: the server puts every live and
+ *   every unread session in it, so under the limit none is missing. Not for
+ *   the mention flag, which the slice's membership does not follow, and only
+ *   while the slice is settled (see settledSessionLists): a session that went
+ *   live since it was read is not in it until the refetch its event started
+ *   lands.
+ *
+ * A slice cut at its limit, and the automation slices (settled sessions, no
+ * status flags), vouch for nothing.
+ */
+function rollupClearAuthorities(
+  sessionLists: readonly { query: Query; settled: boolean }[],
+  sessionFlag: (typeof SESSION_ROLLUP_FLAGS)[number][0],
+): ApiSession[][] {
+  return sessionLists.flatMap(({ query, settled }) => {
+    const data = query.state.data
+    if (!Array.isArray(data)) return []
+    const key = query.queryKey
+    if (key.length === 2) return [data as ApiSession[]]
+    const limit = key[3]
+    if (key.length !== 4 || typeof limit !== 'number' || data.length >= limit) return []
+    if (key[2] === 'recent') return [data as ApiSession[]]
+    if (key[2] === 'notable' && sessionFlag !== 'hasUnreadMention' && settled) return [data as ApiSession[]]
+    return []
+  })
+}
+
+/**
+ * An agent's cached session lists, each with whether it is settled: watched,
+ * not invalidated and not being read. A watched list is read again as soon as
+ * it is invalidated, so a settled one is as current as this tab gets. Taken
+ * BEFORE a patch is written, since writing to a query marks it fresh again.
+ */
+function settledSessionLists(queryClient: QueryClient, aliases: Set<string>): { query: Query; settled: boolean }[] {
+  return queryClient
+    .getQueryCache()
+    .findAll({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+    .map((query) => ({
+      query,
+      settled: query.getObserversCount() > 0 && !query.state.isInvalidated && query.state.fetchStatus === 'idle',
+    }))
+}
+
+/** One cached session list of an agent, and whether it holds a given session. */
+export interface SessionListMembership {
+  queryKey: QueryKey
+  /** The agent's full list, not a slice of it. */
+  full: boolean
+  /** The full list or the sidebar's recent slice: a list whose rows the tab shows. */
+  rows: boolean
+  holds: boolean
+}
+
+/**
+ * Every cached session list of one agent (all route keys and slices), and
+ * whether each holds this session. A status event can patch a row in place;
+ * only a refetch can add one.
+ */
+export function sessionListMembership(queryClient: QueryClient, agentSlug: string, sessionId: string): SessionListMembership[] {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  return queryClient
+    .getQueriesData<unknown>({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+    .flatMap(([queryKey, data]) => Array.isArray(data)
+      ? [{ queryKey, full: queryKey.length === 2, rows: queryKey.length === 2 || isRecentSessionsKey(queryKey), holds: data.some((entry) => (entry as ApiSession | null)?.id === sessionId) }]
+      : [])
+}
+
+/**
+ * Invalidate the agent's session lists that can hold a hidden automated
+ * session. The full list and the notable slice (`useNotableSessions`) come
+ * from the sessions route, which leaves those sessions out.
+ */
+export function invalidateAutomationSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({
+    predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) && query.queryKey.length > 2 && query.queryKey[2] !== 'notable',
+  })
+}
+
+/** Invalidate every cached session list of one agent (all route keys and slices), and no other agent's. */
+export function invalidateAgentSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+}
+
+/**
+ * A deleted session leaves every cached list of its agent at once, and its
+ * detail is dropped rather than read again (the read would 404). A detail a
+ * mounted view still observes is kept, marked stale, until that view leaves.
+ * Call before invalidating the lists: a write clears a query's stale mark.
+ */
+export function removeSessionFromCaches(queryClient: QueryClient, agentSlug: string, sessionId: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.setQueriesData<unknown>(
+    { predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) },
+    (data: unknown) => (
+      Array.isArray(data) && data.some((entry) => (entry as ApiSession | null)?.id === sessionId)
+        ? data.filter((entry) => (entry as ApiSession | null)?.id !== sessionId)
+        : data
+    ),
+  )
+  queryClient.removeQueries({ queryKey: ['session', sessionId], type: 'inactive' })
+  void queryClient.invalidateQueries({ queryKey: ['session', sessionId], refetchType: 'none' })
 }
 
 /**
@@ -222,9 +401,14 @@ export function applySessionActivityStatus(
   // full-cache predicate walks plus an agents-list rebuild in every open tab.
   const hasSessionData = [...aliases].some((alias) =>
     queryClient.getQueryData(['sessions', alias]) !== undefined
+    // The sidebar's slice is a list of rows like the full one, under one known key.
+    || queryClient.getQueryData(recentSessionsKey(alias)) !== undefined
     || queryClient.getQueryData(['session', sessionId, alias]) !== undefined,
   )
   if (!hasSessionData) return false
+
+  const hasClear = Object.values(patch).some((value) => value === false)
+  const sessionLists = hasClear ? settledSessionLists(queryClient, aliases) : []
 
   const changed = patchSessionWithAliases(
     queryClient,
@@ -234,11 +418,11 @@ export function applySessionActivityStatus(
   )
 
   // Agent-level rollups. Raising is always safe — one working/awaiting/unread
-  // session implies the flag. Clearing consults ONLY the authoritative full
-  // lists (['sessions', <alias>], no extra key segments): the notable slice
-  // is truncated server-side and the automation slices hold settled sessions
-  // with no status flags, so any of them could approve a clear it cannot
-  // actually vouch for. A full list must be cached at all, and no OTHER
+  // session implies the flag. Clearing consults ONLY the lists that can vouch
+  // for it (see rollupClearAuthorities): the full list, and a slice the
+  // server did not cut. A slice cut at its limit and the automation slices
+  // (settled sessions with no status flags) could approve a clear they cannot
+  // actually vouch for. Such a list must be cached at all, and no OTHER
   // session in it may still carry the flag.
   //
   // Known blind spot, accepted deliberately: hidden automated sessions and
@@ -249,23 +433,14 @@ export function applySessionActivityStatus(
   // restores it. The client genuinely cannot see those from its caches;
   // carrying rollup state on the events themselves is the fix if that rare
   // flicker ever matters more than the every-turn stagger this echo removes.
-  const hasClear = Object.values(patch).some((value) => value === false)
-  const fullLists = hasClear
-    ? queryClient
-        .getQueriesData<unknown>({
-          predicate: (query) =>
-            query.queryKey.length === 2 && isAgentSessionListKey(query.queryKey, aliases),
-        })
-        .map(([, data]) => data)
-        .filter((data): data is ApiSession[] => Array.isArray(data))
-    : []
   const agentPatch: Partial<ApiAgent> = {}
   for (const [sessionFlag, agentFlag] of SESSION_ROLLUP_FLAGS) {
     const value = patch[sessionFlag]
     if (value === undefined) continue
     if (!value) {
-      if (fullLists.length === 0) continue
-      if (fullLists.some((list) => list.some((entry) => entry?.[sessionFlag]))) continue
+      const authorities = rollupClearAuthorities(sessionLists, sessionFlag)
+      if (authorities.length === 0) continue
+      if (authorities.some((list) => list.some((entry) => entry?.[sessionFlag]))) continue
     }
     agentPatch[agentFlag] = value
   }
@@ -285,11 +460,14 @@ export function applySessionActivityStatus(
     // an already-working agent — the common case) must return the same agent
     // reference, or every event rebuilds the agents array and pays a full
     // deep-compare in structural sharing.
+    // Only the flags that change are written, so a clear adds no `false` an agent never carried.
     updateMatchingAgents(queryClient, agentSlug, (agent) => {
-      const agentChanged = (Object.keys(agentPatch) as (keyof ApiAgent)[]).some((key) => (
+      const changedKeys = (Object.keys(agentPatch) as (keyof ApiAgent)[]).filter((key) => (
         (agent[key] ?? false) !== agentPatch[key]
       ))
-      return agentChanged ? { ...agent, ...agentPatch } : agent
+      return changedKeys.length > 0
+        ? { ...agent, ...Object.fromEntries(changedKeys.map((key) => [key, agentPatch[key]])) }
+        : agent
     })
   }
   return changed

@@ -2,7 +2,8 @@ import { defineToolRenderer } from '../renderer-types'
 import { MoonStar, Globe } from 'lucide-react'
 import type { ToolRendererProps, StreamingToolRendererProps } from '../renderer-types'
 import { Field, ResultField } from '../ui/shared'
-import { scheduleResumeDef, type ScheduleResumeInput } from './definition'
+import { scheduleResumeDef } from './definition'
+import type { ScheduleResumeInput } from './schema'
 
 const parseScheduleResumeInput = scheduleResumeDef.parseInput
 
@@ -37,7 +38,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 function StreamingView({ partialInput }: StreamingToolRendererProps) {
   let parsed: ScheduleResumeInput = {}
   try {
-    parsed = JSON.parse(partialInput)
+    parsed = parseScheduleResumeInput(JSON.parse(partialInput))
   } catch {
     // Still streaming
   }

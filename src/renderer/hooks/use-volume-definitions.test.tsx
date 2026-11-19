@@ -1,0 +1,61 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { apiFetch } from '@renderer/lib/api'
+import { useDeleteVolumeDefinition, useReconnectLocalVolume, useVolumeDefinitions } from './use-volume-definitions'
+
+vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
+
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
+
+function setup() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const invalidated = vi.spyOn(client, 'invalidateQueries')
+  const wrapper = ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  return { client, invalidated, wrapper }
+}
+
+it('preserves visibility when connected to a workspace running the single-owner API', async () => {
+  vi.mocked(apiFetch).mockResolvedValue(Response.json([{ id: 'old-private', userId: 'alice' }, { id: 'old-public', userId: null }]))
+  const { result } = renderHook(() => useVolumeDefinitions(), { wrapper: setup().wrapper })
+  await waitFor(() => expect(result.current.data).toMatchObject([
+    { visibility: 'private', supportsOwnerSharing: false, owners: [{ userId: 'alice' }] },
+    { visibility: 'public', supportsOwnerSharing: false },
+  ]))
+})
+
+describe('choosing a drive’s folder again', () => {
+  it('sends the pick, then refetches the drive and the agents whose restart prompt it changes', async () => {
+    vi.mocked(apiFetch).mockResolvedValue(Response.json({ success: true }))
+    const { invalidated, wrapper } = setup()
+    const { result } = renderHook(() => useReconnectLocalVolume(), { wrapper })
+    await act(() => result.current.mutateAsync({ id: 'v1', config: { path: '/notes', bookmark: 'Ym0y' } }))
+    expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/volume-definitions/v1/reconnect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: '/notes', bookmark: 'Ym0y' }),
+    })
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      ['volume-definitions'], ['mounts'], ['volume-files', 'v1'], ['agents'],
+    ])
+  })
+  it('refetches nothing when the pick is refused', async () => {
+    vi.mocked(apiFetch).mockResolvedValue(Response.json({ error: 'Choose this drive’s own folder' }, { status: 400 }))
+    const { invalidated, wrapper } = setup()
+    const { result } = renderHook(() => useReconnectLocalVolume(), { wrapper })
+    await expect(act(() => result.current.mutateAsync({ id: 'v1', config: { path: '/elsewhere' } }))).rejects.toThrow('Choose this drive’s own folder')
+    expect(invalidated).not.toHaveBeenCalled()
+  })
+})
+
+describe('deleting a drive', () => {
+  it('refetches the mounts a global drive came off', async () => {
+    vi.mocked(apiFetch).mockResolvedValue(Response.json({ success: true }))
+    const { invalidated, wrapper } = setup()
+    const { result } = renderHook(() => useDeleteVolumeDefinition(), { wrapper })
+    await act(() => result.current.mutateAsync('v1'))
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['mounts'])
+  })
+})

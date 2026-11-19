@@ -6,6 +6,9 @@ import { inputEvent, mockChatIntegration } from '../chat-integrations/test-helpe
 import type { IntegrationInputEvent } from './types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 
 // ---------------------------------------------------------------------------
 // SUP-234 — message queue entries were never reclaimed.
@@ -103,8 +106,9 @@ describe('SUP-234: chat integration message queue cleanup', () => {
     mgr.enqueueSSEEvent('intg-2', 'chat-2', { type: 'second' }, 'sess-new')
     await flushMicrotasks()
 
-    expect(handler).toHaveBeenNthCalledWith(1, 'intg-2', 'chat-2', { type: 'first' }, 'sess-old')
-    expect(handler).toHaveBeenNthCalledWith(2, 'intg-2', 'chat-2', { type: 'second' }, 'sess-new')
+    // The last argument is the installation the access check read: none, as no chat follows these sessions.
+    expect(handler).toHaveBeenNthCalledWith(1, 'intg-2', 'chat-2', { type: 'first' }, 'sess-old', undefined)
+    expect(handler).toHaveBeenNthCalledWith(2, 'intg-2', 'chat-2', { type: 'second' }, 'sess-new', undefined)
   })
 
   it('keeps in-flight (unsettled) queue entries', async () => {

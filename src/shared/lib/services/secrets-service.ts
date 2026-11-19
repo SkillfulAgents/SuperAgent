@@ -8,7 +8,7 @@
  * container can read.
  */
 
-import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { agentRegistry, WorkspaceFileError, updateConfigDoc } from '@shared/lib/agent-actor'
 import { AgentSecret } from '@shared/lib/types/agent'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
@@ -188,12 +188,12 @@ export async function getSecret(
  */
 export async function setSecret(agentSlug: string, secret: AgentSecret): Promise<void> {
   // The agent .env is written by BOTH this app AND the container's POST /env
-  // handler (reserved runtime vars). The actor's `secrets` update re-reads
-  // FRESH under the on-disk lock the container honors too and writes
+  // handler (reserved runtime vars). The update is a compare-and-set whose
+  // compare runs under the on-disk lock the container honors too, writing
   // atomically at the mode the container can read, so an interleaved or
   // interrupted write can't drop other secrets or truncate the file (which
   // doubles as the container runtime env).
-  await agentRegistry.get(agentSlug).config.update('secrets', (current) => {
+  await updateConfigDoc(agentRegistry.get(agentSlug).config, 'secrets', (current) => {
     const secrets = secretsFromEnv(current ?? '')
 
     const existingIndex = secrets.findIndex((s) => s.envVar === secret.envVar)
@@ -223,17 +223,18 @@ export type UpdateSecretResult =
   | { status: 'reserved'; envVar: string }
 
 /**
- * A locked read-modify-write over the agent's secrets whose mutator also
- * decides the caller's result. `mutate` sees the current secrets and the
+ * A compare-and-set read-modify-write over the agent's secrets whose mutator
+ * also decides the caller's result. `mutate` sees the current secrets and the
  * current `.env` text, and returns the next text — `current` itself to leave
- * the file's content as it is — together with the result to hand back.
+ * the file's content as it is — together with the result to hand back. A
+ * race reruns it; the last run's result is the caller's.
  */
 async function updateSecrets<T>(
   agentSlug: string,
   mutate: (secrets: AgentSecret[], current: string) => { next: string; result: T },
 ): Promise<T> {
   let outcome: { result: T } | undefined
-  await agentRegistry.get(agentSlug).config.update('secrets', (current) => {
+  await updateConfigDoc(agentRegistry.get(agentSlug).config, 'secrets', (current) => {
     const text = current ?? ''
     const step = mutate(secretsFromEnv(text), text)
     outcome = { result: step.result }

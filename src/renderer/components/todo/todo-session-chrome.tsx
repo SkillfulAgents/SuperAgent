@@ -5,14 +5,14 @@ import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { useExperiment } from '@renderer/hooks/use-experiment'
 import { useTodos, type TodoView } from '@renderer/hooks/use-todos'
-import { cardActionFor, useTodoActionRunners } from './todo-card-action'
+import { cardActionFor, reopenAction, useTodoActionRunners } from './todo-card-action'
 import { ShortcutTooltip, usePlainKeys } from './todo-shortcuts'
 
 /*
  * The Todo board's chrome in a session's header. A session started from the
  * board is one of its items, so its header gets the board's navigation: back
  * to the board on the left; on the right, a stepper through everything
- * waiting on the person and the item's own action (mark done, archive).
+ * waiting on the person and the item's own action (mark done, archive, reopen).
  * Sessions that are not on the board, and people without the experiment,
  * see the header as it always was.
  */
@@ -45,11 +45,6 @@ function useOpenTodo() {
   }
 }
 
-/** Something else has the keyboard: a dialog or a menu is open over the session. */
-function overlayOpen(): boolean {
-  return !!document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')
-}
-
 /** Left of the breadcrumb: back to the board. */
 export function TodoSessionBack({ agentSlug, sessionId }: { agentSlug: string; sessionId: string }) {
   const { todo } = useSessionTodo(agentSlug, sessionId)
@@ -57,7 +52,7 @@ export function TodoSessionBack({ agentSlug, sessionId }: { agentSlug: string; s
   const back = () => void navigate({ to: '/todo' })
 
   usePlainKeys((event) => {
-    if (event.key !== 'Escape' || overlayOpen()) return false
+    if (event.key !== 'Escape') return false
     back()
     return true
   }, !!todo)
@@ -80,13 +75,14 @@ export function TodoSessionBack({ agentSlug, sessionId }: { agentSlug: string; s
   )
 }
 
-/** Right side of the header: step through what is waiting on you, then the item's action. */
+/** Right side of the header: step through what is waiting on you, then the item's actions. */
 export function TodoSessionControls({ agentSlug, sessionId }: { agentSlug: string; sessionId: string }) {
   const { todo, todos } = useSessionTodo(agentSlug, sessionId)
   const openTodo = useOpenTodo()
   const runners = useTodoActionRunners()
-  // The item's own action; a draft has no session, so it is never this one.
-  const action = cardActionFor(todo, runners, () => {})
+  // Reopen, then the item's own action; a draft has no session, so Start is never among them.
+  const actions = [reopenAction(todo, runners), cardActionFor(todo, runners, () => {})]
+    .filter((a) => a !== null)
 
   const queue = todoQueue(todos)
   const index = todo ? queue.findIndex((t) => t.id === todo.id) : -1
@@ -95,11 +91,11 @@ export function TodoSessionControls({ agentSlug, sessionId }: { agentSlug: strin
   const next = index === -1 ? (queue[0] ?? null) : (queue[index + 1] ?? null)
 
   usePlainKeys((event) => {
-    if (overlayOpen()) return false
     const key = event.key.toUpperCase()
     if (key === 'J' && next) { openTodo(next); return true }
     if (key === 'K' && prev) { openTodo(prev); return true }
-    if (action && key === action.shortcut) { action.run(); return true }
+    const action = actions.find((a) => a.shortcut === key)
+    if (action) { action.run(); return true }
     return false
   }, !!todo)
 
@@ -144,8 +140,8 @@ export function TodoSessionControls({ agentSlug, sessionId }: { agentSlug: strin
           </div>
         </>
       )}
-      {action && (
-        <ShortcutTooltip label={action.label} keys={[action.shortcut]}>
+      {actions.map((action) => (
+        <ShortcutTooltip key={action.kind} label={action.label} keys={[action.shortcut]}>
           <Button
             variant="outline"
             size="icon"
@@ -158,7 +154,7 @@ export function TodoSessionControls({ agentSlug, sessionId }: { agentSlug: strin
             <action.Icon className={cn('h-4 w-4', action.iconClass)} />
           </Button>
         </ShortcutTooltip>
-      )}
+      ))}
     </div>
   )
 }

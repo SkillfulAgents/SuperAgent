@@ -5,7 +5,7 @@ import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceC
 
 /** Adapts Live media/mapping to the same agent-event contract as the chained engine. */
 export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
-  readonly capabilities = { speechSpeed: false, spokenTranscript: true }
+  readonly capabilities = { speechSpeed: false, spokenTranscript: true, transcript: 'separate' as const }
   readonly turnPolicy = { retainPausedReplies: true }
   private conversation: OpenAILiveConversation
   private state: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
@@ -28,14 +28,13 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
       onSpeaking: (value) => { this.assistantSpeaking = value; this.publish() },
       onInputSpeaking: (value) => { this.userSpeaking = value; this.publish() },
       onError: (message) => { if (!this.closed) this.events.onError(message) },
+      onSpeech: (piece) => { if (!this.closed) this.events.onSpeech?.(piece) },
       onRequest: async (request) => {
         if (this.closed || this.paused) return false
-        if (request.action !== 'message' && request.action !== 'cancel') return false
-        const result = await this.events.onCommand(request.action === 'cancel'
-          ? { type: 'cancel' } : { type: 'submit', text: request.text })
+        const result = await this.events.onCommand({ type: 'submit', text: request.text, queue: request.mode === 'queue' })
         return result.accepted
       },
-    }, context.history, context.agentSlug)
+    }, context.history, context.agentSlug, context.sessionId)
   }
 
   get analyser() { return this.conversation.analyser }
@@ -72,6 +71,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   setPaused(paused: boolean) { this.paused = paused; this.conversation.setPaused(paused); this.publish() }
   setMicrophoneMuted(muted: boolean) { this.conversation.setMicrophoneMuted(muted) }
   setOutputMuted(muted: boolean) { this.conversation.setOutputMuted(muted) }
+  appendInstructions(text: string) { if (!this.closed) this.conversation.appendInstructions(text) }
   pressMic() { if (!this.closed && !this.paused) this.conversation.pressMic(this.state.active || this.assistantSpeaking) }
   close() { this.closed = true; this.conversation.close(); this.releaseAudio?.(); this.releaseAudio = null }
 

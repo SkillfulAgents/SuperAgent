@@ -7,7 +7,7 @@ import { SessionPage } from '../pages/session.page'
  * Allow/review/block launch policies for subagents (Task) and workflows.
  *
  * The mock scenarios stream a `Workflow` / `Task` tool_use through the real
- * MessagePersister, which applies the real policy gate (defaults: subagents
+ * agent's live sessions, which apply the real policy gate (defaults: subagents
  * allow, workflows review) and broadcasts `capability_review_request`. The
  * card's decisions hit the real /capability-review route, which resolves or
  * rejects the mock container's pending input — same wiring as production.
@@ -56,7 +56,7 @@ test.describe('Capability launch review', () => {
     await sessionPage.sendMessage('launch workflow')
     await expect(reviewCard(page)).toBeVisible({ timeout: 15000 })
 
-    await page.locator('[data-testid="capability-review-run-btn"]').click()
+    await page.locator('[data-testid="capability-review-allow-once-btn"]').click()
 
     await expect(reviewCard(page)).toHaveCount(0, { timeout: 10000 })
     await sessionPage.waitForInputEnabled(15000)
@@ -66,7 +66,7 @@ test.describe('Capability launch review', () => {
     await sessionPage.sendMessage('launch workflow')
     await expect(reviewCard(page)).toBeVisible({ timeout: 15000 })
 
-    await page.locator('[data-testid="capability-review-block-btn"]').click()
+    await page.locator('[data-testid="capability-review-deny-btn"]').click()
 
     await expect(reviewCard(page)).toHaveCount(0, { timeout: 10000 })
     // The deny is a tool result the model adapts to — the session must settle,
@@ -78,8 +78,7 @@ test.describe('Capability launch review', () => {
     await sessionPage.sendMessage('launch workflow')
     await expect(reviewCard(page)).toBeVisible({ timeout: 15000 })
 
-    await page.locator('[data-testid="capability-review-run-btn-chevron"]').click()
-    await page.locator('[data-testid="capability-review-allow-session-btn"]').click()
+    await page.locator('[data-testid="capability-review-always-allow-btn"]').click()
     await expect(reviewCard(page)).toHaveCount(0, { timeout: 10000 })
     await sessionPage.waitForInputEnabled(15000)
 

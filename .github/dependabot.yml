@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # agent-container/Dockerfile pins ubuntu:22.04 by digest, so a new build of
+  # the tag arrives as a PR instead of a surprise full rebuild. Digest updates
+  # only: moving to another Ubuntu release is a deliberate change.
+  - package-ecosystem: docker
+    directory: /agent-container
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: ubuntu
+        update-types: ['version-update:semver-major', 'version-update:semver-minor']

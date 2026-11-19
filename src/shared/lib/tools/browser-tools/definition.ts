@@ -15,6 +15,20 @@ export const browserSnapshotDef: ToolDefinition = {
   displayName: 'Page Snapshot', getSummary: noSummary,
 }
 
+export const browserReadDef: ToolDefinition = {
+  displayName: 'Read Page',
+  getSummary: (input) => {
+    const { outline, section } = input as { outline?: boolean; section?: string }
+    if (outline) return 'outline'
+    return section ? `section "${section.length > 40 ? `${section.slice(0, 37)}...` : section}"` : null
+  },
+}
+
+export const browserCaptureTrafficDef: ToolDefinition = {
+  displayName: 'Capture Traffic',
+  getSummary: (input) => (input as { action?: string }).action ?? null,
+}
+
 export const browserClickDef: ToolDefinition = {
   displayName: 'Click',
   getSummary: (input) => (input as { ref?: string }).ref ?? null,
@@ -78,6 +92,14 @@ export const browserHoverDef: ToolDefinition = {
   getSummary: (input) => (input as { ref?: string }).ref ?? null,
 }
 
+export const browserUploadDef: ToolDefinition = {
+  displayName: 'Upload File',
+  getSummary: (input) => {
+    const { filePath } = input as { filePath?: string }
+    return filePath ? filePath.split('/').pop() || filePath : null
+  },
+}
+
 export const browserDownloadDef: ToolDefinition = {
   displayName: 'Download File',
   getSummary: (input) => {
@@ -106,5 +128,14 @@ export const browserRunDef: ToolDefinition = {
     if (!line) return null
     const firstLine = line.split('\n')[0]
     return firstLine.length > 50 ? `$ ${firstLine.slice(0, 47)}...` : `$ ${firstLine}`
+  },
+}
+
+export const browserGetStateDef: ToolDefinition = {
+  displayName: 'Page State',
+  getSummary: (input) => {
+    const { scope, screenshot } = input as { scope?: string; screenshot?: boolean }
+    const parts = [scope, screenshot === false ? 'no screenshot' : null].filter(Boolean)
+    return parts.length ? parts.join(' · ') : null
   },
 }

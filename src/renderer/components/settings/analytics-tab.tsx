@@ -118,7 +118,7 @@ export function AnalyticsTab() {
           {targets.length > 0 && (
             <div className="space-y-3">
               {targets.map((target, index) => (
-                <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
+                <div key={index} className="flex items-center justify-between p-3 border rounded-card">
                   <div className="flex items-center gap-3">
                     <Switch
                       checked={target.enabled}
@@ -147,7 +147,7 @@ export function AnalyticsTab() {
 
           {/* Add new target */}
           {showAddForm ? (
-            <div className="space-y-3 p-3 border rounded-lg">
+            <div className="space-y-3 p-3 border rounded-card">
               <Select
                 value={newTargetType}
                 onValueChange={(v) => {

@@ -12,13 +12,13 @@ import {
  *
  * Returns undefined for an undefined selection (caller omits the field).
  */
-export function resolveContainerModel(
+export async function resolveContainerModel(
   selection: string | undefined,
   purpose: ModelPurpose,
-): string | undefined {
+): Promise<string | undefined> {
   if (!selection) return undefined
   try {
-    return resolveActiveProviderModel(selection, purpose)
+    return await resolveActiveProviderModel(selection, purpose)
   } catch {
     // Resolution depends on loadable settings + provider registry. In test
     // contexts that partially mock the settings module those may be absent;

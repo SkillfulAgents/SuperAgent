@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import { Authenticated, IsAdmin } from '../middleware/auth'
-import { containerHost } from '@shared/lib/agent-actor'
+import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath } from '@shared/lib/container/base-container-client'
-import { getLimaHome, getLimactlPath } from '@shared/lib/container/lima-container-client'
+import { getLimaHome, getLimactlPath, limactlCommand, LIMA_VM_NAME } from '@shared/lib/container/lima-container-client'
 import { platform } from 'os'
 
 const debug = new Hono()
@@ -13,7 +13,7 @@ debug.use('*', Authenticated(), IsAdmin())
 
 // GET /api/debug/runtime — VM/runtime status info
 debug.get('/runtime', async (c) => {
-  const settings = getSettings()
+  const settings = await getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
   const availability = await checkAllRunnersAvailability()
 
@@ -24,7 +24,7 @@ debug.get('/runtime', async (c) => {
       const limaHome = getLimaHome()
       const limactl = getLimactlPath()
       const { stdout } = await execWithPath(
-        `LIMA_HOME="${limaHome}" "${limactl}" list --json`
+        limactlCommand('list --json')
       )
       const vms = stdout.trim().split('\n')
         .filter(Boolean)
@@ -35,7 +35,7 @@ debug.get('/runtime', async (c) => {
       // Also check containerd status inside the VM
       try {
         const { stdout: containerdOut } = await execWithPath(
-          `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- rc-service containerd status`
+          limactlCommand(`shell ${LIMA_VM_NAME} -- rc-service containerd status`)
         )
         ;(vmStatus as any).containerdStatus = containerdOut.trim()
       } catch (e: any) {
@@ -45,7 +45,7 @@ debug.get('/runtime', async (c) => {
       // Check disk usage
       try {
         const { stdout: dfOut } = await execWithPath(
-          `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- df -h /`
+          limactlCommand(`shell ${LIMA_VM_NAME} -- df -h /`)
         )
         ;(vmStatus as any).diskUsage = dfOut.trim()
       } catch { /* ignore */ }
@@ -94,14 +94,12 @@ debug.get('/runtime', async (c) => {
 
 // GET /api/debug/containers — list all containers from the runtime
 debug.get('/containers', async (c) => {
-  const settings = getSettings()
+  const settings = await getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
 
   let runnerCmd: string
   if (runner === 'lima') {
-    const limaHome = getLimaHome()
-    const limactl = getLimactlPath()
-    runnerCmd = `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- sudo nerdctl`
+    runnerCmd = limactlCommand(`shell ${LIMA_VM_NAME} -- sudo nerdctl`)
   } else if (runner === 'wsl2') {
     runnerCmd = `wsl -d superagent -- sudo nerdctl`
   } else {
@@ -130,14 +128,12 @@ debug.get('/containers', async (c) => {
 debug.get('/containers/:name/logs', async (c) => {
   const name = c.req.param('name')
   const tail = parseInt(c.req.query('tail') || '100', 10)
-  const settings = getSettings()
+  const settings = await getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
 
   let runnerCmd: string
   if (runner === 'lima') {
-    const limaHome = getLimaHome()
-    const limactl = getLimactlPath()
-    runnerCmd = `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- sudo nerdctl`
+    runnerCmd = limactlCommand(`shell ${LIMA_VM_NAME} -- sudo nerdctl`)
   } else if (runner === 'wsl2') {
     runnerCmd = `wsl -d superagent -- sudo nerdctl`
   } else {
@@ -191,6 +187,16 @@ debug.get('/app-info', (c) => {
     electronVersion: process.versions.electron || null,
     terminalCommand,
   })
+})
+
+// GET /api/debug/agents/:id/session-metadata — what the app keeps about each
+// of an agent's sessions (names, stars, how each was started). It lives in
+// the agent's session index, not in a file one can open, so this is where a
+// person, or the E2E suite, reads it.
+debug.get('/agents/:id/session-metadata', async (c) => {
+  const slug = await agentCatalog.resolve(c.req.param('id'))
+  if (!slug) return c.json({ error: 'Agent not found' }, 404)
+  return c.json(await agentRegistry.get(slug).sessions.readMetadata())
 })
 
 export default debug

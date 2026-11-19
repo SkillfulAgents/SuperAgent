@@ -1,9 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { Hono } from 'hono'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { Hono, type Context } from 'hono'
+import { appState, closeAppState, digestKeyPart } from '@shared/lib/app-state'
+import { defineLockout } from '@shared/lib/app-state/lockout'
 
 // Mock getSettings to return configurable auth settings
 let mockAuthSettings: Record<string, unknown> = {}
 let mockUserCount = 1 // Default: at least one user exists (not first user)
+let mockInvited: { status: string } | undefined // the user row an email sign-up names, if any
+// Claiming the account is covered against the real Better Auth (invited-user-claim.integration.test.ts).
+const signUpInvitedUser = vi.hoisted(() => vi.fn(async (c: Context) => c.json({ claimed: true })))
+vi.mock('./invited-sign-up', () => ({ signUpInvitedUser }))
 
 vi.mock('@shared/lib/config/settings', () => ({
   DEFAULT_AUTH_SETTINGS: {
@@ -31,6 +37,7 @@ vi.mock('@shared/lib/db', () => ({
     select: () => ({
       from: () => ({
         get: () => ({ count: mockUserCount }),
+        where: () => ({ get: () => mockInvited }),
       }),
     }),
   },
@@ -44,7 +51,7 @@ vi.mock('drizzle-orm', () => ({
   sql: (strings: TemplateStringsArray) => strings.join(''),
 }))
 
-import { authEnforcementMiddleware, clearLockouts, validatePasswordComplexity } from './auth-enforcement'
+import { authEnforcementMiddleware, validatePasswordComplexity } from './auth-enforcement'
 
 function createApp() {
   const app = new Hono()
@@ -67,12 +74,31 @@ describe('auth enforcement middleware', () => {
   beforeEach(() => {
     mockAuthSettings = {}
     mockUserCount = 1 // default: not first user
-    clearLockouts()
+    mockInvited = undefined
+    signUpInvitedUser.mockClear()
+    // Lockouts live in AppState, which the shared setup installs fresh for every test.
   })
 
   // ── Signup Mode ──────────────────────────────────────────────────────
 
   describe('signup mode', () => {
+    it('lets someone invited from a team directory sign up while sign-ups are invitation-only, into the account waiting for them', async () => {
+      mockAuthSettings = { signupMode: 'invitation_only' }
+      mockInvited = { status: 'invited' }
+      const res = await postJson(createApp(), '/api/auth/sign-up/email', { email: 'Dana@acme.test', password: 'StrongPass123!', name: 'Dana' })
+      expect(await res.json()).toEqual({ claimed: true })
+      expect(signUpInvitedUser).toHaveBeenCalledOnce()
+    })
+
+    it('holds an invited sign-up to the password policy, and to closed sign-ups', async () => {
+      mockInvited = { status: 'invited' }
+      mockAuthSettings = { signupMode: 'invitation_only' }
+      expect((await postJson(createApp(), '/api/auth/sign-up/email', { email: 'dana@acme.test', password: 'short', name: 'Dana' })).status).toBe(400)
+      mockAuthSettings = { signupMode: 'closed' }
+      expect((await postJson(createApp(), '/api/auth/sign-up/email', { email: 'dana@acme.test', password: 'StrongPass123!', name: 'Dana' })).status).toBe(403)
+      expect(signUpInvitedUser).not.toHaveBeenCalled()
+    })
+
     it('blocks signup when mode is closed', async () => {
       mockAuthSettings = { signupMode: 'closed' }
       const app = createApp()
@@ -152,6 +178,23 @@ describe('auth enforcement middleware', () => {
         name: 'First User',
       })
       expect(res.status).toBe(200)
+    })
+
+    it('does not let a first user sign up by email on a platform-controlled deployment', async () => {
+      vi.stubEnv('AUTH_MODE', 'true')
+      vi.stubEnv('PLATFORM_TOKEN', `e30.${Buffer.from(JSON.stringify({ orgId: 'org_1' })).toString('base64url')}.sig`)
+      try {
+        mockUserCount = 0
+        const res = await postJson(createApp(), '/api/auth/sign-up/email', {
+          email: 'stranger@example.com',
+          password: 'password123',
+          name: 'Stranger',
+        })
+        expect(res.status).toBe(403)
+        expect(await res.json()).toMatchObject({ code: 'SIGNUPS_DISABLED' })
+      } finally {
+        vi.unstubAllEnvs()
+      }
     })
 
     it('domain matching is case-insensitive', async () => {
@@ -398,6 +441,135 @@ describe('auth enforcement middleware', () => {
       loginSuccess = false
       const res2 = await postJson(app, '/api/auth/sign-in/email', body)
       expect(res2.status).toBe(401) // not 429
+    })
+
+    describe('state in AppState', () => {
+      const T0 = Date.parse('2026-11-04T12:00:00Z')
+      // The same records the middleware writes: keys are paths, so an equal definition reads them.
+      const lockouts = defineLockout({ name: 'auth:lockout' })
+
+      beforeEach(() => {
+        mockAuthSettings = { accountLockoutThreshold: 3, accountLockoutDurationMin: 30 }
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(T0)
+      })
+
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      /** Better Auth stand-in: 'right' signs in (after `gate` when one is set), anything else is a 401. */
+      function signInApp(gate?: { reached: () => void; release: Promise<void> }) {
+        const handler = vi.fn(async (c: Context) => {
+          const { password } = await c.req.json()
+          if (password !== 'right') return c.json({ error: 'Invalid credentials' }, 401)
+          if (gate) {
+            gate.reached()
+            await gate.release
+          }
+          return c.json({ ok: true })
+        })
+        const app = new Hono()
+        app.use('/api/auth/*', authEnforcementMiddleware)
+        app.post('/api/auth/*', handler)
+        return { app, handler }
+      }
+
+      const signIn = (app: Hono, password: string, email = 'race@example.com') =>
+        postJson(app, '/api/auth/sign-in/email', { email, password })
+
+      it('keys the lockout by the digested lowercase email', async () => {
+        const { app } = signInApp()
+        await signIn(app, 'wrong', 'Case@Example.com')
+        await signIn(app, 'wrong', 'case@example.COM')
+
+        const entry = await appState().get(lockouts.key(digestKeyPart('case@example.com')))
+        expect(entry?.value.failures).toBe(2)
+      })
+
+      it('counts every competing failed sign-in', async () => {
+        const { app, handler } = signInApp()
+        const results = await Promise.all([signIn(app, 'wrong'), signIn(app, 'wrong'), signIn(app, 'wrong')])
+        expect(results.map((res) => res.status)).toEqual([401, 401, 401])
+
+        const locked = await signIn(app, 'right')
+        expect(locked.status).toBe(429)
+        expect(handler).toHaveBeenCalledTimes(3)
+      })
+
+      it('keeps a wrong password that lands while a sign-in succeeds', async () => {
+        let reached!: () => void
+        let release!: () => void
+        const gate = {
+          reached: () => reached(),
+          release: new Promise<void>((resolve) => (release = resolve)),
+        }
+        const atGate = new Promise<void>((resolve) => (reached = resolve))
+        const { app } = signInApp(gate)
+
+        expect((await signIn(app, 'wrong')).status).toBe(401)
+        // Checked against one failure, then held inside the sign-in.
+        const success = signIn(app, 'right')
+        await atGate
+        expect((await signIn(app, 'wrong')).status).toBe(401)
+        release()
+        expect((await success).status).toBe(200)
+
+        // The success cleared the failure it was checked against, not the one that landed meanwhile.
+        expect((await appState().get(lockouts.key(digestKeyPart('race@example.com'))))?.value.failures).toBe(1)
+        expect((await signIn(app, 'wrong')).status).toBe(401)
+        expect((await signIn(app, 'wrong')).status).toBe(401)
+        expect((await signIn(app, 'wrong')).status).toBe(429)
+      })
+
+      it('unlocks once the lock duration has passed, counting from zero', async () => {
+        const { app } = signInApp()
+        for (let i = 0; i < 3; i++) await signIn(app, 'wrong')
+
+        vi.setSystemTime(T0 + 30 * 60_000 - 1)
+        const locked = await signIn(app, 'right')
+        expect(locked.status).toBe(429)
+        expect((await locked.json()).message).toBe('Account is locked. Try again in 1 minute.')
+
+        vi.setSystemTime(T0 + 30 * 60_000)
+        expect((await signIn(app, 'wrong')).status).toBe(401)
+        expect((await signIn(app, 'wrong')).status).toBe(401)
+        expect((await signIn(app, 'right')).status).toBe(200)
+      })
+
+      it('keeps failures below the threshold however long ago they were', async () => {
+        const { app } = signInApp()
+        await signIn(app, 'wrong')
+        await signIn(app, 'wrong')
+
+        vi.setSystemTime(T0 + 365 * 24 * 60 * 60_000)
+        await signIn(app, 'wrong')
+        expect((await signIn(app, 'right')).status).toBe(429)
+      })
+
+      it('refuses the sign-in when the lockout cannot be read', async () => {
+        const { app, handler } = signInApp()
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        await closeAppState()
+
+        expect((await signIn(app, 'right')).status).toBe(500)
+        expect(handler).not.toHaveBeenCalled()
+        expect(String(consoleError.mock.calls[0]?.[0])).toContain('AppState is not initialized')
+        consoleError.mockRestore()
+      })
+
+      it("keeps Better Auth's answer when the lockout cannot be updated", async () => {
+        const { app } = signInApp()
+        await signIn(app, 'wrong')
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        vi.spyOn(appState(), 'compareAndSet').mockRejectedValueOnce(new Error('backend down'))
+        vi.spyOn(appState(), 'consume').mockRejectedValueOnce(new Error('backend down'))
+
+        expect((await signIn(app, 'wrong')).status).toBe(401)
+        expect((await signIn(app, 'right')).status).toBe(200)
+        expect(consoleError).toHaveBeenCalledTimes(2)
+        consoleError.mockRestore()
+      })
     })
   })
 

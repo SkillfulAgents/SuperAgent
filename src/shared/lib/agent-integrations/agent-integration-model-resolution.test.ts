@@ -9,7 +9,7 @@
  * before recording it in its static call log.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -29,6 +29,11 @@ let mockContainerClient: InstanceType<typeof MockContainerClient>
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('../db', () => ({
   get db() { return testDb },
 }))
@@ -72,6 +77,11 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-20250514',
     agentEffort: 'low',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+    agentEffort: 'low',
+  }),
   getSettings: () => ({}),
 }))
 
@@ -104,6 +114,9 @@ vi.mock('../chat-integrations/telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
@@ -127,6 +140,10 @@ function waitForCondition(
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('@shared/lib/services/session-defaults') })
 describe('chat integration model and effort resolution', () => {
   let createSessionSpy: ReturnType<typeof vi.spyOn>
 
@@ -194,7 +211,8 @@ describe('chat integration model and effort resolution', () => {
   it('falls back to the agent default over the global default', async () => {
     mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
     const args = await startSession()
-    expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent')
+    // With the settings the start read once, not a read of its own.
+    expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent', expect.objectContaining({}))
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')
     expect(args.speed).toBe('slow')

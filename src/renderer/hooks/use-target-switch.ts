@@ -64,7 +64,8 @@ export function useTargetSwitch() {
   const { openSettings } = useDialogs()
   const isOnline = useIsOnline()
 
-  const { data: platform } = usePlatformAuthStatus()
+  const platformStatus = usePlatformAuthStatus()
+  const platform = platformStatus.data
 
   // Only ask about the workspace from the LOCAL side. In cloud mode every
   // request goes through the proxy to the deployment, and `getCloudWorkspace`
@@ -75,13 +76,19 @@ export function useTargetSwitch() {
   // joins a check that started before it.
   const { refetch } = useCloudWorkspace(false, platform?.orgId)
 
+  // Resolves true when the switch went ahead (the window is reloading), false
+  // when it did not: already there, already switching, or refused with a
+  // banner, Settings or platform's page.
   const switchTo = useCallback(
-    async (target: ApiTarget) => {
-      if (target === current || switching) return
+    async (target: ApiTarget): Promise<boolean> => {
+      if (target === current || switching) return false
       if (target === 'cloud') {
         // Not connected: Account is where Connect is, and where the cloud
         // agents card appears once connected.
-        if (!canAsk) return openSettings('platform')
+        if (!canAsk) {
+          openSettings('platform')
+          return false
+        }
         setSwitching(true)
         // Never the cached answer: it can be minutes old, from before a
         // workspace was set up or paused. Offline, React Query would hold the
@@ -102,14 +109,17 @@ export function useTargetSwitch() {
             if (cloudAgentsPage) void openExternalUrl(cloudAgentsPage)
           }
           const banner = bannerFor(workspace)
-          if (!banner) return openPlatform()
+          if (!banner) {
+            openPlatform()
+            return false
+          }
           // One id, so pressing again replaces the banner rather than stacking.
           toast(banner.title, {
             id: 'cloud-workspace',
             description: banner.text,
             action: cloudAgentsPage ? { label: 'Platform ↗', onClick: openPlatform } : undefined,
           })
-          return
+          return false
         }
       }
       setSwitching(true)
@@ -125,12 +135,13 @@ export function useTargetSwitch() {
         toast.error('Could not switch workspace', {
           description: error instanceof Error ? error.message : 'Please try again.',
         })
-        return
+        return false
       }
       // The reload has been requested but has not committed yet; clearing keeps
       // the previous Superagent's data off screen for that moment. `switching`
       // deliberately stays true — this window is on its way out.
       queryClient.clear()
+      return true
     },
     [current, switching, canAsk, openSettings, isOnline, refetch, platform, queryClient],
   )
@@ -140,6 +151,12 @@ export function useTargetSwitch() {
     switching,
     /** Whether to offer the control at all: always, in the desktop app. */
     available: isElectron(),
+    /**
+     * Whether a press would be judged on what is true, rather than on a
+     * platform status that has not loaded yet (which reads as not connected).
+     * A press is never early; a switch main asks for on a fresh window can be.
+     */
+    ready: !isElectron() || !platformStatus.isPending,
     switchTo,
   }
 }

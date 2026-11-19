@@ -1,57 +1,35 @@
 import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
-import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { resolveHelperSelection } from '@shared/lib/llm-provider/connections'
-import { getEffectiveModels, getSettings } from '@shared/lib/config/settings'
+import { rateLimitClient } from '../middleware/rate-limit'
+import { defineFixedWindow } from '@shared/lib/app-state/fixed-window'
+import { getConfiguredLlmClientAndModel, helperSetupFrom } from '@shared/lib/llm-provider/helpers'
+import { getSettings } from '@shared/lib/config/settings'
 
 const llm = new Hono()
 
 llm.use('*', Authenticated())
 
-// Simple rate limiter: 100 requests per minute
-const requestCounts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT = 100
-const RATE_WINDOW = 60_000
-
-function checkRateLimit(key: string): boolean {
-  const now = Date.now()
-  const entry = requestCounts.get(key)
-  if (entry && now < entry.resetAt) {
-    if (entry.count >= RATE_LIMIT) return false
-    entry.count++
-  } else {
-    requestCounts.set(key, { count: 1, resetAt: now + RATE_WINDOW })
-  }
-  // Periodic cleanup
-  if (requestCounts.size > 100) {
-    for (const [k, v] of requestCounts) {
-      if (now >= v.resetAt) requestCounts.delete(k)
-    }
-  }
-  return true
-}
+/** Dashboard and helper LLM calls: 100 per client in a one-minute window. */
+const llmRequests = defineFixedWindow({ name: 'rate:llm', limit: 100, windowMs: 60_000 })
 
 /**
- * Resolve the dashboard-runtime default to the active provider's concrete wire
- * id. The iframe proxy historically used the Sonnet tier; browserModel is the
- * existing cross-provider Sonnet-tier setting, so using it preserves that cost
- * profile without hard-coding a Claude model id.
+ * The dashboard runtime's default model: the summarizer connection's model,
+ * else browserModel resolved for the active provider. The iframe proxy
+ * historically used the Sonnet tier; browserModel is the existing
+ * cross-provider Sonnet-tier setting, so using it preserves that cost profile
+ * without hard-coding a Claude model id.
  */
-function getDefaultModel(): string {
-  return resolveActiveProviderModel(getEffectiveModels().browserModel, 'browser')
-}
+const DEFAULT_MODEL_PURPOSE = 'browser'
 
-// GET /api/llm/config
+// GET /api/llm/config — one settings read.
 llm.get('/config', async (c) => {
   try {
-    const selected = getSettings().llmDefault ? await resolveHelperSelection() : null
-    const provider = selected?.provider ?? getActiveLlmProvider()
+    const helper = await helperSetupFrom(await getSettings(), DEFAULT_MODEL_PURPOSE)
     return c.json({
-      configured: provider.getApiKeyStatus().isConfigured,
-      defaultModel: selected?.wireModel ?? getDefaultModel(),
-      provider: provider.id,
+      configured: helper.configured,
+      defaultModel: helper.model,
+      provider: helper.provider.id,
     })
   } catch (error) {
     if (error instanceof HelperConfigurationError) return c.json({ configured: false, error: error.message })
@@ -61,8 +39,9 @@ llm.get('/config', async (c) => {
 
 // POST /api/llm/v1/messages — matches the path the Anthropic SDK sends
 llm.post('/v1/messages', async (c) => {
-  const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-  if (!checkRateLimit(ip)) {
+  // An AppState failure is thrown: the call fails rather than going through uncounted.
+  const hit = await llmRequests.hit(llmRequests.key(rateLimitClient(c)))
+  if (!hit.admitted) {
     return c.json({ error: 'Too many LLM requests. Please slow down.' }, 429)
   }
 
@@ -80,18 +59,25 @@ llm.post('/v1/messages', async (c) => {
   delete body.api_key
   delete body.auth_token
   delete body.base_url
+  // API version 2026-10-21 rejects these even at their defaults, and Claude
+  // 4.7+ only ever sampled with the defaults; dashboard code may still pass them.
+  delete body.temperature
+  delete body.top_p
+  delete body.top_k
 
   if (!body.messages || !Array.isArray(body.messages)) {
     return c.json({ error: 'Missing required field: messages' }, 400)
   }
 
-  let model = (body.model as string) || getDefaultModel()
   const stream = !!body.stream
 
+  // The client and the default model from one settings read.
   let client
+  let model: string
   try {
-    client = await getConfiguredLlmClient()
-    if (!body.model) model = configuredHelperModel(client) ?? model
+    const helper = await getConfiguredLlmClientAndModel(DEFAULT_MODEL_PURPOSE)
+    client = helper.client
+    model = (body.model as string) || helper.model
   } catch (error) {
     return c.json({ error: error instanceof HelperConfigurationError ? error.message : 'LLM provider not configured. Check Gamut settings.' }, 503)
   }

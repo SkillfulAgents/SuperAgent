@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-delivery'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, deliverMarkdown, UndeliveredMessageError, STREAM_FIRST_POST_CHARS, STREAM_UPDATE_MS, type ManagedConnector } from './chat-delivery'
 import { MockChatAgentIntegration } from './mock-connector'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { IntegrationInputContext } from '../agent-integrations/types'
 
 // ── Test helpers ────────────────────────────────────────────────────────
 
@@ -67,6 +69,8 @@ describe('processSSEEvent', () => {
   // ── Basic streaming ─────────────────────────────────────────────
 
   describe('streaming text', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+
     it('accumulates stream_delta text', async () => {
       await processEvents(managed, [
         { type: 'stream_delta', text: 'Hello ' },
@@ -75,22 +79,56 @@ describe('processSSEEvent', () => {
       expect(managed.streamingState.accumulatedText).toBe('Hello world')
     })
 
-    it('sends streaming updates when throttle period elapsed', async () => {
-      managed.streamingState.lastUpdateTime = 0 // force throttle to pass
-      await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    it('holds the first post until it has STREAM_FIRST_POST_CHARS characters, however long that takes', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS - 2) })
+      now.mockReturnValue(10_000 + 5 * STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x' })
+      expect(getMock(managed).streamUpdates).toHaveLength(0)
 
-      const mock = getMock(managed)
-      expect(mock.streamUpdates.length).toBe(1)
-      expect(mock.streamUpdates[0].text).toBe('Hello')
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x' })
+      expect(getMock(managed).streamUpdates.map(u => u.text.length)).toEqual([STREAM_FIRST_POST_CHARS])
     })
 
-    it('throttles streaming updates within 1 second', async () => {
-      managed.streamingState.lastUpdateTime = Date.now() // just updated
-      await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    it('posts a reply that ends before its first post once, whole', async () => {
+      await processEvents(managed, [
+        { type: 'stream_delta', text: 'Y' },
+        { type: 'stream_delta', text: 'es, here are your PRs' },
+        { type: 'session_idle' },
+      ])
 
       const mock = getMock(managed)
-      expect(mock.streamUpdates.length).toBe(0)
-      expect(managed.streamingState.accumulatedText).toBe('Hello')
+      expect(mock.streamUpdates).toHaveLength(0)
+      expect(mock.sentMessages.map(m => m.message.text)).toEqual(['Yes, here are your PRs'])
+    })
+
+    it('edits at most once per STREAM_UPDATE_MS after the first post', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS) })
+      const posted = managed.streamingState.currentMessageId
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS - 1)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      expect(getMock(managed).streamUpdates).toHaveLength(1)
+
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      expect(getMock(managed).streamUpdates.map(u => u.existingMessageId)).toEqual([undefined, posted])
+    })
+
+    it('spends the edit slot on a refused edit, so the next text waits for the next slot', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS) })
+      const edit = vi.spyOn(getMock(managed), 'sendStreamingUpdate').mockRejectedValueOnce(new Error('refused'))
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS + 50)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      expect(edit).toHaveBeenCalledTimes(1)
+
+      now.mockReturnValue(10_000 + 2 * STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '?' })
+      expect(edit.mock.calls.at(-1)?.[1]).toMatch(/!!\?$/)
     })
 
     it('finalizes streaming on session_idle', async () => {
@@ -105,6 +143,156 @@ describe('processSSEEvent', () => {
       expect(managed.streamingState.accumulatedText).toBe('')
     })
 
+    it('clears the turn\'s received marks after the reply commits, again after a late add lands, and keeps one that arrives meanwhile', async () => {
+      managed.streamingState.accumulatedText = 'Final text'
+      managed.streamingState.currentMessageId = 'msg-1'
+      const mock = getMock(managed)
+      const log: string[] = []
+      let landFirstAdd: (() => void) | undefined
+      vi.spyOn(mock as any, 'addAcknowledgement').mockImplementationOnce(() => new Promise<void>(resolve => { landFirstAdd = () => { log.push('added m1'); resolve() } }))
+      vi.spyOn(mock as any, 'removeAcknowledgement').mockImplementation(async (_chatId, messageId) => {
+        log.push(`removed ${messageId}`)
+        if (log.length > 1) throw new Error('no_reaction')
+      })
+      let commit: (() => void) | undefined
+      vi.spyOn(mock, 'finalizeStreamingMessage').mockImplementation(() => new Promise<void>(resolve => { commit = resolve }))
+      const acknowledge = (id: string) => mock.acknowledgeInput({
+        type: 'input', id, externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: id, text: 'hi', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+
+      const first = acknowledge('m1')
+      const idle = processSSEEvent(managed, { type: 'session_idle' })
+      await vi.waitFor(() => expect(commit).toBeDefined())
+      await acknowledge('m2')
+      expect(log).toEqual([])
+      commit!()
+      await idle
+      await vi.waitFor(() => expect(log).toEqual(['removed m1']))
+      landFirstAdd!()
+      await first
+
+      expect(log).toEqual(['removed m1', 'added m1', 'removed m1'])
+    })
+
+    it('keeps a message that arrives while a finished turn is still sending its reply', async () => {
+      managed.streamingState.accumulatedText = 'Final text'
+      managed.streamingState.currentMessageId = 'msg-1'
+      const mock = getMock(managed)
+      let commit: (() => void) | undefined
+      vi.spyOn(mock, 'finalizeStreamingMessage').mockImplementation(() => new Promise<void>(resolve => { commit = resolve }))
+      const acknowledge = (id: string) => mock.acknowledgeInput({
+        type: 'input', id, externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: id, text: 'hi', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+      await acknowledge('m1')
+
+      const turnEnd = processSSEEvent(managed, { type: 'turn_output_complete', answered: [] })
+      await vi.waitFor(() => expect(commit).toBeDefined())
+      await acknowledge('m2')
+      commit!()
+      await turnEnd
+      await processSSEEvent(managed, { type: 'session_idle' })
+
+      expect(mock.acknowledgedMessages('chat-123')).toEqual(['m2'])
+    })
+
+    it('leaves the reply to the session settling when a turn end names nothing it answered', async () => {
+      managed.streamingState.accumulatedText = 'Partial'
+      await processSSEEvent(managed, { type: 'turn_output_complete' })
+      expect(getMock(managed).sentMessages).toEqual([])
+    })
+
+    it('decides the quote when the reply is sent, not when its draft started', async () => {
+      const mock = getMock(managed)
+      const acknowledge = (id: string) => mock.acknowledgeInput({
+        type: 'input', id, externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: id, text: 'hi', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+      await acknowledge('m1')
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS) })
+      await acknowledge('m2')
+      await processSSEEvent(managed, { type: 'session_idle' })
+
+      expect(mock.streamUpdates.map(u => u.text.length)).toEqual([STREAM_FIRST_POST_CHARS])
+      expect(mock.finalizedMessages.map(m => m.replyToExternalId)).toEqual(['m1'])
+    })
+
+    it('quotes on the first text that shows as a message, and again after a send that failed', async () => {
+      const mock = getMock(managed)
+      await mock.acknowledgeInput({
+        type: 'input', id: 'm1', externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: 'm1', text: 'hi', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+      vi.spyOn(mock, 'quotedMessage').mockReturnValue('m1')
+      vi.spyOn(mock, 'carriesText').mockImplementation((_chatId, text) => text !== 'reaction only')
+      vi.spyOn(mock, 'sendMessage').mockResolvedValueOnce('sent-1').mockRejectedValueOnce(new Error('chat down'))
+
+      await processEvents(managed, [{ type: 'stream_delta', text: 'reaction only' }, { type: 'stream_start' }])
+      managed.streamingState.accumulatedText = 'Answer'
+      await expect(finalizeStreaming(managed)).rejects.toThrow('chat down')
+      await finalizeStreaming(managed)
+
+      expect(vi.mocked(mock.sendMessage).mock.calls.map(([, message]) => message)).toEqual([
+        { text: 'reaction only' }, { text: 'Answer', replyToExternalId: 'm1' }, { text: 'Answer', replyToExternalId: 'm1' },
+      ])
+    })
+
+    it("threads each turn's first reply to the message it answered, when another reply or message sits in between", async () => {
+      const mock = getMock(managed)
+      // Each message is sent after anything the agent posted before it.
+      let clock = Date.now() + 1000
+      const receive = async (id: string) => {
+        const sentAt = new Date(clock += 1000)
+        const event = { type: 'input' as const, id, externalId: 'chat-123', timestamp: sentAt,
+          payload: { externalMessageId: id, text: id, chatId: 'chat-123', userId: 'u1', timestamp: sentAt } }
+        await mock.acknowledgeInput(event)
+        await mock.prepareInput(event, { integration: managed.integration, externalId: 'chat-123', deliveryId: `d-${id}` } as IntegrationInputContext)
+      }
+      await receive('600')
+      await receive('900')
+      await processEvents(managed, [
+        { type: 'stream_delta', text: '$108' }, { type: 'stream_start' }, { type: 'stream_delta', text: 'Tip included?' }, { type: 'turn_output_complete', answered: ['d-600'] },
+        { type: 'stream_delta', text: '$162' }, { type: 'turn_output_complete', answered: ['d-900'] },
+      ])
+      await receive('thanks')
+      await processEvents(managed, [{ type: 'stream_delta', text: 'Anytime' }, { type: 'turn_output_complete', answered: ['d-thanks'] }, { type: 'session_idle' }])
+
+      expect(mock.sentMessages.map(s => s.message)).toEqual([
+        { text: '$108', replyToExternalId: '600' }, { text: 'Tip included?' }, { text: '$162', replyToExternalId: '900' }, { text: 'Anytime' },
+      ])
+      expect(mock.acknowledgedMessages('chat-123')).toEqual([])
+    })
+
+    it('threads to a message that was sent before the last reply but reached the app after it', async () => {
+      const mock = getMock(managed)
+      const receive = async (id: string, sentAt: Date) => {
+        const event = { type: 'input' as const, id, externalId: 'chat-123', timestamp: sentAt,
+          payload: { externalMessageId: id, text: id, chatId: 'chat-123', userId: 'u1', timestamp: sentAt } }
+        await mock.acknowledgeInput(event)
+        await mock.prepareInput(event, { integration: managed.integration, externalId: 'chat-123', deliveryId: `d-${id}` } as IntegrationInputContext)
+      }
+      await receive('600', new Date())
+      await processEvents(managed, [{ type: 'stream_delta', text: '$108' }, { type: 'turn_output_complete', answered: ['d-600'] }, { type: 'session_idle' }])
+      await receive('900', new Date(Date.now() - 1000))
+      await processEvents(managed, [{ type: 'stream_delta', text: '$162' }, { type: 'turn_output_complete', answered: ['d-900'] }, { type: 'session_idle' }])
+
+      expect(mock.sentMessages.map(s => s.message)).toEqual([{ text: '$108' }, { text: '$162', replyToExternalId: '900' }])
+    })
+
+    it('does not count a reaction alone as landing under the message, so the answer stays normal', async () => {
+      const mock = getMock(managed)
+      vi.spyOn(mock, 'carriesText').mockImplementation((_chatId, text) => text !== 'reaction only')
+      await mock.acknowledgeInput({
+        type: 'input', id: 'q', externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: 'q', text: 'q', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+
+      await processEvents(managed, [{ type: 'stream_delta', text: 'reaction only' }, { type: 'stream_start' }, { type: 'stream_delta', text: 'Answer' }, { type: 'session_idle' }])
+
+      expect(mock.sentMessages.map(s => s.message)).toEqual([{ text: 'reaction only' }, { text: 'Answer' }])
+    })
+
     it('sends as new message if no streaming message existed', async () => {
       managed.streamingState.accumulatedText = 'Short response'
       managed.streamingState.currentMessageId = null
@@ -114,6 +302,19 @@ describe('processSSEEvent', () => {
       const mock = getMock(managed)
       expect(mock.sentMessages.length).toBe(1)
       expect(mock.sentMessages[0].message.text).toBe('Short response')
+    })
+
+    it("shows an agent's tag as a plain @Name in the chat, holding back one still streaming in", async () => {
+      const text = 'x'.repeat(STREAM_FIRST_POST_CHARS)
+      await processEvents(managed, [
+        { type: 'stream_delta', text: `${text} [@Mike Sm` },
+        { type: 'stream_delta', text: 'ith](user:u_mike1), please decide' },
+        { type: 'session_idle' },
+      ])
+
+      const mock = getMock(managed)
+      expect(mock.streamUpdates.map(u => u.text)).toEqual([`${text} `])
+      expect(mock.finalizedMessages.map(m => m.finalText)).toEqual([`${text} @Mike Smith, please decide`])
     })
 
     it('does nothing on session_idle with no accumulated text', async () => {
@@ -307,6 +508,21 @@ describe('processSSEEvent', () => {
       })
     })
 
+    it('clears the received marks once the question card is posted', async () => {
+      const mock = getMock(managed)
+      const log: string[] = []
+      vi.spyOn(mock as any, 'removeAcknowledgement').mockImplementation(async (_chatId, messageId) => { log.push(`removed ${messageId}`) })
+      vi.spyOn(mock, 'sendUserRequestCard').mockImplementation(async () => { log.push('card'); return 'card-1' })
+      await mock.acknowledgeInput({
+        type: 'input', id: 'm1', externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: 'm1', text: 'hi', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+
+      await processSSEEvent(managed, createdEvent('question', { questions: [{ question: 'Which DB?' }] }))
+
+      await vi.waitFor(() => expect(log).toEqual(['card', 'removed m1']))
+    })
+
     it('forwards a secret request to sendUserRequestCard', async () => {
       await processSSEEvent(managed, createdEvent('secret', { secretName: 'API_KEY' }, { id: 'tu-2' }))
 
@@ -336,7 +552,7 @@ describe('processSSEEvent', () => {
       expect(getMock(managed).sentCards.length).toBe(0)
     })
 
-    it('stays quiet for a review — those are agent-scoped and render off the global channel', async () => {
+    it('stays quiet for a review — its Allow/Deny card is sent by the connector', async () => {
       await processSSEEvent(managed, createdEvent('proxy_review', { toolkit: 'github', displayText: 'Allow?' }))
       expect(getMock(managed).sentCards.length).toBe(0)
     })
@@ -421,6 +637,18 @@ describe('finalizeStreaming', () => {
     expect(managed.streamingState.lastUpdateTime).toBe(0)
   })
 
+  it('posts nothing for a reply of exactly the no-reply token, and posts a reply that merely contains it', async () => {
+    const managed = createManagedConnector()
+    await processSSEEvent(managed, { type: 'stream_delta', text: `\n${NO_REPLY_TOKEN}  ` })
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).streamUpdates).toHaveLength(0)
+    expect(getMock(managed).sentMessages).toHaveLength(0)
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: `Nothing to add, ${NO_REPLY_TOKEN}` })
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).sentMessages.map(m => m.message.text)).toEqual([`Nothing to add, ${NO_REPLY_TOKEN}`])
+  })
+
   it('falls back to sendMessage when finalizeStreamingMessage throws', async () => {
     const managed = createManagedConnector()
     managed.streamingState.accumulatedText = 'Final text'
@@ -452,28 +680,28 @@ describe('resolvePendingToolMessages', () => {
     expect(mock.streamUpdates.length).toBe(0)
   })
 
-  it('updates all pending messages from ⏳ to ✅', async () => {
+  it('marks every pending message stopped (⛔)', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* — `ls -la` ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* — `ls -la` ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
 
     await resolvePendingToolMessages(managed)
 
     const mock = getMock(managed)
     expect(mock.streamUpdates.length).toBe(2)
-    expect(mock.streamUpdates[0].text).toContain('✅')
+    expect(mock.streamUpdates[0].text).toContain('⛔')
     expect(mock.streamUpdates[0].text).not.toContain('⏳')
     expect(mock.streamUpdates[0].existingMessageId).toBe('msg-1')
-    expect(mock.streamUpdates[1].text).toContain('✅')
+    expect(mock.streamUpdates[1].text).toContain('⛔')
     expect(mock.streamUpdates[1].existingMessageId).toBe('msg-2')
   })
 
   it('clears the pending array after resolution', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
     ]
 
     await resolvePendingToolMessages(managed)
@@ -484,8 +712,8 @@ describe('resolvePendingToolMessages', () => {
   it('continues resolving remaining messages if one fails', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
 
     const mock = getMock(managed)
@@ -535,37 +763,76 @@ describe('pendingToolMessages lifecycle', () => {
     expect(managed.pendingToolMessages.length).toBe(0)
   })
 
-  it('stream_start resolves pending tool messages', async () => {
-    // Simulate: tool completes, then new text stream starts
+  it('stream_start leaves pending tool messages for their results', async () => {
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
     ]
 
     await processSSEEvent(managed, { type: 'stream_start' })
 
+    expect(getMock(managed).streamUpdates.length).toBe(0)
+    expect(managed.pendingToolMessages.length).toBe(1)
+  })
+
+  it('tool_result shows the real outcome on its own message only', async () => {
+    managed.pendingToolMessages = [
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Bash* — `echo ⏳` ⏳' },
+    ]
+
+    await processSSEEvent(managed, { type: 'tool_result', toolUseId: 't2', isError: true })
+    await processSSEEvent(managed, { type: 'tool_result', toolUseId: 'unknown', isError: false })
+    await processSSEEvent(managed, { type: 'tool_result', toolUseId: 't1', isError: false })
+
     const mock = getMock(managed)
-    // Pending tool messages should have been resolved (⏳ → ✅)
-    expect(mock.streamUpdates.length).toBe(1)
-    expect(mock.streamUpdates[0].text).toContain('✅')
+    expect(mock.streamUpdates.map(u => [u.existingMessageId, u.text])).toEqual([
+      ['msg-2', '🔧 *Bash* — `echo ⏳` ❌'],
+      ['msg-1', '🔧 *Bash* ✅'],
+    ])
     expect(managed.pendingToolMessages.length).toBe(0)
   })
 
-  it('session_idle resolves pending tool messages', async () => {
+  it('session_waiting_background finalizes the text and stops pending tools once', async () => {
+    managed.streamingState = { currentMessageId: 'stream-1', accumulatedText: 'Started the job', lastUpdateTime: 0 }
+    managed.indicatorShown = true
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+    ]
+
+    await processSSEEvent(managed, { type: 'session_waiting_background' })
+    await processSSEEvent(managed, { type: 'session_waiting_background' })
+
+    const mock = getMock(managed)
+    expect(mock.finalizedMessages.map(m => m.finalText)).toEqual(['Started the job'])
+    expect(mock.streamUpdates.map(u => u.text)).toEqual(['🔧 *Bash* ⛔'])
+    // Unlike session_idle, the indicator stays with the tick: background work is still running.
+    expect(managed.indicatorShown).toBe(true)
+    expect(mock.stoppedWorking).toEqual([])
+  })
+
+  it('session_waiting_background with nothing pending makes no connector calls', async () => {
+    await processSSEEvent(managed, { type: 'session_waiting_background' })
+
+    const mock = getMock(managed)
+    expect([mock.sentMessages, mock.streamUpdates, mock.finalizedMessages]).toEqual([[], [], []])
+  })
+
+  it('session_idle stops pending tool messages', async () => {
+    managed.pendingToolMessages = [
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
 
     await processSSEEvent(managed, { type: 'session_idle' })
 
     const mock = getMock(managed)
     expect(mock.streamUpdates.length).toBe(2)
-    expect(mock.streamUpdates[0].text).toContain('✅')
-    expect(mock.streamUpdates[1].text).toContain('✅')
+    expect(mock.streamUpdates[0].text).toContain('⛔')
+    expect(mock.streamUpdates[1].text).toContain('⛔')
     expect(managed.pendingToolMessages.length).toBe(0)
   })
 
-  it('full lifecycle: text → tool(⏳) → text(✅ resolved) → idle', async () => {
+  it('full lifecycle: text → tool(⏳) → result(✅) → text → idle', async () => {
     const outputLog: string[] = []
     const mock = getMock(managed)
     const origSend = mock.sendMessage.bind(mock)
@@ -594,12 +861,13 @@ describe('pendingToolMessages lifecycle', () => {
       { type: 'tool_use_start', toolId: 't1', toolName: 'Bash' },
       { type: 'tool_use_streaming', partialInput: '{"command":"ls"}' },
       { type: 'tool_use_ready', toolId: 't1', toolName: 'Bash' },
-      { type: 'stream_start' },  // should resolve ⏳ → ✅
+      { type: 'tool_result', toolUseId: 't1', isError: false },
+      { type: 'stream_start' },
       { type: 'stream_delta', text: 'Here are the files' },
       { type: 'session_idle' },
     ], true)
 
-    // Text finalized before tool, tool message sent with ⏳, resolved to ✅ on stream_start
+    // Text finalized before tool, tool message sent with ⏳, resolved to ✅ by its result
     expect(outputLog.some(l => l.includes('Checking files'))).toBe(true)
     expect(outputLog.some(l => l.includes('Bash'))).toBe(true)
     expect(outputLog.some(l => l.includes('resolve:') && l.includes('✅'))).toBe(true)
@@ -838,11 +1106,11 @@ describe('multi-session isolation', () => {
     })
 
     session1.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
     ]
     session2.pendingToolMessages = [
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
-      { messageId: 'msg-3', text: '🔧 *Write* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't3', messageId: 'msg-3', text: '🔧 *Write* ⏳' },
     ]
 
     // Resolve session 1
@@ -868,15 +1136,17 @@ describe('multi-session isolation', () => {
     // Stream to both sessions
     session1.streamingState.lastUpdateTime = 0
     session2.streamingState.lastUpdateTime = 0
-    await processSSEEvent(session1, { type: 'stream_delta', text: 'For Alice' })
-    await processSSEEvent(session2, { type: 'stream_delta', text: 'For Bob' })
+    const forAlice = 'For Alice'.padEnd(STREAM_FIRST_POST_CHARS, '.')
+    const forBob = 'For Bob'.padEnd(STREAM_FIRST_POST_CHARS, '.')
+    await processSSEEvent(session1, { type: 'stream_delta', text: forAlice })
+    await processSSEEvent(session2, { type: 'stream_delta', text: forBob })
 
     // Both go through the same connector, but with different chatIds
     expect(sharedConnector.streamUpdates.length).toBe(2)
     expect(sharedConnector.streamUpdates[0].chatId).toBe('chat-alice')
-    expect(sharedConnector.streamUpdates[0].text).toBe('For Alice')
+    expect(sharedConnector.streamUpdates[0].text).toBe(forAlice)
     expect(sharedConnector.streamUpdates[1].chatId).toBe('chat-bob')
-    expect(sharedConnector.streamUpdates[1].text).toBe('For Bob')
+    expect(sharedConnector.streamUpdates[1].text).toBe(forBob)
   })
 
   it('tool input accumulation is independent per session', async () => {
@@ -1140,6 +1410,211 @@ describe('deliver_file delivery', () => {
     expect(mock.sentFiles.length).toBe(0)
     expect(mock.sentMessages.length).toBe(1)
     expect(mock.sentMessages[0].message.text).toContain('not-on-host.txt')
+  })
+})
+
+// ── Visuals in replies ────────────────────────────────────────────────────
+
+describe('workspace images in a reply', () => {
+  const IMAGE = '![chart](/workspace/chart.png)'
+  let managed: ManagedConnector
+  let workspaceDir: string
+  let prevDataDir: string | undefined
+
+  beforeEach(async () => {
+    const os = await import('os')
+    const fs = await import('fs')
+    const path = await import('path')
+    prevDataDir = process.env.SUPERAGENT_DATA_DIR
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-visuals-'))
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+    managed = createManagedConnector()
+    workspaceDir = path.join(dataDir, 'agents', managed.integration.agentSlug, 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
+  })
+
+  const writeImage = async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    fs.writeFileSync(path.join(workspaceDir, 'chart.png'), 'png-bytes')
+  }
+
+  it('sends text, the image, then text, cutting when the image settles', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const sendMessage = vi.spyOn(mock, 'sendMessage')
+    const sendFile = vi.spyOn(mock, 'sendFile')
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: `Before.\n\n${IMAGE}\n\n` })
+    expect(sendFile).not.toHaveBeenCalled()
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'After.' })
+    // Drawn mid-stream, before anything ends the turn.
+    expect(sendFile).toHaveBeenCalledTimes(1)
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['Before.\n\n', '\n\nAfter.'])
+    expect(mock.sentFiles.map((f) => f.filename)).toEqual(['chart.png'])
+    const [before, after] = sendMessage.mock.invocationCallOrder
+    expect(sendFile.mock.invocationCallOrder[0]).toBeGreaterThan(before)
+    expect(sendFile.mock.invocationCallOrder[0]).toBeLessThan(after)
+  })
+
+  it('keeps the draft and finalizes it to the source when the image does not go out', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const retire = vi.spyOn(mock, 'retireStreamingMessage')
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('upload failed'))
+    managed.streamingState.accumulatedText = IMAGE
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await finalizeStreaming(managed)
+
+    expect(retire).not.toHaveBeenCalled()
+    expect(mock.finalizedMessages.map((m) => [m.messageId, m.finalText])).toEqual([['draft-1', IMAGE]])
+  })
+
+  it('sends a channel-wide reply\'s image to the channel too, with its alt text', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `Before.\n\n${IMAGE}\n\nAfter.`, { alsoSendToChannel: true })
+
+    expect(mock.sentFiles.map((f) => f.options)).toEqual([{ asImage: true, alsoSendToChannel: true, altText: 'chart' }])
+    expect(mock.sentMessages.map((m) => m.message.alsoSendToChannel)).toEqual([true, true])
+  })
+
+  it('quotes the first text after an image, and the text an image falls back to', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    vi.spyOn(mock, 'quotedMessage').mockReturnValue('m1')
+
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `${IMAGE}\n\nAnswer.`, { turn: {} })
+    vi.spyOn(mock, 'sendFile').mockRejectedValueOnce(new Error('upload failed'))
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `${IMAGE}\n\nAnswer.`, { turn: {} })
+
+    expect(mock.sentMessages.map((m) => m.message.replyToExternalId)).toEqual(['m1', 'm1', undefined])
+  })
+
+  it('sends the rest as one text, visuals as their source, once the send\'s time is spent', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const text = `Before.\n\n${IMAGE}\n\nAfter.`
+
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, text, { deadline: Date.now() })
+
+    expect(mock.sentFiles).toEqual([])
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual([text])
+  })
+
+  it('names what did not arrive when a proactive send fails after its first part', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+    const send = mock.sendMessage.bind(mock)
+    let calls = 0
+    vi.spyOn(mock, 'sendMessage').mockImplementation(async (chatId, message) => {
+      if (calls++ === 0) return send(chatId, message)
+      throw new Error('chat down')
+    })
+
+    const { undelivered, error } = await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `Before.\n\n${IMAGE}\n\nAfter.`, {})
+    const undeliveredError = new UndeliveredMessageError(undelivered, error)
+
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['Before.\n\n'])
+    expect(undeliveredError.undeliveredText).toBe(`${IMAGE}\n\nAfter.`)
+    // Errors are reported, so the agent's text stays out of the message, and the chat's own error is the cause.
+    expect(undeliveredError.message).not.toContain('After.')
+    expect(undeliveredError.cause).toEqual(new Error('chat down'))
+  })
+
+  it('keeps the draft for the retry when nothing of the reply went out', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+    vi.spyOn(mock, 'finalizeStreamingMessage').mockRejectedValue(new Error('chat down'))
+    vi.spyOn(mock, 'sendMessage').mockRejectedValue(new Error('chat down'))
+    // The blank line a reply resumes with after an earlier visual: skipped, so the draft is still unused.
+    managed.streamingState.accumulatedText = `\n\n${IMAGE}`
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await expect(finalizeStreaming(managed)).rejects.toThrow('chat down')
+
+    expect(managed.streamingState.currentMessageId).toBe('draft-1')
+  })
+
+  it('still finalizes the draft of a reply that is only whitespace', async () => {
+    managed.streamingState.accumulatedText = '  \n'
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await finalizeStreaming(managed)
+
+    expect(getMock(managed).finalizedMessages.map((m) => m.messageId)).toEqual(['draft-1'])
+  })
+
+  it('does not edit a draft whose text was delivered when the image after it failed', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+    vi.spyOn(mock, 'sendMessage').mockRejectedValue(new Error('chat down'))
+    const update = vi.spyOn(mock, 'sendStreamingUpdate')
+    managed.streamingState.accumulatedText = `Before.\n\n${IMAGE}`
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await expect(finalizeStreaming(managed)).rejects.toThrow('chat down')
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS) })
+
+    expect(mock.finalizedMessages.map((m) => m.messageId)).toEqual(['draft-1'])
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update.mock.calls[0][2]).toBeUndefined()
+  })
+
+  it('retires the draft when the reply opens with an image', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const retire = vi.spyOn(mock, 'retireStreamingMessage')
+    const sendFile = vi.spyOn(mock, 'sendFile')
+    managed.streamingState.accumulatedText = `${IMAGE}\n\nAfter.`
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await finalizeStreaming(managed)
+
+    expect(retire).toHaveBeenCalledWith('chat-123', 'draft-1')
+    // Retired only once the image is out, so a failed upload still has the draft to fall back on.
+    expect(retire.mock.invocationCallOrder[0]).toBeGreaterThan(sendFile.mock.invocationCallOrder[0])
+    expect(mock.finalizedMessages).toHaveLength(0)
+    expect(mock.sentFiles).toHaveLength(1)
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['\n\nAfter.'])
+  })
+
+  it('puts what was not delivered back in front of the text streamed after it, and delivers it once at idle', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const sendMessage = vi.spyOn(mock, 'sendMessage').mockResolvedValueOnce('m1').mockRejectedValue(new Error('chat down'))
+    const sendFile = vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: `Before.\n\n${IMAGE}\n\n` })
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'After.' })
+    expect(managed.streamingState.accumulatedText).toBe(`${IMAGE}\n\nAfter.`)
+
+    // The next line does not cut the restored image again: the next finalize retries it.
+    await processSSEEvent(managed, { type: 'stream_delta', text: '\nMore.\n' })
+    expect(sendFile).toHaveBeenCalledTimes(1)
+
+    sendMessage.mockReset()
+    sendFile.mockReset()
+    await processSSEEvent(managed, { type: 'session_idle' })
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    expect(mock.sentFiles.map((f) => f.filename)).toEqual(['chart.png'])
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['\n\nAfter.\nMore.\n'])
+    expect(sendFile.mock.invocationCallOrder[0]).toBeLessThan(sendMessage.mock.invocationCallOrder[0])
+    expect(managed.streamingState.accumulatedText).toBe('')
   })
 })
 

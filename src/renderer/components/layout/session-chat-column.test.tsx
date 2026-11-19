@@ -56,6 +56,7 @@ const mockStream = {
 }
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStream,
+  isSessionStreamOpen: () => false,
 }))
 
 // A composer-placed error component that withholds the composer, like the paywall while blocked.
@@ -170,6 +171,24 @@ describe('SessionChatColumn composer swap', () => {
     expect(screen.getByText('New line')).toBeInTheDocument()
   })
 
+  it('fades the hint row with plain gradients: no backdrop filter and no mask over the transcript', () => {
+    // The transcript scrolls under this row, so a backdrop-filter or a mask
+    // here is redone on every streamed token and every scroll frame.
+    renderWithProviders(<SessionChatColumn {...baseProps} />)
+
+    const row = screen.getByText('Send').closest('.overflow-hidden')
+    const panels = Array.from(row?.querySelectorAll<HTMLElement>(':scope > [aria-hidden="true"]') ?? [])
+    expect(panels).toHaveLength(2)
+    for (const panel of panels) {
+      expect(panel.className).not.toMatch(/backdrop-/)
+      expect(panel.className).not.toMatch(/mask/)
+      expect(panel.style.backdropFilter ?? '').toBe('')
+      expect(panel.style.maskImage ?? '').toBe('')
+      expect(panel.style.getPropertyValue('-webkit-mask-image')).toBe('')
+      expect(panel.style.backgroundImage).toMatch(/^linear-gradient\(to (right|left), hsl\(var\(--background\) \/ 1\) 0%.* 100%\)$/)
+    }
+  })
+
   it('hides the keyboard hint footer when a request is pending', () => {
     mockPendingResult.items = [secretDescriptor]
     mockPendingResult.count = 1
@@ -186,16 +205,31 @@ describe('SessionChatColumn composer swap', () => {
       <SessionChatColumn
         {...baseProps}
         lastActivityAt={new Date(Date.now() - 7 * 60 * 60 * 1000)}
-        contextUsage={{
-          inputTokens: 110_000,
-          outputTokens: 1_000,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          contextWindow: 200_000,
-        }}
+        contextUsage={{ totalTokens: 110_000, contextWindow: 200_000 }}
       />,
     )
 
     expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
+  })
+})
+
+describe('SessionChatColumn before the first send', () => {
+  it('renders the shared composer without session messages', () => {
+    renderWithProviders(<SessionChatColumn {...baseProps} sessionId={null} />)
+    expect(screen.getByTestId('message-input-mock')).toBeVisible()
+    expect(screen.queryByTestId('message-list')).not.toBeInTheDocument()
+  })
+
+  it('keeps the exact composer node when the draft adopts its session id', () => {
+    const { rerender } = renderWithProviders(<SessionChatColumn {...baseProps} sessionId={null} />)
+    const composer = screen.getByTestId('message-input-mock')
+    rerender(<SessionChatColumn {...baseProps} sessionId="created-session" />)
+    expect(screen.getByTestId('message-input-mock')).toBe(composer)
+    expect(screen.getByTestId('message-list')).toBeVisible()
+  })
+
+  it('hides the composer for view-only members', () => {
+    renderWithProviders(<SessionChatColumn {...baseProps} sessionId={null} isViewOnly />)
+    expect(screen.queryByTestId('message-input-mock')).not.toBeInTheDocument()
   })
 })

@@ -2,7 +2,7 @@
  * Tool definition registry.
  *
  * Maps tool names to their definitions. Usable from both backend
- * (MessagePersister, AgentIntegrationManager) and renderer.
+ * (the agents' live sessions, AgentIntegrationManager) and renderer.
  */
 
 import type { AnyRequestDefinition, RequestDefinition } from './requests/definition'
@@ -16,6 +16,7 @@ import { accountReauthRequestDef } from './account-reauth/definition'
 import { mcpReauthRequestDef } from './mcp-reauth/definition'
 import type { ToolDefinition } from './types'
 import { bashDef } from './bash/definition'
+import { monitorDef } from './monitor/definition'
 import { readDef } from './read/definition'
 import { writeDef } from './write/definition'
 import { globDef } from './glob/definition'
@@ -27,6 +28,7 @@ import { taskDef } from './task/definition'
 import { askUserQuestionDef } from './ask-user-question/definition'
 import { requestSecretDef } from './request-secret/definition'
 import { requestConnectedAccountDef } from './request-connected-account/definition'
+import { requestIntegrationSetupDef } from './request-integration-setup/definition'
 import { scheduleTaskDef } from './schedule-task/definition'
 import { scheduleResumeDef } from './schedule-resume/definition'
 import { deliverFileDef } from './deliver-file/definition'
@@ -35,10 +37,13 @@ import { requestFileDef } from './request-file/definition'
 import { requestRemoteMcpDef } from './request-remote-mcp/definition'
 import { requestScriptRunDef } from './request-script-run/definition'
 import { requestBrowserInputDef } from './request-browser-input/definition'
+import { requestLoginDef } from './request-login/definition'
 import {
   browserOpenDef,
   browserCloseDef,
   browserSnapshotDef,
+  browserReadDef,
+  browserCaptureTrafficDef,
   browserClickDef,
   browserFillDef,
   browserScrollDef,
@@ -51,6 +56,8 @@ import {
   browserDownloadDef,
   browserEvalDef,
   browserRunDef,
+  browserUploadDef,
+  browserGetStateDef,
 } from './browser-tools/definition'
 import {
   createDashboardDef,
@@ -75,6 +82,7 @@ import {
   listAvailableChatProvidersDef,
   listAgentIntegrationsDef,
   addChatIntegrationDef,
+  authorizeAgentIntegrationDef,
   sendChatMessageDef,
 } from './chat-tools/definition'
 
@@ -84,6 +92,7 @@ const definitions: Record<string, ToolDefinition> = {
 
   // Shell/command tools
   Bash: bashDef,
+  Monitor: monitorDef,
 
   // File operations
   Read: readDef,
@@ -110,6 +119,7 @@ const definitions: Record<string, ToolDefinition> = {
   // MCP tools - user input
   'mcp__user-input__request_secret': requestSecretDef,
   'mcp__user-input__request_connected_account': requestConnectedAccountDef,
+  'mcp__user-input__request_integration_setup': requestIntegrationSetupDef,
   'mcp__user-input__schedule_task': scheduleTaskDef,
   'mcp__user-input__schedule_resume': scheduleResumeDef,
   'mcp__user-input__deliver_file': deliverFileDef,
@@ -118,11 +128,14 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__user-input__request_remote_mcp': requestRemoteMcpDef,
   'mcp__user-input__request_script_run': requestScriptRunDef,
   'mcp__user-input__request_browser_input': requestBrowserInputDef,
+  'mcp__user-input__request_login': requestLoginDef,
 
   // MCP tools - browser
   'mcp__browser__browser_open': browserOpenDef,
   'mcp__browser__browser_close': browserCloseDef,
   'mcp__browser__browser_snapshot': browserSnapshotDef,
+  'mcp__browser__browser_read': browserReadDef,
+  'mcp__browser__browser_capture_traffic': browserCaptureTrafficDef,
   'mcp__browser__browser_click': browserClickDef,
   'mcp__browser__browser_fill': browserFillDef,
   'mcp__browser__browser_scroll': browserScrollDef,
@@ -135,6 +148,8 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_download': browserDownloadDef,
   'mcp__browser__browser_eval': browserEvalDef,
   'mcp__browser__browser_run': browserRunDef,
+  'mcp__browser__browser_upload': browserUploadDef,
+  'mcp__browser__browser_get_state': browserGetStateDef,
 
   // MCP tools - dashboards
   'mcp__dashboards__create_dashboard': createDashboardDef,
@@ -151,12 +166,15 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__agents__download_agent_file': downloadAgentFileDef,
 
   // MCP tools - chat integrations
-  'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
+  'mcp__chat__list_available_integration_providers': listAvailableChatProvidersDef,
   'mcp__chat__list_agent_integrations': listAgentIntegrationsDef,
-  // Historical transcripts retain the original tool name.
+  'mcp__chat__add_agent_integration': addChatIntegrationDef,
+  'mcp__chat__authorize_agent_integration': authorizeAgentIntegrationDef,
+  'mcp__chat__send_chat_message': sendChatMessageDef,
+  // Historical transcripts retain the original tool names.
+  'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
   'mcp__chat__list_chat_integrations': listAgentIntegrationsDef,
   'mcp__chat__add_chat_integration': addChatIntegrationDef,
-  'mcp__chat__send_chat_message': sendChatMessageDef,
 }
 
 export function getToolDefinition(toolName: string): ToolDefinition | undefined {

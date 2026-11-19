@@ -27,7 +27,7 @@ async function main() {
     await fs.mkdir(path.dirname(values.out), { recursive: true, mode: 0o700 })
     await fs.writeFile(values.out, JSON.stringify(runtime), { mode: 0o600, flag: 'wx' })
     let textDeltas = 0
-    const result = await provider.createClient().withOptions({ maxRetries: 0 }).messages.stream({
+    const result = await (await provider.createClient()).withOptions({ maxRetries: 0 }).messages.stream({
       model, max_tokens: 2048, thinking: { type: 'disabled' },
       messages: [{ role: 'user', content: 'What is 17 times 23? Answer with the number.' }],
     }).on('text', () => { textDeltas++ }).finalMessage()

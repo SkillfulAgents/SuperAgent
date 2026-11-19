@@ -3,7 +3,7 @@ import { ListTree, ChevronDown, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useElapsedTimer, formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import { StatusIndicator } from './tool-call-item'
-import { splitStreamingMarkdown } from './split-streaming-markdown'
+import { splitStreamingMarkdown } from '@shared/lib/split-streaming-markdown'
 import { AgentMarkdown, COMPACT_AGENT_TEXT } from './agent-markdown'
 
 interface ThinkingBlockItemProps {

@@ -102,6 +102,18 @@ describe('claimPlatformRelayEvents', () => {
     expect(mockCaptureException).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps an event without an opaque payload available for its consumer to handle and acknowledge', async () => {
+    mockFetch.mockResolvedValueOnce(Response.json({
+      events: [{ id: 'whe_empty', composio_trigger_id: 'whep_a', trigger_type: 'CUSTOM_WEBHOOK', created_at: 't' }],
+    }))
+    const claim = await claimPlatformRelayEvents('local', ['whep_a'])
+    expect(claim.events).toEqual([{ id: 'whe_empty', endpointId: 'whep_a', type: 'CUSTOM_WEBHOOK', payload: undefined, createdAt: 't' }])
+    expect(mockCaptureException).not.toHaveBeenCalled()
+    mockFetch.mockResolvedValueOnce(Response.json({ ok: true, acknowledged: 1 }))
+    await acknowledgePlatformRelayEvents('local', claim.events.map(event => event.id))
+    expect(lastRequest().body).toEqual({ event_ids: ['whe_empty'] })
+  })
+
   it('keeps the claimed events when the realtime block is malformed', async () => {
     mockFetch.mockResolvedValue(Response.json({
       events: [{ id: 'whe_1', composio_trigger_id: 'whep_a', trigger_type: 'CUSTOM_WEBHOOK', payload: {}, created_at: 't' }],

@@ -1,4 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
+import { storedRuntimeOptionsUpdate, type StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 /**
  * Webhook Trigger Service
  *
@@ -17,6 +18,7 @@ import {
 } from '@shared/lib/db/schema'
 import { eq, and, inArray, isNotNull, sql, count, desc } from 'drizzle-orm'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
@@ -94,7 +96,7 @@ export async function getDistinctPlatformMemberIdsForActiveTriggers(): Promise<s
     // endpoints have no connected account. The mint fell back to the stored
     // member, so poll as that member too — otherwise the trigger never fires
     // in acting-member mode.
-    const stored = getStoredPlatformMemberId()
+    const stored = await getStoredPlatformMemberId()
     if (stored) ids.add(stored)
   }
   return [...ids]
@@ -148,21 +150,21 @@ export type { WebhookTrigger, NewWebhookTrigger }
  * path ran; webhook-trigger-service.coldstart.test.ts asserts on it.
  */
 function notifyWebhookTriggersChanged(reason: string): void {
-  void import('@shared/lib/scheduler/trigger-manager')
+  background(import('@shared/lib/scheduler/trigger-manager')
     .then(async ({ triggerManager }) => {
       await triggerManager.syncRegistrations()
       console.log(`[webhook-triggers] relay registrations synced (${reason})`)
     })
     .catch((err) => {
       console.warn('[webhook-triggers] relay registration sync failed:', err)
-    })
+    }), { name: 'webhook-trigger.sync-relay-registrations' })
 }
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export interface CreateWebhookTriggerParams {
+export interface CreateWebhookTriggerParams extends Partial<StoredRuntimeOptions> {
   agentSlug: string
   /** 'composio' (default) or 'custom' (agent-minted platform webhook endpoint). */
   kind?: 'composio' | 'custom'
@@ -178,10 +180,6 @@ export interface CreateWebhookTriggerParams {
   createdByUserId?: string
   /** Acting platform member the upstream subscription was minted under (SUP-765). */
   mintedByMemberId?: string
-  llmProviderId?: string | null
-  model?: string
-  effort?: string
-  speed?: string
 }
 
 // ============================================================================
@@ -206,7 +204,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
     mintedByMemberId: params.mintedByMemberId ?? null,
-    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? (await getSettings()).llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -472,7 +470,7 @@ export async function cancelWebhookTriggerWithCleanup(
   const cancelled = await cancelWebhookTrigger(triggerId)
   if (!cancelled) return false
 
-  if (trigger.composioTriggerId && canReachUpstream(trigger.kind)) {
+  if (trigger.composioTriggerId && (await canReachUpstream(trigger.kind))) {
     const upstreamId = trigger.composioTriggerId
     const remaining = await countActiveTriggersForComposioId(upstreamId)
     if (remaining === 0) {
@@ -503,7 +501,7 @@ export async function cancelWebhookTriggerWithCleanup(
 // Custom endpoints live on the webhook relay regardless of Composio key mode,
 // so gate on the relay or a user-supplied Composio key leaves the URL live. A
 // relay that hasn't started yet can still take one down.
-function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
+async function canReachUpstream(kind: WebhookTrigger['kind']): Promise<boolean> {
   if (kind !== 'custom') return isPlatformComposioActive()
   const { unavailableReason } = getWebhookRelay().snapshot()
   return unavailableReason === null || unavailableReason === 'stopped'
@@ -549,12 +547,12 @@ export interface TeardownMembers {
 // Minting member when recorded (the only guaranteed principal); pre-column rows
 // guess via the SUP-226 chain (creator, owner) then the stored member.
 export async function resolveTeardownMembers(trigger: WebhookTrigger): Promise<TeardownMembers> {
-  if (!attribution.requiresActingMember()) return { memberIds: [], known: true }
+  if (!(await attribution.requiresActingMember())) return { memberIds: [], known: true }
   if (trigger.mintedByMemberId) return { memberIds: [trigger.mintedByMemberId], known: true }
   const candidates = [
     (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId,
     (await resolvePlatformMemberForCandidates([await getConnectedAccountOwnerUserId(trigger.connectedAccountId)]))?.memberId,
-    getStoredPlatformMemberId(),
+    await getStoredPlatformMemberId(),
   ]
   return { memberIds: [...new Set(candidates.filter((m): m is string => Boolean(m)))], known: false }
 }
@@ -566,8 +564,9 @@ async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Pr
   const attempts: Array<string | null> = memberIds.length > 0 ? memberIds : [null]
   for (const memberId of attempts) {
     try {
-      await runWithAttribution(memberId ? attribution.fromMemberId(memberId) : null, () =>
-        deleteUpstream(trigger.kind, memberId ?? getStoredPlatformMemberId() ?? 'local', upstreamId),
+      const deleteAs = memberId ?? (await getStoredPlatformMemberId()) ?? 'local'
+      await runWithAttribution(memberId ? await attribution.fromMemberId(memberId) : null, () =>
+        deleteUpstream(trigger.kind, deleteAs, upstreamId),
       )
       return
     } catch (error) {
@@ -698,20 +697,12 @@ export async function updateWebhookTriggerName(
  */
 export async function updateWebhookTriggerRuntimeOptions(
   triggerId: string,
-  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
+  options: Partial<StoredRuntimeOptions>,
 ): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger || trigger.status === 'cancelled') return false
 
-  const updates: Record<string, string | null> = {}
-  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
-  if ('model' in options) {
-    updates.model = options.model ?? null
-    if (!options.model) updates.llmProviderId = null
-    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = trigger.llmProviderId ?? getSettings().llmDefault!.llmProviderId
-  }
-  if ('effort' in options) updates.effort = options.effort ?? null
-  if ('speed' in options) updates.speed = options.speed ?? null
+  const updates = await storedRuntimeOptionsUpdate(options, trigger, async () => (await getSettings()).llmDefault?.llmProviderId)
 
   const result = await db
     .update(webhookTriggers)

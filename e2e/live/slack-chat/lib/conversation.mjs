@@ -7,7 +7,7 @@
  * anything — so `since` advances past everything a wait consumed.
  */
 
-import { sendAsSender, messagesSince, currentWatermark, messageText, normalizeSlackText, buttonActionIds, buttonLabels } from './slack.mjs'
+import { sendAsSender, messagesSince, currentWatermark, messageText, normalizeSlackText, buttonActionIds, buttonLabels, buttonValues } from './slack.mjs'
 
 export class Conversation {
   constructor({ botToken, sender, channelId, botUserId, log = () => {} }) {
@@ -92,4 +92,4 @@ export class Conversation {
   }
 }
 
-export { messageText, normalizeSlackText, buttonActionIds, buttonLabels }
+export { messageText, normalizeSlackText, buttonActionIds, buttonLabels, buttonValues }

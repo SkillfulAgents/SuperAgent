@@ -6,15 +6,14 @@ vi.mock('../config/settings', () => ({
 }))
 
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => 'platform-token',
+  platformAccessTokenFrom: () => 'platform-token',
 }))
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.test',
 }))
 
-vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: vi.fn(), createSummarizerText: vi.fn() }))
-vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: vi.fn() }))
+vi.mock('../llm-provider/helpers', () => ({ configuredLlmClientFrom: vi.fn(), createSummarizerText: vi.fn() }))
 
 import { getVoiceProvider } from './index'
 import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'

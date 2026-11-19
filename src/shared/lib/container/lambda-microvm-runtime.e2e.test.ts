@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from 'vitest'
 //   HOST_PUBLIC_URL=https://dummy \
 //   npx vitest run src/shared/lib/container/lambda-microvm-runtime.e2e.test.ts
 
-vi.mock('@shared/lib/llm-provider', () => ({ getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }) }))
+vi.mock('@shared/lib/llm-provider', () => ({ activeLlmProviderFrom: () => ({ getContainerEnvVars: () => ({}) }) }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
 import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'

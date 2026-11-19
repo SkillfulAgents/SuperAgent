@@ -34,7 +34,7 @@ describe('volumeFolderBrowser', () => {
     await expect(malformed({ accountId: 'account' }, viewer)).rejects.toMatchObject({ status: 503 })
     const failed = volumeFolderBrowser(schema, async () => { throw new Error('private upstream details') })
     await expect(failed({ accountId: 'account' }, viewer)).rejects.toMatchObject({
-      status: 503, message: 'The volume source is temporarily unavailable. Please try again.',
+      status: 503, message: 'The drive source is temporarily unavailable. Please try again.',
     })
   })
 })

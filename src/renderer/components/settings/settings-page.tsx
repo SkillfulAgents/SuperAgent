@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowLeft, ChevronRight, ExternalLink } from 'lucide-react'
+import { ChevronRight, ExternalLink } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -13,6 +13,7 @@ import {
   SidebarMenuItem,
   SidebarProvider,
 } from '@renderer/components/ui/sidebar'
+import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { Button } from '@renderer/components/ui/button'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { type LinkProps } from '@tanstack/react-router'
@@ -210,7 +211,7 @@ function SettingsPageContent({
         <div className="flex h-screen w-full flex-col bg-background pt-[env(safe-area-inset-top)]">
           <div className="flex items-center h-12 shrink-0 px-2 border-b">
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
-              <ArrowLeft className="h-4 w-4" />
+              <AnimatedNavIcon name="back" className="h-4 w-4" />
             </Button>
             <span className="text-sm font-medium px-2">Settings</span>
           </div>
@@ -279,7 +280,7 @@ function SettingsPageContent({
       <div className="flex h-screen w-full flex-col bg-background pt-[env(safe-area-inset-top)]">
         <div className="flex items-center h-12 shrink-0 px-2 border-b">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setMobileView('menu')}>
-            <ArrowLeft className="h-4 w-4" />
+            <AnimatedNavIcon name="back" className="h-4 w-4" />
           </Button>
           <span className="flex-1 text-sm font-medium truncate px-2">
             {activeSection?.label ?? 'Settings'}
@@ -308,7 +309,7 @@ function SettingsPageContent({
               <SidebarMenu>
                 <SidebarMenuItem>
                   <SidebarMenuButton onClick={onClose} data-testid="settings-back">
-                    <ArrowLeft className="h-4 w-4" />
+                    <AnimatedNavIcon name="back" className="h-4 w-4" />
                     <span>Back to app</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

@@ -1,6 +1,6 @@
 import pLimit from 'p-limit'
 import { streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
-import type { FileOps } from '@shared/lib/agent-actor/types'
+import type { StoreFileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError, joinWorkspacePath, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
 import { OPAQUE_PROMPT_REGEX, parseWorkflowScript } from './workflow-script-parser'
 import {
@@ -27,14 +27,14 @@ const AGENT_STATS_CONCURRENCY = 10
 
 /** The agent's workspace and the directory its transcripts are in, as workspace paths. */
 export interface WorkflowTreeSource {
-  files: FileOps
+  files: StoreFileOps
   transcriptsDir: string
   sessionId: string
   runId: string
 }
 
 /** A workspace text file, or null when it is absent or not a file. */
-async function readText(files: FileOps, path: string): Promise<string | null> {
+async function readText(files: StoreFileOps, path: string): Promise<string | null> {
   try {
     const bytes = await files.getDoc(path)
     return bytes === null ? null : Buffer.from(bytes).toString('utf8')
@@ -267,7 +267,7 @@ function resolveFromJsonHole(labelExpr: string, holeExprs: string[], captures: s
 }
 
 /** The model slug from an agent's spawn-time meta.json, or null if absent/unparsable. */
-async function readAgentMetaModel(files: FileOps, metaPath: string): Promise<string | null> {
+async function readAgentMetaModel(files: StoreFileOps, metaPath: string): Promise<string | null> {
   try {
     const raw = await readText(files, metaPath)
     if (raw === null) return null
@@ -421,7 +421,7 @@ function messageText(content: unknown): string {
  * the task it started with), tool-call count, generated (output) tokens, and the
  * first/last timestamps (for duration). Tolerant of a half-written trailing line.
  */
-async function readAgentStats(files: FileOps, filePath: string): Promise<AgentStats> {
+async function readAgentStats(files: StoreFileOps, filePath: string): Promise<AgentStats> {
   const empty: AgentStats = {
     firstPrompt: '',
     toolCount: 0,

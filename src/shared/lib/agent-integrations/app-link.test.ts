@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { resolveAppLinkContext, resolvePublicAppBaseUrl, withSessionUrl } from './app-link'
 
 const settings = vi.hoisted(() => ({ auth: { trustedOrigins: [] as string[] } }))
-vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => settings }))
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => settings }))
 beforeEach(() => { vi.stubEnv('TRUSTED_ORIGINS', ''); settings.auth.trustedOrigins = [] })
 afterEach(() => vi.unstubAllEnvs())
 
@@ -29,56 +29,56 @@ describe('resolveAppLinkContext', () => {
     }
   })
 
-  it('returns a desktop deeplink when process.type is browser', () => {
+  it('returns a desktop deeplink when process.type is browser', async () => {
     ;(process as { type?: string }).type = 'browser'
     process.env.SUPERAGENT_PROTOCOL = 'superagent-dev'
     delete process.env.HOST_PUBLIC_URL
 
-    expect(resolveAppLinkContext('my-agent')).toEqual({
+    expect(await resolveAppLinkContext('my-agent')).toEqual({
       isDesktop: true,
       url: 'superagent-dev://agent/my-agent',
     })
   })
 
-  it('falls back to the superagent scheme when SUPERAGENT_PROTOCOL is unset or empty', () => {
+  it('falls back to the superagent scheme when SUPERAGENT_PROTOCOL is unset or empty', async () => {
     ;(process as { type?: string }).type = 'browser'
     delete process.env.SUPERAGENT_PROTOCOL
-    expect(resolveAppLinkContext('demo').url).toBe('superagent://agent/demo')
+    expect((await resolveAppLinkContext('demo')).url).toBe('superagent://agent/demo')
 
     process.env.SUPERAGENT_PROTOCOL = ''
-    expect(resolveAppLinkContext('demo').url).toBe('superagent://agent/demo')
+    expect((await resolveAppLinkContext('demo')).url).toBe('superagent://agent/demo')
   })
 
-  it('returns a web URL when HOST_PUBLIC_URL is set outside Electron', () => {
+  it('returns a web URL when HOST_PUBLIC_URL is set outside Electron', async () => {
     delete (process as { type?: string }).type
     process.env.HOST_PUBLIC_URL = 'https://app.example.com/'
 
-    expect(resolveAppLinkContext('my-agent')).toEqual({
+    expect(await resolveAppLinkContext('my-agent')).toEqual({
       isDesktop: false,
       url: 'https://app.example.com/agents/my-agent',
     })
   })
 
-  it('returns null web url when HOST_PUBLIC_URL is unset or empty', () => {
+  it('returns null web url when HOST_PUBLIC_URL is unset or empty', async () => {
     delete (process as { type?: string }).type
     delete process.env.HOST_PUBLIC_URL
-    expect(resolveAppLinkContext('demo')).toEqual({ isDesktop: false, url: null })
+    expect(await resolveAppLinkContext('demo')).toEqual({ isDesktop: false, url: null })
 
     process.env.HOST_PUBLIC_URL = ''
-    expect(resolveAppLinkContext('demo')).toEqual({ isDesktop: false, url: null })
+    expect(await resolveAppLinkContext('demo')).toEqual({ isDesktop: false, url: null })
 
     process.env.HOST_PUBLIC_URL = '   '
-    expect(resolveAppLinkContext('demo')).toEqual({ isDesktop: false, url: null })
+    expect(await resolveAppLinkContext('demo')).toEqual({ isDesktop: false, url: null })
   })
 
-  it('URI-encodes the agent slug', () => {
+  it('URI-encodes the agent slug', async () => {
     delete (process as { type?: string }).type
     process.env.HOST_PUBLIC_URL = 'https://app.example.com'
-    expect(resolveAppLinkContext('a/b c').url).toBe('https://app.example.com/agents/a%2Fb%20c')
+    expect((await resolveAppLinkContext('a/b c')).url).toBe('https://app.example.com/agents/a%2Fb%20c')
 
     ;(process as { type?: string }).type = 'browser'
     process.env.SUPERAGENT_PROTOCOL = 'superagent'
-    expect(resolveAppLinkContext('a/b c').url).toBe('superagent://agent/a%2Fb%20c')
+    expect((await resolveAppLinkContext('a/b c')).url).toBe('superagent://agent/a%2Fb%20c')
   })
 })
 
@@ -124,22 +124,22 @@ describe('withSessionUrl', () => {
 
 describe('resolvePublicAppBaseUrl', () => {
   const forwarded = { 'X-Forwarded-Host': 'untrusted.example:8443', 'X-Forwarded-Proto': 'https' }
-  it('prefers the configured public URL and preserves path prefixes', () => {
+  it('prefers the configured public URL and preserves path prefixes', async () => {
     vi.stubEnv('HOST_PUBLIC_URL', ' https://public.example/gamut/// ')
     vi.stubEnv('TRUSTED_ORIGINS', 'https://trusted.example')
     const request = new Request('http://internal:3000/path', { headers: forwarded })
-    expect(resolvePublicAppBaseUrl(request)).toBe('https://public.example/gamut')
+    expect(await resolvePublicAppBaseUrl(request)).toBe('https://public.example/gamut')
   })
-  it('uses the first configured trusted origin for callbacks and integration links', () => {
+  it('uses the first configured trusted origin for callbacks and integration links', async () => {
     vi.stubEnv('HOST_PUBLIC_URL', '')
     vi.stubEnv('TRUSTED_ORIGINS', ' https://public.example/, https://second.example ')
-    expect(resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers: forwarded }))).toBe('https://public.example')
-    expect(resolveAppLinkContext('agent')).toEqual({ isDesktop: false, url: 'https://public.example/agents/agent' })
+    expect(await resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers: forwarded }))).toBe('https://public.example')
+    expect(await resolveAppLinkContext('agent')).toEqual({ isDesktop: false, url: 'https://public.example/agents/agent' })
   })
-  it('uses the same saved-settings fallback as authentication', () => {
+  it('uses the same saved-settings fallback as authentication', async () => {
     vi.stubEnv('HOST_PUBLIC_URL', '')
     settings.auth.trustedOrigins = ['https://settings.example/']
-    expect(resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers: forwarded }))).toBe('https://settings.example')
+    expect(await resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers: forwarded }))).toBe('https://settings.example')
   })
   it.each<Record<string, string>>([
     forwarded,
@@ -147,12 +147,12 @@ describe('resolvePublicAppBaseUrl', () => {
     { 'X-Forwarded-Proto': 'https' },
     { 'X-Forwarded-Host': 'bad.example/path', 'X-Forwarded-Proto': 'javascript' },
     {},
-  ])('ignores client-supplied forwarded headers without configured public origins: %j', headers => {
+  ])('ignores client-supplied forwarded headers without configured public origins: %j', async headers => {
     vi.stubEnv('HOST_PUBLIC_URL', '')
-    expect(resolvePublicAppBaseUrl(new Request('http://localhost:3000/api/setup', { headers }))).toBe('http://localhost:3000')
+    expect(await resolvePublicAppBaseUrl(new Request('http://localhost:3000/api/setup', { headers }))).toBe('http://localhost:3000')
   })
-  it('supports a direct local request without proxy headers', () => {
+  it('supports a direct local request without proxy headers', async () => {
     vi.stubEnv('HOST_PUBLIC_URL', '')
-    expect(resolvePublicAppBaseUrl('http://localhost:3000/path')).toBe('http://localhost:3000')
+    expect(await resolvePublicAppBaseUrl('http://localhost:3000/path')).toBe('http://localhost:3000')
   })
 })

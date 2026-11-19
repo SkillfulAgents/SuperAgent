@@ -11,7 +11,6 @@ const client = new Anthropic();
 
 // Simple message
 const message = await client.messages.create({
-  model: 'claude-sonnet-4-6',
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Summarize this data in 2 sentences.' }]
 });
@@ -27,7 +26,6 @@ For real-time text output, use `.stream()`:
 const client = new Anthropic();
 
 const stream = client.messages.stream({
-  model: 'claude-sonnet-4-6',
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Write a haiku about dashboards.' }]
 });
@@ -45,7 +43,6 @@ Or using `for await`:
 
 ```javascript
 const response = await client.messages.create({
-  model: 'claude-sonnet-4-6',
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Hello' }],
   stream: true
@@ -62,11 +59,7 @@ for await (const event of response) {
 
 ### `new Anthropic(options?)`
 
-Creates a new client instance.
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `model` | string | `'claude-sonnet-4-6'` | Default model for all requests (can be overridden per-call) |
+Creates a new client instance. No options are needed.
 
 ### `client.messages.create(params)`
 
@@ -76,7 +69,7 @@ Create a message (non-streaming or streaming).
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `model` | string | No | Model to use (defaults to client's default) |
+| `model` | string | No | Leave it out to use the user's configured model (see [Models](#models)) |
 | `max_tokens` | number | Yes | Maximum tokens to generate |
 | `messages` | array | Yes | Conversation messages `[{ role, content }]` |
 | `system` | string | No | System prompt |
@@ -94,7 +87,7 @@ Create a message (non-streaming or streaming).
   type: "message",
   role: "assistant",
   content: [{ type: "text", text: "..." }],
-  model: "claude-sonnet-4-6",
+  model: "...",
   stop_reason: "end_turn",
   usage: { input_tokens: 10, output_tokens: 50 }
 }
@@ -130,13 +123,9 @@ Takes the same parameters as `create()` (except `stream` is set automatically).
 
 ## Models
 
-The default model is `claude-sonnet-4-6` (good balance of speed and capability). You can use any model your provider supports:
+Leave out `model`. The request then uses the model the user configured in Gamut, with the right ID for their LLM provider. Hardcoded model IDs go out of date and may not exist on the user's provider.
 
-| Model | Best for |
-|-------|----------|
-| `claude-haiku-4-5` | Fast, cheap — autocomplete, classification, simple Q&A |
-| `claude-sonnet-4-6` | Balanced — most dashboard use cases (default) |
-| `claude-opus-4-7` | Most capable — complex reasoning, analysis |
+Pass `model` only when the user asks for a specific model, and use an ID their provider supports.
 
 ## Examples
 
@@ -150,7 +139,6 @@ async function sendMessage(userText) {
   history.push({ role: 'user', content: userText });
 
   const stream = client.messages.stream({
-    model: 'claude-sonnet-4-6',
     max_tokens: 1024,
     system: 'You are a helpful assistant for this dashboard.',
     messages: history
@@ -174,7 +162,6 @@ const client = new Anthropic();
 
 async function analyzeData(data) {
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
     max_tokens: 512,
     messages: [{
       role: 'user',
@@ -192,7 +179,6 @@ const client = new Anthropic();
 
 async function getSuggestions(input) {
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5',  // Fast model for autocomplete
     max_tokens: 100,
     messages: [{
       role: 'user',

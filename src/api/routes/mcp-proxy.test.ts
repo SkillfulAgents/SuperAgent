@@ -45,6 +45,9 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: {},
 }))
 
+// No proxy rules exist in these tests; the rule paths have their own suite.
+vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
+
 vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
@@ -59,17 +62,29 @@ vi.mock('@shared/lib/proxy/policy-resolver', () => ({
   resolveMcpPolicy: (...args: unknown[]) => mockResolveMcpPolicy(...args),
 }))
 
+// The agent's reviews, as its router answers the actor's review ops: a
+// request resolves to its outcome.
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestReview: (...args: unknown[]) => mockRequestReview(...args),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestReview({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
+    takeDecisionDetail: vi.fn(async () => ({})),
   },
 }))
 
+// The agent's MCP re-auth waits, as its router answers the actor's ops: a
+// request resolves to how the wait ended.
 vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
   mcpReauthManager: {
-    requestReauth: (...args: unknown[]) => mockRequestMcpReauth(...args),
-    completeMcp: vi.fn(),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestMcpReauth({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
   },
+}))
+// A refreshed token resumes the MCP's parked calls in every agent it is assigned to.
+const mockResumeMcpReauthWaits = vi.hoisted(() => vi.fn(async (_mcpId: string) => {}))
+vi.mock('@shared/lib/services/connection-sync-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/connection-sync-service')>()),
+  resumeMcpReauthWaits: (mcpId: string) => mockResumeMcpReauthWaits(mcpId),
 }))
 
 // Mock fetch for forwarded requests
@@ -176,7 +191,7 @@ describe('mcp-proxy route', () => {
       scopeDescriptions: {},
       resolvedFrom: 'global_default',
     })
-    mockRequestMcpReauth.mockResolvedValue(undefined)
+    mockRequestMcpReauth.mockResolvedValue({ outcome: 'resumed' })
   })
 
   afterEach(() => {
@@ -481,7 +496,7 @@ describe('mcp-proxy route', () => {
         mcpId: 'mcp-1',
         mcpName: 'Test MCP',
         authType: 'oauth',
-      }, expect.any(AbortSignal))
+      }, { waitId: expect.any(String) })
       const [, proxyInit] = mockFetch.mock.calls[0]
       expect((proxyInit.headers as Headers).get('Authorization')).toBe('Bearer fresh-token')
     })
@@ -575,10 +590,42 @@ describe('mcp-proxy route', () => {
       )
     })
 
+    it('shares one refresh between requests that find the token expired together', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ tokenExpiresAt: new Date(Date.now() - 60_000) }))
+      let answerRefresh!: () => void
+      mockFetch.mockImplementation(async (url: string) => {
+        if (url === 'https://auth.example.com/token') {
+          await new Promise<void>((resolve) => { answerRefresh = resolve })
+          return Response.json({ access_token: 'new-access-tok', refresh_token: 'new-refresh-tok', expires_in: 3600 })
+        }
+        return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      })
+
+      const request = () => makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', { headers: { Authorization: 'Bearer synth_valid' } })
+      const first = request()
+      await vi.waitFor(() => expect(answerRefresh).toBeTypeOf('function'))
+      // The second request makes the same reads, then reaches the refresh while
+      // the first is still waiting on it (the mocked steps between are microtasks).
+      const readsPerRequest = mockLimit.mock.calls.length
+      const second = request()
+      await vi.waitFor(() => expect(mockLimit.mock.calls.length).toBe(2 * readsPerRequest))
+      await new Promise((resolve) => setImmediate(resolve))
+      answerRefresh()
+      const responses = await Promise.all([first, second])
+
+      expect(responses.map((res) => res.status)).toEqual([200, 200])
+      const refreshes = mockFetch.mock.calls.filter(([url]) => url === 'https://auth.example.com/token')
+      expect(refreshes).toHaveLength(1)
+      const upstream = mockFetch.mock.calls.filter(([url]) => url !== 'https://auth.example.com/token')
+      expect(upstream.map(([, init]) => (init.headers as Headers).get('Authorization')))
+        .toEqual(['Bearer new-access-tok', 'Bearer new-access-tok'])
+    })
+
     it('requires reconnect without persisting a malformed token refresh response', async () => {
       setupSuccessPath({ mcpOverrides: { tokenExpiresAt: new Date(1) } })
       mockFetch.mockResolvedValueOnce(Response.json({ access_token: 123, expires_in: 3600 }))
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('Reconnect timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const response = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
         method: 'POST', headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
@@ -725,7 +772,7 @@ describe('mcp-proxy route', () => {
         mcpId: 'mcp-1',
         mcpName: 'Test MCP',
         authType: 'oauth',
-      }, expect.any(AbortSignal))
+      }, { waitId: expect.any(String) })
 
       const [, proxyInit] = mockFetch.mock.calls[1]
       expect((proxyInit.headers as Headers).get('Authorization')).toBe('Bearer reauthorized-access-token')
@@ -747,7 +794,7 @@ describe('mcp-proxy route', () => {
         accessToken: null, // expired, effectively null
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -870,7 +917,7 @@ describe('mcp-proxy route', () => {
         accessToken: null,
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -888,7 +935,7 @@ describe('mcp-proxy route', () => {
         accessToken: null,
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -905,7 +952,7 @@ describe('mcp-proxy route', () => {
 
       // Refresh fetch throws a network error
       mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'))
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -1724,7 +1771,7 @@ describe('mcp-proxy route', () => {
       mockFetch.mockResolvedValueOnce(
         new Response('{"error":"invalid"}', { status: 400 })
       )
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -1861,7 +1908,7 @@ describe('mcp-proxy route', () => {
         refreshToken: null,
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -1873,7 +1920,7 @@ describe('mcp-proxy route', () => {
       expect(mockRequestMcpReauth).toHaveBeenCalledWith(expect.objectContaining({
         mcpId: 'mcp-1',
         authType: 'bearer',
-      }), expect.any(AbortSignal))
+      }), { waitId: expect.any(String) })
     })
 
     it('handles concurrent requests to different MCP servers', async () => {
@@ -2020,7 +2067,7 @@ describe('mcp-proxy route', () => {
       // mcpToolPolicies no matter what the request path looks like.
       expect(mockRequestReview).toHaveBeenCalledWith(
         expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'tools/call: search' }),
-        expect.anything(),
+        { id: expect.any(String), recheck: true },
       )
     })
 
@@ -2048,7 +2095,7 @@ describe('mcp-proxy route', () => {
       expect(mockRequestReview).toHaveBeenCalledOnce()
       expect(mockRequestReview).toHaveBeenCalledWith(
         expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'resources/read', matchedScopes: [] }),
-        expect.anything(),
+        { id: expect.any(String), recheck: true },
       )
     })
 
@@ -2257,6 +2304,84 @@ describe('mcp-proxy route', () => {
 
       expect(res.status).toBe(200)
       expect(await res.text()).toContain('<html>')
+    })
+  })
+
+  // =========================================================================
+  // Caller session header
+  // =========================================================================
+  describe('caller session header', () => {
+    const toolCall = (headers: Record<string, string>) => makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search' } }),
+    })
+
+    it('names the calling session when a tool call parks for re-authentication', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      const stale = buildMcp({ status: 'auth_required', accessToken: 'stale-token' })
+      setupDbMocks(stale)
+      mockLimit
+        .mockResolvedValueOnce([{ mcp: stale }])
+        .mockResolvedValueOnce([{ mcp: buildMcp({ status: 'active', accessToken: 'fresh-token' }) }])
+      mockFetch.mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }))
+
+      const res = await toolCall({ 'X-Superagent-Session-Id': 'session-a' })
+
+      expect(res.status).toBe(200)
+      expect(mockRequestMcpReauth).toHaveBeenCalledWith(
+        expect.objectContaining({ agentSlug: 'my-agent', mcpId: 'mcp-1', callerSessionId: 'session-a' }),
+        expect.anything(),
+      )
+    })
+
+    it('names the calling session when a tool call needs review', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      const res = await toolCall({ 'X-Superagent-Session-Id': 'session-a' })
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', callerSessionId: 'session-a' }),
+        expect.anything(),
+      )
+    })
+
+    it('does not forward the header to the upstream server', async () => {
+      setupSuccessPath()
+
+      const res = await toolCall({ 'X-Superagent-Session-Id': 'session-a' })
+
+      expect(res.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalled()
+      for (const [, init] of mockFetch.mock.calls) {
+        expect((init.headers as Headers).get('X-Superagent-Session-Id')).toBeNull()
+      }
+    })
+
+    it('names no session when the header is absent', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      await toolCall({})
+
+      expect(mockRequestReview.mock.calls[0][0].callerSessionId).toBeUndefined()
     })
   })
 })

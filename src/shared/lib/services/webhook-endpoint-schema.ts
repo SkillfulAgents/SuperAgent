@@ -91,6 +91,12 @@ export const inspectWebhookEventsInputSchema = z.object({
   test_filter_exp: filterExpressionSchema.optional(),
 })
 
+// Some platform deployments return host/path without a scheme. Supply HTTPS
+// for a bare host (with an optional port), then validate before callers use it.
+const webhookEndpointUrlSchema = z.string().trim()
+  .transform(url => /^[^:/?#@\s]+(?::\d+)?(?:[/?#]|$)/.test(url) ? `https://${url}` : url)
+  .pipe(z.url({ protocol: /^https?$/ }))
+
 /**
  * Endpoint object as the proxy returns it. Lenient: newer proxy fields must
  * never break an older app. The signing secret never round-trips back
@@ -99,7 +105,7 @@ export const inspectWebhookEventsInputSchema = z.object({
 export const webhookEndpointSchema = z
   .object({
     id: z.string(),
-    url: z.string(),
+    url: webhookEndpointUrlSchema,
     name: z.string(),
     status: z.string(),
     verification: z.object({ has_secret: z.boolean().optional() }).loose().nullable().optional(),

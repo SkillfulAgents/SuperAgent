@@ -93,7 +93,7 @@ test.describe('Policy Settings', () => {
 
     // The scope policy editor renders inline in the Permissions column.
     await expect(page.getByRole('heading', { name: account.name })).toBeVisible()
-    await expect(page.getByText('Permissions')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Permissions', exact: true })).toBeVisible()
     await expect(page.locator('[data-testid="scope-group-write"]')).toBeVisible({ timeout: 5000 })
     await expect(page.locator('[data-testid="scope-policy-save"]')).toBeVisible()
   })
@@ -196,9 +196,9 @@ test.describe('Policy Settings', () => {
     await blockToggle.click()
     await expect(blockToggle).toHaveAttribute('data-active', 'false')
 
-    // All toggles should be inactive (= default)
+    // Nothing of its own: the row shows what it inherits (the global default, Review), faded.
     await expect(chatWrite.locator('[data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'false')
-    await expect(chatWrite.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
+    await expect(chatWrite.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-inherited', 'true')
     await expect(chatWrite.locator('[data-testid="policy-toggle-block"]')).toHaveAttribute('data-active', 'false')
 
     // Save and verify the per-scope row is gone from the persisted policies

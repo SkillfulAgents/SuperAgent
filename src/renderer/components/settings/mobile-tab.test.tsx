@@ -9,6 +9,8 @@ import { MobileTab } from './mobile-tab'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl: vi.fn() }))
+const { mockTrack } = vi.hoisted(() => ({ mockTrack: vi.fn() }))
+vi.mock('@renderer/context/analytics-context', () => ({ useAnalyticsTracking: () => ({ track: mockTrack }) }))
 vi.mock('react-qr-code', () => ({
   default: ({ value }: { value: string }) => <div data-testid="qr-code">{value}</div>,
 }))
@@ -110,5 +112,15 @@ describe('MobileTab in a cloud workspace', () => {
     expect(mockApiFetch).not.toHaveBeenCalledWith('/api/auth/mobile/pairing-token', expect.anything())
     // Devices paired elsewhere are still listed and revocable from here.
     expect(await screen.findByTestId('mobile-devices-empty')).toBeTruthy()
+  })
+
+  it('links to the iOS app on the App Store', () => {
+    renderWithProviders(<MobileTab />)
+
+    fireEvent.click(screen.getByTestId('mobile-app-store-link'))
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      'https://apps.apple.com/app/id6801340586',
+    )
+    expect(mockTrack).toHaveBeenCalledWith('app_store_link_clicked', { surface: 'settings_mobile' })
   })
 })

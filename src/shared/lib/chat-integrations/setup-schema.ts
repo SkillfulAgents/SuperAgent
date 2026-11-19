@@ -6,4 +6,6 @@ export const slackResultSchema = z.object({ ok: z.boolean(), team: z.string().op
 export const tokenResultSchema = z.object({ token: z.string().min(1) })
 
 export const telegramTestInputSchema = z.object({ botToken: z.string().min(1, 'Missing botToken') })
-export const slackTestInputSchema = telegramTestInputSchema.extend({ appToken: z.string().min(1, 'Missing appToken (app-level token for Socket Mode)') })
+export const slackTestInputSchema = telegramTestInputSchema.extend({ appToken: z.string().min(1).optional() })
+/** `webhooks: true` creates the installation before its Slack app, with a webhook URL to put in it. */
+export const slackSetupInputSchema = z.object({ webhooks: z.boolean().optional() }).loose()

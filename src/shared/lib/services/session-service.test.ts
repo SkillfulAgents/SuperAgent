@@ -35,6 +35,13 @@ import {
   getSessionsByWebhookTrigger,
 } from './session-service'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { backgroundSettled } from '@shared/lib/background'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+import { parsePageCursor } from './session-page-cursor'
+import { cursorId } from './testing/page-cursor'
+
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
 /**
  * A registered session with no transcript counts as new for an hour after its
@@ -103,17 +110,15 @@ describe('session-service', () => {
     await fs.promises.writeFile(jsonlPath, toJsonl(entries))
   }
 
-  // Helper to create session metadata
+  // Helper to put session metadata into the agent's index, as it stands
   async function createSessionMetadata(
     agentSlug: string,
     metadata: Record<string, object>
   ): Promise<void> {
-    const workspaceDir = path.join(testDir, 'agents', agentSlug, 'workspace')
-    await fs.promises.mkdir(workspaceDir, { recursive: true })
-    await fs.promises.writeFile(
-      path.join(workspaceDir, 'session-metadata.json'),
-      JSON.stringify(metadata, null, 2)
-    )
+    const { index } = createLocalSessionStore(agentSlug)
+    for (const [sessionId, meta] of Object.entries(metadata)) {
+      await index.update(sessionId, () => meta)
+    }
   }
 
   // ============================================================================
@@ -265,22 +270,7 @@ describe('session-service', () => {
 
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('519f8756-a16e-41ff-99de-9fe599dedae5')
-      expect(sessions[0].messageCount).toBe(0)
-    })
-
-    it('names a session after the first message the person sent, skipping system-injected turns', async () => {
-      // A session started by voice opens with the voice-mode notice; the
-      // first real utterance names it.
-      const notice = {
-        ...SAMPLE_JSONL_ENTRIES[0],
-        uuid: '0c0c0c0c-0000-4000-8000-000000000001',
-        message: { role: 'user', content: '[SYSTEM] The user switched to voice mode.\nKeep replies brief.' },
-      }
-      await createSessionFile('test-agent', 'session-voice-first', [notice, ...SAMPLE_JSONL_ENTRIES])
-
-      const session = await getSession(createLocalSessionStore('test-agent'), 'session-voice-first')
-
-      expect(session?.name).toBe('Whats 1+1?')
+      expect(sessions[0]).not.toHaveProperty('messageCount')
     })
 
     it('uses custom name from metadata', async () => {
@@ -331,11 +321,11 @@ describe('session-service', () => {
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('pending-session')
       expect(sessions[0].name).toBe('Pending Session')
-      expect(sessions[0].messageCount).toBe(0)
+      expect(sessions[0]).not.toHaveProperty('messageCount')
     })
 
     it('treats a registration older than the grace window with no transcript as deleted, and prunes it', async () => {
-      await createSessionsDir('test-agent')
+      await createSessionFile('test-agent', 'another', SAMPLE_JSONL_ENTRIES)
       await createSessionMetadata('test-agent', {
         'orphaned': { name: 'Transcript gone', createdAt: '2026-01-24T10:00:00.000Z' },
         'pending': { name: 'Just registered', createdAt: '2026-01-24T13:00:00.000Z' },
@@ -344,19 +334,40 @@ describe('session-service', () => {
       nowIs('2026-01-24T13:30:00.000Z')
 
       const store = createLocalSessionStore('test-agent')
-      expect((await listSessions(store)).map((s) => s.id).sort()).toEqual(['pending', 'unparsable'])
+      expect((await listSessions(store)).map((s) => s.id).sort()).toEqual(['another', 'pending', 'unparsable'])
       expect(await getSession(store, 'orphaned')).toBeNull()
       expect(await sessionIsKnown(store, 'orphaned')).toBe(false)
       expect(await sessionIsKnown(store, 'pending')).toBe(true)
 
-      // The listing drops the entry from the document in the background; a
-      // transcript that appears in between is kept.
+      // The listing drops the entry from the index in the background.
       await vi.waitFor(async () => {
         expect(Object.keys(await readSessionMetadata(store)).sort()).toEqual(['pending', 'unparsable'])
       })
     })
 
-    it('keeps an orphaned entry whose transcript appears while the prune waits for the document', async () => {
+    it.each([
+      ['empty', true],
+      ['missing', false],
+    ])('prunes nothing while the transcripts directory is %s: a volume that went away must not cost every name', async (_state, exists) => {
+      if (exists) await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'one': { name: 'One', createdAt: '2026-01-24T10:00:00.000Z' },
+        'two': { name: 'Two', starred: true, createdAt: '2026-01-24T10:00:00.000Z' },
+      })
+      nowIs('2026-01-24T13:30:00.000Z')
+      const store = createLocalSessionStore('test-agent')
+
+      expect(await listSessions(store)).toEqual([])
+      await backgroundSettled()
+
+      expect(await readSessionMetadata(store)).toMatchObject({ one: { name: 'One' }, two: { name: 'Two', starred: true } })
+      // The volume is back: the sessions list under their names.
+      await createSessionFile('test-agent', 'one', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'two', SAMPLE_JSONL_ENTRIES)
+      expect((await listSessions(store)).map((s) => s.name).sort()).toEqual(['One', 'Two'])
+    })
+
+    it('keeps an orphaned entry whose transcript appears before the prune reaches it', async () => {
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', {
         'late': { name: 'Named before streaming', starred: true, createdAt: '2026-01-24T10:00:00.000Z' },
@@ -364,20 +375,15 @@ describe('session-service', () => {
       nowIs('2026-01-24T13:30:00.000Z')
       const store = createLocalSessionStore('test-agent')
 
-      // Another update holds the document; the prune the listing starts has
-      // to wait behind it, and in the meantime the transcript arrives.
-      let release!: () => void
-      const gate = new Promise<void>((resolve) => { release = resolve })
-      const held = store.config.update('sessionMetadata', async (current) => {
-        await gate
-        return current
+      // The transcript arrives after the listing answered and before the
+      // prune it started looks: the prune's own check finds it.
+      const stat = store.files.stat.bind(store.files)
+      vi.spyOn(store.files, 'stat').mockImplementation(async (file) => {
+        if (file.endsWith('late.jsonl')) await createSessionFile('test-agent', 'late', SAMPLE_JSONL_ENTRIES)
+        return stat(file)
       })
       expect((await listSessions(store)).map((s) => s.id)).toEqual([])
-      await createSessionFile('test-agent', 'late', SAMPLE_JSONL_ENTRIES)
-      release()
-      await held
-      // Queued after the prune's own update, so it has run by the time this resolves.
-      await store.config.update('sessionMetadata', (current) => current)
+      await backgroundSettled()
 
       expect(await readSessionMetadata(store)).toMatchObject({
         late: { name: 'Named before streaming', starred: true },
@@ -629,48 +635,57 @@ describe('session-service', () => {
       expect(session?.id).toBe('519f8756-a16e-41ff-99de-9fe599dedae5')
       expect(session?.agentSlug).toBe('test-agent')
       expect(session?.name).toBe('Simple Math Question')
-      expect(session?.messageCount).toBe(4)
+      expect(session).not.toHaveProperty('messageCount')
     })
 
-    it('calculates correct timestamps', async () => {
-      await createSessionFile(
-        'test-agent',
-        'test-session',
-        SAMPLE_JSONL_ENTRIES
-      )
-
-      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
-
-      expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
-      expect(session?.lastActivityAt.toISOString()).toBe(
-        '2026-01-24T01:31:19.827Z'
-      )
-    })
-
-    it('prefers the recorded metadata createdAt over the first transcript message', async () => {
+    it('takes createdAt from metadata and lastActivityAt from the transcript mtime', async () => {
+      const sessionsDir = await createSessionsDir('test-agent')
       await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      const mtime = new Date('2026-03-01T12:00:00.000Z')
+      await fs.promises.utimes(path.join(sessionsDir, 'test-session.jsonl'), mtime, mtime)
       await createSessionMetadata('test-agent', {
         'test-session': { name: 'Named', createdAt: '2026-01-24T01:31:30.000Z' },
       })
 
       const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
 
-      // Registration time wins (it is what the list already shows); lastActivity
-      // still comes from the transcript.
       expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:31:30.000Z')
-      expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:19.827Z')
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-03-01T12:00:00.000Z')
     })
 
-    it('ignores an unparsable metadata createdAt and keeps the transcript timestamp', async () => {
+    // The list and a single-session read must not disagree, including for a
+    // session with no stored name (it is "New Session" in both, never its first
+    // user message) and one whose stored createdAt does not parse.
+    it.each<[string, { name?: string; createdAt: string } | undefined]>([
+      ['named', { name: 'Named', createdAt: '2026-01-24T01:31:30.000Z' }],
+      ['unnamed', { createdAt: '2026-01-24T01:31:30.000Z' }],
+      ['unparsable createdAt', { name: 'Named', createdAt: 'not-a-date' }],
+      ['no metadata', undefined],
+    ])('reports exactly what the session list reports (%s)', async (_label, meta) => {
       await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
-      await createSessionMetadata('test-agent', {
-        'test-session': { name: 'Named', createdAt: 'not-a-date' },
-      })
+      await createSessionMetadata('test-agent', meta ? { 'test-session': meta } : {})
+      const store = createLocalSessionStore('test-agent')
 
-      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
+      const session = await getSession(store, 'test-session')
+      const [listed] = await listSessions(store)
 
-      expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
-      expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:19.827Z')
+      expect(session).toEqual(listed)
+      expect(Number.isNaN(session!.createdAt.getTime())).toBe(false)
+      if (!meta?.name) expect(session?.name).toBe('New Session')
+    })
+
+    it('never reads the transcript, however large', async () => {
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', SAMPLE_SESSION_METADATA)
+      const store = createLocalSessionStore('test-agent')
+      const read = vi.spyOn(store.files, 'read')
+      const open = vi.spyOn(store.files, 'open')
+
+      const session = await getSession(store, 'test-session')
+
+      expect(session?.id).toBe('test-session')
+      expect(read).not.toHaveBeenCalled()
+      expect(open).not.toHaveBeenCalled()
     })
 
     it('ignores an unparsable metadata createdAt on a registered session with no transcript', async () => {
@@ -719,7 +734,6 @@ describe('session-service', () => {
       expect(session?.id).toBe('settling-session')
       expect(session?.agentSlug).toBe('test-agent')
       expect(session?.name).toBe('Brand New')
-      expect(session?.messageCount).toBe(0)
       expect(session?.createdAt.toISOString()).toBe('2026-06-18T12:00:00.000Z')
       expect(session?.lastActivityAt.toISOString()).toBe('2026-06-18T12:00:00.000Z')
     })
@@ -734,137 +748,6 @@ describe('session-service', () => {
 
       const session = await getSession(createLocalSessionStore('test-agent'), 'half-written')
       expect(session).toBeNull()
-    })
-
-    // The transcript is summarized in a single streaming pass rather than parsed
-    // into an array, so the shapes real transcripts take — rows far wider than a
-    // read chunk, tool-result user rows ahead of any prose, queued commands —
-    // are what the summary has to keep getting right.
-    it('summarizes a transcript whose rows are wider than a read chunk', async () => {
-      const CHUNK_SIZE = 64 * 1024
-      await createSessionFile('test-agent', 'wide-session', [
-        {
-          type: 'user',
-          uuid: 'u1',
-          timestamp: '2026-02-01T10:00:00.000Z',
-          message: { role: 'user', content: 'Summarize the attached log' },
-        },
-        {
-          type: 'assistant',
-          uuid: 'a1',
-          timestamp: '2026-02-01T10:00:05.000Z',
-          message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(CHUNK_SIZE * 3) }] },
-        },
-        {
-          type: 'user',
-          uuid: 'u2',
-          timestamp: '2026-02-01T10:00:09.000Z',
-          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'y'.repeat(CHUNK_SIZE * 2) }] },
-        },
-      ])
-
-      const session = await getSession(createLocalSessionStore('test-agent'), 'wide-session')
-
-      expect(session?.messageCount).toBe(3)
-      expect(session?.createdAt.toISOString()).toBe('2026-02-01T10:00:00.000Z')
-      expect(session?.lastActivityAt.toISOString()).toBe('2026-02-01T10:00:09.000Z')
-      expect(session?.name).toBe('Summarize the attached log')
-    })
-
-    it('names the session from the first user row with string content, not a tool result', async () => {
-      await createSessionFile('test-agent', 'tool-first', [
-        // A resumed session can open on a tool_result user row; its content is an
-        // array, so it must not be mistaken for the prompt.
-        {
-          type: 'user',
-          uuid: 'u0',
-          timestamp: '2026-02-02T10:00:00.000Z',
-          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'ok' }] },
-        },
-        {
-          type: 'user',
-          uuid: 'u1',
-          timestamp: '2026-02-02T10:00:01.000Z',
-          message: { role: 'user', content: 'The actual prompt' },
-        },
-        // A later turn must not overwrite the name.
-        {
-          type: 'user',
-          uuid: 'u2',
-          timestamp: '2026-02-02T10:00:02.000Z',
-          message: { role: 'user', content: 'A follow-up question' },
-        },
-      ])
-
-      const session = await getSession(createLocalSessionStore('test-agent'), 'tool-first')
-
-      expect(session?.name).toBe('The actual prompt')
-      expect(session?.messageCount).toBe(3)
-      // Timestamps still span every message, including the tool_result row.
-      expect(session?.createdAt.toISOString()).toBe('2026-02-02T10:00:00.000Z')
-      expect(session?.lastActivityAt.toISOString()).toBe('2026-02-02T10:00:02.000Z')
-    })
-
-    it('truncates a long derived name to 50 chars with an ellipsis', async () => {
-      await createSessionFile('test-agent', 'long-name', [
-        {
-          type: 'user',
-          uuid: 'u1',
-          timestamp: '2026-02-03T10:00:00.000Z',
-          message: { role: 'user', content: 'a'.repeat(80) },
-        },
-      ])
-
-      const session = await getSession(createLocalSessionStore('test-agent'), 'long-name')
-      expect(session?.name).toBe(`${'a'.repeat(50)}...`)
-    })
-
-    it('counts a mid-turn queued_command attachment as a user message', async () => {
-      await createSessionFile('test-agent', 'queued-session', [
-        {
-          type: 'user',
-          uuid: 'u1',
-          timestamp: '2026-02-04T10:00:00.000Z',
-          message: { role: 'user', content: 'first' },
-        },
-        {
-          type: 'attachment',
-          uuid: 'att1',
-          timestamp: '2026-02-04T10:00:30.000Z',
-          attachment: {
-            type: 'queued_command',
-            commandMode: 'prompt',
-            prompt: 'steer left',
-            source_uuid: 'q1',
-          },
-        },
-        // Not user-typed — must not count.
-        {
-          type: 'attachment',
-          uuid: 'att2',
-          timestamp: '2026-02-04T10:01:00.000Z',
-          attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'meta', isMeta: true },
-        },
-      ])
-
-      const session = await getSession(createLocalSessionStore('test-agent'), 'queued-session')
-
-      expect(session?.messageCount).toBe(2)
-      // The queued command is the last activity, so it moves the timestamp.
-      expect(session?.lastActivityAt.toISOString()).toBe('2026-02-04T10:00:30.000Z')
-    })
-
-    it('skips a half-written trailing row rather than failing the whole session', async () => {
-      const sessionsDir = await createSessionsDir('test-agent')
-      await fs.promises.writeFile(
-        path.join(sessionsDir, 'torn.jsonl'),
-        `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-02-05T10:00:00.000Z', message: { role: 'user', content: 'hello' } })}\n{"type":"assistant","timestamp":"2026-02-05T10`
-      )
-
-      const session = await getSession(createLocalSessionStore('test-agent'), 'torn')
-
-      expect(session?.messageCount).toBe(1)
-      expect(session?.name).toBe('hello')
     })
   })
 
@@ -1044,7 +927,7 @@ describe('session-service', () => {
 
       const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 5 })
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
-      expect(page.nextCursor).toBe('a-7')
+      expect(cursorId(page.nextCursor)).toBe('a-7')
     })
 
     it('returns the page before a cursor', async () => {
@@ -1055,7 +938,70 @@ describe('session-service', () => {
         cursor: 'a-7',
       })
       expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
-      expect(page.nextCursor).toBe('u-5')
+      expect(cursorId(page.nextCursor)).toBe('u-5')
+    })
+
+    it('seeks with an offset cursor and serves the same page as a bare-id cursor', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+      const store = createLocalSessionStore('test-agent')
+
+      const trailing = await getSessionMessagesPage(store, 'page-session', { limit: 5 })
+      expect(parsePageCursor(trailing.nextCursor!)).toEqual({ id: 'a-7', offset: expect.any(Number) })
+
+      const seeked = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: trailing.nextCursor! })
+      const scanned = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: 'a-7' })
+      expect(seeked.messages).toEqual(scanned.messages)
+      expect(seeked.nextCursor).toBe(scanned.nextCursor)
+      expect(parsePageCursor(seeked.nextCursor!).id).toBe('u-5')
+    })
+
+    it('falls back to the id scan when the transcript was rewritten under the offset', async () => {
+      const thread = makeThread(10)
+      await createSessionFile('test-agent', 'page-session', thread)
+      const store = createLocalSessionStore('test-agent')
+      const trailing = await getSessionMessagesPage(store, 'page-session', { limit: 5 })
+      // Deleting the first exchange shifts every row's offset.
+      await createSessionFile('test-agent', 'page-session', thread.slice(2))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const page = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: trailing.nextCursor! })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('is stale'))
+      // The next cursor carries the offset in the rewritten layout.
+      const next = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: page.nextCursor! })
+      expect(next.messages.map((m) => m.id)).toEqual(['a-2', 'u-3', 'a-3', 'u-4', 'a-4'])
+    })
+
+    it('falls back to the id scan when the offset points inside a row', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+      const store = createLocalSessionStore('test-agent')
+      const trailing = await getSessionMessagesPage(store, 'page-session', { limit: 5 })
+      const { id, offset } = parsePageCursor(trailing.nextCursor!)
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const page = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: `${id}:${offset! + 3}` })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
+    })
+
+    it('pages to the first row of a transcript longer than the bare-id scan reaches', async () => {
+      // 60,000 lines: past MAX_TAIL_LINES (50,000) from the end.
+      await createSessionFile('test-agent', 'page-session', makeThread(30_000))
+      const store = createLocalSessionStore('test-agent')
+
+      const first = await getSessionMessagesPage(store, 'page-session', { limit: 5_000 })
+      let count = first.messages.length
+      let oldest = first.messages[0]!.id
+      let cursor = first.nextCursor
+      for (let i = 0; i < 20 && cursor; i++) {
+        const page = await getSessionMessagesPage(store, 'page-session', { limit: 5_000, cursor })
+        count += page.messages.length
+        if (page.messages[0]) oldest = page.messages[0].id
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(oldest).toBe('u-0')
+      expect(count).toBe(60_000)
     })
 
     it('returns no cursor on the oldest page', async () => {
@@ -1080,7 +1026,7 @@ describe('session-service', () => {
       const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 4 })
       expect(page.messages.map((m) => m.id)).toEqual(['u-18', 'a-18', 'u-19', 'a-19'])
       expect(page.messages.some((m) => m.id === 'huge-prefix')).toBe(false)
-      expect(page.nextCursor).toBe('u-18')
+      expect(cursorId(page.nextCursor)).toBe('u-18')
     })
 
     it('does not use a mid-merge assistant uuid as the page cursor', async () => {
@@ -1137,7 +1083,7 @@ describe('session-service', () => {
       const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 5 })
       expect(first.messages.map((m) => m.id)).not.toContain('X-1')
       expect(first.messages[0]?.id).toBe('X-0')
-      expect(first.nextCursor).toBe('X-0')
+      expect(cursorId(first.nextCursor)).toBe('X-0')
       expect(first.messages.find((m) => m.id === 'X-0')).toMatchObject({
         type: 'assistant',
         content: { text: 'leading' },
@@ -1208,7 +1154,7 @@ describe('session-service', () => {
         signal: controller.signal,
       })
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
-      expect(page.nextCursor).toBe('a-7')
+      expect(cursorId(page.nextCursor)).toBe('a-7')
     })
 
     it('byte budget truncates a page short and cursor paging walks the remainder', async () => {
@@ -1222,7 +1168,7 @@ describe('session-service', () => {
       })
       expect(first.messages.length).toBeGreaterThan(0)
       expect(first.messages.length).toBeLessThan(20)
-      expect(first.nextCursor).toBe(first.messages[0]!.id)
+      expect(cursorId(first.nextCursor)).toBe(first.messages[0]!.id)
 
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
@@ -1262,7 +1208,7 @@ describe('session-service', () => {
       // The budget floor guarantees at least one servable item beyond the
       // sacrificial head — the giant trailing item must not become an empty page.
       expect(page.messages.map((m) => m.id)).toEqual(['a-giant'])
-      expect(page.nextCursor).toBe('a-giant')
+      expect(cursorId(page.nextCursor)).toBe('a-giant')
 
       const older = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
@@ -1334,7 +1280,7 @@ describe('session-service', () => {
       expect(queued).toMatchObject({ type: 'user', queued: true, content: { text: 'steer' } })
     })
 
-    it('terminates and returns each item once when history is replayed verbatim', async () => {
+    it('terminates and returns each item once when history is replayed verbatim (bare-id cursors)', async () => {
       // Session resume can re-append prior history to the transcript with the
       // SAME uuids. The transform canonicalizes duplicates to their oldest
       // occurrence; cursor resolution must do the same, or paging anchors on
@@ -1344,18 +1290,133 @@ describe('session-service', () => {
 
       const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 3 })
       const collected = [...first.messages.map((m) => m.id)]
-      let cursor = first.nextCursor
+      let cursor = cursorId(first.nextCursor)
       for (let i = 0; i < 10 && cursor; i++) {
         const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 3,
           cursor,
         })
         collected.unshift(...page.messages.map((m) => m.id))
-        cursor = page.nextCursor
+        cursor = cursorId(page.nextCursor)
       }
 
       expect(cursor).toBeNull()
       expect(collected).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2'])
+    })
+
+    it('terminates and serves every item at each page size when history is replayed (offset cursors)', async () => {
+      // A seek anchors on the copy the client saw and never re-anchors on its
+      // deeper original, so the copies are served first and a later page can
+      // repeat items. What a client shows after it drops the repeats is the
+      // whole transcript, in order, whatever the page size.
+      const thread = makeThread(8)
+      const fixtures: Array<[string, object[]]> = [
+        ['whole history replayed', [...makeThread(3), ...makeThread(3)]],
+        ['two turns replayed mid-transcript', [...thread.slice(0, 12), ...thread.slice(8, 12), ...thread.slice(12)]],
+      ]
+      const store = createLocalSessionStore('test-agent')
+
+      for (const [name, rows] of fixtures) {
+        await createSessionFile('test-agent', 'page-session', rows)
+        const expected = [...new Set(rows.map((row) => (row as { uuid: string }).uuid))]
+        for (let limit = 1; limit <= 8; limit++) {
+          const at = `${name}, limit ${limit}`
+          const first = await getSessionMessagesPage(store, 'page-session', { limit })
+          let shown = first.messages.map((m) => m.id)
+          let cursor = first.nextCursor
+          for (let i = 0; i < 60 && cursor; i++) {
+            expect(parsePageCursor(cursor).offset, at).toBeDefined()
+            const page = await getSessionMessagesPage(store, 'page-session', { limit, cursor })
+            expect(page.messages.length, `${at}: empty page`).toBeGreaterThan(0)
+            shown = [...page.messages.map((m) => m.id).filter((id) => !shown.includes(id)), ...shown]
+            cursor = page.nextCursor
+          }
+          expect(cursor, at).toBeNull()
+          expect(shown, at).toEqual(expected)
+        }
+      }
+    })
+
+    describe('system rows next to replayed rows (offset cursors)', () => {
+      // A system row shows before the message that follows it. When that
+      // message is a replayed copy, a window that holds the copy without its
+      // original and a window that holds both must still agree on where the
+      // row shows, or a walk loses its place: it ended early, skipped a
+      // message, or was handed a bare-id cursor that pages back up the file.
+      let second = 0
+      const at = () => new Date(Date.UTC(2026, 0, 9, 0, 0, second++)).toISOString()
+      const question = (t: number) => ({ type: 'user', uuid: `u-${t}`, timestamp: at(), sessionId: 's', parentUuid: null, message: { role: 'user', content: `q${t}` } })
+      const text = (t: number) => ({ type: 'assistant', uuid: `c-${t}-text`, timestamp: at(), sessionId: 's', parentUuid: null, message: { id: `call-${t}`, role: 'assistant', content: [{ type: 'text', text: `working ${t}` }] } })
+      const call = (t: number) => ({ type: 'assistant', uuid: `c-${t}-tool`, timestamp: at(), sessionId: 's', parentUuid: null, message: { id: `call-${t}`, role: 'assistant', content: [{ type: 'tool_use', id: `tool-${t}`, name: 'Read', input: {} }] } })
+      const result = (t: number) => ({ type: 'user', uuid: `r-${t}`, timestamp: at(), sessionId: 's', parentUuid: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tool-${t}`, content: 'ok' }] } })
+      const answer = (t: number) => ({ type: 'assistant', uuid: `f-${t}`, timestamp: at(), sessionId: 's', parentUuid: null, message: { id: `fin-${t}`, role: 'assistant', content: [{ type: 'text', text: `done ${t}` }] } })
+      const note = (uuid: string) => ({ type: 'system', uuid, subtype: 'informational', content: `note ${uuid}`, isMeta: false, timestamp: at() })
+      const recall = (uuid: string) => ({ type: 'system', uuid, subtype: 'memory_recall', content: '', isMeta: false, timestamp: at(), memory_paths: ['M.md'] })
+      /** A turn's rows by name, so a fixture can replay some of them verbatim. */
+      const turn = (t: number) => ({ question: question(t), text: text(t), call: call(t), result: result(t), answer: answer(t) })
+      const rowsOf = (t: ReturnType<typeof turn>) => [t.question, t.text, t.call, t.result, t.answer]
+
+      const fixtures: Array<[string, () => object[]]> = [
+        ['a run before a replayed tool-call row', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), ...rowsOf(t1), note('n-1'), note('n-2'), t1.call, t1.result, t1.answer, t1.result, t1.answer]
+        }],
+        ['a run between a row and its replay', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), ...rowsOf(t1), t1.answer, note('n-1'), recall('m-1'), recall('m-2'), note('n-2'), t1.question, t1.text, t1.call, t1.result]
+        }],
+        ['a run before replayed rows of an earlier turn', () => {
+          const [t0, t1, t2] = [turn(0), turn(1), turn(2)]
+          return [...rowsOf(t0), ...rowsOf(t1), t2.question, t2.answer, note('n-1'), recall('m-1'), recall('m-2'), t1.answer, t2.question, t2.answer]
+        }],
+        // The note's next row is the response's second row. A window that
+        // starts inside the replay shows the note before that row; one that
+        // holds the whole response shows it before the response.
+        ['a run after rows replayed inside a response', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), t1.question, t1.text, t0.result, t0.answer, note('n-1'), t1.call, t1.result, t1.answer]
+        }],
+        ['a run between two rows of a response', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), t1.question, t1.text, note('n-1'), recall('m-1'), t1.call, t1.result, t1.answer]
+        }],
+        ['a run before a replayed first row of a response', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), t1.question, t1.text, note('n-1'), t1.text, t1.call, t1.result, t1.answer]
+        }],
+        // The replayed recall shows above the replayed note's page, with the
+        // new recall that follows both in the file.
+        ['a replayed run inside a new one', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          const [n0, m0] = [note('n-0'), recall('m-0')]
+          return [...rowsOf(t0), n0, m0, ...rowsOf(t1), recall('m-1'), n0, m0, note('n-1'), recall('m-2'), t1.question, t1.answer]
+        }],
+      ]
+
+      it.each(fixtures)('walks to the first row: %s', async (_name, build) => {
+        await createSessionFile('test-agent', 'page-session', build())
+        const store = createLocalSessionStore('test-agent')
+        const expected = (await getSessionMessagesPage(store, 'page-session', { limit: 1000 })).messages.map((m) => m.id)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        for (let limit = 1; limit <= 6; limit++) {
+          const first = await getSessionMessagesPage(store, 'page-session', { limit })
+          const shown = new Set(first.messages.map((m) => m.id))
+          let cursor = first.nextCursor
+          for (let i = 0; i < 60 && cursor; i++) {
+            // A bare id is a cursor on a row above the one this page was
+            // paged from: the next request would climb back up the file.
+            expect(parsePageCursor(cursor).offset, `limit ${limit}: ${cursor}`).toBeDefined()
+            const page = await getSessionMessagesPage(store, 'page-session', { limit, cursor })
+            for (const m of page.messages) shown.add(m.id)
+            cursor = page.nextCursor
+          }
+          expect(cursor, `limit ${limit}`).toBeNull()
+          expect(expected.filter((id) => !shown.has(id)), `limit ${limit}`).toEqual([])
+        }
+        expect(warn).not.toHaveBeenCalled()
+        warn.mockRestore()
+      })
     })
 
     it('returns every trailing system item across pages despite display reordering', async () => {
@@ -1389,6 +1450,56 @@ describe('session-service', () => {
 
       expect(cursor).toBeNull()
       expect(collected).toEqual(['u-0', 'mr', 'cb', 'info1', 'info2'])
+    })
+
+    describe('a page head above the row it was paged from', () => {
+      // Display reordering can head a page with a row from above the cursor
+      // row: `cb` displays before `info1` though it comes later in the file.
+      // A cursor on `cb` would seek back up the file, so the page from
+      // `info1` takes the rest of that system run, down to the row below it.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 6, 0, 0, s)).toISOString()
+      const run = [
+        { type: 'user', uuid: 'q-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        { type: 'system', uuid: 'info1', subtype: 'informational', content: 'note one', isMeta: false, timestamp: ts(1) },
+        { type: 'system', uuid: 'mr', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(2), memory_paths: ['M.md'] },
+        { type: 'system', uuid: 'cb', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(3), compactMetadata: { trigger: 'manual', preTokens: 1 } },
+        { type: 'system', uuid: 'info2', subtype: 'informational', content: 'note two', isMeta: false, timestamp: ts(4) },
+      ]
+
+      it('widens the page, and every cursor carries an offset further down the file', async () => {
+        await createSessionFile('test-agent', 'page-session', run)
+        const store = createLocalSessionStore('test-agent')
+
+        const steps: Array<{ asked: string; ids: string[]; next: string | null }> = []
+        let cursor = (await getSessionMessagesPage(store, 'page-session', { limit: 1 })).nextCursor
+        for (let i = 0; i < 10 && cursor; i++) {
+          const page = await getSessionMessagesPage(store, 'page-session', { limit: 1, cursor })
+          steps.push({ asked: cursor, ids: page.messages.map((m) => m.id), next: page.nextCursor })
+          cursor = page.nextCursor
+        }
+
+        expect(cursor).toBeNull()
+        expect(steps.find((step) => cursorId(step.asked) === 'info1')!.ids).toEqual(['q-0', 'mr', 'cb'])
+        for (const { asked, next } of steps) {
+          const askedOffset = parsePageCursor(asked).offset
+          expect(askedOffset).toBeDefined()
+          if (next !== null) expect(parsePageCursor(next).offset).toBeLessThan(askedOffset!)
+        }
+      })
+
+      it('pages through the run deeper than the bare-id scan reaches', async () => {
+        // 60,000 lines after the run: past MAX_TAIL_LINES (50,000) from the
+        // end, where a bare-id cursor is not found and paging would end.
+        await createSessionFile('test-agent', 'page-session', [...run, ...makeThread(30_000)])
+        const store = createLocalSessionStore('test-agent')
+        const info1Offset = Buffer.byteLength(JSON.stringify(run[0])) + 1
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        const page = await getSessionMessagesPage(store, 'page-session', { limit: 1, cursor: `info1:${info1Offset}` })
+        expect(page.messages.map((m) => m.id)).toEqual(['q-0', 'mr', 'cb'])
+        expect(page.nextCursor).toBeNull()
+        expect(warn).not.toHaveBeenCalled()
+      })
     })
 
     it('attaches an oversized tool result that starts inside the grace region', async () => {
@@ -1653,13 +1764,11 @@ describe('session-service', () => {
       expect(older.nextCursor).toBeNull()
     })
 
-    it('replayed duplicate anchors do not reopen a collapsed boundary span', async () => {
-      // Byte-identical replayed rows share their original's uuid, and the
-      // transform keys boundary collapse BY uuid — so boundaries separated
-      // only by duplicates of one anchor all collapse to the newest. If each
-      // duplicate reset the span, the collapsed boundaries would satisfy the
-      // page target and the cursor page below the survivor would come out
-      // empty, hiding the real older messages.
+    it('a replayed row ends a boundary span like the row itself', async () => {
+      // Boundaries collapse to the newest within one system run, and a run
+      // ends at a message row, replayed or not: the transform keeps the runs
+      // on either side of a replayed row apart. So each of these boundaries
+      // shows, and a walk serves each.
       const ts = (s: number) => new Date(Date.UTC(2026, 0, 15, 0, 0, s)).toISOString()
       const boundary = (uuid: string, s: number) => ({
         type: 'system', uuid, subtype: 'compact_boundary', content: '', isMeta: false,
@@ -1676,7 +1785,7 @@ describe('session-service', () => {
       ])
 
       const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
-      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'X'])
+      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c1', 'X', 'c2', 'c3', 'c4'])
 
       const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 2 })
       const collected = [...first.messages.map((m) => m.id)]
@@ -1690,7 +1799,9 @@ describe('session-service', () => {
         cursor = page.nextCursor
       }
       expect(cursor).toBeNull()
-      expect(collected).toEqual(['U', 'A', 'c4', 'X'])
+      // A window that holds a copy of X without its original shows X again;
+      // a client drops the repeat.
+      expect([...new Set(collected)].sort()).toEqual(['A', 'U', 'X', 'c1', 'c2', 'c3', 'c4'])
     })
 
     it('attaches a tool result recorded past the cursor line', async () => {
@@ -2220,8 +2331,13 @@ describe('session-service', () => {
       expect(metadata?.name).toBe('New Name')
       expect(metadata?.createdAt).toBeUndefined()
 
-      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
-      expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
+      // A rename records no createdAt, so the session keeps the date the list
+      // derives from the transcript.
+      const store = createLocalSessionStore('test-agent')
+      const session = await getSession(store, 'test-session')
+      const [listed] = await listSessions(store)
+      expect(session?.name).toBe('New Name')
+      expect(session?.createdAt).toEqual(listed.createdAt)
     })
   })
 
@@ -4002,7 +4118,7 @@ describe('session-service', () => {
 
       const sessions = await listSessionsByIds(createLocalSessionStore('test-agent'), ['registered-only'])
       expect(sessions).toHaveLength(1)
-      expect(sessions[0]).toMatchObject({ id: 'registered-only', name: 'Brand new', messageCount: 0 })
+      expect(sessions[0]).toMatchObject({ id: 'registered-only', name: 'Brand new' })
       expect(sessions[0].lastActivityAt).toEqual(new Date('2026-01-05T00:00:00Z'))
     })
 

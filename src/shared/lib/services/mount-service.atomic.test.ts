@@ -28,18 +28,20 @@ describe('atomic volume writes', () => {
     expect(await handle.db.select().from(agentVolumes).all()).toEqual([])
   })
   it('keeps concurrent additions and allocates distinct mount names', async () => {
-    await Promise.all(Array.from({ length: 5 }, () => addMount('agent', 'local', { path: folder }, viewer, { name: 'notes' })))
+    const folders = Array.from({ length: 5 }, (_, i) => path.join(folder, `notes-${i}`))
+    for (const source of folders) fs.mkdirSync(source)
+    await Promise.all(folders.map(source => addMount('agent', 'local', { path: source }, viewer, { name: 'notes' })))
     expect((await getMounts('agent')).map(m => m.name).sort()).toEqual(['notes', 'notes-2', 'notes-3', 'notes-4', 'notes-5'])
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(5)
   })
   it('makes concurrent attachment of one saved source idempotent', async () => {
-    const id = await createVolumeDefinition({ type: 'local', config: { path: folder } }, viewer)
+    const { id } = await createVolumeDefinition({ type: 'local', config: { path: folder } }, viewer)
     const mounts = await Promise.all(Array.from({ length: 5 }, () => attachMount('agent', id, viewer)))
     expect(new Set(mounts.map(m => m.id)).size).toBe(1)
     expect(await getMounts('agent')).toHaveLength(1)
   })
   it('never deletes a source that won a race to attach', async () => {
-    const id = await createVolumeDefinition({ type: 'local', config: { path: folder } }, viewer)
+    const { id } = await createVolumeDefinition({ type: 'local', config: { path: folder } }, viewer)
     const [attachment, deletion] = await Promise.allSettled([attachMount('agent', id, viewer), deleteVolumeDefinition(id, viewer)])
     if (attachment.status === 'fulfilled') {
       expect(deletion.status).toBe('rejected')
@@ -53,6 +55,6 @@ describe('atomic volume writes', () => {
   it('allows renaming an attached public source', async () => {
     const mount = await addMount('agent', 'local', { path: folder }, viewer)
     await updateVolumeDefinition(mount.volumeId, { name: 'new-name', visibility: 'public' }, viewer)
-    expect(await getMounts('agent')).toEqual([mount])
+    expect(await getMounts('agent')).toEqual([{ ...mount, volumeName: 'new-name' }])
   })
 })

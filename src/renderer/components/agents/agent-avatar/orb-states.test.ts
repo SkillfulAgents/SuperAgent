@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { blendFrames, doneFrame, idleFrame, needsInputFrame, restFrame, sleepingFrame } from './orb-states'
+import { SLEEP_PACE, blendFrames, doneFrame, idleFrame, needsInputFrame, restFrame, sleepingFrame } from './orb-states'
 
 describe('orb states', () => {
   it('idle glances somewhere new every 2.2s, from the agent’s own direction, and blinks', () => {
@@ -10,15 +10,12 @@ describe('orb states', () => {
     expect(idleFrame(3.1, -90).blink).toBeCloseTo(0.1)
   })
 
-  it('sleeps upright with its face shut to a slit, centred and low, light breathing over 4s', () => {
-    const inBreath = sleepingFrame(1)
-    const outBreath = sleepingFrame(3)
-    expect(inBreath.phi).toBe(90) // straight down
-    expect(inBreath.distance).toBe(0.7)
-    expect(inBreath.blink).toBe(0.25)
-    expect(inBreath.saturation).toBe(0.85)
-    expect(inBreath.glowOpacity).toBeCloseTo(0.85)
-    expect(outBreath.glowOpacity).toBeCloseTo(0.25)
+  it('sleeps as a slower idle: the same glances and blinks, further apart', () => {
+    for (const t of [0, 1.8, 3.1, 7.4]) expect(sleepingFrame(t * SLEEP_PACE, -90)).toEqual(idleFrame(t, -90))
+    // Idle has blinked by 3.1s; asleep, that blink is still to come.
+    expect(idleFrame(3.1, -90).blink).toBeCloseTo(0.1)
+    expect(sleepingFrame(3.1, -90).blink).toBe(1)
+    expect(sleepingFrame(3.1 * SLEEP_PACE, -90).blink).toBeCloseTo(0.1)
   })
 
   it('done nods once with a swell of light, then rests face-up and a touch brighter', () => {

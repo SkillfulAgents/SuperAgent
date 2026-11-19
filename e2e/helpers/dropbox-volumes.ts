@@ -22,7 +22,7 @@ export async function mockDropboxVolumes(page: Page, agentSlug?: string) {
     created.push(body)
     const source: VolumeDefinitionSummary = {
       id: `dropbox-volume-${definitions.length + 1}`, name: body.name ?? 'Dropbox', type: 'dropbox', hostPath: null,
-      sourceLabel: `Dropbox · ${body.config.path || '/'}`, userId: null, canManage: true, health: 'ok', attachmentCount: 0,
+      sourceLabel: `Dropbox · ${body.config.path || '/'}`, visibility: 'public', owners: [{ userId: null, name: 'Workspace admins', role: 'owner' }], canManage: true, health: 'ok', attachmentCount: 0, globalAccess: null,
     }
     definitions.push(source)
     return source
@@ -36,7 +36,7 @@ export async function mockDropboxVolumes(page: Page, agentSlug?: string) {
     const body = route.request().postDataJSON()
     const source = body.volumeId ? definitions.find(volume => volume.id === body.volumeId)! : save(body)
     source.attachmentCount++
-    const mount = { ...source, id: `mount-${mounts.length + 1}`, volumeId: source.id }
+    const mount = { ...source, id: `mount-${mounts.length + 1}`, volumeId: source.id, volumeName: source.name, readOnly: false }
     mounts.push(mount)
     return route.fulfill({ status: 201, json: mount })
   })

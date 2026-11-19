@@ -6,4 +6,5 @@ module.exports = {
   'agent-actor-escape-hatch-tally': require('./eslint-rules/agent-actor-escape-hatch-tally'),
   'no-db-transaction': require('./eslint-rules/no-db-transaction'),
   'no-sync-drizzle-terminator': require('./eslint-rules/no-sync-drizzle-terminator'),
+  'no-floating-work': require('./eslint-rules/no-floating-work'),
 }

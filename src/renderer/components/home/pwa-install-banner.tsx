@@ -73,7 +73,7 @@ export function PwaInstallBanner() {
         tabIndex={-1}
       />
       <div className="pwa-banner__card relative flex items-center gap-3 p-3 shadow-sm">
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-control bg-primary/10 text-primary">
         <Download className="h-5 w-5" />
       </div>
 
@@ -119,7 +119,7 @@ export function PwaInstallBanner() {
         type="button"
         aria-label="Dismiss install banner"
         onClick={dismiss}
-        className="absolute right-2 top-2 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="absolute right-2 top-2 rounded-icon p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <X className="h-4 w-4" />
       </button>

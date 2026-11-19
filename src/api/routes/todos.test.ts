@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { Hono, type Context, type MiddlewareHandler } from 'hono'
+import { sql } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
 const state = vi.hoisted(() => ({
@@ -8,9 +9,14 @@ const state = vi.hoisted(() => ({
   agents: new Set<string>(),
   // user → agents they can read
   readable: new Map<string, Set<string>>(),
+  // user → agents they can use (role user and up)
+  usable: new Map<string, Set<string>>(),
+  // `agentSlug/sessionId` → session name
+  names: new Map<string, string>(),
   sessions: new Map<string, { isActive: boolean; isAwaitingInput: boolean }>(),
   requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
   wakes: [] as { agentSlug: string; resumeSessionId: string; nextExecutionAt: Date }[],
+  workspace: new Map<string, Map<string, { kind: 'file' | 'directory'; bytes?: Uint8Array }>>(),
 }))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
@@ -18,16 +24,20 @@ vi.mock('@shared/lib/auth/config', () => ({
   getCurrentUserId: (c: Context) => (c.get('user' as never) as { id: string }).id,
 }))
 vi.mock('../middleware/auth', () => ({
+  // Like the real one: the request runs as its user, which connection access reads.
   Authenticated: (): MiddlewareHandler => async (c, next) => {
     const id = c.req.header('Test-User')
     if (!id) return c.json({ error: 'Unauthorized' }, 401)
     c.set('user' as never, { id } as never)
-    return next()
+    const { runWithRequestUser } = await import('@shared/lib/platform-attribution/request-context')
+    return runWithRequestUser(id, () => next())
   },
   getReadableAgentIds: async (c: Context, ids: readonly string[]) => {
     const mine = state.readable.get((c.get('user' as never) as { id: string }).id) ?? new Set()
     return new Set(ids.filter((id) => mine.has(id)))
   },
+  canUseAgent: async (c: Context, slug: string) =>
+    state.usable.get((c.get('user' as never) as { id: string }).id)?.has(slug) ?? false,
 }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   isExperimentEnabled: async (userId: string, id: string) => id === 'todo-board' && state.experimentOn.has(userId),
@@ -38,15 +48,41 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingWakesByAgent: async (slug: string) => state.wakes.filter((w) => w.agentSlug === slug),
 }))
+function workspaceOf(slug: string) {
+  let bucket = state.workspace.get(slug)
+  if (!bucket) {
+    bucket = new Map()
+    state.workspace.set(slug, bucket)
+  }
+  return bucket
+}
+
+function workspacePath(raw: string) {
+  return raw.replace(/^\/workspace\//, '').replace(/^\/+/, '')
+}
+
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
     get: (slug: string) => ({
+      slug,
       sessions: {
         isKnown: async (id: string) => state.sessions.has(`${slug}/${id}`),
-        isActive: (id: string) => state.sessions.get(`${slug}/${id}`)?.isActive ?? false,
-        isAwaitingInput: (id: string) => state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
+        readMetadata: async () => Object.fromEntries([...state.names].flatMap(([key, name]) =>
+          key.startsWith(`${slug}/`) ? [[key.slice(slug.length + 1), { name }]] : [])),
+        rename: async (id: string, name: string) => { state.names.set(`${slug}/${id}`, name) },
+        live: async (id: string) => ({
+          isActive: state.sessions.get(`${slug}/${id}`)?.isActive ?? false,
+          isAwaitingInput: state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
+        }),
       },
       inputs: { snapshot: (id: string) => state.requests.get(`${slug}/${id}`) ?? [] },
+      files: {
+        stat: async (p: string) => {
+          const item = workspaceOf(slug).get(workspacePath(p))
+          if (!item) return null
+          return { kind: item.kind, size: item.bytes?.length ?? 0, mtimeMs: 0 }
+        },
+      },
     }),
   },
 }))
@@ -70,6 +106,12 @@ async function createDraft(body: Record<string, unknown> = { title: 'Write the r
   return res.json()
 }
 
+/** A connection: one everyone may pick when `owner` is null, else that person's own. */
+async function addConnection(id: string, owner: string | null = null) {
+  if (owner) await database.db.run(sql`INSERT OR IGNORE INTO user (id, name, email) VALUES (${owner}, ${owner}, ${`${owner}@example.com`})`)
+  await database.db.run(sql`INSERT INTO llm_connections (id, user_id, name, provider, config, created_at, updated_at) VALUES (${id}, ${owner}, ${id}, 'anthropic', '{}', 1, 1)`)
+}
+
 async function startDraft(agentSlug = 'agent-a', sessionId = 'session-1') {
   const draft = await createDraft({ title: 'Write the report', agentSlug })
   state.sessions.set(`${agentSlug}/${sessionId}`, { isActive: true, isAwaitingInput: false })
@@ -85,9 +127,13 @@ beforeEach(async () => {
   state.experimentOn = new Set(['alice', 'bob'])
   state.agents = new Set(['agent-a', 'agent-b'])
   state.readable = new Map([['alice', new Set(['agent-a', 'agent-b'])], ['bob', new Set(['agent-a'])]])
+  // Bob can see agent-a's sessions but not use the agent.
+  state.usable = new Map([['alice', new Set(['agent-a', 'agent-b'])]])
+  state.names = new Map()
   state.sessions = new Map()
   state.requests = new Map()
   state.wakes = []
+  state.workspace = new Map()
 })
 
 afterEach(async () => {
@@ -154,11 +200,41 @@ describe('drafts', () => {
   })
 
   it('keeps the model, effort and speed picked for a draft, and forgets them on null', async () => {
+    await addConnection('anthropic-main')
     const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a', model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
     expect(draft).toMatchObject({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
     const cleared = await (await call(`/${draft.id}`, 'PATCH', { model: null, llmProviderId: null, effort: null, speed: null })).json()
     expect(cleared).toMatchObject({ model: null, llmProviderId: null, effort: null, speed: null })
     expect((await call(`/${draft.id}`, 'PATCH', { effort: 'extreme' })).status).toBe(400)
+  })
+
+  it('takes only a connection the person may pick, as every model picker does', async () => {
+    await addConnection('shared')
+    await addConnection('bobs-own', 'bob')
+    const refused = await call('', 'POST', { title: 'x', model: 'opus', llmProviderId: 'no-such-connection' })
+    expect(refused.status).toBe(404)
+    expect(await refused.json()).toMatchObject({ code: 'llm_provider_not_found' })
+    expect((await call('', 'POST', { title: 'x', model: 'opus', llmProviderId: 'bobs-own' })).status).toBe(404)
+    expect(await (await call('')).json()).toEqual({ todos: [] })
+
+    const draft = await createDraft({ title: 'x', model: 'opus', llmProviderId: 'shared' })
+    expect((await call(`/${draft.id}`, 'PATCH', { llmProviderId: 'bobs-own' })).status).toBe(404)
+    expect((await call(`/${draft.id}`, 'PATCH', { llmProviderId: 'no-such-connection' })).status).toBe(404)
+    // A refused pick changes nothing, and a save that sends the draft's own pick back still goes through.
+    const saved = await call(`/${draft.id}`, 'PATCH', { title: 'y', model: 'opus', llmProviderId: 'shared' })
+    expect(saved.status).toBe(200)
+    expect(await saved.json()).toMatchObject({ title: 'y', llmProviderId: 'shared' })
+
+    // Bob may pick his own, and nobody else's draft is affected by it.
+    expect(await createDraft({ title: 'x', model: 'opus', llmProviderId: 'bobs-own' }, 'bob')).toMatchObject({ llmProviderId: 'bobs-own' })
+  })
+
+  it('drops a draft\'s connection when the connection is deleted, keeping the rest of the pick', async () => {
+    await addConnection('shared')
+    const draft = await createDraft({ title: 'x', model: 'opus', llmProviderId: 'shared', effort: 'high' })
+    await database.db.run(sql`DELETE FROM llm_connections WHERE id = 'shared'`)
+    const { todos } = await (await call('')).json()
+    expect(todos).toEqual([expect.objectContaining({ id: draft.id, model: 'opus', llmProviderId: null, effort: 'high' })])
   })
 
   it('cannot start a draft for a new agent until the agent is made and assigned', async () => {
@@ -233,14 +309,41 @@ describe('starting', () => {
 })
 
 describe('renaming started work', () => {
-  it('renames an item in any column after it started, and nothing else changes', async () => {
+  it('renames the session in any column after it started, and nothing else changes', async () => {
     const todo = await startDraft()
     const res = await call(`/${todo.id}/title`, 'POST', { title: 'Weekly sales summary' })
     expect(res.status).toBe(200)
     const renamed = await res.json()
     expect(renamed).toMatchObject({ title: 'Weekly sales summary', description: todo.description, status: 'active', position: todo.position })
+    expect(state.names.get('agent-a/session-1')).toBe('Weekly sales summary')
     await call(`/${todo.id}/status`, 'POST', { status: 'done' })
     expect((await call(`/${todo.id}/title`, 'POST', { title: 'Sales summary, done' })).status).toBe(200)
+  })
+
+  it('shows the session\'s current name once started', async () => {
+    await startDraft()
+    state.names.set('agent-a/session-1', 'Renamed from the sidebar')
+    const { todos } = await (await call('')).json()
+    expect(todos[0].title).toBe('Renamed from the sidebar')
+  })
+
+  it('refuses a rename from someone who can see the agent but not use it', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const todo = await (await call('/sessions', 'POST', { title: 'Report', agentSlug: 'agent-a', sessionId: 'session-1' }, 'bob')).json()
+    expect((await call(`/${todo.id}/title`, 'POST', { title: 'Mine now' }, 'bob')).status).toBe(403)
+    expect(state.names.has('agent-a/session-1')).toBe(false)
+  })
+
+  it('renames its own title once the session is gone, even with its name left in metadata', async () => {
+    const todo = await startDraft()
+    await call(`/${todo.id}/status`, 'POST', { status: 'done' })
+    state.names.set('agent-a/session-1', 'Old session name')
+    state.sessions.delete('agent-a/session-1')
+    const res = await call(`/${todo.id}/title`, 'POST', { title: 'Archived report' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).title).toBe('Archived report')
+    expect((await (await call('')).json()).todos[0].title).toBe('Archived report')
+    expect(state.names.get('agent-a/session-1')).toBe('Old session name')
   })
 
   it('leaves drafts to their dialog', async () => {
@@ -348,9 +451,10 @@ describe('board columns', () => {
 
   it('stop reading the session of an agent the person lost access to', async () => {
     const todo = await startDraft()
+    state.names.set('agent-a/session-1', 'Renamed from the sidebar')
     state.readable.get('alice')!.delete('agent-a')
     const listed = (await (await call('')).json()).todos[0]
-    expect(listed).toMatchObject({ id: todo.id, status: 'active', column: 'has_updates' })
+    expect(listed).toMatchObject({ id: todo.id, status: 'active', column: 'has_updates', title: 'Write the report' })
   })
 })
 
@@ -400,5 +504,73 @@ describe('ordering', () => {
     const draft = await createDraft()
     expect((await call(`/${draft.id}/position`, 'POST', { position: 'top' })).status).toBe(400)
     expect((await call(`/${draft.id}/position`, 'POST', { position: 1 }, 'bob')).status).toBe(404)
+  })
+})
+
+
+describe('attachments', () => {
+  const rel = 'uploads/note.txt'
+  const file = { id: '11111111-1111-4111-8111-111111111111', kind: 'file', name: 'note.txt', size: 3, mimeType: 'text/plain', path: `/workspace/${rel}` }
+  const mount = { id: '22222222-2222-4222-8222-222222222222', kind: 'mount', name: 'notes', size: 0, mimeType: 'inode/mount', hostPath: '/Users/me/notes' }
+  function seed(slug = 'agent-a') {
+    workspaceOf(slug).set(rel, { kind: 'file', bytes: new Uint8Array([1, 2, 3]) })
+  }
+  function attach(id: string, list: unknown[], user = 'alice') {
+    return call(`/${id}`, 'PATCH', { attachments: list }, user)
+  }
+
+  it('saves files that are uploads in the agent workspace, and a removal leaves the file there, as chat does', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    const res = await attach(draft.id, [file, mount])
+    expect(res.status).toBe(200)
+    expect((await res.json()).attachments).toEqual([file, mount])
+    const removed = await attach(draft.id, [])
+    expect((await removed.json()).attachments).toEqual([])
+    expect(workspaceOf('agent-a').has(rel)).toBe(true)
+  })
+
+  it('refuses a path outside the upload folder, a file that is not there, and a draft with no agent', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    expect((await attach(draft.id, [{ ...file, path: '/workspace/secrets/note.txt' }])).status).toBe(400)
+    expect((await attach(draft.id, [file])).status).toBe(400)
+    const unassigned = await createDraft({ title: 'Write the report' })
+    expect((await attach(unassigned.id, [mount])).status).toBe(400)
+  })
+
+  it('keeps saving a list whose stored file has since gone from the workspace', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await attach(draft.id, [file])).status).toBe(200)
+    workspaceOf('agent-a').delete(rel)
+    expect((await attach(draft.id, [file, mount])).status).toBe(200)
+    expect((await call(`/${draft.id}`, 'PATCH', { title: 'Still editable' })).status).toBe(200)
+    // A stored id with a new path is a new attachment, and is checked.
+    expect((await attach(draft.id, [{ ...file, path: '/workspace/secrets/note.txt' }, mount])).status).toBe(400)
+  })
+
+  it('does not attach to someone else\'s draft', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await attach(draft.id, [file], 'bob')).status).toBe(404)
+  })
+
+  it('refuses to change the agent while anything is attached', async () => {
+    const draft = await createDraft({ title: 'Read the notes', agentSlug: 'agent-a' })
+    expect((await attach(draft.id, [mount])).status).toBe(200)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })).status).toBe(409)
+    expect((await call(`/${draft.id}`, 'PATCH', { newAgent: true })).status).toBe(409)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: null })).status).toBe(409)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-a', title: 'Renamed' })).status).toBe(200)
+  })
+
+  it('refuses to change what a started item has attached', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await attach(draft.id, [file])).status).toBe(200)
+    state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: false })
+    const { claim } = await (await call(`/${draft.id}/claim`, 'POST', {})).json()
+    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1', claim })).status).toBe(200)
+    expect((await attach(draft.id, [])).status).toBe(409)
   })
 })

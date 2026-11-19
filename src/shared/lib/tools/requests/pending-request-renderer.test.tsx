@@ -8,6 +8,7 @@ import { RemoteMcpRequestItem } from '../request-remote-mcp/request'
 import { QuestionRequestItem } from '../ask-user-question/request'
 import { FileRequestItem } from '../request-file/request'
 import { BrowserInputRequestItem } from '../request-browser-input/request'
+import { LoginRequestItem } from '../request-login/request'
 import { ScriptRunRequestItem } from '../request-script-run/request'
 import { ComputerUseRequestItem } from '../computer-use/request'
 import { CapabilityReviewRequestItem } from '../capability-review/request'
@@ -16,6 +17,7 @@ import { ProxyReviewRequestItem } from '../proxy-review/request'
 import { XAgentReviewRequestItem } from '../x-agent-review/request'
 import { AccountReauthRequestItem } from '../account-reauth/request'
 import { McpReauthRequestItem } from '../mcp-reauth/request'
+import { IntegrationSetupRequestItem } from '../request-integration-setup/request'
 
 const ctx: RenderContext = {
   sessionId: 'session-xyz',
@@ -123,6 +125,23 @@ const cases: Array<{
     expectedProps: { toolUseId: 'tu6', message: 'fill form', requirements: ['name', 'email'] },
   },
   {
+    name: 'login',
+    descriptor: {
+      kind: 'login',
+      key: 'k13',
+      toolUseId: 'tu13',
+      message: 'Sign in to GitHub',
+      fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }],
+      onComplete: noop,
+    },
+    expectedComponent: LoginRequestItem,
+    expectedProps: {
+      toolUseId: 'tu13',
+      message: 'Sign in to GitHub',
+      fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }],
+    },
+  },
+  {
     name: 'script_run',
     descriptor: {
       kind: 'script_run',
@@ -218,6 +237,20 @@ const cases: Array<{
       mcpName: 'Cal.com',
       authType: 'oauth',
     },
+  },
+  {
+    name: 'integration_setup',
+    descriptor: {
+      kind: 'integration_setup',
+      key: 'k13',
+      toolUseId: 'tu-setup',
+      provider: 'linear',
+      reason: 'Triage the support queue',
+      prefill: { name: 'Support bot' },
+      onComplete: noop,
+    },
+    expectedComponent: IntegrationSetupRequestItem,
+    expectedProps: { toolUseId: 'tu-setup', provider: 'linear', reason: 'Triage the support queue', prefill: { name: 'Support bot' } },
   },
 ]
 

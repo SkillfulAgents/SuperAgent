@@ -1,24 +1,19 @@
-import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb } from './types'
-// To switch providers, change this import to a different provider module:
-import { createServerProvider } from './sentry-provider'
+import type { ErrorReportingProvider, ErrorContext, ErrorReportingUser, Breadcrumb } from './types'
+import { background } from '../background'
 
 export type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 
 let provider: ErrorReportingProvider | null = null
+/** Whether {@link attachErrorReportingIdentity} has already given the provider the tenant id and settings context. */
+let identityAttached = false
 
 /**
- * Initialize error reporting for the server/main process.
- *
- * Call once at startup. Subsequent calls are no-ops (safe for multi-init paths
- * like Electron main -> startup.ts).
+ * Sets the process's error reporter. Each entry point creates the one its runtime can run
+ * (Electron and the web server: `createServerProvider`) and passes it here, once, at startup;
+ * null (a reporter that could not start) leaves reporting off. Later calls are no-ops.
  */
-export function initErrorReporting(options: ErrorReportingInitOptions): void {
-  if (provider) return
-  try {
-    provider = createServerProvider(options)
-  } catch (err) {
-    console.warn('[ErrorReporting] Failed to initialize:', err)
-  }
+export function initErrorReporting(reporter: ErrorReportingProvider | null): void {
+  provider ??= reporter
 }
 
 export function getErrorReporter(): ErrorReportingProvider | null {
@@ -41,6 +36,42 @@ export function captureMessage(message: string, context?: ErrorContext): string 
 
 export function setErrorReportingUser(user: ErrorReportingUser | null): void {
   try { provider?.setUser(user) } catch { /* never crash */ }
+}
+
+/**
+ * Attach what reports need from the database: the tenant id (the user of
+ * events with no signed-in user) and the settings part of the environment
+ * fingerprint. Error reporting starts before the database opens so a failed
+ * boot can still be reported; the entry point calls this once app records are
+ * installed. Never throws.
+ *
+ * What the process knows itself is attached before this returns. The disk
+ * space and the container runner's version need the file system and another
+ * program, so they follow in the background and startup does not wait for
+ * them. Once it has succeeded, a later call does nothing: `initializeServices`
+ * calls it again for a reporter whose first attempt failed.
+ */
+export async function attachErrorReportingIdentity(): Promise<void> {
+  const reporter = provider
+  if (!reporter || identityAttached) return
+  try {
+    const [{ getTenantId }, { getSettings }, { collectSettingsEnvironmentData, probeSettingsEnvironmentData }] = await Promise.all([
+      import('../analytics/tenant-id'),
+      import('../config/settings'),
+      import('./environment'),
+    ])
+    reporter.setTenantId(await getTenantId())
+    const settings = await getSettings()
+    const known = collectSettingsEnvironmentData(settings)
+    reporter.setContext('environment_settings', known)
+    identityAttached = true
+    background(async () => {
+      const probed = await probeSettingsEnvironmentData(settings)
+      reporter.setContext('environment_settings', { ...known, ...probed })
+    }, { name: 'error-reporting.settings-environment-probe' })
+  } catch (err) {
+    console.warn('[ErrorReporting] Could not attach the tenant identity:', err)
+  }
 }
 
 export function addErrorBreadcrumb(breadcrumb: Breadcrumb): void {

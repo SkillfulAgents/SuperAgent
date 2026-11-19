@@ -5,13 +5,18 @@ import type { IntegrationMessageProps } from './messages/types'
 export interface IntegrationSetupProps {
   agentSlug: string
   onClose: () => void
+  /** Starting values an agent suggested when it handed the setup over; a form reads the ones it knows. */
+  initial?: Record<string, string>
+  /** Replaces opening the new integration's page, for setup started from a session. */
+  onIntegrationCreated?: (integrationId: string) => void
 }
 
-/** Renderer-only provider definition; independent of host implementations. */
+/**
+ * Renderer-only provider definition; independent of host implementations.
+ * Whether a provider can be set up on this deployment is the server's answer
+ * (`/api/agent-integrations/providers`), not a flag here.
+ */
 export interface IntegrationSetupProvider {
-  platformOnly?: boolean
-  /** Receives events only through the host's webhook relay, so it's hidden while the relay is unavailable. */
-  requiresRelay?: boolean
   slug: string
   label: string
   managementAccess?: 'user' | 'owner'

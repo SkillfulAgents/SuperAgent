@@ -5,10 +5,12 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
-import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
+import type { HealthCheckResult } from '@shared/lib/container/types'
+import type { RuntimeOptions, StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
-import type { SessionUsage } from '@shared/lib/types/agent'
+import type { SessionOrigin, SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { UnansweredReason } from '@shared/lib/tools/types'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import type { AgentAvatar } from './agent-avatar'
 
@@ -27,7 +29,12 @@ export interface ApiAgent {
   /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
   displaySlug: string
   name: string
-  avatar: AgentAvatar
+  /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
+  teamBrain?: { volumeId: string }
+  /** The agent of a Team Brain set-up still in progress: no list shows it. */
+  teamBrainSettingUp?: true
+  /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
+  avatar?: AgentAvatar | null
   description?: string
   instructions?: string // Only included in single-agent response
   createdAt: Date
@@ -41,6 +48,19 @@ export interface ApiAgent {
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** One of its sessions has an unread notification that tags the viewer. */
+  hasUnreadMention?: boolean
+  /**
+   * The start of the newest unread notification behind the flag that wins
+   * above (waiting, then mention, then any unread), on one line. Absent when
+   * none of those flags has a notification to show, e.g. a session marked
+   * unread by hand or a pending proxy review.
+   */
+  notificationPreview?: string
+  /** Identity of the notification shown, for optimistic read updates. */
+  notificationPreviewSource?: { id: string; sessionId: string }
+  /** Personal reminders survive marking notifications read. */
+  markedUnreadSessionIds?: string[]
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
@@ -114,6 +134,8 @@ export interface ApiDiscoverableAgent {
   category?: string
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon?: string
+  /** The template's orb, when its skillset names one. */
+  avatar?: AgentAvatar
   tags?: string[]
   /** Services the template connects to; `slug` matches the service-icon set. */
   worksWith?: { type: string; slug: string }[]
@@ -127,16 +149,19 @@ export interface ApiDiscoverableAgent {
 /**
  * Session response from API
  */
-export interface ApiSession {
+export interface ApiSession extends RuntimeOptions {
   id: string
   agentSlug: string
   name: string
   createdAt: Date
   lastActivityAt: Date
-  messageCount: number
+  /** Original source; older servers may omit it. Promotion does not change it. */
+  origin?: SessionOrigin
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** An unread notification that tags the viewer: drawn as an @, not a dot. */
+  hasUnreadMention?: boolean
   lastUsage?: SessionUsage
   // Present when session was created by a scheduled task or webhook trigger
   scheduledTaskId?: string
@@ -153,13 +178,8 @@ export interface ApiSession {
   // parent's metadata on the single-session GET; undefined when the parent is gone.
   forkedFromSessionId?: string
   forkedFromSessionName?: string
-  // Last effort level used on this session (seeds the composer selector)
-  effort?: EffortLevel
-  // Last processing speed used on this session (seeds the composer selector)
-  speed?: SpeedLevel
-  // Last model used on this session (seeds the composer selector)
-  model?: string
-  llmProviderId?: string | null
+  // The inherited RuntimeOptions are the last ones used on this session; they
+  // seed the composer selector.
   // Present when the session has a pending scheduled wake (long sleep):
   // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
   // pendingWakeSummary is the agent's one line for the user (absent on wakes
@@ -168,6 +188,8 @@ export interface ApiSession {
   pendingWakeTaskId?: string
   pendingWakeNote?: string
   pendingWakeSummary?: string
+  /** Auth mode, list only: the people who wrote in it, in the order they first did. */
+  participants?: ApiMessageSender[]
 }
 
 // ============================================================================
@@ -190,8 +212,12 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
-  /** The runtime's task id for a Bash call run in the background. */
+  /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
   backgroundTaskId?: string
+  /** A TaskCreate call's description as the CLI saved it (CLI 2.1.317+). */
+  taskDescription?: string
+  /** An AskUserQuestion call's questions that ended without an answer, by question text. */
+  unansweredQuestions?: Record<string, UnansweredReason>
 }
 
 /**
@@ -218,6 +244,8 @@ export interface ApiMessage {
   toolCalls: ApiToolCall[]
   createdAt: Date
   sender?: ApiMessageSender
+  /** Set instead of `sender` when another agent sent the message. */
+  agentSender?: Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
   /**
    * Present on a message an integration delivered (Slack, Linear, …). Written
    * by the host beside the transcript, never parsed from the message text, so
@@ -319,9 +347,27 @@ export interface ApiInformational {
 }
 
 /**
+ * One batch of a Monitor watch's output, shown where the runtime delivered it
+ * (see monitor-notifications.ts)
+ */
+export interface ApiMonitorEvent {
+  id: string
+  type: 'monitor_event'
+  /** The watch's task id: the Monitor call's backgroundTaskId. */
+  taskId: string
+  description: string | null
+  events: string[]
+  /** Set on the batch that ended the watch (completed, failed, …). */
+  status: string | null
+  endReason: string | null
+  createdAt: Date
+  forked?: boolean
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational | ApiMonitorEvent
 
 // ============================================================================
 // Secret API Types
@@ -422,7 +468,7 @@ export interface ApiSkillsetConfig {
 /**
  * Scheduled task response from API
  */
-export interface ApiScheduledTask {
+export interface ApiScheduledTask extends StoredRuntimeOptions {
   id: string
   agentSlug: string
   scheduleType: 'at' | 'cron'
@@ -437,10 +483,6 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
-  llmProviderId?: string | null
-  model: string | null
-  effort: string | null
-  speed: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null
@@ -455,12 +497,16 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
   sessionId: string
   agentSlug: string
   title: string
   body: string
   isRead: boolean
+  /** Set on a mention: it is this user's alone. */
+  recipientUserId?: string | null
+  /** The message a mention points at. */
+  messageUuid?: string | null
   createdAt: Date
   readAt: Date | null
 }

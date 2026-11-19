@@ -29,11 +29,9 @@ vi.mock('@shared/lib/config/settings', () => ({
   mutateSettings: (mutator: (s: Record<string, unknown>) => void) => mockMutateSettings(mutator),
 }))
 
-const mockBroadcastGlobal = vi.fn()
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
-  },
+const mockPublishGlobal = vi.fn()
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -90,6 +88,12 @@ vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
 }))
 
 import { platformNotificationsManager } from './platform-notifications-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(platformNotificationsManager))
+import { claimPlatformNotificationBroadcast } from './platform-notification-seen'
+import { backgroundSettled } from '@shared/lib/background'
+import { closeAppState, createLocalAppState, initializeAppState, LocalAppStateBackend } from '@shared/lib/app-state'
 
 // ============================================================================
 // Fixtures
@@ -114,18 +118,19 @@ function record(id: string, createdAt: string, overrides: Record<string, unknown
 }
 
 function osNotificationBroadcasts() {
-  return mockBroadcastGlobal.mock.calls.filter(
+  return mockPublishGlobal.mock.calls.filter(
     (call) => (call[0] as { type?: string }).type === 'os_notification',
   )
 }
 
 function changedBroadcasts() {
-  return mockBroadcastGlobal.mock.calls.filter(
+  return mockPublishGlobal.mock.calls.filter(
     (call) => (call[0] as { type?: string }).type === 'platform_notifications_changed',
   )
 }
 
-async function startWithDefaults(): Promise<EventCallback> {
+/** Starts the manager; the returned delivery resolves once the insert is handled. */
+async function startWithDefaults(): Promise<(record: unknown) => Promise<void>> {
   mockGetRealtimeConfig.mockResolvedValue(REALTIME_CONFIG)
   // Newest existing row — seeds the watermark on first start.
   mockListNotifications.mockResolvedValue({
@@ -136,7 +141,11 @@ async function startWithDefaults(): Promise<EventCallback> {
   await platformNotificationsManager.start()
   const instance = realtimeInstances[realtimeInstances.length - 1]
   expect(instance).toBeDefined()
-  return instance.onEvent!
+  const onEvent = instance.onEvent!
+  return async (row) => {
+    onEvent(row)
+    await backgroundSettled()
+  }
 }
 
 const JWT_REFRESH_INTERVAL_MS = 50 * 60 * 1000
@@ -169,6 +178,14 @@ describe('PlatformNotificationsManager', () => {
   it('does not start without a platform connection', async () => {
     mockToken = null
     await platformNotificationsManager.start()
+    expect(platformNotificationsManager.isActive()).toBe(false)
+    expect(mockGetRealtimeConfig).not.toHaveBeenCalled()
+  })
+
+  it('stays stopped when stop() lands while start() is still reading the token', async () => {
+    const started = platformNotificationsManager.start()
+    platformNotificationsManager.stop()
+    await started
     expect(platformNotificationsManager.isActive()).toBe(false)
     expect(mockGetRealtimeConfig).not.toHaveBeenCalled()
   })
@@ -248,6 +265,7 @@ describe('PlatformNotificationsManager', () => {
       () => new Promise((resolve) => (resolveMint = resolve)),
     )
     const firstStart = platformNotificationsManager.start()
+    await vi.waitFor(() => expect(mockGetRealtimeConfig).toHaveBeenCalledTimes(1))
 
     // ...meanwhile the platform disconnects and reconnects (new identity).
     platformNotificationsManager.stop()
@@ -272,14 +290,16 @@ describe('PlatformNotificationsManager', () => {
   })
 
   it('does not re-notify a reconnect replay of the newest row after a restart', async () => {
-    // Restart clears the in-session id-set; only the persisted watermark
-    // stands between a replayed INSERT (created_at equal to the watermark)
-    // and a duplicate OS notification.
+    // A restarted process has fresh AppState memory, so no seen marker: only
+    // the persisted watermark stands between a replayed INSERT (created_at
+    // equal to the watermark) and a duplicate OS notification.
     const onEvent = await startWithDefaults()
     await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
     expect(osNotificationBroadcasts()).toHaveLength(1)
 
     platformNotificationsManager.stop()
+    await closeAppState()
+    await initializeAppState(createLocalAppState())
     const onEventAfterRestart = await startWithDefaults()
     await onEventAfterRestart(record('ntf_new', '2026-07-02T00:00:00Z'))
 
@@ -312,7 +332,7 @@ describe('PlatformNotificationsManager', () => {
     })
   })
 
-  it('dedups reconnect replays by id and backdated inserts by watermark', async () => {
+  it('dedups reconnect replays and backdated inserts', async () => {
     const onEvent = await startWithDefaults()
 
     await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
@@ -322,6 +342,54 @@ describe('PlatformNotificationsManager', () => {
     expect(osNotificationBroadcasts()).toHaveLength(1)
     // The inbox signal still fires for every INSERT (live page update).
     expect(changedBroadcasts()).toHaveLength(3)
+  })
+
+  it('notifies once when the same INSERT is delivered twice at once', async () => {
+    const onEvent = await startWithDefaults()
+    const row = record('ntf_new', '2026-07-02T00:00:00Z')
+
+    await Promise.all([onEvent(row), onEvent(row)])
+
+    expect(osNotificationBroadcasts()).toHaveLength(1)
+    expect(changedBroadcasts()).toHaveLength(2)
+  })
+
+  describe('with another process holding a realtime connection too', () => {
+    // Two clients of one backend are two processes of one tenant.
+    async function twoProcesses() {
+      await closeAppState()
+      const backend = new LocalAppStateBackend()
+      await initializeAppState(createLocalAppState({ backend }))
+      return createLocalAppState({ backend })
+    }
+
+    it('notifies a row once when both receive the same INSERT', async () => {
+      const otherProcess = await twoProcesses()
+      const onEvent = await startWithDefaults()
+      const row = record('ntf_new', '2026-07-02T00:00:00Z')
+
+      const [, otherClaimed] = await Promise.all([
+        onEvent(row),
+        claimPlatformNotificationBroadcast('sub_member_1', 'ntf_new', otherProcess),
+      ])
+
+      // Exactly one of the two broadcasts it.
+      expect(osNotificationBroadcasts().length + (otherClaimed ? 1 : 0)).toBe(1)
+      expect(changedBroadcasts()).toHaveLength(1)
+    })
+
+    it('stays silent for a row the other process already notified, and still signals the inbox', async () => {
+      const otherProcess = await twoProcesses()
+      expect(await claimPlatformNotificationBroadcast('sub_member_1', 'ntf_new', otherProcess)).toBe(true)
+      const onEvent = await startWithDefaults()
+
+      await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
+
+      expect(osNotificationBroadcasts()).toHaveLength(0)
+      expect(changedBroadcasts()).toHaveLength(1)
+      // This process's watermark still moved past the row.
+      expect((mockSettings.platformNotifications as { lastNotifiedAt?: string }).lastNotifiedAt).toBe('2026-07-02T00:00:00Z')
+    })
   })
 
   it('persists the advanced watermark', async () => {

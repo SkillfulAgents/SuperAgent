@@ -4,6 +4,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { TODO_ASK_LABELS, todoDisplayTitle } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
+import { AgentAvatar, type AvatarMotionState } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import type { TodoView } from '@renderer/hooks/use-todos'
 import type { TodoCardAction } from './todo-card-action'
 import { ShortcutTooltip } from './todo-shortcuts'
@@ -44,6 +45,16 @@ function AskPill({ todo }: { todo: TodoView }) {
   )
 }
 
+/** The card's avatar moves as the work does, in the states the sidebar uses for the agent as a whole. */
+function cardAvatarState(todo: TodoView): AvatarMotionState {
+  switch (todo.column) {
+    case 'working': return 'working'
+    case 'needs_input': return 'needs-input'
+    case 'has_updates': return todo.pendingWakeAt !== null ? 'sleeping' : 'done'
+    default: return 'idle'
+  }
+}
+
 /**
  * A board card: the title, then one metadata row — the agent first, then what
  * matters for the column. Clicking anywhere opens it: a draft opens its
@@ -74,7 +85,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
   return (
     <div
       className={cn(
-        'group/card relative w-full scroll-my-2 rounded-lg border border-border/30 bg-card text-left shadow-sm transition-[border-color,box-shadow] hover:border-border/60 hover:shadow-md',
+        'group/card relative w-full scroll-my-2 rounded-item border border-border/30 bg-card text-left shadow-sm transition-[border-color,box-shadow] hover:border-border/60 hover:shadow-md',
         selected && 'border-border/70 shadow-md ring-1 ring-ring/40',
       )}
       onMouseEnter={() => onHover?.(todo)}
@@ -91,7 +102,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
           onClick={() => onOpen(todo)}
           aria-label={`Open ${title}`}
           aria-haspopup={todo.column === 'drafts' ? 'dialog' : undefined}
-          className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="absolute inset-0 rounded-item focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
       )}
 
@@ -119,8 +130,15 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
           {title}
         </p>
 
-        <p className="flex h-5 min-w-0 items-center gap-1.5 overflow-hidden text-xs text-muted-foreground">
-          {todo.column === 'working' && (
+        {/* The row clips so long names truncate; it reaches 2px into the card's
+            padding on each side because the avatar's working dots spread
+            wider than the orb (~20px at 16px). */}
+        <p className="-mx-0.5 flex h-5 min-w-0 items-center gap-1.5 overflow-hidden px-0.5 text-xs text-muted-foreground">
+          {agent?.avatar ? (
+            <span className="shrink-0" data-testid={todo.column === 'working' ? 'todo-card-orb' : undefined}>
+              <AgentAvatar agent={agent} state={cardAvatarState(todo)} size={16} />
+            </span>
+          ) : todo.column === 'working' && (
             <span className="shrink-0" data-testid="todo-card-orb">
               <ActivityOrb state="working" size={14} />
             </span>

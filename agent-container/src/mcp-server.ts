@@ -6,10 +6,12 @@
  */
 
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
+import { createApiRuleTool, createMcpRuleTool, deleteProxyRuleTool, listProxyRulesTool } from './tools/rules/proxy-rules'
 import { webSearchTool } from './tools/web/web-search'
 import { webFetchTool } from './tools/web/web-fetch'
 import { requestSecretTool } from './tools/request-secret'
 import { requestConnectedAccountTool } from './tools/request-connected-account'
+import { requestIntegrationSetupTool } from './tools/request-integration-setup'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
 import { createRequestRemoteMcpTool, type RemoteMcpInjectionTarget } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
@@ -23,6 +25,7 @@ import {
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
 import { webhookRelayAvailable } from './webhook-relay-env'
+import { isComputerUseHost } from './host-desktop-env'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -37,9 +40,10 @@ import { deliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
+import { createRequestLoginTool } from './tools/request-login'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { createBrowserTools } from './tools/browser'
-import { computerUseTools } from './tools/computer-use'
+import { COMPUTER_USE_SERVER, computerUseTools } from './tools/computer-use'
 import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
@@ -48,17 +52,20 @@ import { createWidgetTool } from './tools/create-widget'
 import { refreshWidgetTool } from './tools/refresh-widget'
 import { listWidgetsTool } from './tools/list-widgets'
 import { listAgentsTool } from './tools/agents/list-agents'
+import { listAgentMembersTool } from './tools/agents/list-agent-members'
 import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
 import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
 import { downloadAgentFileTool } from './tools/agents/download-agent-file'
-import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
+import { listAvailableIntegrationProvidersTool } from './tools/chat/list-available-integration-providers'
 import { listAgentIntegrationsTool } from './tools/integrations/list-agent-integrations'
 import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
-import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
+import { addAgentIntegrationTool } from './tools/chat/add-agent-integration'
+import { authorizeAgentIntegrationTool } from './tools/chat/authorize-agent-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
+import { meetingTools } from './tools/meetings/meeting-tools'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -68,10 +75,14 @@ import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
  * one transport connection per server at a time. Reusing singletons across
  * sessions causes "Already connected to a transport" errors.
  */
-export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTarget | null = () => null) {
-  // Only expose script execution tool on supported host platforms (macOS/Windows)
-  const hostPlatform = process.env.HOST_PLATFORM
-  const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
+export function createUserInputMcpServer(
+  getProcess: () => RemoteMcpInjectionTarget | null = () => null,
+  // request_login prepares its fields through the browser, which checks the
+  // calling session owns it — read at call time, since the id changes on restart.
+  getSessionId: () => string | null = () => null,
+) {
+  // Scripts run on the host's desktop, so they come with computer use.
+  const includeScriptRun = isComputerUseHost()
 
   // Every webhook tool needs the host's webhook relay. Composio-catalog
   // triggers also need platform Composio; custom webhook endpoints don't (they
@@ -85,11 +96,13 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
     version: '1.0.0',
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
+      requestIntegrationSetupTool,
       createRequestRemoteMcpTool(getProcess), searchRemoteMcpServicesTool,
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      createRequestLoginTool(getSessionId),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints
@@ -116,11 +129,17 @@ export function createBrowserMcpServer(tools: ReturnType<typeof createBrowserToo
   })
 }
 
-export function createComputerUseMcpServer() {
+/**
+ * @param options.alwaysLoad - put the tools in the prompt from the first turn
+ *   instead of deferring them behind ToolSearch: for a session the user
+ *   started to use the computer, the first thing it reaches for.
+ */
+export function createComputerUseMcpServer(options: { alwaysLoad?: boolean } = {}) {
   return createSdkMcpServer({
-    name: 'computer-use',
+    name: COMPUTER_USE_SERVER,
     version: '1.0.0',
     tools: computerUseTools,
+    ...(options.alwaysLoad ? { alwaysLoad: true } : {}),
   })
 }
 
@@ -152,6 +171,7 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
     version: '1.0.0',
     tools: [
       listAgentsTool,
+      listAgentMembersTool,
       createAgentTool,
       makeInvokeAgentTool(getCallerSessionId),
       getSessionsTool,
@@ -172,13 +192,41 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
     name: 'chat',
     version: '1.0.0',
     tools: [
-      listAvailableChatProvidersTool,
+      listAvailableIntegrationProvidersTool,
       listAgentIntegrationsTool,
       listChatUsersTool,
       listChatChannelsTool,
-      addChatIntegrationTool,
+      addAgentIntegrationTool,
+      authorizeAgentIntegrationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
+  })
+}
+
+/**
+ * Meetings (server name 'meetings' → mcp__meetings__join_meeting and friends).
+ * The tools call the host's /api/x-agent/meetings routes, which set the agent's
+ * meeting integration up on first use. Registered only when the host reports
+ * the meeting family as available (`availableIntegrationFamilies` on the
+ * session), so a tool whose route would refuse is never listed.
+ */
+export function createMeetingsMcpServer() {
+  return createSdkMcpServer({
+    name: 'meetings',
+    version: '1.0.0',
+    tools: meetingTools,
+  })
+}
+
+/**
+ * Proxy rules: propose (with user approval), list and delete the rules that
+ * let specific API / MCP requests skip the user's review.
+ */
+export function createRulesMcpServer() {
+  return createSdkMcpServer({
+    name: 'rules',
+    version: '1.0.0',
+    tools: [createApiRuleTool, createMcpRuleTool, listProxyRulesTool, deleteProxyRuleTool],
   })
 }
 

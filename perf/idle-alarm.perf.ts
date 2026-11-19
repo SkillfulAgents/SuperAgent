@@ -29,9 +29,6 @@ describe('idle alarm — small profile', () => {
   beforeAll(async () => {
     perf = await bootPerfApp('small')
     ;({ containerHost: host, agentRegistry: registry } = await import('@shared/lib/agent-actor'))
-    // Settings are read from disk once and cached for the process; that read
-    // is the app's, not the alarm's, so pay it here.
-    ;(await import('@shared/lib/config/settings')).getSettings()
     for (const slug of perf.seeded.agentSlugs) await registry.get(slug).container.start()
   })
 
@@ -40,23 +37,23 @@ describe('idle alarm — small profile', () => {
   })
 
   it('decides for every running container without touching a file', async () => {
-    expect(registry.running()).toHaveLength(perf.profile.agents)
+    expect(host.getRunningAgentIds()).toHaveLength(perf.profile.agents)
 
     const { measurement } = await measure(fireAll)
 
     // Started "now": nobody is idle, everybody is still up and re-armed.
-    expect(registry.running()).toHaveLength(perf.profile.agents)
+    expect(host.getRunningAgentIds()).toHaveLength(perf.profile.agents)
     for (const slug of perf.seeded.agentSlugs) expect(host.runtime(slug).idleAlarm.isArmed()).toBe(true)
     expectWithinBudget('small: idle alarm (nothing idle)', measurement, { totalOps: 0, wallMs: 50 })
   })
 
   it('sleeps every container idle past the timeout without touching a file', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(BASE_TIME + AUTO_SLEEP_TIMEOUT_MS + 60_000)
-    expect(registry.running()).toHaveLength(perf.profile.agents)
+    expect(host.getRunningAgentIds()).toHaveLength(perf.profile.agents)
 
     const { measurement } = await measure(fireAll)
 
-    expect(registry.running()).toHaveLength(0)
+    expect(host.getRunningAgentIds()).toHaveLength(0)
     for (const slug of perf.seeded.agentSlugs) expect(host.runtime(slug).idleAlarm.isArmed()).toBe(false)
     expectWithinBudget('small: idle alarm (all idle, all stopped)', measurement, { totalOps: 0, wallMs: 100 })
   })

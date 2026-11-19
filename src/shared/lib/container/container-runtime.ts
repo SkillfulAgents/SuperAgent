@@ -16,6 +16,7 @@ import type {
   ContainerClient,
   ContainerConfig,
   ContainerInfo,
+  ContainerRunner,
   HealthCheckResult,
   StopOptions,
 } from './types'
@@ -25,21 +26,27 @@ import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
-import { getSettings } from '@shared/lib/config/settings'
-import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
+import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
-import { messagePersister } from './message-persister'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
+import { NO_LIVE_SESSIONS, type AgentSessionsAccess, type RuntimeSessions } from './agent-sessions-access'
+import type { RuntimeFatalKind } from './runtime-death'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { listVolumes } from '@shared/lib/services/mount-service'
+import { firstCopies, listVolumes, remounted } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
-import { isPlatformComposioActive } from '@shared/lib/composio/client'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { isPlatformComposioActiveFrom } from '@shared/lib/composio/client'
+import { getDefaultAccountProvider } from '@shared/lib/account-providers/provider-factory'
+import { getAllProviders } from '@shared/lib/account-providers/service-catalog'
+import { platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
+import { runsInAppSandbox, supportsComputerUse } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
 import { prepareVolumeStop } from './volume-stop'
@@ -66,11 +73,13 @@ interface CachedContainerStatus {
 /** What a runtime needs from the host it belongs to. */
 export interface RuntimeHost {
   /**
-   * The agents' workspaces, for what a start needs from them: the browser
-   * profile seeding and the display name. Null only before the agent
-   * registry attached it, which in the app is never.
+   * The agents' workspaces, for what a start needs from them: the display
+   * name. Null only before the agent registry attached it, which in the app
+   * is never.
    */
   readonly agentWorkspaces: AgentWorkspaceAccess | null
+  /** The agents' live sessions. Null only before the agent registry attached it. */
+  readonly agentSessions: AgentSessionsAccess | null
   /** Runs before a container is stopped (e.g. to close the host browser). */
   readonly onBeforeContainerStop: ((slug: string) => Promise<void>) | null
   /**
@@ -79,6 +88,11 @@ export interface RuntimeHost {
    * readiness so the VM restarts.
    */
   afterForceStop(slug: string): void
+}
+
+/** The auto-sleep timeout in `settings`, in ms; zero or less disables. */
+export function autoSleepTimeoutMsFrom(settings: Pick<AppSettings, 'app'>): number {
+  return (settings.app?.autoSleepTimeoutMinutes ?? 30) * 60_000
 }
 
 const healthVolumesSchema = z.object({ status: z.literal('ok'), volumes: z.array(z.string()) })
@@ -92,7 +106,7 @@ function showNotMounted(slug: string, notMounted: NotMountedVolume[]): void {
   if (notMounted.length > 0) {
     console.warn(`[ContainerRuntime] ${notMounted.length} volume(s) not mounted for ${slug}:`, notMounted.map((v) => `${v.name} (${v.reason})`))
   }
-  messagePersister.broadcastGlobal({ type: 'mount_health_warning', agentSlug: slug, notMounted })
+  globalFeed.publish({ type: 'mount_health_warning', agentSlug: slug, notMounted })
 }
 
 async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[], port: number | null): Promise<NotMountedVolume[]> {
@@ -105,6 +119,15 @@ async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[]
 export class ContainerRuntime {
   private volumesPresent: boolean | undefined
   private client: ContainerClient | null = null
+  /** The runner `client` was built for. */
+  private clientRunner: ContainerRunner | null = null
+  /**
+   * Orders getClient's runner reads: each takes the next number before it
+   * reads, and `clientDecidedBy` is the newest read that has landed. A read
+   * that started before it never replaces the client that read decided on.
+   */
+  private clientReads = 0
+  private clientDecidedBy = 0
   /** Cached container status - avoids repeated docker inspect calls */
   private cached: CachedContainerStatus | null = null
   /**
@@ -117,15 +140,19 @@ export class ContainerRuntime {
    * Puts the container to sleep once it has been idle for the auto-sleep
    * timeout. Armed from the marks above, cancelled when the container stops
    * or the runtime is dropped; the host re-arms it when the timeout changes.
+   * The timeout is read from the settings for every arm (marks made while a
+   * read is out share it) and at every fire.
    */
   readonly idleAlarm = new IdleAlarm({
-    timeoutMs: () => (getSettings().app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
+    timeoutMs: async () => autoSleepTimeoutMsFrom(await getSettings()),
     lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
-    sleep: () => this.sleepIdle(),
+    sleep: (timeoutMs) => this.sleepIdle(timeoutMs),
   })
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
+  /** The fatal result a deferred recovery is to report, until it does. */
+  private lastFatal: RuntimeFatalKind = null
   /** Being stopped — skip health checks, sync, and connection error recovery */
   private stopping = false
   /** In-flight ensureRunning promise — deduplicates concurrent start requests */
@@ -134,7 +161,7 @@ export class ContainerRuntime {
   private lifecycle = 0
   /**
    * Dropped by the host. The client this runtime handed out may still be held
-   * elsewhere (the persister's stream subscriptions, a stop in flight) and its
+   * elsewhere (the live sessions' stream subscriptions, a stop in flight) and its
    * callbacks land here; a disposed runtime answers none of them, so a
    * container dying after the eviction cannot start recovery through a runtime
    * the host no longer knows about.
@@ -142,9 +169,11 @@ export class ContainerRuntime {
   private disposed = false
   /**
    * Running on a container env that a setting change replaced. The host marks
-   * every running runtime when a platform token changes; a stop clears it.
+   * every running runtime when a platform token changes; a stop or the next start clears it.
    */
   private stale = false
+  /** The start that has read this agent's drives. A drive change after it needs a restart. */
+  private drivesReadIn: number | null = null
   /**
    * Whether webhooks could be received when this process built the
    * container's env (WEBHOOK_RELAY_AVAILABLE); null until it has.
@@ -156,29 +185,69 @@ export class ContainerRuntime {
     private readonly host: RuntimeHost,
   ) {}
 
-  /** Get or create the container client. */
-  getClient(): ContainerClient {
-    if (!this.client) {
-      const config: ContainerConfig = {
-        agentId: this.slug,
-        onConnectionError: () => {
-          if (this.disposed) return
-          if (this.stopping) return
-          if (this.starting) return
-          // No pre-snapshot here: the orchestrator snapshots synchronously, and
-          // a join during an in-flight recovery queues a re-run that catches
-          // sessions that became active in between.
-          this.handleUnexpectedDeath()
-        },
-        // MicroVM dead-generation replace (and similar) must restart through the
-        // runtime so starts share the in-flight promise and rebuild env from the DB.
-        restartAgent: () => (this.disposed ? Promise.resolve() : this.restartAgent()),
+  /**
+   * The container client. While the container is starting, running or
+   * stopping, that is the client starting, running or stopping it, returned
+   * without reading the settings: only that client can reach and stop its
+   * container, so a runner change made anywhere (another process, or a write
+   * here that did not clear the runtimes) takes effect at the next start.
+   * (The settings route refuses a runner change while agents run.) Otherwise
+   * the runner is read on every call, and a client built for another runner
+   * is replaced. A start in flight keeps the client it was handed, as it does
+   * after `resetClient`.
+   *
+   * `configuredRunner` is the runner a caller working through many runtimes
+   * read once for all of them (the host's start-up). It stands in for this
+   * call's read when there is no client yet or the client is for that
+   * runner; a client for another runner is re-checked with a read of its own.
+   */
+  async getClient(configuredRunner?: ContainerRunner): Promise<ContainerClient> {
+    if (this.client && this.holdsContainer()) return this.client
+    if (configuredRunner !== undefined && (!this.client || configuredRunner === this.clientRunner)) {
+      if (!this.client) {
+        this.client = createContainerClient(this.clientConfig(), configuredRunner)
+        this.clientRunner = configuredRunner
+        this.clientDecidedBy = ++this.clientReads
       }
-
-      this.client = createContainerClient(config)
+      return this.client
     }
-
+    const read = ++this.clientReads
+    const runner = (await getSettings()).container.containerRunner as ContainerRunner
+    // Reading was an await: the container may have started on the client meanwhile.
+    if (this.client && (runner === this.clientRunner || read < this.clientDecidedBy || this.holdsContainer())) {
+      this.clientDecidedBy = Math.max(this.clientDecidedBy, read)
+      return this.client
+    }
+    if (this.client) {
+      console.log(`[ContainerRuntime] Container runner for ${this.slug} changed from ${this.clientRunner} to ${runner}; using a new client`)
+    }
+    this.client = createContainerClient(this.clientConfig(), runner)
+    this.clientRunner = runner
+    this.clientDecidedBy = read
     return this.client
+  }
+
+  /** The client's container is (or may be) running: starting, stopping, or last seen running. */
+  private holdsContainer(): boolean {
+    return this.starting !== null || this.stopping || this.cached?.status === 'running'
+  }
+
+  private clientConfig(): ContainerConfig {
+    return {
+      agentId: this.slug,
+      onConnectionError: () => {
+        if (this.disposed) return
+        if (this.stopping) return
+        if (this.starting) return
+        // No pre-snapshot here: the orchestrator snapshots synchronously, and
+        // a join during an in-flight recovery queues a re-run that catches
+        // sessions that became active in between.
+        this.handleUnexpectedDeath()
+      },
+      // MicroVM dead-generation replace (and similar) must restart through the
+      // runtime so starts share the in-flight promise and rebuild env from the DB.
+      restartAgent: () => (this.disposed ? Promise.resolve() : this.restartAgent()),
+    }
   }
 
   /** Whether a client has been created (the container has been touched). */
@@ -193,6 +262,7 @@ export class ContainerRuntime {
    */
   resetClient(): void {
     this.client = null
+    this.clientRunner = null
   }
 
   isStopping(): boolean {
@@ -203,26 +273,47 @@ export class ContainerRuntime {
     return this.starting !== null
   }
 
+  /** This agent's live sessions, as the runtime marks and recovers them. */
+  sessions(): RuntimeSessions {
+    return this.host.agentSessions?.peek(this.slug) ?? NO_LIVE_SESSIONS
+  }
+
+  /**
+   * A session's agent process reported a fatal result. When the client will
+   * recover the turn (it restarts the dead generation), the kind is kept for
+   * the recovery to report.
+   */
+  fatalResult(client: ContainerClient | undefined, kind: Exclude<RuntimeFatalKind, null>): 'settle' | 'defer_for_recovery' {
+    const plan = client?.onFatalResult(kind) ?? 'settle'
+    if (plan === 'defer_for_recovery') this.lastFatal = kind
+    return plan
+  }
+
+  private consumeLastFatal(): RuntimeFatalKind {
+    const kind = this.lastFatal
+    this.lastFatal = null
+    return kind
+  }
+
   handleUnexpectedDeath(restrictToSessionIds?: string[]): void {
     if (this.disposed) return
     const slug = this.slug
-    void recoverFromUnexpectedDeath({
+    background(recoverFromUnexpectedDeath({
       agentId: slug,
       isStopping: () => this.stopping,
       getClient: () => this.getClient(),
       restartAgent: () => this.restartAgent(),
       ensureRunning: () => this.ensureRunning(),
-      snapshotMidTurnSessions: (agentId, restrict) => messagePersister.snapshotMidTurnSessions(agentId, restrict),
-      consumeLastFatal: (agentId) => messagePersister.consumeLastFatal(agentId),
-      settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(slug, ids),
-      markRecovered: (ids) => messagePersister.markRecovered(slug, ids),
-      takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(slug, id),
-      isSessionRecovering: (id) => messagePersister.isSessionRecovering(slug, id),
-      isSubscribed: (id) => messagePersister.isSubscribed(slug, id),
+      snapshotMidTurnSessions: (_agentId, restrict) => this.sessions().claimMidTurnForRecovery(restrict),
+      consumeLastFatal: () => this.consumeLastFatal(),
+      settleRecoveringSessions: (ids) => this.sessions().settleRecovering(ids),
+      markRecovered: (ids) => this.sessions().markRecovered(ids),
+      takeCoalescedUserMessages: (id) => this.sessions().takeCoalesced(id),
+      isSessionRecovering: (id) => this.sessions().isRecovering(id),
+      isSubscribed: (id) => this.sessions().isSubscribed(id),
       subscribeToSession: (sessionId, client, containerSessionId) =>
-        // Recovery only ever resubscribes THIS agent's sessions, so the slug is
-        // this runtime's — never a value the caller could disagree with.
-        messagePersister.subscribeToSession(slug, sessionId, client, containerSessionId),
+        this.sessions().subscribe(sessionId, client, containerSessionId),
+      inDeliveryTurn: (sessionId, work) => this.sessions().inDeliveryTurn(sessionId, work),
       restrictToSessionIds,
       syncAgentStatus: async () => {
         try {
@@ -230,8 +321,8 @@ export class ContainerRuntime {
         } catch (err) {
           console.error(`[ContainerRuntime] Failed to sync status after connection error:`, err)
           this.markAsStopped()
-          messagePersister.markAllSessionsInactiveForAgent(slug)
-          messagePersister.broadcastGlobal({
+          this.sessions().markAllInactive()
+          globalFeed.publish({
             type: 'agent_status_changed',
             agentSlug: slug,
             status: 'stopped',
@@ -244,7 +335,7 @@ export class ContainerRuntime {
         tags: { area: 'container', op: 'runtime.recover.unhandled' },
         extra: { agentId: slug },
       })
-    })
+    }), { name: 'container-runtime.recover-unexpected-death' })
   }
 
   private assertNotStopping(op: 'start' | 'restart'): void {
@@ -267,17 +358,23 @@ export class ContainerRuntime {
       await this.starting
       return
     }
+    const client = await this.getClient()
+    // Reading the runner was an await: a stop or another start may have begun meanwhile.
+    this.assertNotStopping('restart')
+    if (this.starting) {
+      await this.starting
+      return
+    }
 
     this.markAsStopped()
     // Dead generation had live sessions; clear isActive before the new start
     // (same as stopContainer — replace does not go through stopContainer).
-    messagePersister.markAllSessionsInactiveForAgent(this.slug)
-    messagePersister.broadcastGlobal({
+    this.sessions().markAllInactive()
+    globalFeed.publish({
       type: 'agent_status_changed',
       agentSlug: this.slug,
       status: 'stopped',
     })
-    const client = this.getClient()
     await this.trackStart(this.doStartContainer(client))
   }
 
@@ -291,6 +388,10 @@ export class ContainerRuntime {
     this.starting = startPromise
     try {
       await startPromise
+    } catch (error) {
+      // Nothing runs on the drives a failed start read, so a mark made during it means nothing.
+      if (this.starting === startPromise) this.stale = false
+      throw error
     } finally {
       // A later start that replaced this one clears and arms for itself when it settles.
       if (this.starting === startPromise) this.starting = null
@@ -339,6 +440,11 @@ export class ContainerRuntime {
     return this.stale
   }
 
+  /** Running, or starting past its drive read: either way a drive change reaches it only through a restart. */
+  holdsDrives(): boolean {
+    return this.cached?.status === 'running' || (this.starting !== null && this.drivesReadIn === this.lifecycle)
+  }
+
   /**
    * Mark the container as stopped in cache (e.g., when connection fails).
    * Prefer using stopContainer() which also stops the actual container.
@@ -363,6 +469,9 @@ export class ContainerRuntime {
     this.stopping = true
     this.lifecycle++
     this.starting = null
+    // A stop on purpose: a session mid-turn ends now, as stopped, before the
+    // container goes and drops its socket, which would read as a crash.
+    if (!options?.afterFatalError) this.sessions().markAllStopped()
 
     let forceStopUsed = false
     // Default true: if stop() throws, preserve prior behavior of marking the
@@ -370,7 +479,10 @@ export class ContainerRuntime {
     let stopped = true
 
     try {
-      const client = this.getClient()
+      // The client that started the container is the one that can stop it,
+      // even if the runner setting has moved on since; only a runtime without
+      // one builds a client for the runner configured now.
+      const client = this.client ?? await this.getClient()
       if (this.volumesPresent !== false) await prepareVolumeStop(client, slug)
       // Stop the host browser before the container so it closes gracefully
       // instead of getting a "socket hang up" when the container dies
@@ -402,16 +514,14 @@ export class ContainerRuntime {
         this.markAsStopped()
 
         // Mark all sessions for this agent as inactive
-        messagePersister.markAllSessionsInactiveForAgent(slug, { settleRecovering: true })
+        this.sessions().markAllInactive({ settleRecovering: true })
 
-        // If this agent had grabbed a window, ungrab it so the halo disappears
-        if (computerUsePermissionManager.getGrabbedApp(slug)) {
-          computerUsePermissionManager.clearGrabbedApp(slug)
-          ungrabAC().catch(() => {})  // Best-effort, non-blocking
-        }
+        // The agent's computer-use sessions end with it, and their cursors with them.
+        computerUsePermissionManager.clearActiveApp(slug)
+        background(endComputerUseSessions({ agentSlug: slug }).catch(() => {}), { name: 'container-runtime.end-computer-use' })  // Best-effort, non-blocking
 
         // Broadcast status change so UI updates
-        messagePersister.broadcastGlobal({
+        globalFeed.publish({
           type: 'agent_status_changed',
           agentSlug: slug,
           status: 'stopped',
@@ -439,10 +549,16 @@ export class ContainerRuntime {
   /**
    * Sync this agent's status with reality by querying the runtime.
    * Broadcasts status change if the actual status differs from cached.
+   *
+   * Asks the client this runtime holds, without reading the runner: the
+   * container it knows was started through that client. Only a runtime with
+   * no client yet builds one for the runner configured now. `sweep` carries
+   * what the host read once for a sweep over every runtime: the auto-sleep
+   * timeout an alarm found disarmed is armed with.
    */
-  async syncAgentStatus(): Promise<ContainerInfo> {
+  async syncAgentStatus(sweep?: { idleTimeoutMs?: number }): Promise<ContainerInfo> {
     const slug = this.slug
-    const client = this.getClient()
+    const client = this.client ?? await this.getClient()
     const previousStatus = this.cached?.status
     const info = await client.getInfoFromRuntime()
 
@@ -460,7 +576,9 @@ export class ContainerRuntime {
       // an alarm that fired while a sync (or a transient inspect failure)
       // reported the container stopped found nothing to sleep and disarmed,
       // and the marks it would have re-armed from are still on the clock.
-      this.idleAlarm.schedule()
+      // An alarm still armed is left as it is: every mark re-armed it, and
+      // its fire reads the timeout again.
+      this.idleAlarm.ensureArmed(sweep?.idleTimeoutMs)
     } else {
       // Nothing to sleep while the container is not observed running. The
       // marks stay: if the report was a transient failure, the next running
@@ -471,7 +589,7 @@ export class ContainerRuntime {
     // Broadcast if status changed (e.g., container was stopped externally)
     if (previousStatus && previousStatus !== info.status) {
       console.log(`[ContainerRuntime] Status changed for ${slug}: ${previousStatus} -> ${info.status}`)
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'agent_status_changed',
         agentSlug: slug,
         status: info.status,
@@ -479,7 +597,7 @@ export class ContainerRuntime {
 
       // If container stopped, mark sessions as inactive
       if (info.status === 'stopped') {
-        messagePersister.markAllSessionsInactiveForAgent(slug)
+        this.sessions().markAllInactive()
       }
     }
 
@@ -508,7 +626,7 @@ export class ContainerRuntime {
     this.healthWarnings = warnings
 
     if (changed) {
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'container_health_changed',
         agentSlug: this.slug,
         warnings,
@@ -533,7 +651,10 @@ export class ContainerRuntime {
     this.assertNotStopping('start')
     if (this.starting) return this.starting
 
-    const client = this.getClient()
+    let client = await this.getClient()
+    // Reading the runner was an await: a stop or another start may have begun meanwhile.
+    this.assertNotStopping('start')
+    if (this.starting) return this.starting
     const cached = this.cached
 
     // Treat the cached 'running' status as authoritative only while it's fresh.
@@ -552,6 +673,9 @@ export class ContainerRuntime {
         console.warn(`[ContainerRuntime] Cached 'running' status for ${slug} failed liveness check, (re)starting`)
         this.markAsStopped()
         needsStart = true
+        // Not running after all: the start uses the runner configured now,
+        // which getClient reads for a container that is not running.
+        client = await this.getClient()
       }
     }
 
@@ -572,6 +696,12 @@ export class ContainerRuntime {
   private async doStartContainer(client: ContainerClient): Promise<ContainerClient> {
     const slug = this.slug
     const lifecycle = ++this.lifecycle
+    // A mark from an earlier start that failed does not carry into this one, which reads everything again.
+    this.stale = false
+    // Read once for this start, and handed to the client's start with the env:
+    // the image, the resource limits, the provider env and the platform token
+    // all come from it. The next start reads again.
+    const settings = await getSettings()
     // Pass proxy config and account metadata (no raw tokens)
     const envVars: Record<string, string> = {}
 
@@ -588,7 +718,7 @@ export class ContainerRuntime {
     // Authenticates the HOST to the container API (the reverse direction of
     // PROXY_TOKEN, which the agent legitimately holds). The container server
     // strips this from its env before spawning the CLI.
-    envVars['SUPERAGENT_HOST_TOKEN'] = getOrCreateHostToken(slug)
+    envVars['SUPERAGENT_HOST_TOKEN'] = await getOrCreateHostToken(slug)
 
     // Fetch connected accounts for this agent
     const accountMappings = await db
@@ -614,23 +744,21 @@ export class ContainerRuntime {
       envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
     }
 
-    // Pass host browser env vars if a host browser provider is selected
-    const settings = getSettings()
+    // Pass host browser env vars if a host browser provider is selected.
     if (settings.app?.hostBrowserProvider) {
       envVars['AGENT_BROWSER_USE_HOST'] = '1'
       envVars['HOST_APP_URL'] = hostApiBaseUrl
       envVars['AGENT_ID'] = slug
+    } else if (settings.app?.containerBrowserHighDpi) {
+      envVars['BROWSER_HIGH_DPI'] = '1'
     }
 
     // What the start needs from the agent's workspace goes through the
-    // agent's file operations, never a host path: the workspace is wherever
-    // the agent's actor says it is.
+    // agent's actor, never a host path: the workspace is wherever the actor
+    // says it is.
     let agentName: string | undefined
     const workspaces = this.host.agentWorkspaces
     if (workspaces) {
-      // Seed the built-in container browser from the selected Chrome profile.
-      // A failure fails the start, as a failed copy always did.
-      await seedBrowserProfileFromChrome(slug, workspaces.files(slug))
       // The display name is attribution only; a start without it is still a start.
       try {
         agentName = displayNameFromInstructions(await workspaces.instructions(slug))
@@ -645,11 +773,25 @@ export class ContainerRuntime {
 
     // Tell the agent container which host OS is running (for script type selection)
     envVars['HOST_PLATFORM'] = process.platform
+    // Whether agents get the computer-use and script tools, as the host answers
+    // it, so the container never advertises what the host would refuse. Always
+    // set, so a container can tell "no" from a host too old to say.
+    const serverFacts = getServerFacts()
+    envVars['HOST_COMPUTER_USE'] = String(supportsComputerUse(serverFacts))
+    // The Mac App Store edition: the prompt tells agents what it leaves out.
+    envVars['HOST_APP_SANDBOX'] = String(runsInAppSandbox(serverFacts))
 
     // Enable Composio webhook trigger tools when platform Composio is active
-    if (isPlatformComposioActive()) {
+    const platformComposio = isPlatformComposioActiveFrom(settings)
+    if (platformComposio) {
       envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
     }
+    // Discovery and account requests must offer the same services as /api/providers.
+    // Toolkit slugs contain no commas; an empty string explicitly offers none.
+    envVars['CONNECTED_ACCOUNT_TOOLKITS'] = getAllProviders((await getDefaultAccountProvider()).name)
+      .filter((provider) => !provider.unlisted && (!provider.platformOnly || platformComposio))
+      .map((provider) => provider.slug)
+      .join(',')
 
     // Webhook tools (custom endpoints, and Composio triggers with the flag
     // above) follow the relay, not Composio mode: a personal Composio key
@@ -659,7 +801,7 @@ export class ContainerRuntime {
     envVars['WEBHOOK_RELAY_AVAILABLE'] = String(this.webhookRelayAtStart)
 
     // Platform services (media, enrichment, search) only need the token.
-    if (getPlatformAccessToken()) {
+    if (platformAccessTokenFrom(settings)) {
       envVars['PLATFORM_AUTH_ACTIVE'] = 'true'
     }
 
@@ -671,7 +813,11 @@ export class ContainerRuntime {
 
     envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
-    const listed = await listVolumes(slug)
+    const listed = await listVolumes(slug, () => {
+      // An overtaken start must not claim the drive read of the start that replaced it.
+      this.assertCurrent(lifecycle)
+      this.drivesReadIn = lifecycle
+    })
     const canMount = listed.volumes.length > 0 && client.volumeRunFlags() !== null
     const notMounted = [...listed.notMounted, ...(canMount ? [] : notMountedAll(listed.volumes, 'not supported here'))]
     const volumes = canMount ? listed.volumes : []
@@ -682,6 +828,7 @@ export class ContainerRuntime {
     const startedInfo = await client.start({
       envVars,
       agentName,
+      settings,
       volumes,
       onVolumesDropped: () => { volumesDropped = true },
       onAlreadyRunning: () => { alreadyRunning = true },
@@ -708,7 +855,7 @@ export class ContainerRuntime {
     this.activity.started()
 
     // Broadcast agent status change globally
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'agent_status_changed',
       agentSlug: slug,
       status: info.status,
@@ -717,6 +864,7 @@ export class ContainerRuntime {
     // A container already running got its volumes, and its banner, from an earlier start.
     // A runtime replaced meanwhile (a runner change) no longer owns the banner.
     if (alreadyRunning || this.disposed) return client
+    await remounted(slug)
     this.volumesPresent = !volumesDropped && volumes.length > 0
     let failed: NotMountedVolume[] = []
     if (volumesDropped) {
@@ -733,8 +881,20 @@ export class ContainerRuntime {
       })
     }
     showNotMounted(slug, [...notMounted, ...failed])
+    // A retry of a failed first copy still reports the old failure, so any preparing reason counts.
+    const preparing = notMounted.filter((volume) => volume.reason.startsWith('preparing')).map((volume) => volume.name)
+    if (preparing.length > 0) background(this.staleOnceCopied(lifecycle, preparing), { name: 'container-runtime.stale-after-first-copy' })
 
     return client
+  }
+
+  /** A drive still making its first copy missed this start: once it can mount, the agent is stale until it restarts. */
+  private async staleOnceCopied(lifecycle: number, preparing: string[]): Promise<void> {
+    await firstCopies(this.slug)
+    const { volumes } = await listVolumes(this.slug)
+    if (lifecycle !== this.lifecycle || this.cached?.status !== 'running' || !volumes.some((volume) => preparing.includes(volume.name))) return
+    this.markStale()
+    globalFeed.publish({ type: 'agent_updated', agentSlug: this.slug })
   }
 
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
@@ -787,15 +947,14 @@ export class ContainerRuntime {
 
   private isBusy(): boolean {
     return (
-      messagePersister.hasActiveSessionsForAgent(this.slug) ||
-      messagePersister.hasSessionsAwaitingInputForAgent(this.slug)
+      this.sessions().hasActive() ||
+      this.sessions().hasAwaitingInput()
     )
   }
 
   /** What the idle alarm runs: stop without ever force-stopping the shared VM. */
-  private async sleepIdle(): Promise<void> {
-    const timeoutMinutes = getSettings().app?.autoSleepTimeoutMinutes ?? 30
-    console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMinutes}m, stopping...`)
+  private async sleepIdle(timeoutMs: number): Promise<void> {
+    console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMs / 60_000}m, stopping...`)
     await this.stopContainer({
       stopTimeoutMs: 60_000,
       killTimeoutMs: 30_000,
@@ -815,6 +974,7 @@ export class ContainerRuntime {
     this.disposed = true
     this.lifecycle++
     this.client = null
+    this.clientRunner = null
     this.cached = null
     this.activity.reset()
     this.idleAlarm.cancel()

@@ -17,27 +17,35 @@ import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request
 import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
+  deleteMessageNotifications,
   getAgentAccessUserIds,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
-import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { getUserSettings, getUserSettingsForUsers } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
+import { broadcastMentionWithdrawn } from './channels/client-broadcast-channel'
 import { isNotificationTypeEnabled } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
 import { buildSessionCompleteBody } from './session-complete-summary'
 
 interface SessionCompleteNotificationOptions {
-  /** Final top-level assistant text, already selected by MessagePersister. */
+  /** Final top-level assistant text, already selected by the agent's session. */
   responseText?: string | null
-  /** In-flight same-file byte-boundary snapshot for this completed turn. */
-  responseTranscriptEndOffset?: Promise<number | null>
+  /** Where the transcript ended when this turn did: the byte bound for the body's context lookup. */
+  responseTranscriptEndOffset?: number | null
+  /** Who the run's messages tagged. */
+  taggedUserIds?: readonly string[]
 }
+
+/** A mention's inbox body is its message, cut to a preview. */
+const MENTION_BODY_MAX = 280
 
 type NotificationBody = string | {
   fallback: string
@@ -88,9 +96,11 @@ class NotificationManager {
     if (!isAuthMode()) return true
 
     try {
-      const userIds = await getAgentAccessUserIds(agentSlug)
-      for (const userId of userIds) {
-        if (isNotificationTypeEnabled((await getUserSettings(userId)).notifications, type)) return true
+      // Two statements however long the access list is: everyone's settings
+      // come back together, not one read per member until one says yes.
+      const settingsByUser = await getUserSettingsForUsers(await getAgentAccessUserIds(agentSlug))
+      for (const settings of settingsByUser.values()) {
+        if (isNotificationTypeEnabled(settings.notifications, type)) return true
       }
       return false
     } catch (error) {
@@ -120,8 +130,10 @@ class NotificationManager {
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
     extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
+    /** A targeted notification: only this user gets it. */
+    recipient?: { userId: string; messageUuid: string }
   }): Promise<void> {
-    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
+    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra, recipient } = params
 
     // A blocked automated session must become visible: session lists exclude
     // non-promoted automated sessions, so a session_waiting notification on one
@@ -157,6 +169,7 @@ class NotificationManager {
       agentSlug,
       title,
       body: resolvedBody,
+      ...(recipient ? { recipientUserId: recipient.userId, messageUuid: recipient.messageUuid } : {}),
     })
 
     // Stamp the actionContext with notificationId so the renderer dispatcher
@@ -178,14 +191,15 @@ class NotificationManager {
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
       ...(extra ? { extra } : {}),
+      ...(recipient ? { recipientUserId: recipient.userId, messageUuid: recipient.messageUuid } : {}),
     }
 
     // Fire-and-forget per channel: delivery to one backend (a slow push POST,
     // a dead endpoint) must never block the trigger path or another channel.
     for (const channel of getNotificationChannels()) {
-      void channel.deliver(event).catch((error) => {
+      background(channel.deliver(event).catch((error) => {
         console.error(`[NotificationManager] ${channel.id} delivery failed:`, error)
-      })
+      }), { name: 'notification-manager.deliver-to-channel' })
     }
   }
 
@@ -224,6 +238,15 @@ class NotificationManager {
   ): Promise<void> {
     const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
     if (isHiddenAutomatedSession(meta)) {
+      // A hidden run that tagged a member is shown, so the tag opens something
+      // they can find. Its own completion stays muted.
+      try {
+        if ((await this.membersAmong(agentSlug, options.taggedUserIds ?? [])).length > 0) {
+          await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId, meta)
+        }
+      } catch (error) {
+        console.error('[NotificationManager] Failed to promote a session that tagged a member:', error)
+      }
       return
     }
     const displayName = await this.getAgentDisplayName(agentSlug)
@@ -247,8 +270,7 @@ class NotificationManager {
                 sessionId,
                 agentSlug,
                 responseText: options.responseText,
-                responseTranscriptEndOffset:
-                  await options.responseTranscriptEndOffset,
+                responseTranscriptEndOffset: options.responseTranscriptEndOffset,
                 fallbackBody,
               }),
             )
@@ -417,6 +439,84 @@ class NotificationManager {
       title,
       body,
     })
+  }
+
+  /**
+   * Trigger the notification for one person tagged in a session message.
+   * Only they get it, it always notifies (there is no setting for it), and it
+   * points at the message.
+   */
+  async triggerSessionMention(params: {
+    sessionId: string
+    agentSlug: string
+    messageUuid: string
+    recipientUserId: string
+    senderName: string
+    /** The message as plain text. */
+    text: string
+    /** Also tell an invited person, not on Gamut yet, through their team directory. */
+    relayToInvited?: boolean
+  }): Promise<void> {
+    const body = params.text.length > MENTION_BODY_MAX
+      ? `${params.text.slice(0, MENTION_BODY_MAX - 1).trimEnd()}…`
+      : params.text
+    await this.triggerNotification({
+      type: 'session_mention',
+      sessionId: params.sessionId,
+      agentSlug: params.agentSlug,
+      title: `${params.senderName} mentioned you`,
+      body,
+      recipient: { userId: params.recipientUserId, messageUuid: params.messageUuid },
+    })
+    // Someone not on Gamut yet finds this waiting when they join; tell them
+    // now through their team directory too.
+    if (params.relayToInvited) {
+      background(this.tellInvitedAboutMention(params), { name: 'notification-manager.tell-invited-about-mention' })
+    }
+  }
+
+  /**
+   * An agent's message tagged people: each member of the agent is told, under
+   * the agent's name. Anyone else is dropped, and nothing leaves the app.
+   */
+  async triggerAgentMentions(params: { agentSlug: string; sessionId: string; messageUuid: string; userIds: readonly string[]; text: string }): Promise<void> {
+    const members = await this.membersAmong(params.agentSlug, params.userIds)
+    if (members.length === 0) return
+    const senderName = await this.getAgentDisplayName(params.agentSlug)
+    for (const recipientUserId of members) {
+      try {
+        const { sessionId, agentSlug, messageUuid, text } = params
+        await this.triggerSessionMention({ sessionId, agentSlug, messageUuid, text, recipientUserId, senderName })
+      } catch (error) {
+        captureException(error, { tags: { component: 'notifications', operation: 'agent-mention' }, level: 'warning' })
+      }
+    }
+  }
+
+  /** The ids that belong to members of the agent, once each. Teammates exist in auth mode only. */
+  private async membersAmong(agentSlug: string, userIds: readonly string[]): Promise<string[]> {
+    if (userIds.length === 0 || !isAuthMode()) return []
+    const members = new Set(await getAgentAccessUserIds(agentSlug))
+    return [...new Set(userIds)].filter((id) => members.has(id))
+  }
+
+  private async tellInvitedAboutMention(params: { agentSlug: string; recipientUserId: string; senderName: string; text: string }): Promise<void> {
+    const { notifyInvitedUser } = await import('@shared/lib/team-directory/invited-users')
+    await notifyInvitedUser(params.recipientUserId, {
+      kind: 'mentioned',
+      agentName: await this.getAgentDisplayName(params.agentSlug),
+      byName: params.senderName,
+      text: params.text,
+    })
+  }
+
+  /**
+   * Take back the mentions of a message that never reached the transcript
+   * (cancelled while queued, or discarded by a Stop): the inbox row and the @
+   * go. A push already shown stays shown.
+   */
+  async withdrawSessionMentions(messageUuid: string): Promise<void> {
+    for (const row of await deleteMessageNotifications(messageUuid)) broadcastMentionWithdrawn(row)
   }
 
   /**

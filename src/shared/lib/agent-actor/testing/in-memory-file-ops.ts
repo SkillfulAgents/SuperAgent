@@ -3,7 +3,8 @@
  * implementation the contract suite runs, and the workspace of an in-memory
  * agent actor in tests.
  */
-import type { ByteRange, FileEntry, FileOps, FileStat, OpenFile, WriteOptions } from '../types'
+import type { ByteRange, FileEntry, FileStat, OpenFile, StoreFileOps, WriteOptions } from '../types'
+import { readSized } from '../read-sized'
 import { WorkspaceFileError, normalizeWorkspacePath, workspaceDirname } from '../workspace-path'
 
 function ancestorsOf(rel: string): string[] {
@@ -44,7 +45,7 @@ function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
   })
 }
 
-export class InMemoryFileOps implements FileOps {
+export class InMemoryFileOps implements StoreFileOps {
   private readonly files = new Map<string, Uint8Array>()
   private readonly dirs = new Set<string>([''])
   private readonly mtimes = new Map<string, number>()
@@ -63,8 +64,21 @@ export class InMemoryFileOps implements FileOps {
       if (!this.dirs.has(ancestor)) {
         this.dirs.add(ancestor)
         this.mtimes.set(ancestor, Date.now())
+        this.entriesChanged(ancestor)
       }
     }
+  }
+
+  /**
+   * An entry was added to or removed from the directory holding `rel`: the
+   * directory's mtime moves, as a filesystem's does. Always forward, so two
+   * changes in one millisecond still read as two (a filesystem keeps finer
+   * times than `Date.now()`).
+   */
+  private entriesChanged(rel: string): void {
+    if (rel === '') return
+    const parent = workspaceDirname(rel)
+    if (this.dirs.has(parent)) this.mtimes.set(parent, Math.max(Date.now(), (this.mtimes.get(parent) ?? 0) + 0.001))
   }
 
   async list(dir: string): Promise<FileEntry[]> {
@@ -96,6 +110,10 @@ export class InMemoryFileOps implements FileOps {
       }
     }
     return null
+  }
+
+  readSized(workspacePath: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
+    return readSized(this.open(workspacePath))
   }
 
   async open(workspacePath: string): Promise<OpenFile> {
@@ -149,9 +167,9 @@ export class InMemoryFileOps implements FileOps {
     const rel = normalizeWorkspacePath(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
     if (this.dirs.has(rel)) throw new WorkspaceFileError('not-a-file')
-    options?.signal?.throwIfAborted()
     if (options?.overwrite === false && this.files.has(rel)) throw new WorkspaceFileError('already-exists')
     this.ensureDirs(workspaceDirname(rel))
+    if (!this.files.has(rel)) this.entriesChanged(rel)
     this.files.set(rel, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : new Uint8Array(bytes))
     this.mtimes.set(rel, Date.now())
     if (!this.birthtimes.has(rel)) this.birthtimes.set(rel, Date.now())
@@ -192,12 +210,14 @@ export class InMemoryFileOps implements FileOps {
       this.mtimes.delete(rel)
       this.birthtimes.delete(rel)
       this.modes.delete(rel)
+      this.entriesChanged(rel)
       return
     }
     if (!this.dirs.has(rel)) return
     if (!options?.recursive) {
       throw new WorkspaceFileError('not-a-file', 'Path is a directory; delete it with recursive')
     }
+    this.entriesChanged(rel)
     const prefix = `${rel}/`
     for (const candidate of [...this.dirs]) if (candidate === rel || candidate.startsWith(prefix)) this.dirs.delete(candidate)
     for (const candidate of [...this.files.keys()]) if (candidate.startsWith(prefix)) this.files.delete(candidate)

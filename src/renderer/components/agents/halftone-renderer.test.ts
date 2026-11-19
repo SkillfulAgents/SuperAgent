@@ -26,6 +26,71 @@ function createContextMock() {
   return { context, events }
 }
 
+// Independent reference for the original field: rotate coordinates, evaluate
+// all three waves at each offset, then light the finite-difference normal.
+// This deliberately does not share the renderer's row/column factorization.
+function referenceFlowDot(u: number, v: number, epsilon: number, time: number, seed: number) {
+  const angle = (seed % 18) * 20 * (Math.PI / 180)
+  const heightAt = (x: number, y: number) => {
+    const rotatedU = 0.5 + (x - 0.5) * Math.cos(angle) - (y - 0.5) * Math.sin(angle)
+    const rotatedV = 0.5 + (x - 0.5) * Math.sin(angle) + (y - 0.5) * Math.cos(angle)
+    const t = time + seed % 1000
+    return 0.65 +
+      0.3 * Math.sin(rotatedU * 7 - t * 0.04) +
+      0.2 * Math.sin(rotatedU * 13 + rotatedV * 6 - t * 0.05) +
+      0.15 * Math.sin(rotatedU * 4 + rotatedV * 11 + t * 0.03)
+  }
+  const height = heightAt(u, v)
+  const normalX = -(heightAt(u + epsilon, v) - height) / epsilon
+  const normalY = -(heightAt(u, v + epsilon) - height) / epsilon
+  const lit = Math.max(0, (normalX * 0.32 + normalY * -0.55 + 0.78) /
+    (Math.hypot(normalX, normalY, 1) * Math.hypot(0.32, -0.55, 0.78)))
+  return {
+    alpha: Math.fround(Math.min(1, (0.18 + lit * 0.74) * 1.4 * 0.9) * 0.5),
+    radius: Math.fround(Math.max(0.2, 0.45 + Math.max(0, height) * 1.9) * (1.3 / 2.4)),
+  }
+}
+
+describe('halftone flow fidelity', () => {
+  it.each(Array.from({ length: 18 }, (_, seed) => seed + 990))(
+    'preserves the original wave field through time and resizes for seed %i',
+    (seed) => {
+      const renderer = new HalftoneFrameRenderer({
+        motif: 'flow_3d', color: '#111827', spacing: 5, maxRadius: 1.3,
+        contrast: 1.4, dim: 0.5, vignette: 0, seed,
+      })
+      const { context } = createContextMock()
+      const alphas: number[] = []
+      vi.mocked(context.fill).mockImplementation(() => alphas.push(context.globalAlpha))
+
+      // Grow and shrink the caches, including a single row/column. Removing
+      // vignette and pointer influence isolates the field's radius and lighting.
+      for (const [width, height] of [[35, 25], [5, 30], [30, 5], [60, 40], [15, 15]]) {
+        renderer.resize(width, height)
+        const columns = renderer.columnCount
+        const rows = renderer.rowCount
+        for (const time of [0, 735, 20000]) {
+          vi.mocked(context.arc).mockClear()
+          alphas.length = 0
+          expect(renderer.draw(context, time, 'per-dot')).toBe(columns * rows)
+          for (let dot = 0; dot < columns * rows; dot++) {
+            const column = dot % columns
+            const row = Math.floor(dot / columns)
+            const expected = referenceFlowDot(
+              Math.fround(column / columns), Math.fround(row / rows), 0.5 / columns, time, seed
+            )
+            const [x, y, radius] = vi.mocked(context.arc).mock.calls[dot]
+            expect(x).toBe((width - (columns - 1) * 5) / 2 + column * 5)
+            expect(y).toBe((height - (rows - 1) * 5) / 2 + row * 5)
+            expect(radius).toBeCloseTo(expected.radius, 7)
+            expect(alphas[dot]).toBeCloseTo(expected.alpha, 7)
+          }
+        }
+      }
+    }
+  )
+})
+
 describe('halftone alpha bands', () => {
   it('assigns alpha 0/1 and band-boundary values with at most 1/64 error', () => {
     const samples = [0, Number.EPSILON, 0.5 - Number.EPSILON, 0.5, 1]

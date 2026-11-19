@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { invalidateAgentWidgets, patchAgentWidget } from '@renderer/lib/agent-cache'
 import type { ApiAgentWidget, WidgetScheme } from '@shared/lib/widgets/widget-schema'
@@ -63,6 +64,21 @@ export function useRefreshStaleWidgets() {
       return res.json() as Promise<{ refreshing: string[] }>
     },
   })
+}
+
+/** Refresh once per Agent Home visit, independent of whether its widget panel is visible. */
+export function useRefreshWidgetsOnVisit(agentSlug: string | null) {
+  const { data: widgets } = useAgentWidgets(agentSlug)
+  const { mutate: refreshStale } = useRefreshStaleWidgets()
+  const triggeredFor = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!agentSlug || !widgets?.length || triggeredFor.current === agentSlug) return
+    triggeredFor.current = agentSlug
+    // Re-read staleness on the server: a cached listing may still look fresh
+    // after its snapshot expires. Later SSE changes must not repeat the visit.
+    refreshStale(agentSlug)
+  }, [agentSlug, widgets, refreshStale])
 }
 
 /** Explicit refresh of one widget (the card's refresh button). */

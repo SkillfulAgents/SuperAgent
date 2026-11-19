@@ -10,6 +10,7 @@ import {
   listRemoteMcps,
 } from '../helpers/connections'
 import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-server'
+import { openHomeSection } from '../helpers/agent-home'
 
 async function withMockMcp<T>(run: (mockMcp: MockMcpServer) => Promise<T>): Promise<T> {
   const mockMcp = await startMockMcpServer(0)
@@ -28,6 +29,7 @@ async function openAgentConnectionsPage(
   await appPage.goto()
   await appPage.waitForAgentsLoaded()
   await openAgentHome(page, agent)
+  await openHomeSection(page, 'Connections')
   await page.locator('[data-testid="home-connections-open-page"]').click()
   await expect(page.locator('[data-testid="connections-add-button"]')).toBeVisible()
 }

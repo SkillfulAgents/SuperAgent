@@ -1,0 +1,1 @@
+ALTER TABLE `agent_volumes` ADD `read_only` integer DEFAULT false NOT NULL;

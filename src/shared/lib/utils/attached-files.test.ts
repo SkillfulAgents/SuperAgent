@@ -74,17 +74,35 @@ describe('parseAttachedFiles', () => {
     expect(cleanText).toBe('')
     expect(attachedFiles).toEqual(files)
   })
+
+  it('reads no block from a marker followed by more text', () => {
+    const message = '[Attached files:]\n- /workspace/uploads/a.png\n\nthis list was pasted, not attached'
+    expect(parseAttachedFiles(message)).toEqual({ cleanText: message, attachedFiles: [] })
+  })
+
+  it('lifts only the last block when an earlier one was pasted as text', () => {
+    const pasted = appendAttachedFiles('The bubble used to show:', ['/workspace/uploads/example.png'])
+    const message = `${pasted}\n\nlike that`
+    const { cleanText, attachedFiles } = parseAttachedFiles(appendAttachedFiles(message, ['/workspace/uploads/real.png']))
+    expect(cleanText).toBe(message)
+    expect(attachedFiles).toEqual(['/workspace/uploads/real.png'])
+  })
+
+  it('keeps a message that ends on a bare marker', () => {
+    const message = 'The header reads\n\n[Attached files:]\n'
+    expect(parseAttachedFiles(message)).toEqual({ cleanText: message, attachedFiles: [] })
+  })
 })
 
 describe('appendMountedFolders', () => {
   it('appends mounts to a message with content', () => {
     const result = appendMountedFolders('Hello', [{ containerPath: '/mounts/project', hostPath: '/Users/joe/project' }])
-    expect(result).toBe('Hello\n\n[Mounted folders (read-write):]\n- /mounts/project (from /Users/joe/project)')
+    expect(result).toBe('Hello\n\n[Attached drives (read-write):]\n- /mounts/project (from /Users/joe/project)')
   })
 
   it('creates a mount-only message when content is empty', () => {
     const result = appendMountedFolders('', [{ containerPath: '/mounts/src', hostPath: '/tmp/src' }])
-    expect(result).toBe('[Mounted folders (read-write):]\n- /mounts/src (from /tmp/src)')
+    expect(result).toBe('[Attached drives (read-write):]\n- /mounts/src (from /tmp/src)')
   })
 
   it('handles multiple mounts', () => {
@@ -92,7 +110,7 @@ describe('appendMountedFolders', () => {
       { containerPath: '/mounts/a', hostPath: '/host/a' },
       { containerPath: '/mounts/b', hostPath: '/host/b' },
     ])
-    expect(result).toBe('Hi\n\n[Mounted folders (read-write):]\n- /mounts/a (from /host/a)\n- /mounts/b (from /host/b)')
+    expect(result).toBe('Hi\n\n[Attached drives (read-write):]\n- /mounts/a (from /host/a)\n- /mounts/b (from /host/b)')
   })
 
   it('returns message unchanged when mounts array is empty', () => {
@@ -101,7 +119,7 @@ describe('appendMountedFolders', () => {
 })
 
 describe('parseMountedFolders', () => {
-  it('parses mounts from a message with content', () => {
+  it('still parses the tag on messages sent before drives', () => {
     const text = 'Hello\n\n[Mounted folders (read-write):]\n- /mounts/project (from /Users/joe/project)'
     const result = parseMountedFolders(text)
     expect(result.cleanText).toBe('Hello')
@@ -109,7 +127,7 @@ describe('parseMountedFolders', () => {
   })
 
   it('parses mount-only message', () => {
-    const text = '[Mounted folders (read-write):]\n- /mounts/src (from /tmp/src)'
+    const text = '[Attached drives (read-write):]\n- /mounts/src (from /tmp/src)'
     const result = parseMountedFolders(text)
     expect(result.cleanText).toBe('')
     expect(result.mountedFolders).toEqual([{ containerPath: '/mounts/src', hostPath: '/tmp/src' }])
@@ -143,12 +161,10 @@ describe('parseMountedFolders', () => {
 
   it('coexists with attached files block (mounts appended first)', () => {
     const msg = 'Check these'
-    // In the real flow, mounts are appended after files: appendAttachedFiles then appendMountedFolders
-    // But parseAttachedFiles strips everything from its marker onward, so we parse mounts first
+    // The composer appends mounts, then files, so each parser lifts the block that ends the text.
     const withMounts = appendMountedFolders(msg, [{ containerPath: '/mounts/src', hostPath: '/host/src' }])
     const withBoth = appendAttachedFiles(withMounts, ['/workspace/uploads/file.md'])
 
-    // Parse attached files first (its marker is last, so it strips cleanly)
     const { cleanText: afterFiles, attachedFiles } = parseAttachedFiles(withBoth)
     expect(attachedFiles).toEqual(['/workspace/uploads/file.md'])
 
@@ -156,5 +172,19 @@ describe('parseMountedFolders', () => {
     const { cleanText, mountedFolders } = parseMountedFolders(afterFiles)
     expect(cleanText).toBe('Check these')
     expect(mountedFolders).toEqual([{ containerPath: '/mounts/src', hostPath: '/host/src' }])
+  })
+
+  it('reads an old-tag block after a quoted new marker', () => {
+    const message = 'It now says [Attached drives (read-write):] instead'
+    const text = `${message}\n\n[Mounted folders (read-write):]\n- /mounts/src (from /host/src)`
+    expect(parseMountedFolders(text)).toEqual({ cleanText: message, mountedFolders: [{ containerPath: '/mounts/src', hostPath: '/host/src' }] })
+  })
+
+  it('keeps a marker quoted in the message as text', () => {
+    const message = 'Line 2: > "Shows [Attached drives (read-write):] under the text"\nfix'
+    const mounts = [{ containerPath: '/mounts/src', hostPath: '/host/src' }]
+    const { cleanText, mountedFolders } = parseMountedFolders(appendMountedFolders(message, mounts))
+    expect(cleanText).toBe(message)
+    expect(mountedFolders).toEqual(mounts)
   })
 })

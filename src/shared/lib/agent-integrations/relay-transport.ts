@@ -1,3 +1,6 @@
+import { and, ne, sql } from 'drizzle-orm'
+import { db } from '../db'
+import { chatIntegrations } from '../db/schema'
 import { captureException } from '../error-reporting'
 import { getStoredPlatformMemberId } from '../services/platform-auth-service'
 import { resolvePlatformMemberForCandidates } from '../services/webhook-trigger-service'
@@ -11,6 +14,7 @@ import {
   type WebhookRelayService,
 } from '../webhook-relay'
 import { WebhookEndpointsApiError } from '../webhook-relay/platform-endpoints-client'
+import type { VerificationProfile } from '../services/webhook-endpoint-schema'
 import { IntegrationSetupError } from './setup-types'
 import {
   integrationRelayBindingSchema,
@@ -29,7 +33,7 @@ import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationInp
  */
 export async function integrationRelayScope(userId?: string): Promise<string> {
   const resolved = userId ? await resolvePlatformMemberForCandidates([userId]) : null
-  return resolved?.memberId ?? getStoredPlatformMemberId() ?? LOCAL_RELAY_SCOPE
+  return resolved?.memberId ?? (await getStoredPlatformMemberId()) ?? LOCAL_RELAY_SCOPE
 }
 
 /** The endpoint's name on the platform, which lists it alongside agent-minted ones. */
@@ -37,11 +41,14 @@ export function integrationRelayName(providerName: string, agentSlug: string): s
   return `${providerName} integration for ${agentSlug}`
 }
 
-/** Mints the public URL an integration's webhooks will arrive at. */
-export async function provisionIntegrationRelay(name: string, userId?: string): Promise<IntegrationRelayBinding> {
+/**
+ * Mints the public URL an integration's webhooks will arrive at. With a
+ * verification profile, the relay rejects deliveries that don't match it.
+ */
+export async function provisionIntegrationRelay(name: string, userId?: string, verification?: VerificationProfile): Promise<IntegrationRelayBinding> {
   const scope = await integrationRelayScope(userId)
   try {
-    const endpoint = await getWebhookRelay().createEndpoint(scope, { name: name.slice(0, 200) })
+    const endpoint = await getWebhookRelay().createEndpoint(scope, { name: name.slice(0, 200), ...(verification ? { verification } : {}) })
     return integrationRelayBindingSchema.parse({ endpointId: endpoint.id, url: endpoint.url, scope })
   } catch (error) {
     if (error instanceof WebhookRelayUnavailableError) throw new IntegrationSetupError(error.message)
@@ -53,14 +60,27 @@ export async function provisionIntegrationRelay(name: string, userId?: string): 
 }
 
 /** The URL stops accepting deliveries. */
+/** The endpoint checks posts with this from now on: a secret known only once the app behind it exists. */
+export async function updateIntegrationRelayVerification(binding: IntegrationRelayBinding, verification: VerificationProfile): Promise<void> {
+  await getWebhookRelay().updateEndpoint(binding.scope, binding.endpointId, { verification })
+}
+
 export async function disableIntegrationRelay(binding: IntegrationRelayBinding): Promise<void> {
   await getWebhookRelay().disableEndpoint(binding.scope, binding.endpointId)
 }
 
+/** Another installation receives through this endpoint too (Email's mailboxes share one per scope). */
+async function endpointSharedWith(endpointId: string, integrationId: string): Promise<boolean> {
+  const other = await db.select({ id: chatIntegrations.id }).from(chatIntegrations)
+    .where(and(ne(chatIntegrations.id, integrationId), sql`json_extract(${chatIntegrations.config}, '$.relay.endpointId') = ${endpointId}`)).get()
+  return !!other
+}
+
 /**
  * An integration is being deleted: nothing more is claimed for it, what was
- * already claimed is discarded, and its URL is disabled. Never throws: a
- * relay that can't be reached must not block deletion.
+ * already claimed is discarded, and its URL is disabled unless another
+ * installation still uses it. Never throws: a relay that can't be reached
+ * must not block deletion.
  */
 export async function releaseIntegrationTransport(record: AgentIntegrationRecord): Promise<void> {
   integrationRelays.remove(record.id)
@@ -72,6 +92,7 @@ export async function releaseIntegrationTransport(record: AgentIntegrationRecord
   }
   if (!relay) return
   try {
+    if (await endpointSharedWith(relay.endpointId, record.id)) return
     await disableIntegrationRelay(relay)
   } catch (error) {
     // The URL stays live but nothing claims its events; they expire on the platform.
@@ -91,10 +112,11 @@ export async function setUpIntegrationWebhooks(
   record: AgentIntegrationRecord,
   definition: Pick<AgentIntegrationDefinition, 'name' | 'transports'>,
   write: (relay: IntegrationRelayBinding) => Promise<void>,
+  verification?: VerificationProfile,
 ): Promise<boolean> {
   if (readIntegrationRelay(record.config)) return false
   if (!supportedTransports(definition).includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)
-  const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, record.agentSlug), record.createdByUserId ?? undefined)
+  const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, record.agentSlug), record.createdByUserId ?? undefined, verification)
   try {
     await write(relay)
   } catch (error) {

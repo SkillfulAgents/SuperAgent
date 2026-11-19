@@ -152,7 +152,7 @@ export function AddToDockDialog({
                 <button
                   key={c[0]}
                   onClick={() => setColor(c)}
-                  className={`w-7 h-7 rounded-md border-2 transition-all ${
+                  className={`w-7 h-7 rounded-control border-2 transition-all ${
                     color[0] === c[0] ? 'border-foreground scale-110' : 'border-transparent'
                   }`}
                   style={{ background: `linear-gradient(to bottom, ${c[0]}, ${c[1]})` }}
@@ -168,7 +168,7 @@ export function AddToDockDialog({
                 <button
                   key={e}
                   onClick={() => setEmoji(e)}
-                  className={`w-9 h-9 rounded-md text-lg flex items-center justify-center transition-all ${
+                  className={`w-9 h-9 rounded-control text-lg flex items-center justify-center transition-all ${
                     emoji === e ? 'bg-accent ring-2 ring-foreground scale-110' : 'hover:bg-accent/50'
                   }`}
                 >
@@ -177,7 +177,7 @@ export function AddToDockDialog({
               ))}
               <button
                 onClick={handleOpenEmojiPicker}
-                className="w-9 h-9 rounded-md border border-dashed border-muted-foreground/40 flex items-center justify-center hover:bg-accent/50 transition-all"
+                className="w-9 h-9 rounded-control border border-dashed border-muted-foreground/40 flex items-center justify-center hover:bg-accent/50 transition-all"
                 title="Browse all emojis"
               >
                 <Plus className="h-4 w-4 text-muted-foreground" />

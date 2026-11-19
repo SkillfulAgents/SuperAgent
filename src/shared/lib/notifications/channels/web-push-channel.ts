@@ -1,9 +1,9 @@
 import webPush from 'web-push'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
+import { getUserSettings, getUserSettingsForUsers } from '@shared/lib/services/user-settings-service'
 import {
   listPushSubscriptions,
+  listPushSubscriptionsForAgentMembers,
   deletePushSubscriptionById,
   type PushSubscriptionRow,
 } from '../push/push-subscription-service'
@@ -21,7 +21,7 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
 
 /**
  * How long the push service may hold an undelivered push for an offline
@@ -32,6 +32,7 @@ const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_w
 const PUSH_TTL_SECONDS: Record<string, number> = {
   session_waiting: 10 * 60,
   session_complete: 60 * 60,
+  session_mention: 24 * 60 * 60,
 }
 const DEFAULT_PUSH_TTL_SECONDS = 60 * 60
 
@@ -57,15 +58,15 @@ function topicForSession(sessionId: string): string {
 function vapidSubjectForOrigin(origin: string): string {
   return origin.startsWith('https:')
     ? origin
-    : 'https://github.com/SkillfulAgents/SuperAgent'
+    : 'https://www.gamut.so'
 }
 
 /**
  * Delivers over Web Push to devices with a stored subscription — the channel
  * that reaches a phone whose PWA (and browser) is closed. There is no live
  * client to defer policy to, so gating happens here, per subscription:
- * the pushable-type allowlist, the owner's notification settings, and (in
- * auth mode) the owner's agent access.
+ * the pushable-type allowlist, (in auth mode) the owner's agent access, and
+ * the owner's notification settings.
  */
 export class WebPushChannel implements NotificationChannel {
   readonly id = 'web_push'
@@ -75,7 +76,16 @@ export class WebPushChannel implements NotificationChannel {
       return
     }
 
-    const subscriptions = await listPushSubscriptions()
+    // The statements below are a fixed number however many people and devices
+    // the deployment has: every finished or blocked turn comes through here.
+    const authMode = isAuthMode()
+    // With sign-in the access gate is part of the read: only subscriptions of
+    // people who have joined and are on the agent's access list come back
+    // (never an ownerless row, e.g. one subscribed before auth was enabled),
+    // and for a mention only those of the person tagged.
+    const subscriptions = authMode
+      ? await listPushSubscriptionsForAgentMembers(event.agentSlug, event.recipientUserId)
+      : await listPushSubscriptions()
     if (subscriptions.length === 0) {
       return
     }
@@ -90,18 +100,28 @@ export class WebPushChannel implements NotificationChannel {
       return
     }
 
-    // Several subscriptions can share an owner — resolve agent access once per user.
-    const accessCache = new Map<string, Promise<string[]>>()
+    // In local mode the single local user's settings govern every device —
+    // including rows that retain a userId from a previous auth-mode life of
+    // this database (that user's old per-user settings row is stale there).
+    // Several subscriptions can share an owner: each owner is read once, and
+    // all of them together.
+    const ownerOf = (subscription: PushSubscriptionRow): string =>
+      authMode ? (subscription.userId as string) : 'local'
+    const settingsByOwner = authMode
+      ? await getUserSettingsForUsers(subscriptions.map(ownerOf))
+      : new Map([['local', await getUserSettings('local')]])
+    const wanted = subscriptions.filter((subscription) => {
+      const settings = settingsByOwner.get(ownerOf(subscription))
+      return settings !== undefined && isNotificationTypeEnabled(settings.notifications, event.type)
+    })
 
     // Bounded fan-out: batches of SEND_CONCURRENCY rather than one socket per
-    // stored subscription at once.
-    for (let i = 0; i < subscriptions.length; i += SEND_CONCURRENCY) {
+    // subscription at once.
+    for (let i = 0; i < wanted.length; i += SEND_CONCURRENCY) {
       await Promise.allSettled(
-        subscriptions
+        wanted
           .slice(i, i + SEND_CONCURRENCY)
-          .map((subscription) =>
-            this.sendToSubscription(event, subscription, vapidKeys, accessCache)
-          )
+          .map((subscription) => this.sendToSubscription(event, subscription, vapidKeys))
       )
     }
   }
@@ -109,34 +129,8 @@ export class WebPushChannel implements NotificationChannel {
   private async sendToSubscription(
     event: NotificationEvent,
     subscription: PushSubscriptionRow,
-    vapidKeys: VapidKeyPair,
-    accessCache: Map<string, Promise<string[]>>
+    vapidKeys: VapidKeyPair
   ): Promise<void> {
-    if (isAuthMode()) {
-      // An ownerless row in auth mode (e.g. subscribed before auth was
-      // enabled) has no user to gate on — never deliver to it.
-      if (!subscription.userId) {
-        return
-      }
-      let access = accessCache.get(subscription.userId)
-      if (!access) {
-        access = getAccessibleAgentSlugs(subscription.userId)
-        accessCache.set(subscription.userId, access)
-      }
-      if (!(await access).includes(event.agentSlug)) {
-        return
-      }
-    }
-
-    // In local mode the single local user's settings govern every device —
-    // including rows that retain a userId from a previous auth-mode life of
-    // this database (that user's old per-user settings row is stale there).
-    const ownerId = isAuthMode() ? (subscription.userId as string) : 'local'
-    const settings = await getUserSettings(ownerId)
-    if (!isNotificationTypeEnabled(settings.notifications, event.type)) {
-      return
-    }
-
     const payload = buildDeclarativePushPayload(event, subscription.origin)
     try {
       await webPush.sendNotification(

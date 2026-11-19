@@ -5,8 +5,8 @@ vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 import { AnthropicLlmProvider } from './anthropic-provider'
 
 describe('presentationForTurnError', () => {
-  it('does not special-case a platform spend-cap body', () => {
-    const parsed = new AnthropicLlmProvider().presentationForTurnError(
+  it('does not special-case a platform spend-cap body', async () => {
+    const parsed = await new AnthropicLlmProvider().presentationForTurnError(
       429,
       'A spend cap for this workspace was reached. It resets within 30 days.',
       'rate_limit',
@@ -22,7 +22,7 @@ describe('presentationForTurnError', () => {
 describe('AnthropicLlmProvider — tool search', () => {
   // Deferred tool loading is expanded by Anthropic's own API, so this is the
   // one endpoint that needs no compatibility work.
-  it('turns ENABLE_TOOL_SEARCH on', () => {
-    expect(new AnthropicLlmProvider().toolSearchEnv).toBe('true')
+  it('turns ENABLE_TOOL_SEARCH on', async () => {
+    expect(await new AnthropicLlmProvider().toolSearchEnv()).toBe('true')
   })
 })
