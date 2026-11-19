@@ -46,6 +46,14 @@ it('searches through the host with the agent token and prints what install_team_
   expect(result.content[0].text).toContain('skillset_id: platform--team--skills, skill_path: skills/invoice-parser/SKILL.md')
 })
 
+it('leaves the version out for a skill the index lists without one', async () => {
+  stubHost(() => Response.json({ skills: [{ ...invoiceParser, version: '' }], total: 1 }))
+
+  const result = await run(searchTeamSkillsTool, {})
+
+  expect(result.content[0].text).toContain('- invoice-parser (skillset: Team Skills) - Read fields from invoice PDFs')
+})
+
 it('says when the host returned only part of the matches', async () => {
   stubHost(() => Response.json({ skills: [invoiceParser], total: 40 }))
 
@@ -118,9 +126,31 @@ it('says nothing was published when the person rejects or the host refuses the s
     content: [{ text: 'Not published: The user rejected publishing this skill. Nothing was published.' }],
   })
 
-  stubHost(() => Response.json({ error: 'cannot_publish', message: 'This skill has no changes to publish.' }, { status: 422 }))
+  const refused = [
+    () => Response.json({ proposalId: 'p2', status: 'pending' }, { status: 202 }),
+    () => Response.json({ error: 'cannot_publish', message: 'This skill has no changes to publish.' }, { status: 422 }),
+  ]
+  stubHost(() => refused.shift()!())
   expect(await run(publishTeamSkillTool, { skill: 'invoice-parser', title: 'Add', note: 'Why', skillset_id: 'team-skills' })).toMatchObject({
     isError: true,
     content: [{ text: 'Not published: This skill has no changes to publish.' }],
+  })
+})
+
+it('reports a failure after the approval in the words of the host, and a rejected request by its status', async () => {
+  const failed = [
+    () => Response.json({ proposalId: 'p1', status: 'pending' }, { status: 202 }),
+    () => Response.json({ error: 'publish_failed', message: 'Publishing failed after the approval: pull failed. The skill may have reached the team skillset, so search for it before you ask again.' }, { status: 500 }),
+  ]
+  stubHost(() => failed.shift()!())
+  const afterApproval = await run(publishTeamSkillTool, { skill: 'invoice-parser', title: 'Add', note: 'Why' })
+  expect(afterApproval.isError).toBe(true)
+  expect(afterApproval.content[0].text).toMatch(/^Publishing failed after the approval: pull failed\./)
+
+  // What the route's validator answers for a body it refuses: no message, and an object under `error`.
+  stubHost(() => Response.json({ success: false, error: { name: 'ZodError', issues: [{ path: ['note'], message: 'Too big' }] } }, { status: 400 }))
+  expect(await run(publishTeamSkillTool, { skill: 'invoice-parser', title: 'Add', note: 'Why' })).toMatchObject({
+    isError: true,
+    content: [{ text: 'Not published: HTTP 400' }],
   })
 })

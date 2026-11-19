@@ -22,11 +22,12 @@ import { RuleJobs, TooManyJobsError } from '@shared/lib/proxy/rules/jobs'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { matchSkills } from '@shared/lib/services/skill-search'
 import {
+  BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS,
   getDiscoverableSkills,
   installDiscoverableSkill,
   planTeamSkillPublish,
   publishPlannedTeamSkill,
-  refreshAgentSkills,
+  pullSkillsets,
   SkillPublishRefusal,
   type TeamSkillPublishPlan,
 } from '@shared/lib/services/skillset-service'
@@ -46,8 +47,9 @@ router.post('/search', zValidator('json', z.object({ query: z.string().max(200).
   try {
     const callerSlug = c.get('callerSlug')
     const skillsets = await getTeamSkillsets()
-    // Pulls each skillset that was not refreshed lately, so the search sees what was published since.
-    await refreshAgentSkills(callerSlug, skillsets, { background: true })
+    // Pulls each skillset that was not refreshed lately, so the search sees what was published
+    // since. Only the caches: the agent's installed skills are not reconciled on its own request.
+    await pullSkillsets(skillsets, { maxAgeMs: BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS })
     const matches = matchSkills(await getDiscoverableSkills(callerSlug, skillsets), c.req.valid('json').query)
     return c.json({ skills: matches.slice(0, MAX_RESULTS), total: matches.length })
   } catch (error) {
@@ -93,28 +95,18 @@ const publishBodySchema = z.object({
   title: z.string().min(1).max(200),
   note: z.string().min(1).max(2000),
 })
+type PublishRequest = z.infer<typeof publishBodySchema>
 
 const proposalSchema = z.object({ proposalId: z.string().min(1) })
 
-router.post('/publish', zValidator('json', publishBodySchema), async (c) => {
+// Reading the skill, the card and the publish all run in the job, so the route answers at once
+// and the limit on waiting jobs applies before the host reads anything from the workspace.
+router.post('/publish', zValidator('json', publishBodySchema), (c) => {
   const callerSlug = c.get('callerSlug')
-  const { skillDirectory, skillsetId, title, note } = c.req.valid('json')
-
-  let plan: TeamSkillPublishPlan
-  try {
-    const skillsets = await getTeamSkillsets()
-    // Settles a change of this skill that was merged or rejected since, and pulls the skillset the plan checks.
-    await refreshAgentSkills(callerSlug, skillsets, { background: true })
-    plan = await planTeamSkillPublish(callerSlug, skillDirectory, skillsets, skillsetId)
-  } catch (error) {
-    if (error instanceof SkillPublishRefusal) return c.json({ error: 'cannot_publish', message: error.message }, 422)
-    captureException(error, { tags: { component: 'agent-skills', operation: 'publish-plan' } })
-    return c.json({ error: 'publish_failed', message: 'The host could not read the skill. Nothing was published.' }, 500)
-  }
-
+  const request = c.req.valid('json')
   let proposalId: string
   try {
-    proposalId = publishes.start(callerSlug, (signal) => publishAfterApproval(callerSlug, plan, { title, body: note }, signal))
+    proposalId = publishes.start(callerSlug, (signal) => proposePublish(callerSlug, request, signal))
   } catch (error) {
     if (!(error instanceof TooManyJobsError)) throw error
     return c.json({ error: 'too_many_pending', message: 'This agent already has several publish requests waiting. Wait for those first.' }, 429)
@@ -139,12 +131,20 @@ router.post('/cancel', zValidator('json', proposalSchema), (c) => {
   return c.json({ ok: publishes.cancel(c.req.valid('json').proposalId, c.get('callerSlug')) })
 })
 
-async function publishAfterApproval(
-  callerSlug: string,
-  plan: TeamSkillPublishPlan,
-  note: { title: string; body: string },
-  signal: AbortSignal,
-): Promise<PublishOutcome> {
+async function proposePublish(callerSlug: string, request: PublishRequest, signal: AbortSignal): Promise<PublishOutcome> {
+  let plan: TeamSkillPublishPlan
+  try {
+    const skillsets = await getTeamSkillsets()
+    // Only the caches, as in search: the plan's name check reads the skillset index.
+    await pullSkillsets(skillsets, { maxAgeMs: BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS })
+    plan = await planTeamSkillPublish(callerSlug, request.skillDirectory, skillsets, request.skillsetId)
+  } catch (error) {
+    // Nothing reaches a person until the host can say what would be published, and where.
+    if (error instanceof SkillPublishRefusal) return { status: 422, body: { error: 'cannot_publish', message: error.message } }
+    captureException(error, { tags: { component: 'agent-skills', operation: 'publish-plan' } })
+    throw error
+  }
+
   let decision: 'allow' | 'deny'
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
@@ -163,7 +163,7 @@ async function publishAfterApproval(
         skillDirectory: plan.skillDirectory,
         skillsetName: plan.skillsetName,
         description: plan.description,
-        agentNote: note.body,
+        agentNote: request.note,
         files: plan.files,
         updatesPublishedSkill: plan.updatesPublishedSkill,
       },
@@ -175,19 +175,34 @@ async function publishAfterApproval(
     return { status: 403, body: { error: 'denied_by_user', message: 'The user rejected publishing this skill. Nothing was published.' } }
   }
 
+  // One audit row for every approved request, whatever came of it: a failure after the
+  // skillset took the files must not leave an approved publish with no record.
+  let outcome: 'published' | 'not_published' | 'failed' = 'failed'
   try {
-    const result = await publishPlannedTeamSkill(callerSlug, plan, await getTeamSkillsets(), note)
+    const result = await publishPlannedTeamSkill(callerSlug, plan, await getTeamSkillsets(), { title: request.title, body: request.note })
+    outcome = 'published'
+    return { status: 200, body: { ok: true, message: result.successMessage, ...(result.prUrl ? { url: result.prUrl } : {}) } }
+  } catch (error) {
+    if (error instanceof SkillPublishRefusal) {
+      outcome = 'not_published'
+      return { status: 409, body: { error: 'not_published', message: error.message } }
+    }
+    captureException(error, { tags: { component: 'agent-skills', operation: 'publish' } })
+    const reason = error instanceof Error ? error.message : 'unknown error'
+    return {
+      status: 500,
+      body: {
+        error: 'publish_failed',
+        message: `Publishing failed after the approval: ${reason}. The skill may have reached the team skillset, so search for it before you ask again.`,
+      },
+    }
+  } finally {
     await logAuditEvent({
       object: 'skill',
       objectId: `${callerSlug}/${plan.skillDirectory}`,
       action: 'exported',
-      details: { method: 'publish', skillsetId: plan.skillsetId, title: note.title, by: 'agent', agentSlug: callerSlug },
+      details: { method: 'publish', skillsetId: plan.skillsetId, title: request.title, by: 'agent', agentSlug: callerSlug, outcome },
     })
-    return { status: 200, body: { ok: true, message: result.successMessage, ...(result.prUrl ? { url: result.prUrl } : {}) } }
-  } catch (error) {
-    if (error instanceof SkillPublishRefusal) return { status: 409, body: { error: 'not_published', message: error.message } }
-    captureException(error, { tags: { component: 'agent-skills', operation: 'publish' } })
-    return { status: 500, body: { error: 'publish_failed', message: error instanceof Error ? error.message : 'Publishing failed on the host.' } }
   }
 }
 

@@ -1433,6 +1433,26 @@ export async function getAgentSkillsWithStatus(
 }
 
 /**
+ * Pull each skillset's cache and nothing else: no agent's installed skills are read or changed.
+ * With `maxAgeMs`, a cache refreshed within that window is left alone. A failed pull is
+ * reported and skipped, so the other skillsets still refresh.
+ */
+export async function pullSkillsets(skillsets: SkillsetConfig[], options: { maxAgeMs?: number } = {}): Promise<void> {
+  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
+  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
+    try {
+      await refreshSkillset(toSkillsetRefFromConfig(ss), options)
+    } catch (error) {
+      console.warn(`Failed to refresh skillset ${ss.id}:`, error)
+      const msg = error instanceof Error ? error.message : String(error)
+      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
+        captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
+      }
+    }
+  })))
+}
+
+/**
  * Refresh all skillset caches and reconcile skill status. This is where
  * state-changing reconciliation lives (metadata writes, file copies, clearing
  * openPrUrl, resolving pending platform queue items). The listing read path
@@ -1445,20 +1465,7 @@ export async function refreshAgentSkills(
 ): Promise<void> {
   const configMap = new Map<string, SkillsetConfig>()
   for (const ss of skillsets) configMap.set(ss.id, ss)
-  const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
-
-  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
-  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
-    try {
-      await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
-    } catch (error) {
-      console.warn(`Failed to refresh skillset ${ss.id}:`, error)
-      const msg = error instanceof Error ? error.message : String(error)
-      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
-        captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
-      }
-    }
-  })))
+  await pullSkillsets(skillsets, { maxAgeMs: options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined })
 
   const files = agentFiles(agentSlug)
   const skillsDir = skillWorkspacePath()
@@ -1642,8 +1649,13 @@ export async function installDiscoverableSkill(
   const skill = (await getDiscoverableSkills(agentSlug, [config])).find((s) => s.path === skillPath)
   if (!skill) return null
 
+  // A link at the destination is not listed as an installed skill, and the copy would follow
+  // it out of the workspace, so anything already at that path refuses the install.
+  const directory = skillPathToDirName(skill.path)
+  if (await agentFiles(agentSlug).stat(skillWorkspacePath(directory))) return null
+
   await installSkillFromSkillset(agentSlug, toSkillsetRefFromConfig(config), skill.path, skill.name, skill.version)
-  return { name: skill.name, directory: skillPathToDirName(skill.path) }
+  return { name: skill.name, directory }
 }
 
 /**
@@ -1806,16 +1818,18 @@ export async function createSkillPR(
     body: string
     newVersion?: string
   },
+  /** The install record and the files to publish, from a caller that already read and checked them. */
+  prepared?: { meta: InstalledSkillMetadata; packageFiles: SkillPackageFile[] },
 ): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
-  const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
+  const meta = prepared?.meta ?? await getInstalledSkillMetadata(agentSlug, skillDirName)
   if (!meta) {
     throw new Error('Skill has no skillset metadata - cannot create PR')
   }
 
   const files = agentFiles(agentSlug)
   const skillDir = skillWorkspacePath(skillDirName)
-  let packageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
+  let packageFiles = prepared?.packageFiles ?? await readWorkspaceSkillPackageFiles(files, skillDir)
   let modifiedContent = getSkillMdFromPackageFiles(packageFiles)
 
   if (options.newVersion) {
@@ -2027,12 +2041,14 @@ export async function publishSkillToSkillset(
     body: string
     newVersion?: string
   },
+  /** The files to publish, from a caller that already read and checked them. */
+  prepared?: { packageFiles: SkillPackageFile[] },
 ): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
 
   const files = agentFiles(agentSlug)
   const skillDir = skillWorkspacePath(skillDirName)
-  let packageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
+  let packageFiles = prepared?.packageFiles ?? await readWorkspaceSkillPackageFiles(files, skillDir)
   let skillContent = getSkillMdFromPackageFiles(packageFiles)
 
   if (options.newVersion) {
@@ -2127,7 +2143,7 @@ export async function publishSkillToSkillset(
 /** Why a skill cannot be published, worded for the agent that asked. */
 export class SkillPublishRefusal extends Error {}
 
-/** What publishing one skill would send, fixed before a person is asked to approve it. */
+/** What publishing one skill would send and where, fixed before a person is asked to approve it. */
 export interface TeamSkillPublishPlan {
   skillName: string
   skillDirectory: string
@@ -2142,6 +2158,13 @@ export interface TeamSkillPublishPlan {
   packageHash: string
 }
 
+/** A plan with what publishing it takes: the files it was made from and, for an update, the install record to publish under. */
+interface PreparedTeamSkillPublish {
+  plan: TeamSkillPublishPlan
+  packageFiles: SkillPackageFile[]
+  record?: InstalledSkillMetadata
+}
+
 async function readSkillPackageToPublish(agentSlug: string, skillDirName: string): Promise<SkillPackageFile[]> {
   const files = agentFiles(agentSlug)
   const skillDir = skillWorkspacePath(skillDirName)
@@ -2149,21 +2172,28 @@ async function readSkillPackageToPublish(agentSlug: string, skillDirName: string
   if (!packageFiles.some((file) => file.relativePath === 'SKILL.md')) {
     throw new SkillPublishRefusal(`No skill at /workspace/.claude/skills/${skillDirName}: SKILL.md not found.`)
   }
+  if (packageFiles.length > SKILL_MAX_FILE_COUNT) {
+    throw new SkillPublishRefusal(`This skill has ${packageFiles.length} files. A published skill can have ${SKILL_MAX_FILE_COUNT} at most.`)
+  }
   return packageFiles
 }
 
-/**
- * Plan the publish of an agent's skill to one of `teamSkillsets`: a skill the agent wrote goes
- * to the skillset named by `skillsetId` (or to the only one), and a changed skill that was
- * installed from a team skillset goes back to that skillset. Throws SkillPublishRefusal when
- * there is nothing to publish or nowhere to publish it.
- */
-export async function planTeamSkillPublish(
+/** Whether a change submitted earlier has left the skillset's review queue. Unknown counts as still waiting. */
+async function earlierChangeSettled(target: SkillsetConfig, queueItemId: string): Promise<boolean> {
+  try {
+    const status = await getSkillsetProvider(target.provider).getQueueItemStatus(queueItemId)
+    return status === 'merged' || status === 'rejected'
+  } catch {
+    return false
+  }
+}
+
+async function prepareTeamSkillPublish(
   agentSlug: string,
   skillDirName: string,
   teamSkillsets: SkillsetConfig[],
   skillsetId?: string,
-): Promise<TeamSkillPublishPlan> {
+): Promise<PreparedTeamSkillPublish> {
   if (!skillDirName || skillDirName.includes('/') || skillDirName.includes('\\') || skillDirName.includes('..')) {
     throw new SkillPublishRefusal(`"${skillDirName}" is not a skill directory name.`)
   }
@@ -2173,11 +2203,26 @@ export async function planTeamSkillPublish(
 
   const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
   let target: SkillsetConfig | undefined
+  let record: InstalledSkillMetadata | undefined
   if (meta) {
     target = teamSkillsets.find((ss) => ss.id === meta.skillsetId)
     if (!target) throw new SkillPublishRefusal('This skill was installed from a skillset that is not a team skillset, so its changes cannot be published.')
-    if (meta.pendingQueueItemId) throw new SkillPublishRefusal('This skill already has a change waiting for review in the team skillset.')
+    // The install record is a file the agent can write, and a copied skill directory carries the
+    // record of the skill it was copied from. Only a record that names this directory makes the
+    // publish an update, so the skill the card names is the skill that is replaced.
+    if (meta.skillPath !== `skills/${skillDirName}/SKILL.md`) {
+      throw new SkillPublishRefusal(
+        `This directory carries the install record of "${skillPathToDirName(meta.skillPath)}", so it is a copy of that skill. `
+        + 'To publish it as a new skill, delete .skillset-metadata.json and .skillset-original.md in it.',
+      )
+    }
+    if (meta.pendingQueueItemId && !(await earlierChangeSettled(target, meta.pendingQueueItemId))) {
+      throw new SkillPublishRefusal('This skill already has a change waiting for review in the team skillset.')
+    }
     if (packageHash === meta.originalContentHash) throw new SkillPublishRefusal('This skill has no changes to publish.')
+    // Where the update goes comes from the host's settings, not from the record.
+    const ref = toSkillsetRefFromConfig(target)
+    record = { ...meta, skillsetUrl: ref.skillsetUrl, skillsetName: ref.skillsetName, provider: ref.provider, providerData: ref.providerData }
   } else {
     if (teamSkillsets.length === 0) throw new SkillPublishRefusal('This workspace has no team skillset to publish to.')
     target = skillsetId ? teamSkillsets.find((ss) => ss.id === skillsetId) : teamSkillsets.length === 1 ? teamSkillsets[0] : undefined
@@ -2193,33 +2238,59 @@ export async function planTeamSkillPublish(
   }
 
   return {
-    skillName: getDisplayName(skillDirName),
-    skillDirectory: skillDirName,
-    skillsetId: target.id,
-    skillsetName: target.name,
-    description: parseDescription(getSkillMdFromPackageFiles(packageFiles)),
-    files: packageFiles.map((file) => file.relativePath),
-    updatesPublishedSkill: meta !== null,
-    packageHash,
+    plan: {
+      skillName: getDisplayName(skillDirName),
+      skillDirectory: skillDirName,
+      skillsetId: target.id,
+      skillsetName: target.name,
+      description: parseDescription(getSkillMdFromPackageFiles(packageFiles)),
+      files: packageFiles.map((file) => file.relativePath),
+      updatesPublishedSkill: record !== undefined,
+      packageHash,
+    },
+    packageFiles,
+    record,
   }
 }
 
-/** Publish the skill of `plan`, unless its files changed after the plan was made. */
+/**
+ * Plan the publish of an agent's skill to one of `teamSkillsets`: a skill the agent wrote goes
+ * to the skillset named by `skillsetId` (or to the only one), and a changed skill that was
+ * installed from a team skillset goes back to that skillset. Throws SkillPublishRefusal when
+ * there is nothing to publish or nowhere to publish it.
+ */
+export async function planTeamSkillPublish(
+  agentSlug: string,
+  skillDirName: string,
+  teamSkillsets: SkillsetConfig[],
+  skillsetId?: string,
+): Promise<TeamSkillPublishPlan> {
+  return (await prepareTeamSkillPublish(agentSlug, skillDirName, teamSkillsets, skillsetId)).plan
+}
+
+/**
+ * Publish the skill of an approved plan. The skill is planned again from the workspace, and a
+ * plan that differs from the approved one (its files, its skillset, new or update) publishes
+ * nothing. So does a skill this plan already published: it has no changes left. The files read
+ * for the check are the files sent, and an update goes to the target the check settled on.
+ */
 export async function publishPlannedTeamSkill(
   agentSlug: string,
-  plan: TeamSkillPublishPlan,
+  approved: TeamSkillPublishPlan,
   teamSkillsets: SkillsetConfig[],
   note: { title: string; body: string },
 ): Promise<{ prUrl?: string; successMessage: string }> {
-  const packageFiles = await readSkillPackageToPublish(agentSlug, plan.skillDirectory)
-  if (hashSkillPackageFiles(packageFiles) !== plan.packageHash) {
+  const { plan, packageFiles, record } = await prepareTeamSkillPublish(agentSlug, approved.skillDirectory, teamSkillsets, approved.skillsetId)
+  if (plan.packageHash !== approved.packageHash
+      || plan.skillsetId !== approved.skillsetId
+      || plan.updatesPublishedSkill !== approved.updatesPublishedSkill) {
     throw new SkillPublishRefusal('The skill changed after the approval was asked for. Nothing was published.')
   }
-  if (plan.updatesPublishedSkill) return createSkillPR(agentSlug, plan.skillDirectory, note)
+  if (record) return createSkillPR(agentSlug, plan.skillDirectory, note, { meta: record, packageFiles })
 
   const target = teamSkillsets.find((ss) => ss.id === plan.skillsetId)
   if (!target) throw new SkillPublishRefusal('The team skillset is no longer connected. Nothing was published.')
-  return publishSkillToSkillset(agentSlug, plan.skillDirectory, target, note)
+  return publishSkillToSkillset(agentSlug, plan.skillDirectory, target, note, { packageFiles })
 }
 
 // ============================================================================
