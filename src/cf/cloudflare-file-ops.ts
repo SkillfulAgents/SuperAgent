@@ -252,20 +252,31 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
       return { size: bytes.byteLength }
     },
 
-    async delete(path) {
+    async delete(path, options) {
       const rel = normalizeWorkspacePath(path)
+      if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root cannot be deleted')
+      const refuseFolder = (isFolder: boolean) => {
+        if (isFolder && !options?.recursive) throw new WorkspaceFileError('not-a-file', 'Path is a directory; delete it with recursive')
+      }
       // The container deletes a named entry of a named kind (its file browser's delete), so the kind is asked first.
       const inContainer = async () => {
         const found = await awake(`/files/${encodePath(rel)}`)
         if (!found?.ok) return found
         const type = Array.isArray(await found.json()) ? 'directory' : 'file'
+        refuseFolder(type === 'directory')
         return awake('/workspace/entries', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: `/workspace/${rel}`, type }),
         })
       }
-      await change(rel, inContainer, () => sleeping.remove(rel), true)
+      const asleep = async () => {
+        const found = await sleeping.entry(rel)
+        if (!found) return true
+        refuseFolder(Array.isArray(found))
+        return sleeping.remove(rel)
+      }
+      await change(rel, inContainer, asleep, true)
     },
 
     async mkdir(path) {

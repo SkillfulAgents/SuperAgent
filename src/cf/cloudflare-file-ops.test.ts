@@ -209,9 +209,24 @@ describe('Cloudflare file ops while the container runs', () => {
     const container = fakeContainer({ '.claude/projects/-workspace/session.jsonl': 'line', 'notes/a.txt': 'a', 'notes/old/b.txt': 'b', 'AGENTS.md': 'keep' })
     const files = createCloudflareFileOps(container.call, unused)
     await files.delete('.claude/projects/-workspace/session.jsonl')
-    await files.delete('notes')
+    await expect(files.delete('notes')).rejects.toMatchObject({ code: 'not-a-file' })
+    expect(container.files.has('notes/a.txt')).toBe(true)
+    await files.delete('notes', { recursive: true })
     expect([...container.files.keys()]).toEqual(['AGENTS.md'])
     expect(container.calls.filter((call) => call.startsWith('DELETE '))).toEqual(['DELETE /workspace/entries', 'DELETE /workspace/entries'])
+  })
+
+  it('refuses to delete the root, or a folder of the saved workspace without recursive', async () => {
+    const container = fakeContainer()
+    container.state.running = false
+    const saved = fakeSleeping({ 'notes/a.txt': 'a', 'notes/b.txt': 'b' })
+    const files = createCloudflareFileOps(container.call, saved.store)
+    await expect(files.delete('', { recursive: true })).rejects.toMatchObject({ code: 'invalid-path' })
+    await expect(files.delete('notes')).rejects.toMatchObject({ code: 'not-a-file' })
+    expect([...saved.files.keys()]).toEqual(['notes/a.txt', 'notes/b.txt'])
+    await files.delete('notes', { recursive: true })
+    await files.delete('never-there')
+    expect([...saved.files.keys()]).toEqual([])
   })
 
   it('streams a written stream to a running container, and reads it whole only for the saved workspace', async () => {
