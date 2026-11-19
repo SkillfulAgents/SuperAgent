@@ -254,6 +254,7 @@ export function WidgetBoard({
     const dx = e.clientX - (boardRect.left + p.left)
     const dy = e.clientY - (boardRect.top + p.top)
     let started = false
+    let snapped: Pick<DragState, 'target' | 'preview'> | null = null
 
     const move = (ev: PointerEvent) => {
       if (!started && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return
@@ -266,9 +267,13 @@ export function WidgetBoard({
       const maxX = cols - item.w
       const tx = Math.max(0, Math.min(maxX, Math.round(left / unitX)))
       const ty = Math.max(0, Math.round(top / unitY))
-      const moved = placed.map((g) => (g.id === item.id ? { ...g, x: tx, y: ty } : g))
-      const preview = resolveLayout(moved, item.id)
-      setDrag({ id: item.id, left, top, w: item.w, h: item.h, target: { x: tx, y: ty }, preview })
+      // Most pointermoves stay inside one snapped cell: the other cards' reflow
+      // is the same, so only the dragged tile's left/top change.
+      if (!snapped || snapped.target.x !== tx || snapped.target.y !== ty) {
+        const moved = placed.map((g) => (g.id === item.id ? { ...g, x: tx, y: ty } : g))
+        snapped = { target: { x: tx, y: ty }, preview: resolveLayout(moved, item.id) }
+      }
+      setDrag({ id: item.id, left, top, w: item.w, h: item.h, target: snapped.target, preview: snapped.preview })
     }
     const cleanup = () => {
       window.removeEventListener('pointermove', move)
@@ -306,6 +311,26 @@ export function WidgetBoard({
     const next = placed.map((g) => (g.id === item.id ? { ...g, x, w, h: def.h } : g))
     commitFromPlaced(resolveLayout(next, item.id))
   }
+
+  // The cards are built once per layout, not once per board render. A drag
+  // re-renders the board on every pointermove (60-120 Hz) to move the dragged
+  // tile; handing React the same elements lets it skip every card's subtree,
+  // so only the wrappers' positions are diffed. The parent does not re-render
+  // during a drag, so `renderItem` keeps its identity; whenever it does change,
+  // every card is rebuilt, as before. `onResize` reads the latest `setSize`
+  // through a ref, so a kept element never resizes against an old layout.
+  const setSizeRef = useRef(setSize)
+  setSizeRef.current = setSize
+  const contents = useMemo(() => {
+    const map = new Map<string, ReactNode>()
+    for (const item of placed) {
+      map.set(
+        item.id,
+        renderItem(item.id, widgetSizeKey(item.w, item.h), (s) => setSizeRef.current(item, s))
+      )
+    }
+    return map
+  }, [placed, renderItem])
 
   const previewMap = new Map<string, Placed>()
   if (drag?.preview) for (const g of drag.preview) previewMap.set(g.id, g)
@@ -391,7 +416,7 @@ export function WidgetBoard({
               className={cn('h-full w-full', arranging && !isDragging && 'home-card-jiggle')}
               style={arranging ? { animationDelay: `${-(index % 5) * 37}ms` } : undefined}
             >
-              {renderItem(item.id, widgetSizeKey(item.w, item.h), (s) => setSize(item, s))}
+              {contents.get(item.id)}
             </div>
             {/* Mobile Arrange gets a full-card overlay so a touch hold cannot
                 reach Radix's long-press menu. Desktop uses the board's bubbling
