@@ -104,10 +104,19 @@ describe('the cf-workspace-server', () => {
     expect((await lstat(join(root, 'drafts'))).isDirectory()).toBe(true)
   })
 
-  it('fails a restore whose bytes the store does not have', async () => {
-    const { post } = await running()
-    const response = await post('/restore', { files: [{ path: 'notes.md', hash: 'a'.repeat(64), size: 1, mode: 0o644, kind: 'file' }] })
-    expect(response.status).toBe(500)
+  it('leaves out a file whose bytes the store does not have, and restores the rest', async () => {
+    const store = fakeStore()
+    store.blobs.set(sha256('# Q3 report'), '# Q3 report')
+    const { post } = await running(store)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const response = await post('/restore', { files: [
+      { path: 'notes.md', hash: 'a'.repeat(64), size: 1, mode: 0o644, kind: 'file' },
+      { path: 'reports/q3.md', hash: sha256('# Q3 report'), size: 11, mode: 0o644, kind: 'file' },
+    ] })
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('restored 1 files; left out 1 whose bytes are missing')
+    expect(await readFile(join(root, 'reports/q3.md'), 'utf8')).toBe('# Q3 report')
+    await expect(lstat(join(root, 'notes.md'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('scans and saves only once the agent is launched, and launches it once', async () => {

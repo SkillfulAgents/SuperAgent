@@ -42,7 +42,9 @@ export function createWorkspaceService({ workspace: WORKSPACE, store: STORE, lau
   // path -> { size, mtimeMs, hash, mode } from the last scan, so unchanged files are not rehashed.
   let scanned = new Map()
 
+  // Returns the paths whose bytes the store does not have: those files are left out, so one lost file does not keep the agent from starting.
   async function restore(entries) {
+    const missing = []
     await inPool(entries, async (entry) => {
       const abs = path.join(WORKSPACE, entry.path)
       const kind = entry.kind ?? 'file'
@@ -60,12 +62,18 @@ export function createWorkspaceService({ workspace: WORKSPACE, store: STORE, lau
         return
       }
       const response = await fetch(`${STORE}/blobs/${entry.hash}`)
+      if (response.status === 404) {
+        await response.body?.cancel()
+        missing.push(entry.path)
+        return
+      }
       if (!response.ok) throw new Error(`blob ${entry.hash} for ${entry.path}: ${response.status}`)
       await fs.promises.writeFile(abs, Readable.fromWeb(response.body))
       await fs.promises.chmod(abs, entry.mode)
       // The time it was last changed, not the time of this restore: tools and the file list compare it.
       if (entry.mtimeMs) await fs.promises.utimes(abs, new Date(), new Date(entry.mtimeMs))
     })
+    return missing
   }
 
   // 'ok', or 'changed' when the store found the bytes no longer match the hash.
@@ -254,8 +262,9 @@ export function createWorkspaceService({ workspace: WORKSPACE, store: STORE, lau
       if (route === 'POST /restore') {
         if (agent) return end(res, 409, 'the agent is already running')
         const { files } = await readJson(req)
-        await restore(files)
-        return end(res, 200, `restored ${files.length} files`)
+        const missing = await restore(files)
+        if (missing.length) console.error(`[workspace] restored without ${missing.length} files whose bytes are missing: ${missing.join(', ')}`)
+        return end(res, 200, `restored ${files.length - missing.length} files${missing.length ? `; left out ${missing.length} whose bytes are missing` : ''}`)
       }
 
       // Before launch, /workspace is not (yet) the agent's: saving it could replace a good one.
