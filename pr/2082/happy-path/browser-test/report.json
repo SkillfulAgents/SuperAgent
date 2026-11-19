@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: Page Title\"\n- Browser tool calls executed successfully (3 tool calls made)\n- Response confirms the browser was opened, navigated to the correct URL, page title was captured, and browser was closed\n- All expected UI elements were present and functional\n\nNo bugs were found during this test execution.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 66143,
+  "sessionId": "22f1d99f-c99a-46aa-ae92-5ecd580f9ad6",
+  "cost": {
+    "inputTokens": 374,
+    "outputTokens": 10534,
+    "cacheCreationTokens": 73051,
+    "cacheReadTokens": 1077173,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.252075
+  }
+}
