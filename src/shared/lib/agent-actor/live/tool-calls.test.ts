@@ -198,6 +198,7 @@ describe('ToolCalls', () => {
       h.calls.mainToolUse(use('t_file', 'mcp__user-input__request_file', { description: 'Your CV', fileTypes: ['.pdf'] }))
       h.calls.mainToolUse(use('t_mcp', 'mcp__user-input__request_remote_mcp', { url: 'https://mcp.example', name: 'Ex', clientId: 'cid' }))
       h.calls.mainToolUse(use('t_browser', 'mcp__user-input__request_browser_input', { message: 'Log in', requirements: 'a string' }))
+      h.calls.mainToolUse(use('t_setup', 'mcp__user-input__request_integration_setup', { provider: 'linear', reason: 'Triage', prefill: { name: 'Helper', clientSecret: 'x'.repeat(201), nested: { no: 1 } } }))
 
       expect(h.open('t_secret')).toMatchObject({ kind: 'secret', payload: { secretName: 'API_KEY', reason: 'deploy' } })
       expect(h.open('t_account')).toMatchObject({ kind: 'connected_account', payload: { toolkit: 'github', reason: 'repos' } })
@@ -205,12 +206,15 @@ describe('ToolCalls', () => {
       expect(h.open('t_mcp')).toMatchObject({ kind: 'remote_mcp', payload: { url: 'https://mcp.example', name: 'Ex', clientId: 'cid' } })
       // The model controls `requirements`: a non-array becomes [].
       expect(h.open('t_browser')).toMatchObject({ kind: 'browser_input', payload: { message: 'Log in', requirements: [] } })
+      // Only short strings start the form.
+      expect(h.open('t_setup')).toMatchObject({ kind: 'integration_setup', payload: { provider: 'linear', reason: 'Triage', prefill: { name: 'Helper' } } })
       expect(h.host.sent('analytics').map((e) => e.event)).toEqual([
         'agent_request_secret',
         'agent_request_connected_account',
         'agent_request_file',
         'agent_request_remote_mcp',
         'agent_request_browser_input',
+        'agent_request_integration_setup',
       ])
     })
 

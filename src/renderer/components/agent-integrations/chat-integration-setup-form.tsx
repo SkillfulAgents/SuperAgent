@@ -205,10 +205,13 @@ export function ChatIntegrationSetupForm({
   provider,
   onClose,
   leading,
+  initial,
 }: {
   agentSlug: string
   provider: ChatProvider
   onClose: () => void
+  /** Starting values an agent suggested when it handed the setup over. */
+  initial?: Record<string, string>
   /** Shown above the fields, e.g. Slack's choice of webhooks. */
   leading?: ReactNode
 }) {
@@ -216,7 +219,7 @@ export function ChatIntegrationSetupForm({
   const testCredentials = useTestAgentIntegrationCredentials()
 
   const [formData, setFormData] = useState<Record<string, string>>({})
-  const [integrationName, setIntegrationName] = useState('')
+  const [integrationName, setIntegrationName] = useState(initial?.name ?? '')
   const [behavior, setBehavior] = useState(DEFAULT_CHAT_SETUP_BEHAVIOR)
   const [testResult, setTestResult] = useState<{ valid: boolean; info?: string } | null>(null)
   const [slackSetupMode, setSlackSetupMode] = useState<'manifest' | 'manual'>('manifest')

@@ -36,6 +36,7 @@ import type { AskUserQuestionInput } from '@shared/lib/tools/ask-user-question/d
 import type { RequestSecretInput } from '@shared/lib/tools/request-secret/definition'
 import type { RequestFileInput } from '@shared/lib/tools/request-file/definition'
 import type { RequestConnectedAccountInput } from '@shared/lib/tools/request-connected-account/definition'
+import type { RequestIntegrationSetupInput } from '@shared/lib/tools/request-integration-setup/definition'
 import type { RequestRemoteMcpInput } from '@shared/lib/tools/request-remote-mcp/definition'
 import type { RequestBrowserInputInput } from '@shared/lib/tools/request-browser-input/definition'
 import type { RequestLoginInput } from '@shared/lib/tools/request-login/definition'
@@ -115,6 +116,17 @@ const USER_INPUT_REQUESTS: Record<
     payload: (input) => {
       const { toolkit, reason } = input as RequestConnectedAccountInput
       return toolkit ? { toolkit: toolkit.toLowerCase(), reason } : 'missing toolkit'
+    },
+  },
+  integration_setup: {
+    label: 'integration setup request',
+    payload: (input) => {
+      const { provider, reason, prefill } = input as RequestIntegrationSetupInput
+      if (typeof provider !== 'string' || !provider) return 'missing provider'
+      // Starting values for the form, as short strings: nothing else reaches the card.
+      const suggested = Object.entries(prefill && typeof prefill === 'object' ? prefill : {})
+        .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length <= 200)
+      return { provider, reason, ...(suggested.length ? { prefill: Object.fromEntries(suggested) } : {}) }
     },
   },
   file: {

@@ -41,6 +41,7 @@ it('takes any provider the host names, and reports the host\'s refusal', async (
 it('lists the host\'s providers with their guides, and the ones this host cannot run', async () => {
   host(200, { webhookRelay: false, providers: [
     { provider: 'telegram', name: 'Telegram', guide: 'Required: `botToken`' },
+    { provider: 'slack', name: 'Slack', guide: 'Create the app', oneClickWorkspace: 'Acme' },
     { provider: 'github', name: 'GitHub', unavailable: 'Needs a webhook relay, which this host does not have.' },
   ] })
 
@@ -49,5 +50,6 @@ it('lists the host\'s providers with their guides, and the ones this host cannot
   expect(vi.mocked(fetch).mock.calls[0][0]).toBe('https://host/api/x-agent/chat/providers')
   expect(result.content[0].text).toContain('## Telegram (provider `telegram`)\nRequired: `botToken`')
   expect(result.content[0].text).toContain('## GitHub (provider `github`)\nNeeds a webhook relay')
+  expect(result.content[0].text).toContain('## Slack (provider `slack`)\nOne click: the Acme team directory creates this app for the user in the app\'s setup form. Hand the setup over with request_integration_setup')
   expect(result.content[0].text).toContain('This host has no webhook relay.')
 })

@@ -5,6 +5,10 @@ import type { IntegrationMessageProps } from './messages/types'
 export interface IntegrationSetupProps {
   agentSlug: string
   onClose: () => void
+  /** Starting values an agent suggested when it handed the setup over; a form reads the ones it knows. */
+  initial?: Record<string, string>
+  /** Replaces opening the new integration's page, for setup started from a session. */
+  onIntegrationCreated?: (integrationId: string) => void
 }
 
 /**

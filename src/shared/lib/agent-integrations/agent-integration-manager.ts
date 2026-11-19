@@ -42,6 +42,7 @@ import { restoreStreamPayloadSchema, type RestoreStreamPayload } from './restore
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
 import { continuationPrompt } from './continuation-prompt'
+import { answerSetupRequests } from './setup-request'
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
 const COMPONENT = 'agent-integration'
@@ -793,6 +794,8 @@ export class AgentIntegrationManager implements Service {
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
+    // The agent may have handed exactly this setup to the user, and be waiting on it.
+    background(answerSetupRequests(integration), { name: 'integration-manager.answer-setup-requests' })
 
     // Follow again the chats whose session is running now: a turn that began
     // while no connection was there to hear it (a creation accepted during

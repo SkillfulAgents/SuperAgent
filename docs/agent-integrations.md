@@ -186,6 +186,19 @@ install) hands the address it was redirected to back as `redirect_url`;
 provider's callback path and only for the caller's own installation, and returns
 a further provider step (GitHub's install page) to open next.
 
+An agent can also hand a setup to the user: `request_integration_setup`
+(`mcp__user-input__`, request kind `integration_setup`) parks like any other
+user-input request and shows a card in the session. The card opens the
+provider's own setup form (`AgentIntegrationSetupDialog`) with the agent's
+suggested starting values (`initial`; a form reads the keys it knows, never
+credentials), for whoever may add that provider from the agent's home page.
+`answerSetupRequests` answers the call when an integration of that provider
+connects for the agent, whichever screen set it up; declining rejects it
+(`POST /api/agents/:id/sessions/:sessionId/decline-integration-setup`). The
+provider listing marks a provider whose app a connected team directory can
+create (`oneClickWorkspace`), which only the form can use, so the agent hands
+those over by default.
+
 Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
 credential panel, fields, feedback and actions. Providers supply their content and
 connection flow. An optional read-only `setup.describe` hook supplies app-creation

@@ -11,6 +11,7 @@ import { webSearchTool } from './tools/web/web-search'
 import { webFetchTool } from './tools/web/web-fetch'
 import { requestSecretTool } from './tools/request-secret'
 import { requestConnectedAccountTool } from './tools/request-connected-account'
+import { requestIntegrationSetupTool } from './tools/request-integration-setup'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
 import { createRequestRemoteMcpTool, type RemoteMcpInjectionTarget } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
@@ -95,6 +96,7 @@ export function createUserInputMcpServer(
     version: '1.0.0',
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
+      requestIntegrationSetupTool,
       createRequestRemoteMcpTool(getProcess), searchRemoteMcpServicesTool,
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
       cancelScheduledTaskTool,

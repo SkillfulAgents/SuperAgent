@@ -27,6 +27,15 @@ delivery.
    `redirect_url` set to that page's address.
 5. List integrations again to confirm that setup succeeded.
 
+Do the setup yourself by default. Hand it to the user with
+`mcp__user-input__request_integration_setup` instead when the provider listing
+marks the provider "one click", when the user wants to do it themselves or will
+not log in to the service in your browser, when only they can get past a step
+(single sign-on, a second factor, an admin's approval), or when you have no
+browser. It opens the provider's setup form for them in this session, starting
+from the values you suggest, and returns once the integration is connected.
+Choose before step 4: the form creates the integration itself.
+
 Do not use `request_connected_account` or remote-MCP discovery for this flow.
 
 ## Email

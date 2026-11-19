@@ -28,6 +28,7 @@ import { taskDef } from './task/definition'
 import { askUserQuestionDef } from './ask-user-question/definition'
 import { requestSecretDef } from './request-secret/definition'
 import { requestConnectedAccountDef } from './request-connected-account/definition'
+import { requestIntegrationSetupDef } from './request-integration-setup/definition'
 import { scheduleTaskDef } from './schedule-task/definition'
 import { scheduleResumeDef } from './schedule-resume/definition'
 import { deliverFileDef } from './deliver-file/definition'
@@ -118,6 +119,7 @@ const definitions: Record<string, ToolDefinition> = {
   // MCP tools - user input
   'mcp__user-input__request_secret': requestSecretDef,
   'mcp__user-input__request_connected_account': requestConnectedAccountDef,
+  'mcp__user-input__request_integration_setup': requestIntegrationSetupDef,
   'mcp__user-input__schedule_task': scheduleTaskDef,
   'mcp__user-input__schedule_resume': scheduleResumeDef,
   'mcp__user-input__deliver_file': deliverFileDef,
