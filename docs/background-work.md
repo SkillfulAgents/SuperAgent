@@ -132,6 +132,8 @@ Electron main adds three of its own, with their existing gates. They are not in 
 
 The stale-upload sweep (`src/shared/lib/utils/chunked-upload.ts`) is a task with no service around it: `afterBindInitialize` schedules it ahead of the services, because a server whose services failed to start still takes uploads. It sweeps at once, then every 30 minutes, and each pass only sets a sweep going, so a slow sweep does not hold up the next.
 
+A local agent's session index stores its recorded activity on a `session-index.store-activity` wakeup (`src/shared/lib/agent-actor/session-activity-wakeup.ts`), also a task with no service: it registers itself the first time an index sets one, and is set 5 s after a write the index has not stored. See [session-index.md](session-index.md#last-activity).
+
 **A pass that must not count as running.** The integration and container health checks start their work and return, rather than being awaited. A connect that hangs holds up only its own integration (`reconcilingIds`), and a runtime that hangs on one agent holds up only that pass; if the manager saw a pass as running, it would skip all the later ones. Reach for this only when later passes are safe to run alongside a stuck one.
 
 **Left where they are.** Browser profile maintenance is going away and is not migrated. An agent's auto-sleep is its `IdleAlarm`. Transport heartbeats, request-local timeouts, typing indicators and renderer timers are not background jobs. Neither is the wait between the follow-up passes of a reconnect after system resume (`reconnectAll`), which is one pass in progress.

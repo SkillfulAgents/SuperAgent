@@ -128,6 +128,7 @@ src/shared/lib/auth/invited-user-claim.integration.test.ts
 src/shared/lib/team-directory/provisioning.test.ts
 src/api/routes/agent-integration-provisioning.test.ts
 src/shared/lib/agent-actor/db-session-index-storage.test.ts
+src/shared/lib/agent-actor/session-activity-wakeup.test.ts
 src/shared/lib/services/session-service.metadata.test.ts
 src/shared/lib/services/session-service.summary.test.ts
 src/shared/lib/services/session-service.listing.test.ts

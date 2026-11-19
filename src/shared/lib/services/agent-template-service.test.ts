@@ -2334,6 +2334,9 @@ describe('exportAgentFull', () => {
     await listSessions(store)
     // A write the host saw, later than the file's own time.
     recordSessionActivity(store, 'recorded', new Date('2026-03-09T00:00:00.000Z'))
+    // The export reads through the agent's actor, which has an index of its
+    // own: this store's is told to store what it holds, as its wakeup would.
+    await store.index.storeRecordedActivity()
 
     const { metadata, entries } = await exportedSessionMetadata('full-agent')
 

@@ -20,7 +20,7 @@ vi.mock('@shared/lib/background', async (importOriginal) => {
 })
 
 import { backgroundSettled } from '@shared/lib/background'
-import { SessionIndex, type SessionIndexStorage } from './session-index'
+import { ACTIVITY_STORE_INTERVAL_MS, SessionIndex, type SessionIndexStorage } from './session-index'
 import { CLI_TRANSCRIPTS_DIR } from './session-store'
 import { InMemoryFileOps } from './testing/in-memory-file-ops'
 import { createInMemorySessionIndexStorage } from './testing/in-memory-session-index-storage'
@@ -634,5 +634,256 @@ describe('SessionIndex activity', () => {
     index.recordActivity('s2', 9_000_000_000_000)
 
     expect(await activityOf(index)).toMatchObject({ s2: 9_000_000_000_000 })
+  })
+})
+
+describe('SessionIndex storing activity on a wakeup', () => {
+  /** An index whose owner arranges wakeups: the test is the alarm, and fires it with `due()`. */
+  function setupWithWakeups(overrides: Partial<SessionIndexStorage> = {}, canArrange = () => true) {
+    const files = new InMemoryFileOps()
+    const storage = { ...createInMemorySessionIndexStorage(), ...overrides }
+    const wakeups: number[] = []
+    const index: SessionIndex = new SessionIndex({
+      files,
+      transcriptsDir: CLI_TRANSCRIPTS_DIR,
+      key: () => 'workspace-one',
+      storage,
+      directoryTickMs: 0,
+      storeActivityLater: (atMs) => {
+        if (!canArrange()) return false
+        wakeups.push(atMs)
+        return true
+      },
+    })
+    return { files, storage, index, wakeups, due: () => index.storeRecordedActivity() }
+  }
+
+  it('stores a turn\'s frames as one write when the wakeup comes, not one per frame', async () => {
+    const { index, files, storage, wakeups, due } = setupWithWakeups()
+    await files.putDoc(transcript('s1'), 'x')
+    const seenAt = (await activityOf(index)).s1!
+    const touch = vi.spyOn(storage, 'touch')
+    vi.useFakeTimers({ now: seenAt + 10, toFake: ['Date'] })
+
+    for (let frame = 1; frame <= 200; frame++) {
+      index.recordActivity('s1', seenAt + 10 + frame)
+      vi.advanceTimersByTime(10)
+    }
+    await backgroundSettled()
+
+    // 2 s of frames: one wakeup arranged, an interval after the first, and nothing stored yet.
+    expect(wakeups).toEqual([seenAt + 10 + ACTIVITY_STORE_INTERVAL_MS])
+    expect(touch).not.toHaveBeenCalled()
+
+    await due()
+
+    expect(touch).toHaveBeenCalledTimes(1)
+    expect(touch).toHaveBeenCalledWith(new Map([['s1', seenAt + 210]]))
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 210)
+  })
+
+  it('arranges one wakeup per interval in which something is recorded, and none while nothing is', async () => {
+    const { index, files, wakeups, due } = setupWithWakeups()
+    await files.putDoc(transcript('s1'), 'x')
+    const seenAt = (await activityOf(index)).s1!
+
+    index.recordActivity('s1', seenAt + 10)
+    index.recordActivity('s1', seenAt + 11)
+    expect(wakeups).toHaveLength(1)
+    await due()
+    // Due again with nothing recorded: nothing to arrange.
+    await due()
+    expect(wakeups).toHaveLength(1)
+
+    index.recordActivity('s1', seenAt + 12)
+    index.recordActivity('s1', seenAt + 13)
+    expect(wakeups).toHaveLength(2)
+    await due()
+  })
+
+  it('answers a read with everything recorded, without waiting for the wakeup', async () => {
+    const { index, files, storage } = setupWithWakeups()
+    await files.putDoc(transcript('s1'), 'x')
+    await files.putDoc(transcript('s2'), 'x')
+    const seenAt = (await activityOf(index)).s1!
+
+    index.recordActivity('s1', seenAt + 5000)
+
+    expect((await index.entry('s1'))?.transcript?.mtimeMs).toBe(seenAt + 5000)
+    index.recordActivity('s2', seenAt + 7000)
+    expect(await activityOf(index)).toEqual({ s1: seenAt + 5000, s2: seenAt + 7000 })
+    expect((await storage.get('s2'))?.transcript?.mtimeMs).toBe(seenAt + 7000)
+  })
+
+  it('stores what is recorded when told a turn ended, whenever the wakeup is due', async () => {
+    const { index, files, storage, due } = setupWithWakeups()
+    await files.putDoc(transcript('s1'), 'x')
+    const seenAt = (await activityOf(index)).s1!
+
+    index.recordActivity('s1', seenAt + 100)
+    index.recordActivity('s1', seenAt + 200)
+    await index.storeRecordedActivity()
+
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 200)
+    // The wakeup still comes, and finds nothing left to store.
+    const touch = vi.spyOn(storage, 'touch')
+    await due()
+    expect(touch).not.toHaveBeenCalled()
+  })
+
+  it('does not chain a write for what is recorded while one is under way', async () => {
+    const base = createInMemorySessionIndexStorage()
+    const held: Array<() => void> = []
+    const touched: Array<Map<string, number>> = []
+    const { index, files, storage, wakeups, due } = setupWithWakeups({
+      ...base,
+      touch: async (activity) => {
+        touched.push(new Map(activity))
+        await new Promise<void>((resolve) => held.push(resolve))
+        return base.touch(activity)
+      },
+    })
+    await files.putDoc(transcript('s1'), 'x')
+    await index.entries()
+    const seenAt = (await storage.get('s1'))!.transcript!.mtimeMs
+
+    index.recordActivity('s1', seenAt + 1)
+    const storing = due()
+    await vi.waitFor(() => expect(held).toHaveLength(1))
+    // Frames keep coming while the write is out: they wait for a wakeup of their own.
+    for (let frame = 2; frame <= 20; frame++) index.recordActivity('s1', seenAt + frame)
+    held.shift()!()
+    await storing
+
+    expect(touched).toEqual([new Map([['s1', seenAt + 1]])])
+    expect(wakeups).toHaveLength(2)
+
+    // A read that comes meanwhile still gets all of it, in one more write.
+    const reading = activityOf(index)
+    await vi.waitFor(() => expect(held).toHaveLength(1))
+    held.shift()!()
+    expect(await reading).toEqual({ s1: seenAt + 20 })
+    expect(touched).toHaveLength(2)
+  })
+
+  it('a read that arrives during a write waits for it, then stores what was recorded since', async () => {
+    const base = createInMemorySessionIndexStorage()
+    const held: Array<() => void> = []
+    const { index, files, storage, due } = setupWithWakeups({
+      ...base,
+      touch: async (activity) => {
+        await new Promise<void>((resolve) => held.push(resolve))
+        return base.touch(activity)
+      },
+    })
+    await files.putDoc(transcript('s1'), 'x')
+    await index.entries()
+    const seenAt = (await storage.get('s1'))!.transcript!.mtimeMs
+
+    index.recordActivity('s1', seenAt + 1)
+    const storing = due()
+    await vi.waitFor(() => expect(held).toHaveLength(1))
+    index.recordActivity('s1', seenAt + 2)
+    const reading = index.entry('s1')
+    held.shift()!()
+    await storing
+    await vi.waitFor(() => expect(held).toHaveLength(1))
+    held.shift()!()
+
+    expect((await reading)?.transcript?.mtimeMs).toBe(seenAt + 2)
+  })
+
+  it('keeps activity a wakeup could not store, arranges another, and stores it then', async () => {
+    const base = createInMemorySessionIndexStorage()
+    let failing = true
+    const { index, files, storage, wakeups, due } = setupWithWakeups({
+      ...base,
+      touch: async (activity) => {
+        if (failing) throw new Error('storage unavailable')
+        return base.touch(activity)
+      },
+    })
+    await files.putDoc(transcript('s1'), 'x')
+    await index.entries()
+    const seenAt = (await storage.get('s1'))!.transcript!.mtimeMs
+
+    index.recordActivity('s1', seenAt + 1000)
+    await expect(due()).rejects.toThrow('storage unavailable')
+    expect(wakeups).toHaveLength(2)
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt)
+
+    failing = false
+    await due()
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 1000)
+    expect(wakeups).toHaveLength(2)
+  })
+
+  it('stops waiting for a wakeup that is an interval late, and stores as the next write is recorded', async () => {
+    const { index, files, storage, wakeups } = setupWithWakeups()
+    await files.putDoc(transcript('s1'), 'x')
+    const seenAt = (await activityOf(index)).s1!
+    vi.useFakeTimers({ now: seenAt + 10, toFake: ['Date'] })
+
+    index.recordActivity('s1', seenAt + 10)
+    // The wakeup never comes: dispatch stopped, or its manager is gone.
+    vi.setSystemTime(seenAt + 10 + 2 * ACTIVITY_STORE_INTERVAL_MS - 1)
+    index.recordActivity('s1', seenAt + 20)
+    await backgroundSettled()
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt)
+
+    vi.setSystemTime(seenAt + 10 + 2 * ACTIVITY_STORE_INTERVAL_MS)
+    index.recordActivity('s1', seenAt + 30)
+    await backgroundSettled()
+
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 30)
+    // And asks for another, in case wakeups come again.
+    expect(wakeups).toHaveLength(2)
+  })
+
+  it('stores each write as it is recorded when no wakeup can be arranged', async () => {
+    let canArrange = false
+    const { index, files, storage, wakeups } = setupWithWakeups({}, () => canArrange)
+    await files.putDoc(transcript('s1'), 'x')
+    const seenAt = (await activityOf(index)).s1!
+
+    index.recordActivity('s1', seenAt + 100)
+    await backgroundSettled()
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 100)
+    expect(wakeups).toEqual([])
+
+    // Arranged from the first write after it becomes possible.
+    canArrange = true
+    index.recordActivity('s1', seenAt + 200)
+    await backgroundSettled()
+    expect(wakeups).toHaveLength(1)
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 100)
+  })
+
+  it('stores nothing for a session deleted before the wakeup', async () => {
+    const { index, files, storage, due } = setupWithWakeups()
+    await files.putDoc(transcript('s1'), 'x')
+    await index.entries()
+    const touch = vi.spyOn(storage, 'touch')
+
+    index.recordActivity('s1', 9_000_000_000_000)
+    await files.delete(transcript('s1'))
+    await index.delete(['s1'])
+    await due()
+
+    expect(touch).not.toHaveBeenCalled()
+    expect(await storage.list()).toEqual([])
+  })
+
+  it('holds activity for a transcript it has not seen across a wakeup, until it sees it', async () => {
+    const { index, files, storage, due } = setupWithWakeups()
+    await index.update('s1', () => ({ name: 'Registered' }))
+    index.recordActivity('s1', 9_000_000_000_000)
+    await due()
+    expect((await storage.get('s1'))?.transcript).toBeNull()
+
+    await files.putDoc(transcript('s1'), 'x')
+
+    expect(await activityOf(index)).toEqual({ s1: 9_000_000_000_000 })
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(9_000_000_000_000)
   })
 })

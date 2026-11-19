@@ -40,6 +40,19 @@ function countingBoundParameters(db: AppDatabase): { db: AppDatabase; counts: nu
 const database = perTestDatabase()
 vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
+// How many statements each batch the storage sent held: a batch is one round trip.
+const batchSizes = vi.hoisted(() => [] as number[])
+vi.mock('@shared/lib/db/batch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/db/batch')>()
+  return {
+    ...actual,
+    batch: (statements: Parameters<typeof actual.batch>[0]) => {
+      batchSizes.push(statements.length)
+      return actual.batch(statements)
+    },
+  }
+})
+
 describeSessionIndexStorageContract('DbSessionIndexStorage', () => ({
   storage: createDbSessionIndexStorage('agent-one'),
   other: createDbSessionIndexStorage('agent-two'),
@@ -66,6 +79,58 @@ describe('DbSessionIndexStorage', () => {
     } finally {
       await migrating.close()
     }
+  })
+
+  describe('touch', () => {
+    const seen = (sessionId: string) => ({ sessionId, meta: null, transcript: { mtimeMs: 1000, birthtimeMs: 1, size: 0 } })
+
+    it('stores the activity of several sessions in one batch, and says which it left alone', async () => {
+      const storage = createDbSessionIndexStorage('agent-one')
+      await storage.fill([seen('s1'), seen('s2'), seen('s3'), { sessionId: 'registered', meta: { name: 'No transcript yet' }, transcript: null }])
+      batchSizes.length = 0
+      const update = vi.spyOn(database.db, 'update')
+
+      const leftAlone = await storage.touch(new Map([['s1', 5000], ['registered', 5000], ['s2', 500], ['unknown', 5000], ['s3', 7000]]))
+
+      expect(batchSizes).toEqual([5])
+      expect(update).toHaveBeenCalledTimes(5)
+      expect(leftAlone).toEqual(['registered', 'unknown'])
+      expect((await storage.list()).map((entry) => [entry.sessionId, entry.transcript?.mtimeMs ?? null, entry.transcript?.size ?? null]).sort()).toEqual([
+        ['registered', null, null],
+        ['s1', 5000, 1],
+        // Never moved back.
+        ['s2', 1000, 1],
+        ['s3', 7000, 1],
+      ])
+    })
+
+    it('stores one session\'s activity as one statement, with no batch around it', async () => {
+      const storage = createDbSessionIndexStorage('agent-one')
+      await storage.fill([seen('s1')])
+      batchSizes.length = 0
+
+      expect(await storage.touch(new Map([['s1', 5000]]))).toEqual([])
+
+      expect(batchSizes).toEqual([])
+      expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(5000)
+    })
+
+    it('sends no batch to the app\'s database for a handle it was given', async () => {
+      const migrating = await createTestDatabase()
+      try {
+        const storage = createDbSessionIndexStorage('agent-one', migrating.db)
+        await storage.fill([seen('s1'), seen('s2')])
+        batchSizes.length = 0
+
+        expect(await storage.touch(new Map([['s1', 5000], ['s2', 6000], ['unknown', 1]]))).toEqual(['unknown'])
+
+        expect(batchSizes).toEqual([])
+        expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(5000)
+        expect((await storage.get('s2'))?.transcript?.mtimeMs).toBe(6000)
+      } finally {
+        await migrating.close()
+      }
+    })
   })
 
   it('hands out a row whose stored metadata it cannot read as one without metadata, and the rest as they are', async () => {

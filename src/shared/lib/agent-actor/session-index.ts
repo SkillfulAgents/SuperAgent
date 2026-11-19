@@ -100,7 +100,27 @@ export interface SessionIndexDeps {
    * workspace. It must not reject; it reports its own failures.
    */
   beforeFirstUse?: () => Promise<void>
+  /**
+   * Arrange for `storeRecordedActivity()` to be called at about `atMs` (host
+   * clock), replacing whatever this index arranged before. Answers false when
+   * it cannot. Given, recorded activity is stored once per
+   * {@link ACTIVITY_STORE_INTERVAL_MS} rather than once per write; not given,
+   * or answering false, each write is stored as it is recorded. The local
+   * actor's is a task-manager wakeup; an actor that runs elsewhere gives its
+   * own alarm.
+   */
+  storeActivityLater?: (atMs: number) => boolean
 }
+
+/**
+ * How long recorded activity may wait to be stored. A streaming turn records
+ * a write per frame, several a second through a run of tool calls, and every
+ * one would otherwise be a statement of its own. Nothing is read late for
+ * it: every read stores what is recorded first. What it bounds is how much
+ * of a running turn's activity a process that dies without shutting down
+ * forgets.
+ */
+export const ACTIVITY_STORE_INTERVAL_MS = 5_000
 
 /**
  * The coarsest clock a filesystem is expected to stamp a directory with. A
@@ -194,6 +214,8 @@ export class SessionIndex {
   /** Recorded activity not yet stored. */
   private pending = new Map<string, number>()
   private flushing: Promise<void> | undefined
+  /** When the wakeup arranged through `storeActivityLater` is due, while one is. */
+  private storeDueAtMs: number | undefined
   /**
    * Activity recorded for a session whose transcript the index has not seen
    * (a send is recorded before the CLI writes): stored once reconciliation
@@ -296,14 +318,44 @@ export class SessionIndex {
   /**
    * A write reached a session's transcript. Synchronous for its callers (a
    * stream frame handler does not wait on storage): the write is stored
-   * behind them, one batch at a time, and every read waits for it.
+   * behind them, with whatever else is recorded within
+   * {@link ACTIVITY_STORE_INTERVAL_MS}, and every read stores it first.
    */
   recordActivity(sessionId: string, activityAtMs: number): void {
     // The write settles a provisional record: the turn it announced is real.
     const provisional = this.provisional.get(sessionId)
     this.provisional.delete(sessionId)
     this.keep(this.pending, sessionId, Math.max(provisional ?? -Infinity, activityAtMs))
-    if (!this.flushing) background(this.flush(), { name: 'session-index.store-activity' })
+    const now = Date.now()
+    // A wakeup is on its way: it stores this write with the others.
+    if (this.storeDueAtMs !== undefined && now < this.storeDueAtMs + ACTIVITY_STORE_INTERVAL_MS) return
+    // One that is a whole interval late is not coming (dispatch stopped, or
+    // the manager it was set on is gone), so this write is stored now.
+    const wakeupLost = this.storeDueAtMs !== undefined
+    if (!this.storeLater(now) || wakeupLost) background(this.flush(), { name: 'session-index.store-activity' })
+  }
+
+  /**
+   * Store what is recorded, now: the wakeup came due, a turn ended, or the
+   * actor is going away. A failure leaves it recorded, for the next wakeup
+   * and the next read.
+   */
+  async storeRecordedActivity(): Promise<void> {
+    this.storeDueAtMs = undefined
+    try {
+      await this.flush()
+    } catch (error) {
+      if (this.pending.size > 0) this.storeLater(Date.now())
+      throw error
+    }
+  }
+
+  /** Arrange a wakeup one interval from `now`. False when there is nobody to arrange it with. */
+  private storeLater(now: number): boolean {
+    const dueAtMs = now + ACTIVITY_STORE_INTERVAL_MS
+    const arranged = this.deps.storeActivityLater?.(dueAtMs) ?? false
+    this.storeDueAtMs = arranged ? dueAtMs : undefined
+    return arranged
   }
 
   /**
@@ -362,9 +414,18 @@ export class SessionIndex {
     return this.firstUse.done
   }
 
-  /** Store the recorded activity. Concurrent callers share one run. */
-  private flush(): Promise<void> {
-    if (!this.flushing && this.pending.size === 0) return Promise.resolve()
+  /**
+   * Store the activity recorded before the call. One pass runs at a time and
+   * stores what was recorded when it started; what is recorded while it runs
+   * waits for the next wakeup or the next read, so a turn whose frames come
+   * faster than a write completes is not one write after another.
+   */
+  private async flush(): Promise<void> {
+    // The pass under way started before this caller came. Whether it failed
+    // is its own callers' to hear: what it could not store is recorded again.
+    if (this.flushing) await this.flushing.catch(() => undefined)
+    // A pass started since then took everything this caller came with.
+    if (!this.flushing && this.pending.size === 0) return
     this.flushing ??= this.storePending().finally(() => {
       this.flushing = undefined
     })
@@ -372,22 +433,20 @@ export class SessionIndex {
   }
 
   private async storePending(): Promise<void> {
-    while (this.pending.size > 0) {
-      const batch = this.pending
-      this.pending = new Map()
-      try {
-        await this.inOrder(async () => {
-          for (const sessionId of await this.storage.touch(batch)) {
-            this.keep(this.awaitingTranscript, sessionId, batch.get(sessionId)!)
-            // A write to a transcript the index has not seen: look for it.
-            this.lookAgain()
-          }
-        })
-      } catch (error) {
-        // Kept for the next flush, under whatever was recorded meanwhile.
-        for (const [sessionId, at] of batch) this.keep(this.pending, sessionId, at)
-        throw error
-      }
+    const batch = this.pending
+    this.pending = new Map()
+    try {
+      await this.inOrder(async () => {
+        for (const sessionId of await this.storage.touch(batch)) {
+          this.keep(this.awaitingTranscript, sessionId, batch.get(sessionId)!)
+          // A write to a transcript the index has not seen: look for it.
+          this.lookAgain()
+        }
+      })
+    } catch (error) {
+      // Kept for the next flush, under whatever was recorded meanwhile.
+      for (const [sessionId, at] of batch) this.keep(this.pending, sessionId, at)
+      throw error
     }
   }
 

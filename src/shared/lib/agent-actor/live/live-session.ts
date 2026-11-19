@@ -1079,6 +1079,12 @@ export class LiveSession {
       recordSessionActivity(this.ctx.store, this.ctx.sessionId, message.timestamp)
       // The turn is real: the send's provisional mark no longer needs undoing.
       this.provisionalActivity = null
+      // A result is the last write of a turn: what the index holds recorded
+      // is stored now, not at its next wakeup, so a session at rest is stored
+      // as it was last written.
+      if (content.type === 'result') {
+        background(this.ctx.store.index.storeRecordedActivity(), { name: 'live-session.store-activity-at-turn-end' })
+      }
     }
 
     // Late-join catch-up: the runtime replays the last turn's terminal frames
