@@ -28,7 +28,7 @@ vi.mock('@renderer/hooks/use-team-brain-access', () => ({
   useTeamBrainAccess: () => ({ isOn: () => false, isChanging: () => false, ready: true, everyAgent: state.everyAgent, toggle }),
 }))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
-  useAgentIntegrations: () => ({ data: state.integrations }),
+  useAgentIntegrations: () => ({ data: state.integrations, refetch: vi.fn() }),
   useAvailableAgentIntegrationProviders: () => ({ data: availableProviders?.map(provider => ({ provider })) }),
 }))
 vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog', () => ({
@@ -37,7 +37,7 @@ vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog'
 const show = () => render(<AgentAddonsStep header={null} agentSlug="scout" onBusyChange={vi.fn()} onDreamChange={vi.fn()} />)
 beforeEach(() => {
   vi.clearAllMocks()
-  availableProviders = ['platform-email', 'slack', 'telegram', 'imessage']
+  availableProviders = ['platform-email', 'slack', 'telegram', 'imessage', 'github', 'linear', 'recall']
   state.integrations = []
   state.skills = [dream]
   state.catalogError = false
@@ -104,7 +104,9 @@ it.each([['Inbox', 'platform-email'], ['Slack', 'slack']])('opens the existing %
   expect(screen.getByRole('dialog')).toHaveTextContent(provider)
 })
 
-it.each([['Telegram', 'telegram'], ['iMessage', 'imessage']])('opens %s setup from More channels', async (label, provider) => {
+it.each([
+  ['Telegram', 'telegram'], ['iMessage', 'imessage'], ['GitHub', 'github'], ['Linear', 'linear'], ['Meetings', 'recall'],
+])('opens %s setup from More channels', async (label, provider) => {
   show()
   const action = { name: 'Set up ' + label }
   expect(screen.queryByRole('button', action)).toBeNull()
@@ -161,6 +163,24 @@ vi.mock('@renderer/components/agent-integrations/slack-setup', () => ({
   SlackSetup: () => null,
   SlackConnectionSettings: ({ integration }: { integration: PublicAgentIntegration }) => <button>Connect {integration.id}</button>,
 }))
+
+vi.mock('@renderer/components/agent-integrations/github-setup', () => ({
+  GitHubSetupForm: () => null,
+  GitHubConnectionSettings: ({ integration }: { integration: PublicAgentIntegration }) => <p>{integration.id}</p>,
+}))
+vi.mock('@renderer/components/agent-integrations/linear-setup', () => ({
+  LinearSetupForm: () => null,
+  LinearIntegrationSettings: () => null,
+  LinearConnectionSettings: ({ integration }: { integration: PublicAgentIntegration }) => <p>{integration.id}</p>,
+}))
+
+it.each([['GitHub', 'github'], ['Linear', 'linear']])('resumes an unfinished %s authorization on the existing integration', async (label, provider) => {
+  state.integrations = [{ id: 'existing-installation', provider, hasCredentials: false }]
+  show()
+  await userEvent.click(screen.getByRole('button', { name: 'More channels' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Finish setup ' + label }))
+  expect(screen.getByRole('dialog', { name: 'Finish ' + label + ' setup' })).toHaveTextContent('existing-installation')
+})
 
 it.each([
   { provisionedApp: { installed: false }, action: 'Install' },

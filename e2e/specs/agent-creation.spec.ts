@@ -219,7 +219,7 @@ test('removing Dream before leaving the wizard clears its first-job instruction'
 })
 
 test('More channels opens Telegram setup and returns to the wizard after connecting', async ({ page }) => {
-  await page.route('**/api/agent-integrations/providers', route => route.fulfill({ json: [{ provider: 'telegram' }] }))
+  await page.route('**/api/agent-integrations/providers', route => route.fulfill({ json: [{ provider: 'telegram' }, { provider: 'linear' }] }))
   let connected = false
   await page.route('**/api/agent-integrations/agents/*', route => {
     const agentSlug = route.request().url().split('/').pop()!
@@ -238,8 +238,20 @@ test('More channels opens Telegram setup and returns to the wizard after connect
   await expect(page.getByRole('tooltip')).toHaveText('Connect your Gamut account to set up Inbox.')
   const telegram = page.getByRole('button', { name: 'Set up Telegram' })
   await expect(telegram).toBeHidden()
-  await page.getByRole('button', { name: 'More channels' }).click()
+  const more = page.getByRole('button', { name: 'More channels' })
+  const heading = page.getByRole('heading', { name: 'Channels' })
+  await expect(more).toHaveCSS('color', await heading.evaluate(el => getComputedStyle(el).color))
+  await more.click()
   await expect(page.getByRole('button', { name: 'Set up iMessage' })).toBeDisabled()
+  const github = page.getByRole('button', { name: 'Set up GitHub' })
+  await expect(github).toBeDisabled()
+  await github.scrollIntoViewIfNeeded()
+  await github.focus()
+  await expect(github).toHaveAccessibleDescription(/webhook relay/)
+  await expect(page.getByRole('button', { name: 'Set up Meetings' })).toBeDisabled()
+  await page.getByRole('button', { name: 'Set up Linear' }).click()
+  await expect(page.getByRole('dialog').getByLabel('Client ID')).toBeVisible()
+  await page.keyboard.press('Escape')
   await telegram.click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Bot Token').fill('fixture-token')

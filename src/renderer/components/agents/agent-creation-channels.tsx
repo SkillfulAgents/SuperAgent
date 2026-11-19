@@ -1,13 +1,11 @@
 import { useId, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
-import { CHAT_PROVIDERS } from '@shared/lib/chat-integrations/config-schema'
 import { publicSlackDelivery } from '@shared/lib/chat-integrations/public'
 import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
 import { ProvisionedAppCard } from '@renderer/components/agent-integrations/provisioned-app-card'
 import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
 import type { IntegrationSetupProvider } from '@renderer/components/agent-integrations/setup-types'
-import { SlackConnectionSettings } from '@renderer/components/agent-integrations/slack-setup'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@renderer/components/ui/dialog'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
@@ -15,9 +13,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui
 import { useAgentIntegrations, useAvailableAgentIntegrationProviders } from '@renderer/hooks/use-agent-integrations'
 
 const featured = integrationSetupProviders.filter(p => p.slug === 'platform-email' || p.slug === 'slack')
-const moreChannels = integrationSetupProviders.filter(p => p.slug !== 'slack' && CHAT_PROVIDERS.some(slug => slug === p.slug))
+const moreChannels = integrationSetupProviders.filter(provider => !featured.includes(provider))
 
-function needsSlackSetup(integration: PublicAgentIntegration) {
+function needsSetup(integration: PublicAgentIntegration) {
+  if (integration.provider === 'github' || integration.provider === 'linear') return !integration.hasCredentials
   if (integration.provider !== 'slack') return false
   if (integration.provisionedApp) return !integration.provisionedApp.installed
   const slack = publicSlackDelivery(integration)
@@ -54,14 +53,15 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
   const moreId = useId()
   const [setup, setSetup] = useState<IntegrationSetupProvider | null>(null)
   const [resumeId, setResumeId] = useState<string | null>(null)
-  const resume = integrations.data?.find(row => row.id === resumeId && needsSlackSetup(row))
+  const resume = integrations.data?.find(row => row.id === resumeId && needsSetup(row))
+  const resumeProvider = resume && integrationSetupProviders.find(provider => provider.slug === resume.provider)
 
   function channelRow(provider: IntegrationSetupProvider) {
     const inbox = provider.slug === 'platform-email'
     const title = inbox ? 'Inbox' : provider.label
     const rows = integrations.data?.filter(row => row.provider === provider.slug)
-    const configured = rows?.some(row => !needsSlackSetup(row))
-    const pending = rows?.find(needsSlackSetup)
+    const configured = rows?.some(row => !needsSetup(row))
+    const pending = rows?.find(needsSetup)
     const action = configured ? 'Configured' : pending ? 'Finish setup' : 'Set up'
     let reason: string | undefined
     if (configured) {
@@ -70,16 +70,16 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
       if (!providers.data || !integrations.data) {
         reason = providers.isError || integrations.isError ? 'Could not load channels.' : 'Checking available channels…'
       } else if (!providers.data.some(p => p.provider === provider.slug)) {
-        reason = inbox ? 'Connect your Gamut account to set up Inbox.' : `${title} is unavailable in this workspace.`
+        reason = provider.unavailableReason ?? `${title} is unavailable in this workspace.`
       }
     }
     return <div key={provider.slug} className="flex items-center gap-3 px-4 py-3">
       <span className="grid size-8 shrink-0 place-items-center rounded-control bg-muted text-muted-foreground [&_svg]:size-4" aria-hidden>
-        <ServiceIcon slug={provider.slug} fallback="mcp" />
+        <ServiceIcon slug={provider.slug} fallback="mcp" className={provider.iconClassName} />
       </span>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{title}</p>
-        <p className="text-xs text-muted-foreground">{inbox ? 'Give this agent its own email address.' : `Talk to this agent in ${title}.`}</p>
+        <p className="text-xs text-muted-foreground">{provider.description}</p>
       </div>
       <ChannelAction action={action} title={title} reason={reason} onSetup={() => {
         if (pending) setResumeId(pending.id)
@@ -91,18 +91,22 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
   return <>
     {featured.map(channelRow)}
     <button type="button" aria-label="More channels" aria-expanded={expanded} aria-controls={moreId}
-      className="flex w-full items-center justify-between gap-3 rounded-b-card px-4 py-3 text-sm font-medium hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-expanded:rounded-none"
+      className="flex w-full items-center justify-between gap-3 rounded-b-card px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-expanded:rounded-none"
       onClick={() => setExpanded(open => !open)}>
       More
-      <ChevronDown aria-hidden className={`size-4 text-muted-foreground ${expanded ? 'rotate-180' : ''}`} />
+      <ChevronDown aria-hidden className={`size-4 ${expanded ? 'rotate-180' : ''}`} />
     </button>
     <div id={moreId} hidden={!expanded} className="divide-y">{expanded && moreChannels.map(channelRow)}</div>
     <Dialog open={!!resume} onOpenChange={open => { if (!open) setResumeId(null) }}>
       {resume && <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogTitle>Finish Slack setup</DialogTitle>
-        {resume.provisionedApp ? <ProvisionedAppCard integration={resume} /> : <SlackConnectionSettings integration={resume} />}
+        <DialogTitle>Finish {resumeProvider?.label} setup</DialogTitle>
+        {resume.provisionedApp ? <ProvisionedAppCard integration={resume} /> : resumeProvider?.ConnectionSettings && <resumeProvider.ConnectionSettings integration={resume} />}
       </DialogContent>}
     </Dialog>
-    <AgentIntegrationSetupDialog agentSlug={agentSlug} provider={setup} onIntegrationCreated={() => setSetup(null)} onOpenChange={open => { if (!open) setSetup(null) }} />
+    <AgentIntegrationSetupDialog agentSlug={agentSlug} provider={setup} onIntegrationCreated={() => setSetup(null)} onOpenChange={open => {
+      if (open) return
+      setSetup(null)
+      void integrations.refetch()
+    }} />
   </>
 }
