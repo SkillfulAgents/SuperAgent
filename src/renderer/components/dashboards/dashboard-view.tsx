@@ -20,11 +20,22 @@ import { useDashboardFrameComments } from './comments/dashboard-frame'
 import { useDashboardComment } from './comments/use-dashboard-comment'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-context'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import {
   DASHBOARD_WAIT_BOUND_MS,
   resolveDashboardViewState,
   type DashboardViewState,
 } from './dashboard-view-state'
+
+type OpenOutcome = 'ready' | 'start_failed' | 'not_found' | 'crashed' | 'timeout' | 'load_failed'
+/** How a measured attempt began: the open itself, or a person's Retry or Refresh (iOS measures each Reload). A Restart is not measured: it times the agent, not the dashboard. */
+type Attempt = 'open' | 'retry' | 'refresh'
+/** The view states that end an open as a failure, in the iOS app's `dashboard_failed` terms. */
+const OPEN_FAILURES: Partial<Record<DashboardViewState['kind'], OpenOutcome>> = {
+  'agent-start-failed': 'start_failed',
+  missing: 'not_found',
+  crashed: 'crashed',
+}
 
 interface DashboardViewProps {
   agentSlug: string
@@ -55,6 +66,12 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
   const autoStartedRef = useRef<string | null>(null)
+  // One open and its attempts, reported as the iOS app reports them. Only time on screen is measured:
+  // leaving the screen ends an attempt with no outcome, and one begun off screen is not timed.
+  const openRef = useRef<{ at: number; opened: boolean; settled: boolean; wakeAttempted: boolean | null; attempt: Attempt }>({
+    at: Date.now(), opened: false, settled: document.visibilityState === 'hidden', wakeAttempted: null, attempt: 'open',
+  })
+  const [attemptCount, setAttemptCount] = useState(0)
   const wasDocumentHiddenRef = useRef(document.visibilityState === 'hidden')
   const { data: agent, refetch: refetchAgent } = useAgent(agentSlug)
   const { data: artifacts } = useArtifacts(agentSlug, { pollFast, watching: pollWatching })
@@ -119,6 +136,53 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const iframeSrc = `${getRemoteDeploymentUrl() ?? baseUrl}${dashboardPath}`
   const dashboardDispatch = useDashboardDispatch(iframeRef)
 
+  const { track } = useAnalyticsTracking()
+  const agentLoaded = agent !== undefined
+  const dashboardStatus = dashboard?.status
+  useEffect(() => {
+    const open = openRef.current
+    if (open.opened || !agentLoaded) return
+    open.opened = true
+    track('dashboard_opened', { agent_key: dashboardAgentSlug })
+  }, [agentLoaded, track, dashboardAgentSlug])
+  useEffect(() => {
+    const open = openRef.current
+    if (open.wakeAttempted !== null || !agentLoaded || (isAgentRunning && !artifactsLoaded)) return
+    // As on iOS, an open that first finds the agent asleep or its dashboard not yet serving had to wake it.
+    open.wakeAttempted = !isAgentRunning || (dashboardStatus !== undefined && dashboardStatus !== 'running')
+  }, [agentLoaded, isAgentRunning, artifactsLoaded, dashboardStatus])
+  const settleOpen = useCallback((outcome: OpenOutcome) => {
+    const open = openRef.current
+    if (open.settled || !open.opened) return
+    open.settled = true
+    const elapsedMs = Date.now() - open.at
+    const wakeAttempted = open.wakeAttempted ?? true
+    if (outcome === 'ready') {
+      track('dashboard_ready', { agent_key: dashboardAgentSlug, time_to_ready_ms: elapsedMs, wake_attempted: wakeAttempted, attempt: open.attempt })
+    } else {
+      track('dashboard_failed', { agent_key: dashboardAgentSlug, reason_code: outcome, duration_ms: elapsedMs, wake_attempted: wakeAttempted, attempt: open.attempt })
+    }
+  }, [track, dashboardAgentSlug])
+  /** A person's Retry or Refresh: a new measured attempt of the same open. */
+  const beginAttempt = useCallback((attempt: Exclude<Attempt, 'open'>, wakeAttempted: boolean) => {
+    openRef.current = { ...openRef.current, at: Date.now(), settled: document.visibilityState === 'hidden', wakeAttempted, attempt }
+    // A check of the page from before this attempt must not settle it.
+    frameProbeSeqRef.current++
+    setAttemptCount((count) => count + 1)
+  }, [])
+  const openFailure = OPEN_FAILURES[viewState.kind]
+  useEffect(() => {
+    if (!openFailure) return
+    // Crashed and missing are the open's outcomes. A Retry or Refresh ends in ready, a failed start or
+    // load, or timeout: the dashboard list cached before it can still say crashed meanwhile.
+    if (openFailure !== 'start_failed' && openRef.current.attempt !== 'open') return
+    settleOpen(openFailure)
+  }, [openFailure, settleOpen])
+  useEffect(() => {
+    const id = window.setTimeout(() => settleOpen('timeout'), openRef.current.at + DASHBOARD_WAIT_BOUND_MS - Date.now())
+    return () => window.clearTimeout(id)
+  }, [settleOpen, attemptCount])
+
   const dashboardName = dashboard?.name || dashboardSlug
   const commentTarget = useMemo(() => ({ name: dashboardName, slug: dashboardSlug }), [dashboardName, dashboardSlug])
   const comment = useDashboardComment({
@@ -161,8 +225,14 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   }, [])
 
   const handleStartAgent = useCallback(() => {
+    beginAttempt('retry', true)
     startAgent.mutate(agentSlug)
-  }, [startAgent, agentSlug])
+  }, [beginAttempt, startAgent, agentSlug])
+
+  const handleRefreshClick = useCallback(() => {
+    beginAttempt('refresh', !(isAgentRunning && dashboard?.status === 'running'))
+    handleRefresh()
+  }, [beginAttempt, handleRefresh, isAgentRunning, dashboard?.status])
 
   const handleRestartAgent = useCallback(async () => {
     // The deliberate stop must not re-trigger this view's auto-start effect.
@@ -223,6 +293,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         wasDocumentHiddenRef.current = true
+        openRef.current.settled = true
         visibilityCheck += 1
         return
       }
@@ -271,7 +342,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     actions: showFrame
       ? {
           onOpenExternal: handlePopOut,
-          onRefresh: handleRefresh,
+          onRefresh: handleRefreshClick,
           ...(addsToDock() ? { onAddToDock: handleAddToDock } : {}),
           refreshState: refreshing ? 'refreshing' as const : frameLoading ? 'loading' as const : 'idle' as const,
           ...(canStart
@@ -294,7 +365,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     isAgentStarting,
     showFrame,
     handlePopOut,
-    handleRefresh,
+    handleRefreshClick,
     handleAddToDock,
     refreshing,
     frameLoading,
@@ -339,6 +410,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   useEffect(() => () => {
     if (frameRetryTimerRef.current !== null) window.clearTimeout(frameRetryTimerRef.current)
+    // A probe still out when the view goes must not report on an open nobody waits for.
+    frameProbeSeqRef.current++
   }, [])
 
   const scheduleFrameRetry = useCallback(() => {
@@ -346,6 +419,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     // previously blank forever with no recovery.
     if (frameErrorRetriesRef.current >= 3) {
       setFrameLoading(false)
+      settleOpen('load_failed')
       return
     }
     const delay = 1_000 * 2 ** frameErrorRetriesRef.current
@@ -354,7 +428,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     frameRetryTimerRef.current = window.setTimeout(() => {
       setFrameAttempt((attempt) => attempt + 1)
     }, delay)
-  }, [])
+  }, [settleOpen])
 
   // Browsers fire 'load' even for a failed iframe navigation (they render an
   // error document), and iframes get no 'error' event for it — the load event
@@ -374,10 +448,11 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     if (ok) {
       setFrameLoading(false)
       frameErrorRetriesRef.current = 0
+      settleOpen('ready')
     } else {
       scheduleFrameRetry()
     }
-  }, [dashboardPath, scheduleFrameRetry])
+  }, [dashboardPath, scheduleFrameRetry, settleOpen])
 
   if (!showFrame) {
     return (
@@ -442,7 +517,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           <DashboardFrameMenu
             at={frameMenuAt}
             onComment={handleCommentHere}
-            onRefresh={handleRefresh}
+            onRefresh={handleRefreshClick}
             onClose={() => setFrameMenuAt(null)}
           />
         )}
