@@ -345,7 +345,7 @@ describe('Cloudflare file ops while the container is asleep', () => {
         else controller.close()
       },
     })
-    await expect(files.write('uploads/video.mp4', large)).rejects.toThrow('uploads/video.mp4 is larger than 64 MB')
+    await expect(files.write('uploads/video.mp4', large)).rejects.toThrow('uploads/video.mp4 is larger than 16 MB')
     expect(sleeping.files.has('uploads/video.mp4')).toBe(false)
   })
 

@@ -17,9 +17,11 @@ export type ContainerFetch = (path: string, init?: RequestInit) => Promise<Respo
 
 /**
  * The largest file written whole while the agent sleeps. The saved workspace hashes a file before
- * it stores it, so the file is held in memory once, and an agent's object has 128 MB.
+ * it stores it, so it is read whole: its chunks and then their joined copy, twice its size at the
+ * peak. An isolate has 128 MB for the app, every object it hosts and this, and going over resets
+ * every object in it, so the file is kept well under a quarter of that.
  */
-export const MAX_ASLEEP_WRITE_BYTES = 64 * 1024 * 1024
+export const MAX_ASLEEP_WRITE_BYTES = 16 * 1024 * 1024
 
 /**
  * A file up to this size is read once when it is opened: its reader pages through it with many
