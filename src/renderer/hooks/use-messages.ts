@@ -268,6 +268,11 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 
   const fetchOlder = useCallback(async (onBeforePrepend?: () => void): Promise<boolean> => {
     if (!sessionId || !agentSlug || isFetchingOlder || !hasOlder) return false
+    // A second call from the same render still reads isFetchingOlder as false;
+    // the ref holds the walk in flight. A second walk from the same cursor,
+    // answering late, hands back a cursor the first has since paged from,
+    // which reads as a circle and ends history.
+    if (olderAbortRef.current) return false
     const cursor =
       olderCursor ?? latest.data?.nextCursor ?? older[0]?.id ?? latestMessages[0]?.id
     if (!cursor) return false

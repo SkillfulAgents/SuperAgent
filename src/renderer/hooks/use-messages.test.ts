@@ -521,6 +521,44 @@ describe('useMessages forward delta', () => {
     expect(inflight).toHaveLength(3)
   })
 
+  it('runs one older walk at a time when called twice from one render', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    vi.mocked(captureRendererException).mockClear()
+
+    // Both calls read the same render's isFetchingOlder (false).
+    let first: Promise<boolean>
+    let second: Promise<boolean>
+    act(() => {
+      first = result.current.fetchOlder()
+      second = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].resolve({ messages: [user('u2'), assistant('a2')], nextCursor: 'c1' })
+    await act(async () => {
+      expect(await first).toBe(true)
+      expect(await second).toBe(false)
+    })
+    expect(inflight).toHaveLength(2)
+
+    // A second walk from `older-cursor`, answering after the next page, would
+    // hand back `c1` as a cursor already paged from and end history.
+    let next: Promise<boolean>
+    act(() => {
+      next = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=c1')
+    inflight[2].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: 'c2' })
+    await act(async () => {
+      expect(await next).toBe(true)
+    })
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3'])
+    expect(result.current.hasOlder).toBe(true)
+    expect(captureRendererException).not.toHaveBeenCalled()
+  })
+
   it('pages from a cursor again after the request for it failed', async () => {
     const wrapper = createWrapper()
     const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
