@@ -18,6 +18,10 @@ import {
   MESSAGES_PAGE_MIN_BYTES,
   MESSAGES_PAGE_OLDER_LIMIT,
   MESSAGES_PAGE_MAX_LIMIT,
+  MESSAGES_PAGE_MAX_MIN_TURNS,
+  MESSAGES_PAGE_MIN_TURNS,
+  MESSAGES_PAGE_SOFT_BYTES,
+  softMessagesPageBudget,
 } from './messages-page'
 
 const CURSOR = 'some-message-id'
@@ -134,5 +138,27 @@ describe('clampMessagesPageBytes', () => {
   it('never lets a request raise the window past the server default', () => {
     expect(clampMessagesPageBytes(MESSAGES_PAGE_MAX_BYTES + 1)).toBe(MESSAGES_PAGE_MAX_BYTES)
     expect(clampMessagesPageBytes(Number.MAX_SAFE_INTEGER)).toBe(MESSAGES_PAGE_MAX_BYTES)
+  })
+})
+
+describe('softMessagesPageBudget', () => {
+  it('is absent unless both halves are sent', () => {
+    expect(softMessagesPageBudget(undefined, undefined)).toBeUndefined()
+    expect(softMessagesPageBudget(MESSAGES_PAGE_SOFT_BYTES, undefined)).toBeUndefined()
+    expect(softMessagesPageBudget(undefined, MESSAGES_PAGE_MIN_TURNS)).toBeUndefined()
+  })
+
+  it('clamps the bytes like max_bytes and keeps the turns', () => {
+    expect(softMessagesPageBudget(1, 3)).toEqual({ bytes: MESSAGES_PAGE_MIN_BYTES, minTurns: 3 })
+    expect(softMessagesPageBudget(Number.MAX_SAFE_INTEGER, 3)).toEqual({ bytes: MESSAGES_PAGE_MAX_BYTES, minTurns: 3 })
+  })
+
+  it('what the renderer sends is a lower budget than the default, inside the bounds', () => {
+    expect(softMessagesPageBudget(MESSAGES_PAGE_SOFT_BYTES, MESSAGES_PAGE_MIN_TURNS)).toEqual({
+      bytes: MESSAGES_PAGE_SOFT_BYTES,
+      minTurns: MESSAGES_PAGE_MIN_TURNS,
+    })
+    expect(MESSAGES_PAGE_SOFT_BYTES).toBeLessThan(MESSAGES_PAGE_MAX_BYTES)
+    expect(MESSAGES_PAGE_MIN_TURNS).toBeLessThanOrEqual(MESSAGES_PAGE_MAX_MIN_TURNS)
   })
 })

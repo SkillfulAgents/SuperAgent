@@ -5721,6 +5721,55 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
       expect(getSessionMessagesDelta).not.toHaveBeenCalled()
     })
 
+    // What the web renderer sends for its trailing page.
+    it('forwards soft_bytes + min_turns as the soft budget, and no byte budget', async () => {
+      const res = await getReq(app, `${URL}?limit=300&media=ref&soft_bytes=1048576&min_turns=10`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toEqual({
+        limit: 300,
+        cursor: undefined,
+        signal: expect.any(AbortSignal),
+        media: 'ref',
+        softBudget: { bytes: 1048576, minTurns: 10 },
+      })
+    })
+
+    it('clamps soft_bytes like max_bytes and carries both budgets when both are sent', async () => {
+      const res = await getReq(app, `${URL}?limit=200&cursor=m1&max_bytes=2097152&soft_bytes=1&min_turns=3`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toMatchObject({
+        cursor: 'm1',
+        byteBudget: 2097152,
+        softBudget: { bytes: 64 * 1024, minTurns: 3 },
+      })
+    })
+
+    it('rejects half of the pair, and a malformed or out-of-range value', async () => {
+      for (const query of [
+        'soft_bytes=1048576',
+        'min_turns=10',
+        'soft_bytes=abc&min_turns=10',
+        'soft_bytes=1048576&min_turns=0',
+        'soft_bytes=1048576&min_turns=1.5',
+        'soft_bytes=1048576&min_turns=101',
+      ]) {
+        const res = await getReq(app, `${URL}?limit=10&${query}`)
+        expect(res.status, query).toBe(400)
+      }
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    })
+
+    it('ignores the soft budget on a forward delta', async () => {
+      const res = await getReq(app, `${URL}?limit=300&after=m1&media=ref&soft_bytes=1048576&min_turns=10`)
+      expect(res.status).toBe(200)
+      expect(vi.mocked(getSessionMessagesDelta).mock.calls[0]![2]).toEqual({
+        after: 'm1',
+        signal: expect.any(AbortSignal),
+        media: 'ref',
+      })
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    })
+
     it('leaves the unpaginated read untouched', async () => {
       vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
       mockTransformMessages.mockReturnValue([])

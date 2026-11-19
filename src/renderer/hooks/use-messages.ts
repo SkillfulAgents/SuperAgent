@@ -9,7 +9,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
 import type { InterruptScope } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
-import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
+import {
+  MESSAGES_PAGE_LIMIT,
+  MESSAGES_PAGE_MIN_TURNS,
+  MESSAGES_PAGE_OLDER_LIMIT,
+  MESSAGES_PAGE_SOFT_BYTES,
+} from '@shared/lib/messages-page'
 import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
 import { isSessionStreamOpen } from '@renderer/hooks/use-message-stream'
 
@@ -78,7 +83,16 @@ async function fetchMessagesPage(
   opts: { limit: number; cursor?: string; signal?: AbortSignal }
 ): Promise<MessagesPage> {
   const params = new URLSearchParams({ limit: String(opts.limit), media: 'ref' })
-  if (opts.cursor) params.set('cursor', opts.cursor)
+  if (opts.cursor) {
+    params.set('cursor', opts.cursor)
+  } else {
+    // The trailing page is read on every open and every full refetch, so it
+    // asks for the cheaper window: about 1 MiB of transcript once that holds
+    // ten whole turns, the server's default page until then. Older pages keep
+    // the default: each is one request the reader waits on while scrolling.
+    params.set('soft_bytes', String(MESSAGES_PAGE_SOFT_BYTES))
+    params.set('min_turns', String(MESSAGES_PAGE_MIN_TURNS))
+  }
   const res = await apiFetch(
     `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
     { signal: opts.signal }

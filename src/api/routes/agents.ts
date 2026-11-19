@@ -44,7 +44,7 @@ import {
   injectDashboardRuntime,
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
-import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes } from '@shared/lib/messages-page'
+import { MESSAGES_PAGE_MAX_LIMIT, MESSAGES_PAGE_MAX_MIN_TURNS, capMessagesPageLimit, clampMessagesPageBytes, softMessagesPageBudget } from '@shared/lib/messages-page'
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
@@ -2450,10 +2450,18 @@ const messagesListQuerySchema = z
     // on every paginated request, honored on backward pages only: a forward
     // delta is already bounded by the live turn.
     maxBytes: z.coerce.number().int().min(1).optional(),
+    // Opt-in `soft_bytes` + `min_turns`, sent together: a lower budget that
+    // cuts a backward page only once it holds that many whole turns (see
+    // MESSAGES_PAGE_SOFT_BYTES). Ignored on a forward delta, like `max_bytes`.
+    softBytes: z.coerce.number().int().min(1).optional(),
+    minTurns: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_MIN_TURNS).optional(),
   })
   // Backward paging and the forward delta are different protocols; a request
   // mixing them has no coherent meaning.
   .refine((q) => !(q.cursor && q.after), { message: 'cursor and after are mutually exclusive' })
+  .refine((q) => (q.softBytes === undefined) === (q.minTurns === undefined), {
+    message: 'soft_bytes and min_turns go together',
+  })
 
 // Presentation is derived fresh per response (not persisted), so provider copy
 // changes apply to history retroactively.
@@ -2558,6 +2566,8 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const rawAfter = c.req.query('after')
     const rawMedia = c.req.query('media')
     const rawMaxBytes = c.req.query('max_bytes')
+    const rawSoftBytes = c.req.query('soft_bytes')
+    const rawMinTurns = c.req.query('min_turns')
     // `media` and `max_bytes` select the paginated branch too: they are only
     // honored there, so leaving them out would silently serve the full
     // transcript to a client that asked for refs or for a bounded response —
@@ -2594,6 +2604,8 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         ...(rawAfter !== undefined ? { after: rawAfter } : {}),
         ...(rawMedia !== undefined ? { media: rawMedia } : {}),
         ...(rawMaxBytes !== undefined ? { maxBytes: rawMaxBytes } : {}),
+        ...(rawSoftBytes !== undefined ? { softBytes: rawSoftBytes } : {}),
+        ...(rawMinTurns !== undefined ? { minTurns: rawMinTurns } : {}),
       })
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
@@ -2625,12 +2637,14 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       // Without `max_bytes` no budget is passed and the reader's default
       // applies — the same call as before the parameter existed.
       const byteBudget = clampMessagesPageBytes(parsed.data.maxBytes)
+      const softBudget = softMessagesPageBudget(parsed.data.softBytes, parsed.data.minTurns)
       const page = await actor.messages.page(sessionId, {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
         signal: c.req.raw.signal,
         media: parsed.data.media,
         ...(byteBudget !== undefined ? { byteBudget } : {}),
+        ...(softBudget !== undefined ? { softBudget } : {}),
       })
       c.req.raw.signal.throwIfAborted()
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)

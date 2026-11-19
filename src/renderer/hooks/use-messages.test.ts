@@ -78,7 +78,7 @@ describe('useMessages abort wiring', () => {
     renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
 
     await waitFor(() => expect(inflight).toHaveLength(1))
-    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
+    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref&soft_bytes=1048576&min_turns=10')
     expect(inflight[0].init?.signal).toBeInstanceOf(AbortSignal)
     expect(inflight[0].init?.signal?.aborted).toBe(false)
   })
@@ -225,7 +225,7 @@ describe('useMessages forward delta', () => {
     messages: unknown[]
   ) {
     await waitFor(() => expect(inflight).toHaveLength(1))
-    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
+    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref&soft_bytes=1048576&min_turns=10')
     inflight[0].resolve({ messages, nextCursor: 'older-cursor' })
     await waitFor(() => expect(result.current.isFetching).toBe(false))
   }
@@ -265,7 +265,7 @@ describe('useMessages forward delta', () => {
     inflight[1].resolve({ messages: [], anchor: null, resync: true })
 
     await waitFor(() => expect(inflight).toHaveLength(3))
-    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref&soft_bytes=1048576&min_turns=10')
     inflight[2].resolve({ messages: [user('u9')], nextCursor: null })
     // Resync means the transcript was rewritten: u1/a1 may no longer exist, so
     // they must NOT survive in the older-history buffer.
@@ -302,7 +302,7 @@ describe('useMessages forward delta', () => {
         void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
       })
       await waitFor(() => expect(inflight).toHaveLength(2))
-      expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
+      expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref&soft_bytes=1048576&min_turns=10')
       inflight[1].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
       await waitFor(() => expect(result.current.isFetching).toBe(false))
 
@@ -326,7 +326,7 @@ describe('useMessages forward delta', () => {
       void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
     })
     await waitFor(() => expect(inflight).toHaveLength(2))
-    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
+    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref&soft_bytes=1048576&min_turns=10')
   })
 
   it('a tool-call deletion forces the next refetch to be a full page', async () => {
@@ -358,7 +358,7 @@ describe('useMessages forward delta', () => {
     })
 
     await waitFor(() => expect(inflight).toHaveLength(3))
-    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref&soft_bytes=1048576&min_turns=10')
 
     // The refetch omits the rewritten-away assistant. That omission is
     // authoritative — the item must vanish, not slide into the older-history
@@ -379,6 +379,11 @@ describe('useMessages forward delta', () => {
     })
     await waitFor(() => expect(inflight).toHaveLength(2))
     expect(inflight[1].url).toContain('cursor=older-cursor')
+    // Only the trailing page asks for the cheaper window: an older page is
+    // the server's default one.
+    expect(inflight[1].url).toBe(
+      '/api/agents/agent-1/sessions/s1/messages?limit=200&media=ref&cursor=older-cursor',
+    )
 
     // Meanwhile the transcript is rewritten: delta answers resync, the full
     // fetch replaces the page.
@@ -651,7 +656,7 @@ describe('useMessages forward delta', () => {
     inflight[1].resolve({ messages: [user('u0'), user('u1'), assistant('a1')], anchor: 'u1' })
 
     await waitFor(() => expect(inflight).toHaveLength(3))
-    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref&soft_bytes=1048576&min_turns=10')
   })
 })
 

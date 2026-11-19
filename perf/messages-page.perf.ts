@@ -12,9 +12,11 @@
  * anchor, so the scan always reaches the start).
  *
  * `max_bytes` is what the clients send: iOS 512 KiB for the latest page and
- * 1 MiB for "Load Earlier"; 1 MiB is also pinned as a mid-range budget. No
- * `max_bytes` is every other client (the web renderer included), served the
- * default 4 MiB window exactly as before.
+ * 1 MiB for "Load Earlier"; 1 MiB is also pinned as a mid-range budget. The
+ * web renderer sends `soft_bytes` + `min_turns` for its trailing page (1 MiB
+ * once the page holds ten whole turns) and nothing for older pages. No budget
+ * at all is a client that predates both, served the default 4 MiB window
+ * exactly as before.
  *
  * Before (fixed 64 KiB reads, no `max_bytes`; a 512 KiB request then got the
  * default window too): trailing page 139 ops / 133 reads / 8.6 MB read; older
@@ -24,11 +26,12 @@
  * BUDGET_LATENCY_MS (see harness.ts).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_MIN_TURNS, MESSAGES_PAGE_SOFT_BYTES } from '@shared/lib/messages-page'
 import { parsePageCursor } from '@shared/lib/services/session-page-cursor'
 import { bootPerfApp, expectWithinBudget, measure, type Measurement, type PerfApp } from './harness'
 
 interface PageBody {
-  messages: { id: string }[]
+  messages: { id: string; type?: string }[]
   nextCursor: string | null
 }
 
@@ -141,6 +144,48 @@ describe('chat transcript — long session', () => {
       ops: { 'handle.read': 8 },
       bytesRead: 3_113_696,
       wallMs: 320,
+    })
+  })
+
+  // The request the web renderer makes on every chat open, reconnect and
+  // periodic full refetch (use-messages.ts).
+  it('trailing page, soft_bytes=1MiB min_turns=10 (web renderer)', async () => {
+    const query = `limit=${MESSAGES_PAGE_LIMIT}&media=ref&soft_bytes=${MESSAGES_PAGE_SOFT_BYTES}&min_turns=${MESSAGES_PAGE_MIN_TURNS}`
+    const { body, measurement, responseBytes } = await read<PageBody>(query)
+    expectTrailingPage(body)
+    expect(responseBytes).toBeLessThan(2 * MESSAGES_PAGE_SOFT_BYTES)
+    // The floor: ten whole turns at least, and a suffix of the default page.
+    expect(body.messages.filter((m) => m.type === 'user').length).toBeGreaterThanOrEqual(MESSAGES_PAGE_MIN_TURNS)
+    const byDefault = await latest('limit=300&media=ref')
+    expect(body.messages.map((m) => m.id)).toEqual(
+      byDefault.messages.slice(-body.messages.length).map((m) => m.id),
+    )
+    expect(body.messages.length).toBeLessThan(byDefault.messages.length / 2)
+    reportPayload('web renderer (soft 1MiB, 10 turns)', responseBytes, body.messages.length)
+    expectWithinBudget('transcript: trailing page (web renderer)', measurement, {
+      totalOps: 13,
+      ops: { 'handle.read': 8 },
+      bytesRead: 3_113_696,
+      wallMs: 320,
+    })
+  })
+
+  // Scroll-up from the page above: the first older page the web renderer
+  // asks for, unbudgeted.
+  it('older page behind the web renderer’s trailing page', async () => {
+    const first = await latest(
+      `limit=${MESSAGES_PAGE_LIMIT}&media=ref&soft_bytes=${MESSAGES_PAGE_SOFT_BYTES}&min_turns=${MESSAGES_PAGE_MIN_TURNS}`,
+    )
+    const { body, measurement, responseBytes } = await read<PageBody>(
+      `limit=200&media=ref&cursor=${encodeURIComponent(first.nextCursor!)}`,
+    )
+    expectOlderPage(body, first)
+    reportPayload('older, behind the web page', responseBytes, body.messages.length)
+    expectWithinBudget('transcript: older page (behind the web page)', measurement, {
+      totalOps: 21,
+      ops: { 'handle.read': 16 },
+      bytesRead: 10_306_522,
+      wallMs: 500,
     })
   })
 

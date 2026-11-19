@@ -160,8 +160,8 @@ interface WalkStep {
 
 /** Latest page, then older pages down the cursor chain, as a client walks it. */
 async function walk(
-  latest: { limit: number; byteBudget?: number },
-  older: { limit: number; byteBudget?: number },
+  latest: { limit: number; byteBudget?: number; softBudget?: { bytes: number; minTurns: number } },
+  older: { limit: number; byteBudget?: number; softBudget?: { bytes: number; minTurns: number } },
   sessionId = SESSION
 ): Promise<WalkStep[]> {
   const store = createLocalSessionStore(AGENT)
@@ -240,6 +240,109 @@ describe('budgeted page walks over a multi-MB transcript', () => {
       previous = page.messages.length
       expect(cursorId(page.nextCursor)).toBe(page.messages.length < full.length ? page.messages[0]!.id : null)
     }
+  }, WALK_TIMEOUT_MS)
+})
+
+// What the web renderer sends for its trailing page: a lower budget that may
+// cut the page only once it holds a number of whole turns.
+describe('a soft budget with a turn floor', () => {
+  const turnStarts = (items: TransformedItem[]) =>
+    items.filter((m) => m.type === 'user' && !m.queued).length
+
+  async function trailing(opts: { softBudget?: { bytes: number; minTurns: number }; byteBudget?: number }, sessionId = SESSION) {
+    return getSessionMessagesPage(createLocalSessionStore(AGENT), sessionId, { limit: 300, ...opts })
+  }
+
+  it('serves a suffix of the default page that holds its turns, for every floor', async () => {
+    const byDefault = await trailing({})
+    // ~4 MiB of ~50 KiB turns: more turns than any floor below 60.
+    expect(turnStarts(byDefault.messages)).toBeGreaterThan(60)
+    let previous = 0
+    for (const minTurns of [1, 5, 10, 40, 60]) {
+      const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns } })
+      const at = `min_turns ${minTurns}`
+      expect(page.messages.length, at).toBeGreaterThan(0)
+      expect(page.messages, at).toEqual(byDefault.messages.slice(byDefault.messages.length - page.messages.length))
+      expect(page.messages.length, at).toBeLessThan(byDefault.messages.length)
+      expect(turnStarts(page.messages), at).toBeGreaterThanOrEqual(minTurns)
+      expect(cursorId(page.nextCursor), at).toBe(page.messages[0]!.id)
+      expect(page.messages.length, at).toBeGreaterThanOrEqual(previous)
+      previous = page.messages.length
+    }
+  }, WALK_TIMEOUT_MS)
+
+  it('cuts at the bytes once the turns are there, and at the turn when they are not', async () => {
+    const plain = await trailing({ byteBudget: 1 * MiB })
+    // 1 MiB already holds more than ten turns: the floor changes nothing.
+    expect(turnStarts(plain.messages)).toBeGreaterThan(10)
+    expect((await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } })).messages).toEqual(plain.messages)
+    // Forty turns are about 2 MiB: the page runs on to the fortieth turn's
+    // question and starts there, a whole turn.
+    const floored = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 40 } })
+    expect(turnStarts(floored.messages)).toBe(40)
+    expect(floored.messages[0]).toMatchObject({ type: 'user', id: 'u-70' })
+  }, WALK_TIMEOUT_MS)
+
+  it('is the default page when the default window holds fewer turns than the floor', async () => {
+    const byDefault = await trailing({})
+    const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 100 } })
+    expect(turnStarts(byDefault.messages)).toBeLessThan(100)
+    expect(page).toEqual(byDefault)
+  }, WALK_TIMEOUT_MS)
+
+  it('does not count a message queued mid-turn as a turn', async () => {
+    // Turn 107 holds a queued steering message (107 % 17 === 5).
+    const page = await trailing({ softBudget: { bytes: 64 * KiB, minTurns: 4 } })
+    expect(page.messages.some((m) => m.type === 'user' && m.queued)).toBe(true)
+    expect(turnStarts(page.messages)).toBeGreaterThanOrEqual(4)
+    expect(page.messages[0]!.type).toBe('user')
+  }, WALK_TIMEOUT_MS)
+
+  it('chains into older pages with nothing skipped or repeated', async () => {
+    const soft = { softBudget: { bytes: 1 * MiB, minTurns: 10 } }
+    // The web mix: a soft trailing page, default older pages.
+    expectConsistentWalk(await walk({ limit: 300, ...soft }, { limit: 200 }))
+    // A floor that places every page boundary, and one the item limit beats.
+    const small = { softBudget: { bytes: 64 * KiB, minTurns: 3 } }
+    expectConsistentWalk(await walk({ limit: 300, ...small }, { limit: 200, ...small }))
+    expectConsistentWalk(await walk({ limit: 7, ...soft }, { limit: 5, ...soft }))
+  }, WALK_TIMEOUT_MS)
+
+  it('leaves a transcript smaller than the budget whole', async () => {
+    await writeTranscript('soft-small', buildTranscript(6))
+    const whole = await fullTransform('soft-small')
+    const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, 'soft-small')
+    expect(page).toEqual({ messages: whole, nextCursor: null })
+    expect(page).toEqual(await trailing({}, 'soft-small'))
+  })
+
+  it('serves a huge trailing result whole, with the turns before it', async () => {
+    // Twelve small turns, then a turn whose tool result alone is 2 MiB: twice
+    // the soft budget, in the newest rows of the file.
+    const rows = buildTranscript(12)
+    rows.push(
+      { type: 'user', uuid: 'u-big', timestamp: '2026-01-03T01:00:00.000Z', sessionId: SESSION, parentUuid: null, message: { role: 'user', content: 'read the dump' } },
+      { type: 'assistant', uuid: 'a-big', timestamp: '2026-01-03T01:00:01.000Z', sessionId: SESSION, parentUuid: 'u-big', message: { id: 'msg-big', role: 'assistant', content: [{ type: 'tool_use', id: 't-big', name: 'Read', input: { file_path: '/w/dump' } }] } },
+      { type: 'user', uuid: 'r-big', timestamp: '2026-01-03T01:00:02.000Z', sessionId: SESSION, parentUuid: 'a-big', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't-big', content: payload(2 * MiB, 999) }] } },
+      { type: 'assistant', uuid: 'f-big', timestamp: '2026-01-03T01:00:03.000Z', sessionId: SESSION, parentUuid: 'r-big', message: { id: 'fin-big', role: 'assistant', content: [{ type: 'text', text: 'read it' }] } },
+    )
+    await writeTranscript('soft-big-tail', rows)
+    const whole = await fullTransform('soft-big-tail')
+    const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, 'soft-big-tail')
+    expect(page.messages).toEqual(whole.slice(whole.length - page.messages.length))
+    expect(page.messages.at(-1)!.id).toBe('f-big')
+    const call = page.messages.find((m) => m.id === 'a-big')
+    expect(call?.type === 'assistant' && call.toolCalls[0]!.result).toBeTruthy()
+    // The big turn and nine before it: the page starts on a question.
+    expect(turnStarts(page.messages)).toBe(10)
+    expect(page.messages[0]).toMatchObject({ type: 'user', id: 'u-3' })
+    expect(cursorId(page.nextCursor)).toBe('u-3')
+
+    // The same turn alone in a transcript: all of it.
+    await writeTranscript('soft-only-big', rows.slice(-4))
+    const only = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, 'soft-only-big')
+    expect(only.messages.map((m) => m.id)).toEqual(['u-big', 'a-big', 'f-big'])
+    expect(only.nextCursor).toBeNull()
   }, WALK_TIMEOUT_MS)
 })
 

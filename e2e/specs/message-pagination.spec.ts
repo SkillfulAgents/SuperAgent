@@ -80,8 +80,54 @@ function seedHistory(agentSlug: string, sessionId: string): void {
   fs.writeFileSync(jsonlPath, `${rows.join('\n')}\n${existing}`)
 }
 
+/** Turns of the byte-heavy transcript: one ~100 KB tool result and a terse answer each (~6 MB). */
+const HEAVY_TURNS = 60
+const HEAVY_RESULT_BYTES = 100 * 1024
+/** The trailing page's floor in whole turns (MESSAGES_PAGE_MIN_TURNS). */
+const MIN_TURNS = 10
+const heavyUserText = (i: number) => `heavy turn ${String(i).padStart(3, '0')}`
+const heavyReplyText = (i: number) => `heavy reply ${String(i).padStart(3, '0')}`
+
+/**
+ * Prepend HEAVY_TURNS tool-heavy turns: megabytes of transcript that fold to
+ * three short rows a turn, the shape where a byte-bounded page is shortest on
+ * screen.
+ */
+function seedHeavyHistory(agentSlug: string, sessionId: string): void {
+  const jsonlPath = sessionJsonlPath(agentSlug, sessionId)
+  const existing = fs.readFileSync(jsonlPath, 'utf-8')
+  const at = (seconds: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString()
+  const result = 'x'.repeat(HEAVY_RESULT_BYTES)
+
+  const rows: string[] = []
+  for (let i = 0; i < HEAVY_TURNS; i++) {
+    const row = (entry: Record<string, unknown>, n: number) =>
+      rows.push(JSON.stringify({ timestamp: at(i * 4 + n), sessionId, ...entry }))
+    row({ type: 'user', uuid: `heavy-u-${i}`, parentUuid: null, message: { role: 'user', content: heavyUserText(i) } }, 0)
+    row({
+      type: 'assistant', uuid: `heavy-c-${i}`, parentUuid: `heavy-u-${i}`,
+      message: {
+        id: `msg-heavy-call-${i}`, role: 'assistant',
+        content: [{ type: 'tool_use', id: `toolu-heavy-${i}`, name: 'Read', input: { file_path: `/workspace/f-${i}.txt` } }],
+      },
+    }, 1)
+    row({
+      type: 'user', uuid: `heavy-r-${i}`, parentUuid: `heavy-c-${i}`,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu-heavy-${i}`, content: result }] },
+    }, 2)
+    row({
+      type: 'assistant', uuid: `heavy-a-${i}`, parentUuid: `heavy-r-${i}`,
+      message: { id: `msg-heavy-answer-${i}`, role: 'assistant', content: [{ type: 'text', text: heavyReplyText(i) }] },
+    }, 3)
+  }
+
+  fs.writeFileSync(jsonlPath, `${rows.join('\n')}\n${existing}`)
+}
+
 interface PageResponse {
   cursor: string | null
+  softBytes: string | null
+  minTurns: string | null
   count: number
   nextCursor: string | null
 }
@@ -110,6 +156,8 @@ function trackMessagePages(page: Page): PageResponse[] {
         if (!Array.isArray(body?.messages)) return
         seen.push({
           cursor: params.get('cursor'),
+          softBytes: params.get('soft_bytes'),
+          minTurns: params.get('min_turns'),
           count: body.messages.length,
           nextCursor: body.nextCursor ?? null,
         })
@@ -259,6 +307,72 @@ test.describe('transcript pagination', () => {
     await expect(page.getByText(OLDEST, { exact: true })).toBeVisible()
     const metrics = await messageListMetrics(page)
     expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight)
+  })
+
+  // The trailing page asks for a cheaper window than the server's default
+  // (about 1 MiB of transcript once that holds ten whole turns). On a
+  // tool-heavy session that is a fraction of the default page, and what must
+  // survive is everything the reader does next: the newest turns are there,
+  // the list can scroll, and scrolling up walks to the very first message
+  // with every turn present once and in order.
+  test('a byte-heavy session opens on a bounded page and still pages back to the start', async ({
+    page,
+    request,
+  }, testInfo) => {
+    test.setTimeout(150_000)
+    const agent = await createAgent(request, uniqueName(testInfo, 'Pagination Heavy'))
+    const session = await createSession(request, agent, 'seed the transcript')
+    await expect
+      .poll(() => fs.existsSync(sessionJsonlPath(agent.slug, session.id)), { timeout: 15_000 })
+      .toBe(true)
+    seedHeavyHistory(agent.slug, session.id)
+
+    const pages = trackMessagePages(page)
+    await page.goto(`/agents/${agent.slug}/sessions/${session.id}`)
+    await expect(page.getByText(heavyReplyText(HEAVY_TURNS - 1), { exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect.poll(() => pages.length, { timeout: 15_000 }).toBeGreaterThan(0)
+
+    const first = pages.find((p) => p.cursor === null)!
+    expect(first.softBytes).toBe(String(1024 * 1024))
+    expect(first.minTurns).toBe(String(MIN_TURNS))
+    expect(first.nextCursor).not.toBeNull()
+    // Far fewer than the default page would hold (4 MiB: about 40 of these
+    // turns, 120 items), and never fewer than the floor's whole turns.
+    expect(first.count).toBeLessThan(60)
+    const userMessages = page.locator('[data-testid="message-user"]')
+    expect(await userMessages.count()).toBeGreaterThanOrEqual(MIN_TURNS)
+    await expect(page.getByText(heavyUserText(0), { exact: true })).toHaveCount(0)
+
+    // The bounded page overflows the viewport, so the reader can scroll up.
+    const opened = await messageListMetrics(page)
+    expect(opened.scrollHeight).toBeGreaterThan(opened.clientHeight)
+
+    for (let attempt = 0; attempt < 12; attempt++) {
+      if (await page.getByText(heavyUserText(0), { exact: true }).count()) break
+      const renderedBefore = await userMessages.count()
+      const pagesBefore = pages.length
+      await scrollToTop(page)
+      await expect.poll(() => pages.length, { timeout: 20_000 }).toBeGreaterThan(pagesBefore)
+      await expect.poll(() => userMessages.count(), { timeout: 20_000 }).toBeGreaterThan(renderedBefore)
+      await settleFrames(page)
+    }
+    await expect(page.getByText(heavyUserText(0), { exact: true })).toHaveCount(1)
+
+    // Older pages are the server's default ones: only the trailing page is bounded.
+    const olderPages = pages.filter((p) => p.cursor !== null)
+    expect(olderPages.length).toBeGreaterThan(0)
+    for (const olderPage of olderPages) {
+      expect(olderPage.softBytes).toBeNull()
+      expect(olderPage.count).toBeGreaterThan(0)
+    }
+    expect(olderPages[olderPages.length - 1]!.nextCursor).toBeNull()
+
+    // No gap and no duplicate at any page boundary: every seeded turn's
+    // question, once, in order.
+    const questions = (await userMessages.allTextContents())
+      .map((text) => /heavy turn \d{3}/.exec(text)?.[0])
+      .filter((text): text is string => text !== undefined)
+    expect(questions).toEqual(Array.from({ length: HEAVY_TURNS }, (_, i) => heavyUserText(i)))
   })
 
   // Guards the fixture's own arithmetic: if the seed ever stops exceeding one

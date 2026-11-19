@@ -36,6 +36,7 @@ import type {
   StopOptions,
 } from '@shared/lib/container/types'
 import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
+import type { MessagesPageSoftBudget } from '@shared/lib/messages-page'
 import type { SessionModelRuntime } from './live/live-sessions'
 import type { SessionEvent, WireFrame } from './live/session-channel'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
@@ -592,7 +593,14 @@ export interface MessageOps {
   /** `getSessionMessagesPage` */
   page(
     sessionId: string,
-    opts: { limit: number; cursor?: string; signal?: AbortSignal; byteBudget?: number; media?: 'ref' },
+    opts: {
+      limit: number
+      cursor?: string
+      signal?: AbortSignal
+      byteBudget?: number
+      softBudget?: MessagesPageSoftBudget
+      media?: 'ref'
+    },
   ): Promise<SessionMessagesPage>
   /** `getSessionMessagesDelta` */
   delta(sessionId: string, opts: { after: string; signal?: AbortSignal; media?: 'ref' }): Promise<SessionMessagesDelta>

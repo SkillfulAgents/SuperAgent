@@ -15,6 +15,33 @@ export const MESSAGES_PAGE_OLDER_LIMIT = 200
 export const MESSAGES_PAGE_MIN_BYTES = 64 * 1024
 export const MESSAGES_PAGE_MAX_BYTES = 4 * 1024 * 1024
 
+/**
+ * Renderer first-page request (`soft_bytes` + `min_turns`): the page may stop
+ * at this many raw transcript bytes, but only once it holds this many whole
+ * turns (a turn starts at a user message that was not queued mid-turn). Until
+ * then it is budgeted exactly as a request that sent neither, so the page is
+ * always a suffix of the default one and never shorter than these turns
+ * unless the default page is.
+ *
+ * Turns, not items: the message list folds a completed turn's work into one
+ * row, so a page of many items can still render as a few rows, and a list
+ * shorter than its viewport cannot scroll up to load the history above it.
+ * Ten turns are at least twenty rows.
+ *
+ * Not `max_bytes`: a server that predates these parameters ignores them and
+ * serves its default page, where it would honor `max_bytes` with no floor.
+ */
+export const MESSAGES_PAGE_SOFT_BYTES = 1024 * 1024
+export const MESSAGES_PAGE_MIN_TURNS = 10
+/** Upper bound of `min_turns`. */
+export const MESSAGES_PAGE_MAX_MIN_TURNS = 100
+
+/** A byte budget that binds only once the page holds `minTurns` whole turns. */
+export interface MessagesPageSoftBudget {
+  bytes: number
+  minTurns: number
+}
+
 function envLimit(name: string, fallback: number): number {
   const n = Number(process.env[name])
   if (!Number.isInteger(n) || n < 1) return fallback
@@ -37,4 +64,16 @@ export function capMessagesPageLimit(requested: number | undefined, cursor?: str
 export function clampMessagesPageBytes(requested: number | undefined): number | undefined {
   if (requested === undefined) return undefined
   return Math.min(MESSAGES_PAGE_MAX_BYTES, Math.max(MESSAGES_PAGE_MIN_BYTES, requested))
+}
+
+/**
+ * A requested `soft_bytes` + `min_turns` pair as the page reader's soft
+ * budget, its bytes clamped like `max_bytes`. Absent stays absent.
+ */
+export function softMessagesPageBudget(
+  softBytes: number | undefined,
+  minTurns: number | undefined,
+): MessagesPageSoftBudget | undefined {
+  if (softBytes === undefined || minTurns === undefined) return undefined
+  return { bytes: clampMessagesPageBytes(softBytes)!, minTurns }
 }

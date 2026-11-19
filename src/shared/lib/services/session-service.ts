@@ -30,7 +30,7 @@ import {
   streamJsonl,
   streamLines,
 } from '@shared/lib/agent-actor/jsonl-files'
-import { MESSAGES_PAGE_MAX_BYTES } from '@shared/lib/messages-page'
+import { MESSAGES_PAGE_MAX_BYTES, type MessagesPageSoftBudget } from '@shared/lib/messages-page'
 import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 import { ConfigDocError, type ConfigDoc } from '@shared/lib/agent-actor/config-schema'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
@@ -1083,6 +1083,10 @@ async function scanMessagesPageWindow(
     cursor?: string
     cursorOffset?: number
     byteBudget: number
+    /** A lower budget that stops the window only once it holds `minTurns`
+     * turn starts. Below that the window is placed by `byteBudget` alone, so
+     * it is always a suffix of the window the scan picks without it. */
+    softBudget?: MessagesPageSoftBudget
     signal?: AbortSignal
     /** `'shallowest'`: anchor at the newest verified occurrence of the cursor
      * and treat deeper copies as ordinary rows. For a phantom cursor (see
@@ -1091,7 +1095,7 @@ async function scanMessagesPageWindow(
     anchor?: 'deepest' | 'shallowest'
   }
 ): Promise<PageWindowScan> {
-  const { limit, cursor, cursorOffset, byteBudget, signal } = opts
+  const { limit, cursor, cursorOffset, byteBudget, softBudget, signal } = opts
   const seeking = cursor !== undefined && cursorOffset !== undefined
   // A seek anchors on the validated row only: a deeper copy of the same uuid
   // is a replayed row's original, and re-anchoring on it would skip the
@@ -1141,6 +1145,8 @@ async function scanMessagesPageWindow(
   let endOffset: number | undefined
   let linesScanned = 0
   let displayCount = 0
+  // Counted user items that were not queued mid-turn: the rows a turn starts at.
+  let turnStarts = 0
   let windowBytes = 0
   let startOffset = 0
   let anchorOffset: number | undefined
@@ -1195,6 +1201,7 @@ async function scanMessagesPageWindow(
           pendingInformationalContent: null,
         }
         displayCount = 0
+        turnStarts = 0
         windowBytes = 0
         deepestCountedIsGroup = true
         openGroupId = null
@@ -1272,6 +1279,13 @@ async function scanMessagesPageWindow(
         if (isBoundary) boundaryCountedSinceAnchor = true
         displayCount++
         deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
+        if (
+          msgEntry?.type === 'user' &&
+          !msgEntry.isQueuedCommand &&
+          !isTaskNotificationMessage(msgEntry)
+        ) {
+          turnStarts++
+        }
       }
     }
     // Merge-group span tracking. An assistant group's older entries can lie
@@ -1291,6 +1305,16 @@ async function scanMessagesPageWindow(
     }
     const groupOpen = openGroupId !== null
     if (displayCount >= targetItems && !groupOpen) {
+      mode = 'extending'
+    } else if (
+      softBudget !== undefined &&
+      windowBytes >= softBudget.bytes &&
+      turnStarts >= softBudget.minTurns &&
+      displayCount >= 2 &&
+      !groupOpen
+    ) {
+      // The soft budget stops like the budget below, and only on a window
+      // that already holds its turns.
       mode = 'extending'
     } else if (windowBytes >= byteBudget && displayCount >= 2 && !groupOpen) {
       // The budget stop waits for two items: one sacrificial head plus at
@@ -1408,12 +1432,14 @@ export async function getSessionMessagesPage(
     cursor?: string
     signal?: AbortSignal
     byteBudget?: number
+    /** A lower byte budget that binds only once the page holds its turns. */
+    softBudget?: MessagesPageSoftBudget
     /** `'ref'` replaces inline base64 images with media refs (see session-media). */
     media?: 'ref'
   }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = transcriptPath(store, sessionId)
-  const { limit, signal } = opts
+  const { limit, signal, softBudget } = opts
   const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
   // `uuid:offset` seeks to the row; a bare uuid scans from EOF as before.
   const parsedCursor = opts.cursor !== undefined ? parsePageCursor(opts.cursor) : undefined
@@ -1429,7 +1455,7 @@ export async function getSessionMessagesPage(
   let entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   let rowOffsets: Map<string, number>
   try {
-    scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, cursorOffset, byteBudget, signal })
+    scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, cursorOffset, byteBudget, softBudget, signal })
     signal?.throwIfAborted()
     if (!scan.found && scan.stale) {
       // Deletion, retention or resync rewrote the transcript since the cursor
@@ -1440,7 +1466,7 @@ export async function getSessionMessagesPage(
         `in session ${sessionId}; falling back to the id scan`
       )
       cursorOffset = undefined
-      scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal })
+      scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, softBudget, signal })
       signal?.throwIfAborted()
     }
     if (!scan.found) {
@@ -1508,7 +1534,7 @@ export async function getSessionMessagesPage(
         `response in session ${sessionId}; paging from its newest copy`
       )
       try {
-        scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal, anchor: 'shallowest' })
+        scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, softBudget, signal, anchor: 'shallowest' })
         signal?.throwIfAborted()
         if (!scan.found) return { messages: [], nextCursor: null }
         ;({ entries, rowOffsets } = await readEntriesRange(
