@@ -247,7 +247,15 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
+    // On a short phone the last tile sits below the footer. Wheel the list itself to reach it.
+    await page.setViewportSize({ width: 390, height: 400 })
     await page.getByRole('button', { name: 'Browse Templates' }).click()
+    const importTile = page.getByTestId('import-agent-card')
+    await expect(importTile).not.toBeInViewport()
+    await page.mouse.move(180, 160)
+    await page.mouse.wheel(0, 2000)
+    await expect(importTile).toBeInViewport({ ratio: 0.9 })
+    await page.setViewportSize({ width: 1280, height: 800 })
     const installed = page.waitForResponse(response =>
       response.request().method() === 'POST' && response.url().endsWith('/api/agents/install-from-skillset'),
     )

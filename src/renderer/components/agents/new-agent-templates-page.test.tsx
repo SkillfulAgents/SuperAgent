@@ -13,7 +13,7 @@ const { mockNavigate, mockPush, mockComplete, mockFile, search, installProps } =
 }))
 
 vi.mock('@tanstack/react-router', () => ({
-  useRouter: () => ({ history: { push: mockPush }, navigate: mockNavigate }),
+  useRouter: () => ({ history: { push: mockPush, location: { state: {} } }, navigate: mockNavigate }),
   useSearch: () => search,
 }))
 vi.mock('@renderer/hooks/use-complete-template-install', () => ({ useCompleteTemplateInstall: () => mockComplete }))

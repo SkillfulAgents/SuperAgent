@@ -77,6 +77,13 @@ export interface SessionUsage {
 
 /** What the app keeps about a session, in the agent's session index. */
 export interface SessionMetadata extends RuntimeOptions {
+  /** Receipt registered with the first turn so interrupted setup can safely resume. */
+  creationSetup?: {
+    requestId?: string
+    userId: string
+    initialMessageUuid: string
+    dreamSetupId?: string
+  }
   name?: string
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created

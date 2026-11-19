@@ -203,6 +203,7 @@ export function useCreateSession(options: {
     mutationFn: async (data: {
       agentSlug: string
       message: string
+      requestId?: string
       // Names the session instead of generating a name from the message.
       name?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
@@ -222,6 +223,8 @@ export function useCreateSession(options: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: data.message,
+          requestId: data.requestId,
+          ...(data.origin && data.origin !== 'user' && { skipDreamSetup: true }),
           ...(data.name ? { name: data.name } : {}),
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
@@ -234,7 +237,7 @@ export function useCreateSession(options: {
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
-      return res.json() as Promise<ApiSession & { initialMessageUuid: string; credentialSource?: string }>
+      return res.json() as Promise<ApiSession & { initialMessageUuid: string; initialMessage?: string; replayed?: boolean; credentialSource?: string }>
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'

@@ -59,6 +59,12 @@ export const sessionMetadataSchema = z
   .object({
     name: z.string().optional(),
     starred: z.boolean().optional(),
+    creationSetup: z.object({
+      requestId: z.string().uuid().optional(),
+      userId: z.string(),
+      initialMessageUuid: z.string().uuid(),
+      dreamSetupId: z.string().uuid().optional(),
+    }).optional(),
     createdAt: z.string().optional(),
     createdByUserId: z.string().optional(),
     createdByDeviceId: z.string().optional(),

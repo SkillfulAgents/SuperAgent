@@ -1,10 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
-import { agentSkillsQuery } from '@renderer/hooks/use-agent-skills'
-import { DREAM_SETUP_PROMPT } from '@renderer/lib/dream-skill'
 import { CreateAgentForm } from './create-agent-form'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import {
@@ -189,22 +185,17 @@ describe('CreateAgentForm', () => {
     expect(mockNavigate).not.toHaveBeenCalled()
   })
 
-  it.each([
-    ['the public Dream skill is installed', DEFAULT_PUBLIC_SKILLSET.id, true],
-    ['Dream has been removed', undefined, false],
-    ['Dream belongs to another skillset', 'other-skillset', false],
-  ] as const)('sends and displays the initial job when %s', async (_case, skillsetId, activatesDream) => {
-    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } })
+  it('uses the server’s accepted first message for the optimistic preview', async () => {
     const agent = { slug: 'scout', displaySlug: 'scout-id' }
-    client.setQueryData(agentSkillsQuery(agent.slug).queryKey, skillsetId ? [{
-      name: 'dream', path: 'dream', description: 'Self-review', status: { type: 'up_to_date', skillsetId },
-    }] : [])
-    renderWithProviders(<QueryClientProvider client={client}><CreateAgentForm namedFlow existingAgent={agent} /></QueryClientProvider>)
     const job = 'Review our customer feedback.'
+    const initialMessage = job + '\n\nRun Dream setup.'
+    mockCreateSession.mutateAsync.mockResolvedValueOnce({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid', initialMessage })
+    renderWithProviders(<CreateAgentForm namedFlow existingAgent={agent} sessionRequestId="saved-request" />)
     await act(async () => { await capturedComposerOptions.onSubmit(job) })
-    const message = activatesDream ? `${job}\n\n${DREAM_SETUP_PROMPT}` : job
-    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ agentSlug: agent.slug, message }))
-    expect(peekPendingSessionSeed('session-123')).toMatchObject({ text: message })
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      agentSlug: agent.slug, message: job, requestId: 'saved-request',
+    }))
+    expect(peekPendingSessionSeed('session-123')).toMatchObject({ text: initialMessage })
   })
 
   it('does not make a created session retryable when wizard finalization fails', async () => {

@@ -3,10 +3,12 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { AgentAddonsStep } from './agent-addons-step'
 
 const dream = { name: 'dream', path: 'skills/dream/SKILL.md', version: '0.1.0', skillsetId: DEFAULT_PUBLIC_SKILLSET.id }
-const state = { skills: [dream], brain: true, everyAgent: false }
+
+const state = { integrations: [] as Partial<PublicAgentIntegration>[], skills: [dream], brain: true, everyAgent: false }
 const install = vi.fn()
 const toggle = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.brain ? [{ slug: 'brain', teamBrain: { volumeId: 'drive' } }] : [] }) }))
@@ -24,7 +26,7 @@ vi.mock('@renderer/hooks/use-team-brain-access', () => ({
   useTeamBrainAccess: () => ({ isOn: () => false, isChanging: () => false, ready: true, everyAgent: state.everyAgent, toggle }),
 }))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
-  useAgentIntegrations: () => ({ data: [] }),
+  useAgentIntegrations: () => ({ data: state.integrations }),
   useAvailableAgentIntegrationProviders: () => ({ data: [{ provider: 'slack' }, { provider: 'platform-email' }] }),
 }))
 vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog', () => ({
@@ -33,6 +35,7 @@ vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog'
 const show = () => render(<AgentAddonsStep header={null} agentSlug="scout" onBusyChange={vi.fn()} />)
 beforeEach(() => {
   vi.clearAllMocks()
+  state.integrations = []
   state.skills = [dream]
   state.brain = true
   state.everyAgent = false
@@ -40,7 +43,7 @@ beforeEach(() => {
 it('installs the public Dream skill and grants Team Brain to the confirmed agent', async () => {
   show()
   await userEvent.click(screen.getByRole('switch', { name: 'Self-Improvement' }))
-  expect(install).toHaveBeenCalledWith({ agentSlug: 'scout', skillsetId: dream.skillsetId, skillPath: dream.path, skillVersion: dream.version, skillName: dream.name })
+  expect(install).toHaveBeenCalledWith({ agentSlug: 'scout', skillsetId: dream.skillsetId, skillPath: dream.path, skillVersion: dream.version, skillName: dream.name, activateDream: true })
   await userEvent.click(screen.getByRole('switch', { name: 'Team Brain' }))
   expect(toggle).toHaveBeenCalledWith('scout', true)
 })
@@ -84,4 +87,22 @@ it.each([['Inbox', 'platform-email'], ['Slack', 'slack']])('opens the existing %
   show()
   await userEvent.click(screen.getByRole('button', { name: 'Set up ' + label }))
   expect(screen.getByRole('dialog')).toHaveTextContent(provider)
+})
+
+vi.mock('@renderer/components/agent-integrations/provisioned-app-card', () => ({
+  ProvisionedAppCard: ({ integration }: { integration: PublicAgentIntegration }) => <button>Install {integration.id}</button>,
+}))
+vi.mock('@renderer/components/agent-integrations/slack-setup', () => ({
+  SlackSetup: () => null,
+  SlackConnectionSettings: ({ integration }: { integration: PublicAgentIntegration }) => <button>Connect {integration.id}</button>,
+}))
+
+it.each([
+  { provisionedApp: { installed: false }, action: 'Install' },
+  { slack: { botTokenSaved: false, webhook: { status: 'pending' } }, action: 'Connect' },
+])('resumes the existing incomplete Slack connection', async ({ action, ...fields }) => {
+  state.integrations = [{ id: 'existing', provider: 'slack', ...fields } as Partial<PublicAgentIntegration>]
+  show()
+  await userEvent.click(screen.getByRole('button', { name: 'Finish setup Slack' }))
+  expect(screen.getByRole('dialog')).toHaveTextContent(action + ' existing')
 })

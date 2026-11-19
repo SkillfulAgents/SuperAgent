@@ -2,12 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { getTeamBrain } from '../config/settings'
+import { volumeDefinitions } from '../db/schema'
 import type { AppDatabase } from '../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 
 let testDir: string
 let testDb: AppDatabase
 let handle: TestDatabase
+
+vi.mock('../config/settings', () => ({ getTeamBrain: vi.fn(async () => null) }))
 
 vi.mock('../db', async () => {
   return {
@@ -45,6 +49,26 @@ describe('x-agent-policy-service', () => {
       expect((await evaluate('caller', 'read', 'target'))).toBe('review')
       expect((await evaluate('caller', 'invoke', 'target'))).toBe('review')
     })
+  })
+
+  it('lets a new agent invoke the global Team Brain and respects explicit decisions', async () => {
+    vi.mocked(getTeamBrain).mockResolvedValue({ agentSlug: 'brain', volumeId: 'team-drive' })
+    try {
+      const time = new Date()
+      await testDb.insert(volumeDefinitions).values({
+        id: 'team-drive', name: 'Team Brain', type: 'local', config: '{}',
+        globalAccess: 'read', createdAt: time, updatedAt: time,
+      }).run()
+      expect(await evaluate('new-agent', 'invoke', 'brain')).toBe('allow')
+      expect(await evaluate('new-agent', 'read', 'brain')).toBe('review')
+      expect(await evaluate('new-agent', 'invoke', 'other')).toBe('review')
+      await setPolicy('new-agent', 'invoke', 'brain', 'block')
+      expect(await evaluate('new-agent', 'invoke', 'brain')).toBe('block')
+      await testDb.update(volumeDefinitions).set({ globalAccess: null }).run()
+      expect(await evaluate('another-new-agent', 'invoke', 'brain')).toBe('review')
+    } finally {
+      vi.mocked(getTeamBrain).mockResolvedValue(null)
+    }
   })
 
   describe('setPolicy + getPolicy', () => {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowDownToLine } from 'lucide-react'
 import { Skeleton } from '@renderer/components/ui/skeleton'
@@ -80,6 +80,7 @@ export function CreateAgentTemplates({
   const navigate = useNavigate()
   const { templates, isLoading } = useExploreTemplates()
   const isMobile = useIsMobile()
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
 
   const openCategory = useCallback(
     async (category: string) => {
@@ -151,7 +152,7 @@ export function CreateAgentTemplates({
           <section key={category}>
             <h4 className="mb-2 text-[13px] font-medium text-muted-foreground">{category}</h4>
             <TemplateGrid>
-              {shown.map((template) => (
+              {(expanded.has(category) ? [...shown, ...rest] : shown).map((template) => (
                 <ExploreTemplateCard
                   key={`${template.skillsetId}/${template.path}`}
                   template={template}
@@ -162,8 +163,11 @@ export function CreateAgentTemplates({
                   action="install"
                 />
               ))}
-              {rest.length > 0 && (
-                <SeeMoreCard rest={rest} onClick={() => void openCategory(category)} />
+              {rest.length > 0 && !expanded.has(category) && (
+                <SeeMoreCard rest={rest} onClick={() => {
+                  if (standalone) setExpanded(current => new Set(current).add(category))
+                  else void openCategory(category)
+                }} />
               )}
             </TemplateGrid>
           </section>

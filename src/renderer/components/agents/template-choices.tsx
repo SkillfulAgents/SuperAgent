@@ -21,7 +21,7 @@ export function TemplateChoices({ initiallyImporting, surface, onInstalled, onNa
   }
   return (
     <>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="h-full min-h-0 flex-1 overflow-y-auto pb-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <CreateAgentTemplates
           standalone
           onNavigateAway={onNavigateAway}

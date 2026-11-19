@@ -20,7 +20,10 @@ export function NewAgentTemplatesPage() {
       data-testid="new-agent-templates-page"
       onClose={close}
       footer={(
-        <Button variant="outline" onClick={() => void router.navigate({ to: '/new-agent', search: { from, section, surface }, replace: true })} data-testid="new-agent-back">
+        <Button variant="outline" onClick={() => {
+          if (router.history.location.state.fromAgentIdentity) router.history.back()
+          else void router.navigate({ to: '/new-agent', search: { from, section, surface }, replace: true })
+        }} data-testid="new-agent-back">
           <ChevronLeft className="h-4 w-4 mr-1" />
           Back
         </Button>

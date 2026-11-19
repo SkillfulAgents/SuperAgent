@@ -17,7 +17,8 @@ import { z } from 'zod'
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
-import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
+import { getTeamBrain } from '@shared/lib/config/settings'
+import { volumeDefinitions, xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
 import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // ============================================================================
@@ -201,7 +202,8 @@ export async function deleteTargetGrant(callerSlug: string, operation: XAgentOpe
  *   2. Global row (caller, op, target=null) — applies when no specific row exists.
  *      For 'read'/'invoke' this is the "allow for all agents" form. For 'list'
  *      it's the only form (list has no target).
- *   3. Default: 'review' (interactive prompt).
+ *   3. Invoking the workspace-wide Team Brain is allowed.
+ *   4. Default: 'review' (interactive prompt).
  *
  * Each operation is independent — invoke does NOT imply read. This lets users
  * configure write-only access (invoke=allow, read=review/block) for cases
@@ -238,7 +240,17 @@ export async function evaluate(
     .orderBy(sql`${xAgentPolicies.targetAgentSlug} is null`, desc(xAgentPolicies.updatedAt))
     .limit(1)
     .all()
-  return rows[0]?.decision ?? 'review'
+  if (rows[0]) return rows[0].decision
+  // The workspace default also applies to agents created after Team Brain was configured.
+  if (operation === 'invoke') {
+    const brain = await getTeamBrain()
+    if (brain?.agentSlug === targetSlug) {
+      const drive = await db.select({ access: volumeDefinitions.globalAccess }).from(volumeDefinitions)
+        .where(eq(volumeDefinitions.id, brain.volumeId)).get()
+      if (drive?.access) return 'allow'
+    }
+  }
+  return 'review'
 }
 
 /**

@@ -1,6 +1,8 @@
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
 
+export const DREAM_SKILL_PATH = 'skills/dream/SKILL.md'
+
 export function isPublicDreamSkill(skill: ApiSkillWithStatus) {
   return skill.status.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && skill.name.toLowerCase() === 'dream'
 }

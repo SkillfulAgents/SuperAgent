@@ -13,9 +13,6 @@ import { useCreateAgent, useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useCreateAgentForPrompt } from '@renderer/hooks/use-create-agent-for-prompt'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
-import { agentSkillsQuery } from '@renderer/hooks/use-agent-skills'
-import { DREAM_SETUP_PROMPT, isPublicDreamSkill } from '@renderer/lib/dream-skill'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { seedPendingSessionMessage } from '@renderer/context/pending-session-seed'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
@@ -96,6 +93,7 @@ export interface CreateAgentFormProps {
    */
   surface?: CreateAgentSurface
   namedFlow?: boolean
+  sessionRequestId?: string
   existingAgent?: Pick<ApiAgent, 'slug' | 'displaySlug'>
   initialPrompt?: string
   onPromptChange?: (prompt: string) => void
@@ -123,7 +121,7 @@ export interface CreateAgentFormProps {
   exiting?: boolean
 }
 
-export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, namedFlow, existingAgent, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, namedFlow, existingAgent, sessionRequestId, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -150,7 +148,6 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
   const createAgentForPrompt = useCreateAgentForPrompt()
   const deleteAgent = useDeleteAgent()
   const createSession = useCreateSession()
-  const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
@@ -300,18 +297,17 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
             const warmSlug = namedFlow ? null : await awaitWarmStartRef.current()
             const newAgent = existingAgent ?? await createAgentForPrompt(content, warmSlug)
             if (warmSlug) warmConsumedRef.current = true
-            const installedSkills = existingAgent ? await queryClient.fetchQuery(agentSkillsQuery(existingAgent.slug)) : []
-            const initialMessage = installedSkills.some(isPublicDreamSkill) ? `${content}\n\n${DREAM_SETUP_PROMPT}` : content
             const session = await createSession.mutateAsync({
               agentSlug: newAgent.slug,
-              message: initialMessage,
+              message: content,
+              ...(existingAgent && { requestId: sessionRequestId }),
               ...composerOptions.toRuntimeOptions(),
               // An untouched model is omitted from the runtime options, but a brand
               // new agent has no stored default for the server to resolve against —
               // always send what the picker is showing.
               model: composerOptions.model ?? composerOptions.defaultModel,
             })
-            return { newAgent, session, initialMessage }
+            return { newAgent, session, initialMessage: session.initialMessage ?? content }
           } catch (error) {
             console.error('Failed to create agent:', error)
             toast.error('Failed to create agent', {
@@ -323,7 +319,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
           }
         })()
 
-        seedPendingSessionMessage(
+        if (!session.replayed) seedPendingSessionMessage(
           session.id,
           initialMessage,
           session.initialMessageUuid,
@@ -341,7 +337,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgentForPrompt, namedFlow, existingAgent, queryClient, createSession, navigate, track, surface, onAgentCreated, composerOptions]),
+    }, [createAgentForPrompt, namedFlow, existingAgent, sessionRequestId, createSession, navigate, track, surface, onAgentCreated, composerOptions]),
   })
 
   useEffect(() => { onPromptChange?.(composer.message) }, [composer.message, onPromptChange])

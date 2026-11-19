@@ -76,14 +76,15 @@ export function useInstallSkill() {
       skillsetId: string
       skillPath: string
       skillName: string
+      activateDream?: boolean
       skillVersion: string
     }
   >({
-    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion }) => {
+    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion, activateDream }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion }),
+        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion, activateDream }),
       })
       if (!res.ok) {
         const data = await res.json()

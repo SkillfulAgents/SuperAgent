@@ -27,7 +27,7 @@ export function NewAgentPage() {
       nameTitle="Name your new AI teammate"
       surface={surface}
       onChooseSource={(openImport) => void router.navigate({
-        to: '/new-agent/templates', search: { from, section, surface, importing: openImport || undefined },
+        to: '/new-agent/templates', state: { fromAgentIdentity: true }, search: { from, section, surface, importing: openImport || undefined },
       })}
       onIdentityCreated={handleAgentCreated}
       onClose={close}

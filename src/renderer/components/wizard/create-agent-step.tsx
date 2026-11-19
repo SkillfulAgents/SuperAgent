@@ -115,6 +115,7 @@ export function CreateAgentStep({
               )}
             namedFlow={named}
             existingAgent={flow.agent}
+            sessionRequestId={flow.sessionRequestId}
             initialPrompt={flow.prompt}
             onPromptChange={flow.setPrompt}
             initialRuntimeOptions={flow.initialRuntimeOptions}

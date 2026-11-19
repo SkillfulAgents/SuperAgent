@@ -29,6 +29,9 @@ import { createHash, randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
+import { DREAM_SETUP_PROMPT, DREAM_SKILL_PATH } from '@shared/lib/skillset-provider/dream-skill'
+import { startWithCreationSetup } from '@shared/lib/services/session-creation-setup'
 import { createAgentOnce } from './agent-creation-request'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
@@ -2240,6 +2243,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       return c.json({ error: 'Message is required' }, 400)
     }
 
+    const requestId = z.string().uuid().optional().safeParse(body.requestId)
+    if (!requestId.success) return c.json({ error: 'Invalid session creation request ID' }, 400)
     const runtimeOptions = parseRuntimeOptions(body)
 
     // The dispatch launcher's computer-use toggle: the session may list and
@@ -2280,18 +2285,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const actor = agentRegistry.get(slug)
 
-    await actor.container.start()
-    const availableEnvVars = await getSecretEnvVars(slug)
-
     // One read of the settings for this session's start: limits, custom env,
     // tab limit, models and the runtime below all come from it.
     const launch = await resolveSessionDefaults(await getSettings(), slug)
     const { agentLimits, customEnvVars, maxBrowserTabs, models } = launch
-
-    // Server-generated uuid for the initial message (never client-supplied —
-    // it keys the messageAuthor attribution row). Returned in the response so
-    // the client can materialize its optimistic copy by exact id match.
-    const initialMessageUuid = randomUUID()
 
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, launch.agentPrefs.defaultLlmProviderId)
@@ -2334,40 +2331,54 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // as soon as create returns, and a session whose attach or registration
     // fails is revoked rather than left running unseen. The registration
     // carries the commands the container listed.
-    const containerSession = await actor.sessions.start({
-      create: {
-        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-        initialMessage: await attributedForAgent(c, slug, message.trim()),
-        initialMessageUuid,
-        model: resolved.model,
-        llmProviderId: resolved.llmProviderId,
-        browserModel: models.browserModel,
-        dashboardBuilderModel: models.dashboardBuilderModel,
-        maxOutputTokens: agentLimits.maxOutputTokens,
-        maxThinkingTokens: agentLimits.maxThinkingTokens,
-        maxTurns: agentLimits.maxTurns,
-        maxBudgetUsd: agentLimits.maxBudgetUsd,
-        customEnvVars,
-        maxBrowserTabs,
-        effort: resolved.effort,
-        speed: resolved.speed,
-        ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
-        // Same preference chain MINUS the per-session pick: this is what the
-        // composer will send next time (it only puts model/effort/speed on the
-        // wire when the user explicitly chooses one), so it is what the
-        // container should pre-warm for.
-        prewarmDefaults: {
-          llmProviderId: prewarm.llmProviderId ?? undefined,
-          model: prewarm.model,
-          effort: prewarm.effort,
-          speed: prewarm.speed,
+    let dreamMessage: string | undefined
+    const { id: sessionId, initialMessageUuid, replayed } = await startWithCreationSetup(actor, {
+      userId: getCurrentUserId(c),
+      requestId: requestId.data,
+      pendingDream: body.skipDreamSetup === true ? undefined : launch.agentPrefs.dreamSetupId,
+    }, async (initialMessageUuid, receipt) => {
+      await actor.container.start()
+      const availableEnvVars = await getSecretEnvVars(slug)
+      if (receipt?.dreamSetupId) dreamMessage = `${message.trim()}\n\n${DREAM_SETUP_PROMPT}`
+      return actor.sessions.start({
+        create: {
+          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+          initialMessage: await attributedForAgent(c, slug, dreamMessage ?? message.trim()),
+          initialMessageUuid,
+          model: resolved.model,
+          llmProviderId: resolved.llmProviderId,
+          browserModel: models.browserModel,
+          dashboardBuilderModel: models.dashboardBuilderModel,
+          maxOutputTokens: agentLimits.maxOutputTokens,
+          maxThinkingTokens: agentLimits.maxThinkingTokens,
+          maxTurns: agentLimits.maxTurns,
+          maxBudgetUsd: agentLimits.maxBudgetUsd,
+          customEnvVars,
+          maxBrowserTabs,
+          effort: resolved.effort,
+          speed: resolved.speed,
+          ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
+          // Same preference chain MINUS the per-session pick: this is what the
+          // composer will send next time (it only puts model/effort/speed on the
+          // wire when the user explicitly chooses one), so it is what the
+          // container should pre-warm for.
+          prewarmDefaults: {
+            llmProviderId: prewarm.llmProviderId ?? undefined,
+            model: prewarm.model,
+            effort: prewarm.effort,
+            speed: prewarm.speed,
+          },
         },
-      },
-      name: name || 'New Session',
-      metadata: initialMetadata,
-      ...(computerUse ? { grantComputerUse: true } : {}),
+        name: name || 'New Session',
+        metadata: receipt ? { ...initialMetadata, creationSetup: receipt } : initialMetadata,
+        ...(computerUse ? { grantComputerUse: true } : {}),
+      })
     })
-    const sessionId = containerSession.id
+    if (replayed) {
+      const existing = await actor.sessions.get(sessionId)
+      if (!existing) return c.json({ error: 'The original session is no longer available' }, 410)
+      return c.json({ ...existing, initialMessageUuid, replayed: true })
+    }
 
     // The session runs now, so a failed attribution row leaves the message
     // unattributed rather than failing a session the user can already see.
@@ -2401,6 +2412,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         ...(resolved.effort ? { effort: resolved.effort } : {}),
         ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
+        ...(dreamMessage && { initialMessage: dreamMessage }),
         credentialSource: credentialSource((await actor.sessions.live(sessionId)).runtime?.provider),
       },
       201
@@ -6020,7 +6032,7 @@ agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
 agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const { skillsetId, skillPath, skillName, skillVersion } = await c.req.json()
+    const { skillsetId, skillPath, skillName, skillVersion, activateDream } = await c.req.json()
 
     if (!skillsetId || !skillPath) {
       return c.json({ error: 'skillsetId and skillPath are required' }, 400)
@@ -6038,6 +6050,10 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       skillName || skillPath,
       skillVersion || '0.0.0',
     )
+
+    if (activateDream === true && skillsetId === DEFAULT_PUBLIC_SKILLSET.id && skillPath === DREAM_SKILL_PATH) {
+      await updateAgentPreferences(agentSlug, { dreamSetupId: randomUUID() })
+    }
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillPath}`, action: 'created', details: { skillsetId, skillName: skillName || skillPath } })
     return c.json({ installed: true })
@@ -6381,6 +6397,7 @@ agents.delete('/:id/skills/:dir', AgentAdmin(), async (c) => {
     const agentSlug = getAgentId(c)
     const dir = c.req.param('dir')
     await deleteSkill(agentSlug, dir)
+    if (dir === 'dream') await updateAgentPreferences(agentSlug, { dreamSetupId: null })
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'deleted' })
     return c.body(null, 204)

@@ -27,10 +27,12 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
   const [stage, setStage] = useState<CreationDraft['stage'] | 'templates'>(() =>
     draft?.stage ?? (signupHandoff?.template_slug && !signupHandoff.prompt ? 'describe' : 'name'))
   const [identity, setIdentity] = useState<ChosenAgentIdentity>(() => draft?.identity ?? { name: '', avatar: randomAgentAvatar() })
+  const initialIdentity = useRef(identity)
   const [agent, setAgent] = useState(draft?.agent)
   const [prompt, setPrompt] = useState(draft?.prompt ?? '')
   const [runtimeOptions, setRuntimeOptions] = useState(draft?.runtimeOptions)
   const [importing, setImporting] = useState(false)
+  const [sessionRequestId] = useState(() => draft?.sessionRequestId ?? uuid())
   const requestId = useRef(draft?.requestId)
   const resumeCreation = useRef(!!draft?.requestId && !draft.agent && draft.stage === 'describe')
   const [saving, setSaving] = useState(resumeCreation.current)
@@ -49,10 +51,10 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
   const { track } = useAnalyticsTracking()
 
   useEffect(() => {
-    if (!finished.current && (agent || requestId.current) && stage !== 'templates') {
-      saveCreationDraft(key, { agent, requestId: agent ? undefined : requestId.current, identity: confirmed.current ?? identity, stage, prompt, runtimeOptions })
+    if (!finished.current && stage !== 'templates' && (agent || requestId.current || identity !== initialIdentity.current)) {
+      saveCreationDraft(key, { agent, sessionRequestId, requestId: agent ? undefined : requestId.current, identity: confirmed.current ?? identity, stage, prompt, runtimeOptions })
     }
-  }, [key, agent, identity, saving, stage, prompt, runtimeOptions])
+  }, [key, agent, identity, sessionRequestId, saving, stage, prompt, runtimeOptions])
 
   useEffect(() => {
     if (resumeCreation.current) {
@@ -73,7 +75,7 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
       if (!target) {
         requestId.current ??= uuid()
         // Store the request before dispatch. A refresh can replay this exact create.
-        saveCreationDraft(key, { requestId: requestId.current, identity: chosen, stage: 'describe', prompt, runtimeOptions })
+        saveCreationDraft(key, { requestId: requestId.current, sessionRequestId, identity: chosen, stage: 'describe', prompt, runtimeOptions })
         const created = await createAgent.mutateAsync({ ...chosen, requestId: requestId.current })
         target = { slug: created.slug, displaySlug: created.displaySlug }
         confirmed.current = { name: created.name, avatar: created.avatar ?? chosen.avatar }
@@ -136,7 +138,7 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface 
     setStage('templates')
   }
   return {
-    stage, identity, setIdentity, agent, prompt, setPrompt, named: !!agent || saving,
+    stage, identity, setIdentity, agent, sessionRequestId, prompt, setPrompt, named: !!agent || saving,
     initialRuntimeOptions: draft?.runtimeOptions, setRuntimeOptions,
     saving, addonBusy, setAddonBusy, confirmIdentity, complete, finish, back, showChoices, importing,
     backToName: () => { if (!busy.current && !addonBusy) setStage('name') },
