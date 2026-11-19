@@ -584,3 +584,51 @@ describe('provide-connected-account handler', () => {
     ])
   })
 })
+
+// The sibling decline route for an agent's integration setup ask; it shares this file's agents.ts mocks.
+describe('decline-integration-setup handler', () => {
+  let app: ReturnType<typeof createApp>
+  const ENDPOINT = '/api/agents/test-agent/sessions/sess-1/decline-integration-setup'
+  const post = (body: unknown) => app.request(`http://localhost${ENDPOINT}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tu-setup', kind: 'integration_setup', scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true, autoApproved: false, payload: { provider: 'linear' },
+    })
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+  })
+
+  it('rejects the parked call with the reason and settles the card', async () => {
+    mockContainerFetch.mockResolvedValue({ ok: true, json: async () => ({ success: true }) })
+
+    const res = await post({ toolUseId: 'tu-setup', declineReason: 'Use the shared bot instead' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, declined: true })
+    const [path, opts] = mockContainerFetch.mock.calls[0]
+    expect(path).toBe('/inputs/tu-setup/reject')
+    expect(JSON.parse(opts.body)).toEqual({ reason: 'Use the shared bot instead' })
+    expect(userInputRequestManager.getOpenRequest('tu-setup', 'test-agent')).toBeNull()
+  })
+
+  it('does not decide a request of another kind', async () => {
+    userInputRequestManager.register({
+      id: 'tu-account', kind: 'connected_account', scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true, autoApproved: false, payload: { toolkit: 'gmail' },
+    })
+
+    const res = await post({ toolUseId: 'tu-account' })
+
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+})

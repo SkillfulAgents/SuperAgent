@@ -15,6 +15,17 @@ import { exchangeLinearToken, LinearAuthorizationError, LinearClient, revokeLine
 
 export { publicLinearIntegration } from './presentation'
 export const linearSetup: IntegrationProviderSetup = {
+  // The agent creates the Linear app in its browser, as the setup form asks a person to.
+  allowAgentCreation: true,
+  agentNextStep(record) {
+    const config = parseTaskJson(linearConfigSchema, record.config)
+    const webhook = !!config.relay
+    return [
+      `Create this agent's Linear app: open ${linearAppCreationUrl(record.name ?? record.agentSlug, config)} in your browser. If Linear asks to log in, ask the user to with request_browser_input.`,
+      `The form is prefilled${webhook ? ', including the callback and webhook URLs' : ' with the callback URL'}. Keep the app private, add an avatar if you have one, and create it.`,
+      `Copy the app's Client ID and Client secret${webhook ? ' and its webhook Signing secret' : ''}, then call authorize_agent_integration with integration_id "${record.id}" and config {clientId, clientSecret${webhook ? ', webhookSecret' : ''}}.`,
+    ].join('\n')
+  },
   describe(context, name) {
     return { redirectUri: context.callbackUrl, creationUrl: linearAppCreationUrl(name ?? context.agentSlug, { redirectUri: context.callbackUrl }) }
   },
