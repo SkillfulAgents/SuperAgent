@@ -178,27 +178,30 @@ html[data-keyboard-open] [data-composer-footer] {
   padding-bottom: 0;
 }
 
-/* Newly streamed prose resolves from a soft blur. Each word is mounted once in
-   the growing Markdown tail, so previously revealed text stays crisp while the
-   next chunk arrives. */
+/* Newly streamed prose fades in word by word. Each word is mounted once in the
+   growing Markdown tail, so previously revealed text stays put while the next
+   chunk arrives.
+
+   Opacity only, no `filter`: a dozen or more words are mid-reveal at any moment
+   of a stream, each on its own compositor layer for the length of its
+   animation, and a blur on each is one more filter pass per word per frame in
+   the GPU process (measured: about a fifth of that process's CPU while a reply
+   streams). `streaming-word-reveal.test.ts` pins this. */
 @keyframes streaming-word-reveal {
   from {
     opacity: 0.18;
-    filter: blur(3.5px);
   }
   to {
     opacity: 1;
-    filter: blur(0);
   }
 }
 
-/* `backwards` (not `both`): a forwards fill would keep `filter: blur(0)` applied
-   after the animation ends, leaving every revealed word layer-promoted and a
-   stacking context for the life of the tail — tables and lists have no blank
-   lines, so they stay "tail" (and would accumulate promoted layers) until the
-   stream moves past them. No `will-change` for the same reason: browsers already
-   promote during an active filter animation, and it would otherwise pin a layer
-   per word. */
+/* `backwards` (not `both`): nothing of the animation outlives it, so a revealed
+   word goes back to being plain text in its paragraph's layer — tables and
+   lists have no blank lines, so they stay "tail" (and would accumulate promoted
+   layers) until the stream moves past them. No `will-change` for the same
+   reason: browsers already promote during an active opacity animation, and it
+   would otherwise pin a layer per word. */
 .streaming-word-reveal {
   animation: streaming-word-reveal 420ms cubic-bezier(0.22, 0.61, 0.25, 1) backwards;
 }

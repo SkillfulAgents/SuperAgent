@@ -3,7 +3,7 @@
  * reveal hook. Existing spans keep their position as text is appended, so React
  * only mounts (and animates) the words that just arrived.
  *
- * Code-like elements are deliberately left alone: blurring individual tokens
+ * Code-like elements are deliberately left alone: fading individual tokens
  * makes code shimmer and can disturb its whitespace-sensitive presentation.
  * Text without a source position (nodes a plugin generated rather than parsed,
  * e.g. GFM footnote scaffolding) is also left alone — it has no offset to batch

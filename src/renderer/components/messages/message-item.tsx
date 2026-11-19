@@ -83,7 +83,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAl
 })
 
 // Only the still-growing Markdown tail uses the word wrapper. Settled blocks
-// switch back to MarkdownBlock, keeping the filter-animation surface small even
+// switch back to MarkdownBlock, keeping the animated surface small even
 // during long responses.
 const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset }: MarkdownBlockProps) {
   const previousTextRef = useRef('')
