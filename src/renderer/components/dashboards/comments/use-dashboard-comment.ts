@@ -148,7 +148,7 @@ export function useDashboardComment({ frameRef, agentSlug, routeAgentSlug, agent
     })
 
     try {
-      const session = await createSession.mutateAsync({ agentSlug, message })
+      const session = await createSession.mutateAsync({ agentSlug, message, surface: 'dashboard_comment' })
       toast.success(`Sent to ${agentName}`, {
         description: 'It’s working on your comment in a new session.',
         action: {
