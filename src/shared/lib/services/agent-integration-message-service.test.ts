@@ -18,10 +18,10 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import {
-  annotateIntegrationMessages,
   hasIntegrationMessages,
   recordIntegrationMessage,
 } from './agent-integration-message-service'
+import { annotateMessageAuthors } from './message-author-annotation-service'
 import { captureException } from '@shared/lib/error-reporting'
 
 const AGENT = 'agent-a'
@@ -45,6 +45,10 @@ function user(id: string, text: string, extra: Partial<TransformedMessage> = {})
 async function record(id: string, text: string, overrides: { sessionId?: string; agentSlug?: string; display?: IntegrationMessageDisplay } = {}) {
   return recordIntegrationMessage({ id, sessionId: overrides.sessionId ?? SESSION, agentSlug: overrides.agentSlug ?? AGENT, display: overrides.display ?? display(text) })
 }
+
+// Cards are joined on by the messages API's one author read.
+const annotateIntegrationMessages = (agentSlug: string, sessionId: string, items: readonly (TransformedItem | null | undefined)[]) =>
+  annotateMessageAuthors(agentSlug, sessionId, items, { senders: false })
 
 describe('agent-integration-message-service', () => {
   beforeEach(async () => {

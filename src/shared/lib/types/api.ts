@@ -5,7 +5,8 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
-import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
+import type { HealthCheckResult } from '@shared/lib/container/types'
+import type { RuntimeOptions, StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionOrigin, SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
@@ -148,7 +149,7 @@ export interface ApiDiscoverableAgent {
 /**
  * Session response from API
  */
-export interface ApiSession {
+export interface ApiSession extends RuntimeOptions {
   id: string
   agentSlug: string
   name: string
@@ -177,13 +178,8 @@ export interface ApiSession {
   // parent's metadata on the single-session GET; undefined when the parent is gone.
   forkedFromSessionId?: string
   forkedFromSessionName?: string
-  // Last effort level used on this session (seeds the composer selector)
-  effort?: EffortLevel
-  // Last processing speed used on this session (seeds the composer selector)
-  speed?: SpeedLevel
-  // Last model used on this session (seeds the composer selector)
-  model?: string
-  llmProviderId?: string | null
+  // The inherited RuntimeOptions are the last ones used on this session; they
+  // seed the composer selector.
   // Present when the session has a pending scheduled wake (long sleep):
   // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
   pendingWakeAt?: string
@@ -469,7 +465,7 @@ export interface ApiSkillsetConfig {
 /**
  * Scheduled task response from API
  */
-export interface ApiScheduledTask {
+export interface ApiScheduledTask extends StoredRuntimeOptions {
   id: string
   agentSlug: string
   scheduleType: 'at' | 'cron'
@@ -484,10 +480,6 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
-  llmProviderId?: string | null
-  model: string | null
-  effort: string | null
-  speed: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null

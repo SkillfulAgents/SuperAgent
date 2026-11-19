@@ -16,6 +16,9 @@ const command = process.platform === 'win32'
   : `${inline} node e2e/setup-e2e-data.js && ${inline} npm run dev:web`
 const desktopSpecs = ['**/home-graph.spec.ts', '**/home-graph-interactions.spec.ts']
 
+// WebKit traces without screenshots: they fill a macOS VM's WindowServer (see playwright.config.ts).
+const webkitTrace = { mode: 'retain-on-failure', screenshots: false } as const
+
 export default defineConfig({
   testDir: './e2e',
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results/graph',
@@ -27,9 +30,9 @@ export default defineConfig({
   use: { baseURL, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
   projects: [
     { name: 'graph-chromium', testMatch: desktopSpecs, grepInvert: /@touch/, use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } },
-    { name: 'graph-webkit', testMatch: desktopSpecs, grepInvert: /@touch/, use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 } } },
+    { name: 'graph-webkit', testMatch: desktopSpecs, grepInvert: /@touch/, use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 }, trace: webkitTrace } },
     { name: 'graph-chromium-touch', testMatch: '**/home-graph-interactions.spec.ts', grep: /@touch/, use: { ...devices['Pixel 7'], viewport: { width: 1024, height: 900 } } },
-    { name: 'graph-webkit-touch', testMatch: '**/home-graph-interactions.spec.ts', grep: /@touch/, use: { ...devices['iPhone 13'], viewport: { width: 1024, height: 900 } } },
+    { name: 'graph-webkit-touch', testMatch: '**/home-graph-interactions.spec.ts', grep: /@touch/, use: { ...devices['iPhone 13'], viewport: { width: 1024, height: 900 }, trace: webkitTrace } },
   ],
   webServer: { command, url: `${baseURL}/api/settings`, reuseExistingServer: false, timeout: 120_000, stdout: 'pipe' },
 })

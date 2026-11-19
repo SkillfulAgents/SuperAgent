@@ -10,8 +10,9 @@ const { mockApiFetch } = vi.hoisted(() => ({
 vi.mock('@renderer/lib/api', () => ({ apiFetch: mockApiFetch }))
 let mockAgent = { slug: 'a1', status: 'running', stale: false }
 vi.mock('./use-agents', () => ({ useAgent: () => ({ data: mockAgent }) }))
-vi.mock('./use-volume-definitions', () => ({ useVolumeDefinitions: () => ({ data: [], isLoading: false, error: null }) }))
-vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ canUseAgent: () => true }) }))
+const registry = { data: [] as { id: string }[] | undefined, isLoading: false, error: null as Error | null, refetch: vi.fn() }
+vi.mock('./use-volume-definitions', () => ({ useVolumeDefinitions: () => registry }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ canUseAgent: () => true, canAdminAgent: () => false }) }))
 
 import { useAddMount, useAgentMounts, useVolumesManager } from './use-mounts'
 
@@ -19,7 +20,11 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockApiFetch.mockReset()
+  Object.assign(registry, { data: [], isLoading: false, error: null })
+})
 
 describe('useAddMount', () => {
   it('adds a picked folder as a local volume', async () => {
@@ -58,6 +63,32 @@ describe('useAgentMounts', () => {
 })
 
 describe('useVolumesManager', () => {
+  it('hides paths and actions if the drive is missing from the current registry', async () => {
+    mockApiFetch.mockResolvedValueOnce(Response.json([{ id: 'm', volumeId: 'v', volumeName: 'Forecasts', hostPath: '/private', readOnly: true }]))
+    const { result } = renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper })
+    await waitFor(() => expect(result.current.mounts).toEqual([{ id: 'm', volumeName: 'Forecasts', restricted: true }]))
+  })
+
+  it('waits for the registry and supports retry before deciding whether a mount is restricted', async () => {
+    registry.data = undefined
+    registry.isLoading = true
+    const mount = { id: 'm', volumeId: 'v', volumeName: 'Forecasts', hostPath: '/private' }
+    mockApiFetch.mockImplementation(async () => Response.json([mount]))
+    const { result, rerender } = renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper })
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalled())
+    expect(result.current.isLoading).toBe(true)
+    expect(result.current.mounts).toEqual([])
+    Object.assign(registry, { isLoading: false, error: new Error('offline') })
+    rerender()
+    expect(result.current.loadError).toBe(true)
+    expect(result.current.mounts).toEqual([])
+    await act(() => result.current.retryLoad())
+    expect(registry.refetch).toHaveBeenCalled()
+    Object.assign(registry, { data: [{ id: 'v' }], error: null })
+    rerender()
+    await waitFor(() => expect(result.current.mounts).toEqual([mount]))
+  })
+
   it('asks for a restart while the agent is marked stale', () => {
     mockAgent = { slug: 'a1', status: 'running', stale: true }
     expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.pendingRestart).toBe(true)

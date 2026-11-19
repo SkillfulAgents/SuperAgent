@@ -10,6 +10,7 @@ import type {
   UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
 import { todoPrompt, type TodoAttachment } from '@shared/lib/todos/todo-schema'
+import { fromStoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useCreateAgentForPrompt } from './use-create-agent-for-prompt'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
@@ -262,9 +263,7 @@ export function useStartTodo() {
             origin: 'todo',
             name: claimed.title.trim() || undefined,
             message: appendAttachedFiles(appendMountedFolders(todoPrompt(claimed), bound), pointedPaths(list)),
-            ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
-            ...(claimed.effort ? { effort: claimed.effort } : {}),
-            ...(claimed.speed ? { speed: claimed.speed } : {}),
+            ...fromStoredRuntimeOptions(claimed),
           })).id
         } catch (error) {
           if (error instanceof Error) reportedBySessionCreation.add(error)

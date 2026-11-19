@@ -3,10 +3,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   sendNotification: vi.fn(async (..._args: unknown[]) => ({ statusCode: 201 })),
   listPushSubscriptions: vi.fn((): unknown[] => []),
+  // The auth-mode read: who is an active member is decided in its SQL, which
+  // push-recipients.integration.test.ts covers against a real database.
+  listPushSubscriptionsForAgentMembers: vi.fn(
+    (_agentSlug: string, _recipientUserId?: string): unknown[] => []
+  ),
   deletePushSubscriptionById: vi.fn(),
   getVapidKeys: vi.fn(() => ({ publicKey: 'vapid-pub', privateKey: 'vapid-priv' })),
   isAuthMode: vi.fn(() => false),
-  getUserSettings: vi.fn(() => ({
+  getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
       enabled: true,
       sessionComplete: true,
@@ -16,7 +21,8 @@ const mocks = vi.hoisted(() => ({
       notifyWhenUnfocused: false,
     },
   })),
-  getPushableAgentSlugs: vi.fn(async (_userId: string): Promise<string[]> => []),
+  // The batched read answers from the same per-user mock, so a test sets one.
+  getUserSettingsForUsers: vi.fn(async (_userIds: readonly string[]) => new Map<string, unknown>()),
 }))
 
 vi.mock('web-push', () => ({
@@ -24,6 +30,7 @@ vi.mock('web-push', () => ({
 }))
 vi.mock('../push/push-subscription-service', () => ({
   listPushSubscriptions: mocks.listPushSubscriptions,
+  listPushSubscriptionsForAgentMembers: mocks.listPushSubscriptionsForAgentMembers,
   deletePushSubscriptionById: mocks.deletePushSubscriptionById,
 }))
 vi.mock('../push/vapid-keys', () => ({
@@ -34,9 +41,7 @@ vi.mock('@shared/lib/auth/mode', () => ({
 }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
-}))
-vi.mock('@shared/lib/services/notification-service', () => ({
-  getPushableAgentSlugs: mocks.getPushableAgentSlugs,
+  getUserSettingsForUsers: mocks.getUserSettingsForUsers,
 }))
 
 import { WebPushChannel } from './web-push-channel'
@@ -90,7 +95,10 @@ beforeEach(() => {
       notifyWhenUnfocused: false,
     },
   })
-  mocks.getPushableAgentSlugs.mockResolvedValue([])
+  mocks.listPushSubscriptionsForAgentMembers.mockReturnValue([])
+  mocks.getUserSettingsForUsers.mockImplementation(
+    async (userIds) => new Map(userIds.map((userId) => [userId, mocks.getUserSettings(userId)]))
+  )
 })
 
 describe('type allowlist', () => {
@@ -197,10 +205,34 @@ describe('owner settings gate', () => {
     expect(mocks.getUserSettings).toHaveBeenCalledWith('local')
 
     mocks.isAuthMode.mockReturnValue(true)
-    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
-    mocks.listPushSubscriptions.mockReturnValue([makeSubscription({ userId: 'user-a' })])
+    mocks.listPushSubscriptionsForAgentMembers.mockReturnValue([makeSubscription({ userId: 'user-a' })])
     await channel.deliver(makeEvent())
-    expect(mocks.getUserSettings).toHaveBeenCalledWith('user-a')
+    expect(mocks.getUserSettingsForUsers).toHaveBeenCalledWith(['user-a'])
+  })
+
+  it('auth mode reads every owner’s settings in one call and applies each owner’s own', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mocks.listPushSubscriptionsForAgentMembers.mockReturnValue([
+      makeSubscription({ id: 'sub-a1', endpoint: 'https://push/a1', userId: 'user-a' }),
+      makeSubscription({ id: 'sub-a2', endpoint: 'https://push/a2', userId: 'user-a' }),
+      makeSubscription({ id: 'sub-b', endpoint: 'https://push/b', userId: 'user-b' }),
+    ])
+    mocks.getUserSettings.mockImplementation((userId: string) => ({
+      notifications: {
+        enabled: true,
+        sessionComplete: userId !== 'user-b',
+        sessionWaiting: true,
+        sessionScheduled: true,
+        platformNotification: true,
+        notifyWhenUnfocused: false,
+      },
+    }))
+
+    await channel.deliver(makeEvent({ type: 'session_complete' }))
+
+    expect(mocks.getUserSettingsForUsers).toHaveBeenCalledTimes(1)
+    const endpoints = mocks.sendNotification.mock.calls.map((call) => (call[0] as { endpoint: string }).endpoint)
+    expect(endpoints.sort()).toEqual(['https://push/a1', 'https://push/a2'])
   })
 
   it('local mode ignores a userId retained from a previous auth-mode life — local settings govern', async () => {
@@ -219,47 +251,52 @@ describe('auth-mode agent access gate', () => {
     mocks.isAuthMode.mockReturnValue(true)
   })
 
-  it('skips owners without access to the event agent', async () => {
+  it('sends only to the subscriptions of the event agent’s members, never to the whole table', async () => {
+    // Everyone's rows are in the table; only user-a is a member of agent-x.
     mocks.listPushSubscriptions.mockReturnValue([
       makeSubscription({ id: 'sub-a', userId: 'user-a' }),
       makeSubscription({ id: 'sub-b', endpoint: 'https://push/b', userId: 'user-b' }),
+      makeSubscription({ id: 'sub-none', endpoint: 'https://push/none', userId: null }),
     ])
-    mocks.getPushableAgentSlugs.mockImplementation(async (userId: string) =>
-      userId === 'user-a' ? ['agent-x'] : ['agent-other']
-    )
+    mocks.listPushSubscriptionsForAgentMembers.mockReturnValue([
+      makeSubscription({ id: 'sub-a', userId: 'user-a' }),
+    ])
 
     await channel.deliver(makeEvent())
 
+    expect(mocks.listPushSubscriptionsForAgentMembers).toHaveBeenCalledWith('agent-x', undefined)
+    expect(mocks.listPushSubscriptions).not.toHaveBeenCalled()
     expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
     const [target] = mocks.sendNotification.mock.calls[0] as unknown as [{ endpoint: string }]
     expect(target.endpoint).toBe('https://web.push.apple.com/abc')
   })
 
-  it('never delivers to ownerless subscriptions in auth mode', async () => {
-    mocks.listPushSubscriptions.mockReturnValue([makeSubscription({ userId: null })])
-
+  it('reads nothing more when no member has a subscription', async () => {
     await channel.deliver(makeEvent())
 
+    expect(mocks.getVapidKeys).not.toHaveBeenCalled()
+    expect(mocks.getUserSettingsForUsers).not.toHaveBeenCalled()
     expect(mocks.sendNotification).not.toHaveBeenCalled()
   })
 
   it('pushes a mention to its recipient only', async () => {
-    mocks.listPushSubscriptions.mockReturnValue([
-      makeSubscription({ id: 'sub-a', userId: 'user-a' }),
-      makeSubscription({ id: 'sub-b', endpoint: 'https://push/b', userId: 'user-b' }),
-    ])
-    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.listPushSubscriptionsForAgentMembers.mockImplementation((_agentSlug, recipientUserId) =>
+      [
+        makeSubscription({ id: 'sub-a', userId: 'user-a' }),
+        makeSubscription({ id: 'sub-b', endpoint: 'https://push/b', userId: 'user-b' }),
+      ].filter((subscription) => recipientUserId === undefined || subscription.userId === recipientUserId)
+    )
 
     await channel.deliver(makeEvent({ type: 'session_mention', recipientUserId: 'user-b' }))
 
+    expect(mocks.listPushSubscriptionsForAgentMembers).toHaveBeenCalledWith('agent-x', 'user-b')
     expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
     const [target] = mocks.sendNotification.mock.calls[0] as unknown as [{ endpoint: string }]
     expect(target.endpoint).toBe('https://push/b')
   })
 
   it("opens a mention on the message it tags, the id encoded once", async () => {
-    mocks.listPushSubscriptions.mockReturnValue([makeSubscription({ userId: 'user-b' })])
-    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.listPushSubscriptionsForAgentMembers.mockReturnValue([makeSubscription({ userId: 'user-b' })])
 
     await channel.deliver(makeEvent({ type: 'session_mention', recipientUserId: 'user-b', messageUuid: 'a&b#c' }))
 

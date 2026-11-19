@@ -1078,6 +1078,7 @@ describe('usePendingRequests', () => {
             targetAgentName: 'Researcher',
             operation: 'invoke',
             attachments: ['/workspace/report.pdf', 42],
+            runtime: { model: 'sonnet', llmProviderId: 'platform', effort: 'max', label: 'Sonnet 5.5' },
           },
         },
         { agentScoped: true },
@@ -1090,6 +1091,7 @@ describe('usePendingRequests', () => {
     const matches = ofKind(result.current.items, 'x_agent_review')
     expect(matches).toHaveLength(1)
     expect(matches[0].xAgent.attachments).toEqual(['/workspace/report.pdf'])
+    expect(matches[0].xAgent.runtime).toEqual({ model: 'sonnet', llmProviderId: 'platform', effort: 'max', label: 'Sonnet 5.5' })
     expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(0)
   })
 

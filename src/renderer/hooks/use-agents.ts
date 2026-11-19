@@ -10,7 +10,7 @@ import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/a
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
 import { useInstallingTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
-import { agentQuery } from './query-options'
+import { agentQuery, agentsListQuery, AGENTS_LIST_POLL_MS } from './query-options'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -94,12 +94,8 @@ export function useAgents<TData = ApiAgent[]>(options?: {
   poll?: false
 }) {
   return useQuery<ApiAgent[], Error, TData>({
-    queryKey: ['agents'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/agents')
-      if (!res.ok) throw new Error('Failed to fetch agents')
-      return res.json()
-    },
+    // Key, fetch and staleTime are shared with the list's other observers.
+    ...agentsListQuery,
     enabled: options?.enabled,
     // React Query structurally shares the `select` result, so a narrow projection
     // (e.g. just {slug, displaySlug} for UserProvider's slug→id resolver) keeps a
@@ -109,7 +105,7 @@ export function useAgents<TData = ApiAgent[]>(options?: {
     select: options?.select,
     notifyOnChangeProps: options?.notifyOnChangeProps,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
-    refetchInterval: options?.poll === false ? false : 60000,
+    refetchInterval: options?.poll === false ? false : AGENTS_LIST_POLL_MS,
   })
 }
 

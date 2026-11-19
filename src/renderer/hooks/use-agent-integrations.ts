@@ -12,6 +12,7 @@ import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/s
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 export type { AgentIntegrationSession, ChatIntegrationAccess }
@@ -206,10 +207,7 @@ export function useCreateAgentIntegration() {
       config: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      llmProviderId?: string | null; model?: string | null
-      effort?: string | null
-      speed?: string | null
-    }) => {
+    } & Partial<StoredRuntimeOptions>) => {
       const { agentSlug, ...body } = params
       const res = await apiFetch(`/api/agent-integrations/agents/${agentSlug}`, {
         method: 'POST',
@@ -256,11 +254,8 @@ export function useUpdateAgentIntegration() {
       config?: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      llmProviderId?: string | null; model?: string | null
-      effort?: string | null
-      speed?: string | null
       status?: 'active' | 'paused'
-    }) => {
+    } & Partial<StoredRuntimeOptions>) => {
       const res = await apiFetch(`/api/agent-integrations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

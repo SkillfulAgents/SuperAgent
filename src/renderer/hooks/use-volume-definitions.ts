@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import type { GlobalAccess, VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { localVolumeConfigSchema, volumeConfigSchema, type LocalVolumeConfig, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
@@ -20,7 +20,18 @@ async function checkedResponse(response: Response): Promise<Response> {
 export function useVolumeDefinitions() {
   return useQuery<VolumeDefinitionSummary[]>({
     queryKey: ['volume-definitions'],
-    queryFn: async () => (await checkedResponse(await apiFetch('/api/volume-definitions'))).json(),
+    queryFn: async () => {
+      // Desktop can be connected to a workspace running the single-owner API.
+      type LegacyDrive = Omit<VolumeDefinitionSummary, 'owners' | 'visibility'> & { userId: string | null }
+      const response = await checkedResponse(await apiFetch('/api/volume-definitions'))
+      const drives: (VolumeDefinitionSummary | LegacyDrive)[] = await response.json()
+      return drives.map(drive => 'visibility' in drive ? drive : {
+        ...drive,
+        visibility: drive.userId === null ? 'public' : 'private',
+        owners: [{ userId: drive.userId, name: drive.userId === null ? 'Workspace admins' : 'You', role: 'owner' }],
+        supportsOwnerSharing: false,
+      })
+    },
     refetchInterval: query => query.state.status !== 'error' && query.state.data?.some(volume => volume.health === 'preparing') ? 2000 : false,
   })
 }
@@ -65,10 +76,10 @@ export function useDeleteVolumeDefinition() {
     mutationFn: async (id: string) => checkedResponse(await apiFetch(`/api/volume-definitions/${id}`, { method: 'DELETE' })),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ['volume-definitions'] })
+      client.invalidateQueries({ queryKey: ['mounts'] })
     },
   })
 }
-
 
 export function useVolumeAgents(id: string | undefined) {
   return useQuery<{ attachments: { agentSlug: string; mountId: string }[] }>({
@@ -76,4 +87,18 @@ export function useVolumeAgents(id: string | undefined) {
     enabled: !!id,
     queryFn: async () => (await checkedResponse(await apiFetch(`/api/volume-definitions/${encodeURIComponent(id!)}/agents`))).json(),
   })
+}
+
+export function useRemoveVolumeOwner(id: string) {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: async (userId: string) => checkedResponse(await apiFetch(
+      `/api/volume-definitions/${encodeURIComponent(id)}/access/${encodeURIComponent(userId)}`, { method: 'DELETE' },
+    )),
+    onSuccess: () => invalidateVolumeAccess(client),
+  })
+}
+
+export function invalidateVolumeAccess(client: QueryClient) {
+  return Promise.all(['volume-definitions', 'mounts', 'volume-owner-candidates'].map(key => client.invalidateQueries({ queryKey: [key] })))
 }

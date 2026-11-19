@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
+import { useUser } from '@renderer/context/user-context'
 import { useAddMount, useRemoveMount } from '@renderer/hooks/use-mounts'
 import { useSaveVolumeDefinition, useVolumeAgents, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 
@@ -56,6 +57,7 @@ export function useTakeTeamBrain() {
 
 /** Which agents use Team Brain once it is set up, read from its drive, and the switches that change it. */
 export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefined) {
+  const { isAuthMode, isAdmin } = useUser()
   const give = useGiveTeamBrain()
   const take = useTakeTeamBrain()
   const saveVolume = useSaveVolumeDefinition()
@@ -95,7 +97,7 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
   return {
     everyAgent: definition?.globalAccess != null,
     // Going global is the drive's managers' to change, and only a drive everyone can add can go.
-    canGoGlobal: definition?.userId === null && !!definition.canManage,
+    canGoGlobal: (!isAuthMode || isAdmin) && definition?.visibility === 'public' && !!definition.canManage,
     isOn: (slug: string) => changing.get(slug) ?? mountOf(slug) !== undefined,
     isChanging: (slug: string) => changing.has(slug),
     toggle,

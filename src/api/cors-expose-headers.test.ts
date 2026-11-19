@@ -32,6 +32,8 @@ describe('CORS exposes the workspace-unavailable header', () => {
     expect(res.headers.get('access-control-allow-origin')).toBe('*')
     const exposed = res.headers.get('access-control-expose-headers')?.toLowerCase().split(',') ?? []
     expect(exposed).toContain(WORKSPACE_UNAVAILABLE_HEADER)
+    // The preview drawer reads a workspace file's ETag to see that it changed.
+    expect(exposed).toContain('etag')
     expect(await res.text()).not.toBe('')
   })
 

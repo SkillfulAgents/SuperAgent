@@ -1,4 +1,4 @@
-import type { IntegrationSessionContext } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationSessionContext } from '../agent-integrations/types'
 import { getAgentIntegration } from '../services/agent-integration-service'
 
 import { parseEmailConfig, parseEmailIntegrationConfig } from './config-schema'
@@ -55,8 +55,9 @@ export class EmailPolicyError extends Error {
 }
 
 /** Read authoritative mail from the gateway, without copying it into app tables. */
-export async function emailSessionAllowed(context: IntegrationSessionContext, admission?: { message: EmailMessage; contacted: boolean }): Promise<boolean> {
-  const record = await getAgentIntegration(context.integration.id)
+export async function emailSessionAllowed(context: IntegrationSessionContext, admission?: { message: EmailMessage; contacted: boolean }, current?: AgentIntegrationRecord): Promise<boolean> {
+  // `current` is the row when the caller read it for this check; it is not read again.
+  const record = current?.id === context.integration.id ? current : await getAgentIntegration(context.integration.id)
   if (!record || record.status !== 'active') return false
   const config = parseEmailIntegrationConfig(record.config)
   if (!admission) {

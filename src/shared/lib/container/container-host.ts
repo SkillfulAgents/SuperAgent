@@ -235,6 +235,11 @@ export class ContainerHost {
     return running
   }
 
+  /** Agents a drive change reaches only through a restart, and with `orStarting` every start not yet at its drive read too. */
+  getAgentIdsHoldingDrives(options?: { orStarting?: boolean }): string[] {
+    return [...this.runtimes].filter(([, runtime]) => runtime.holdsDrives() || (options?.orStarting && runtime.isStarting())).map(([slug]) => slug)
+  }
+
   /** Record every running agent as stale. */
   markAgentsStale(): void {
     for (const slug of this.getRunningAgentIds()) this.runtime(slug).markStale()

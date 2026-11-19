@@ -63,6 +63,22 @@ export const llmConnections = sqliteTable('llm_connections', {
 }))
 
 /**
+ * The columns of stored runtime options (`StoredRuntimeOptions` in
+ * `@shared/lib/container/runtime-options`): a pick that overrides the agent's
+ * defaults, each null where nothing was picked. A table that keeps one spreads
+ * this in, so a new knob reaches them all. Deleting a connection drops the
+ * pick of it back to the default.
+ */
+export function runtimeOptionsColumns() {
+  return {
+    llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+    model: text('model'),
+    effort: text('effort'),
+    speed: text('speed'),
+  }
+}
+
+/**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
  * this row; the refresh secret is stored only as a SHA-256 hash and deleting
  * the row revokes every session in the device family through the FK below.
@@ -349,10 +365,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   timezone: text('timezone'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -683,10 +696,11 @@ export const agentSessions = sqliteTable('agent_sessions', {
   pk: primaryKey({ columns: [table.agentSlug, table.sessionId] }),
 }))
 
-// Reusable sources. A NULL owner makes a volume available to every user.
+// The creator seeds the first ACL entry on insert. Subsequent access comes from visibility and volume_acl.
 export const volumeDefinitions = sqliteTable('volume_definitions', {
   id: text('id').primaryKey(),
-  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  createdBy: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+  visibility: text('visibility', { enum: ['public', 'private'] }).notNull(),
   name: text('name').notNull(),
   type: text('type').notNull(),
   config: text('config').notNull(),
@@ -694,7 +708,25 @@ export const volumeDefinitions = sqliteTable('volume_definitions', {
   globalAccess: text('global_access', { enum: ['read', 'write'] }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
-}, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
+}, table => ({
+  creatorIdx: index('volume_definitions_creator_idx').on(table.createdBy),
+  visibilityCheck: check('volume_visibility_check', sql`${table.visibility} in ('public', 'private') and (${table.globalAccess} is null or ${table.visibility} = 'public')`),
+}))
+
+// A NULL principal represents the workspace on old public drives with no recorded creator
+// and in single-user mode. Its managers are workspace admins. Only public drives can have one.
+export const volumeAcl = sqliteTable('volume_acl', {
+  id: text('id').primaryKey(),
+  volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  role: text('role', { enum: ['owner'] }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  memberUnique: uniqueIndex('volume_acl_member_unique').on(table.volumeId, table.userId),
+  workspaceUnique: uniqueIndex('volume_acl_workspace_unique').on(table.volumeId).where(sql`${table.userId} is null`),
+  userIdx: index('volume_acl_user_idx').on(table.userId),
+  roleCheck: check('volume_acl_role_check', sql`${table.role} = 'owner'`),
+}))
 
 // An attachment owns its mount name and WebDAV identity; renaming a definition
 // never changes a running agent's /mounts/<name> path.
@@ -733,27 +765,30 @@ export const userSettings = sqliteTable('user_settings', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
-// Message author attribution - tracks who sent each user message (auth mode only)
-// Who sent a user message: a person in the app (auth mode), or an agent
-// integration, whose row also carries the card the app draws for it (JSON,
-// integrationMessageDisplaySchema). Host-written only. An integration row has
-// no foreign key: its name snapshot outlives a rename or deletion. A message
-// another agent sent names that agent beside the person billed for the call.
+// Host-recorded sender of a transcript message. An agent's slug and an
+// integration's card survive deletion of the sender. For an agent call the
+// payer is a separate reference that can be cleared when the account is deleted.
 export const messageAuthor = sqliteTable('message_author', {
-  id: text('id').primaryKey(), // Same UUID passed to the SDK and written into JSONL
+  id: text('id').notNull(), // Transcript UUID; a queued prompt keeps it in a fork.
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
   integrationId: text('integration_id'),
   display: text('display'),
   authorAgentSlug: text('author_agent_slug'),
+  billedUserId: text('billed_user_id').references(() => user.id, { onDelete: 'set null' }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' })
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .notNull(),
 }, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.sessionId, table.id] }),
   sessionIdx: index('message_author_session_idx').on(table.sessionId),
-  // Exactly one author; an integration author always has its card.
-  authorCheck: check('message_author_author_check', sql`(${table.userId} is null) <> (${table.integrationId} is null) and (${table.integrationId} is null) = (${table.display} is null)`),
+  // A retried integration delivery can move to a replacement session.
+  integrationDelivery: uniqueIndex('message_author_integration_delivery_idx').on(table.id).where(sql`${table.integrationId} is not null`),
+  authorCheck: check('message_author_author_check', sql`
+    (${table.userId} is not null) + (${table.integrationId} is not null) + (${table.authorAgentSlug} is not null) = 1
+    and (${table.integrationId} is null) = (${table.display} is null)
+    and (${table.billedUserId} is null or ${table.authorAgentSlug} is not null)`),
 }))
 
 // API scope policies - per-account scope-level access policies
@@ -892,10 +927,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -921,10 +953,8 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'), // Claude model override; null = use default
-  effort: text('effort'), // Effort level override; null = use default
-  speed: text('speed'), // Speed level override; null = use default
+  // Runtime options (override the defaults when set; null = use default)
+  ...runtimeOptionsColumns(),
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
@@ -1107,10 +1137,7 @@ export const todos = sqliteTable('todos', {
   // brief. Never set together with agentSlug: the start assigns the new agent.
   newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
   // What to start it on, where the person picked over the agent's defaults.
-  model: text('model'),
-  llmProviderId: text('llm_provider_id'),
-  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
+  ...runtimeOptionsColumns(),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that

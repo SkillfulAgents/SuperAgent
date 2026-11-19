@@ -98,7 +98,8 @@ app.use('*', cors({
   ...(trustedOrigins?.length ? { origin: trustedOrigins } : {}),
   // The packaged renderer is file:// calling loopback, so the cloud router's
   // not-ready marker (relayed by cloud-proxy.ts) is only readable if exposed here.
-  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER],
+  // So is a workspace file's ETag, which an open preview polls for changes.
+  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER, 'ETag'],
 }))
 
 // Uncacheable unless a route opts in — see the middleware for why an absent

@@ -6,6 +6,7 @@ import {
   locateWindowsFrame,
   MAX_IMAGE_EDGE,
   MAX_IMAGE_PIXELS,
+  opaqueBounds,
   prepareScreenshot,
   setCaptureDecoder,
 } from './screenshot-frame'
@@ -69,6 +70,12 @@ describe('fitImageSize', () => {
     expect(Math.max(width, height)).toBeLessThanOrEqual(MAX_IMAGE_EDGE)
     expect(width * height).toBeLessThanOrEqual(MAX_IMAGE_PIXELS)
     expect(width / height).toBeCloseTo(3252 / 2672, 2)
+  })
+
+  it('shrinks a Retina display capture to no more pixels than XGA', () => {
+    const { width, height } = fitImageSize(3024, 1964)
+    expect(width * height).toBeLessThanOrEqual(1024 * 768)
+    expect(width * height).toBeGreaterThan(1024 * 768 * 0.99)
   })
 })
 
@@ -208,6 +215,189 @@ describe('prepareScreenshot', () => {
     const capture = PNG.sync.write(windowCapture(800, 600, FOCUSED_SHADOW))
     expect(prepareScreenshot(capture, null, 'it names no window').unalignedReason).toBe('it names no window')
     expect(prepareScreenshot(capture, { kind: 'window', candidates: [] }).frame).toBeNull()
+  })
+})
+
+/** The opaque bounds as they were first found, every pixel read: what the faster reading must agree with. */
+function opaqueBoundsReadingEveryPixel(image: { width: number; height: number; data: Uint8Array }) {
+  let minX = image.width
+  let minY = image.height
+  let maxX = -1
+  let maxY = -1
+  for (let y = 0; y < image.height; y++) {
+    for (let x = 0; x < image.width; x++) {
+      if (image.data[(y * image.width + x) * 4 + 3] < 250) continue
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
+  }
+  return maxX < 0 ? null : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+}
+
+/** The same pixels, counting how many of them are read. */
+function countingReads<T extends Uint8Array>(data: T): { data: T; counts: { pixelReads: number } } {
+  const counts = { pixelReads: 0 }
+  const counted = new Proxy(data, {
+    get: (target, key) => {
+      if (typeof key === 'string' && /^\d+$/.test(key)) counts.pixelReads++
+      return Reflect.get(target, key, target)
+    },
+  })
+  return { data: counted, counts }
+}
+
+describe('opaqueBounds', () => {
+  const blank = (width: number, height: number) => ({ width, height, data: new Uint8Array(width * height * 4) })
+
+  it('finds what reading every pixel finds, whatever the image', () => {
+    // A repeatable stream of numbers.
+    let state = 7
+    const upTo = (n: number) => {
+      state = (state * 1664525 + 1013904223) >>> 0
+      return Math.floor((state / 2 ** 32) * n)
+    }
+    for (let round = 0; round < 500; round++) {
+      const image = blank(1 + upTo(24), 1 + upTo(24))
+      // Nothing, lone pixels, or blocks, some of them only nearly opaque.
+      const shapes = upTo(5)
+      for (let shape = 0; shape < shapes; shape++) {
+        const x = upTo(image.width)
+        const y = upTo(image.height)
+        const width = round % 2 ? 1 : 1 + upTo(image.width - x)
+        const height = round % 2 ? 1 : 1 + upTo(image.height - y)
+        const alpha = [255, 250, 249, 120][upTo(4)]
+        for (let row = y; row < y + height; row++) {
+          for (let col = x; col < x + width; col++) image.data[(row * image.width + col) * 4 + 3] = alpha
+        }
+      }
+      expect(opaqueBounds(image), `round ${round}`).toEqual(opaqueBoundsReadingEveryPixel(image))
+    }
+  })
+
+  it('finds a window in its shadow, with and without things drawn past its edges', () => {
+    const capture = windowCapture(800, 600, FOCUSED_SHADOW)
+    expect(opaqueBounds(capture)).toEqual({ x: 112, y: 78, width: 800, height: 600 })
+    paint(capture, 112 + 700, 78 + 40, 150, 200)
+    paint(capture, 40, 78 + 560, 100, 90)
+    expect(opaqueBounds(capture)).toEqual({ x: 40, y: 78, width: 922, height: 650 })
+    expect(opaqueBounds(capture)).toEqual(opaqueBoundsReadingEveryPixel(capture))
+  })
+
+  it('finds nothing in an image with no opaque pixel, or no pixel', () => {
+    expect(opaqueBounds(blank(40, 30))).toBeNull()
+    expect(opaqueBounds(blank(0, 0))).toBeNull()
+  })
+
+  it('reads a window capture\'s shadow, not the window', () => {
+    const capture = windowCapture(800, 600, FOCUSED_SHADOW)
+    const { data, counts } = countingReads(capture.data)
+    expect(opaqueBounds({ width: capture.width, height: capture.height, data })).toEqual({ x: 112, y: 78, width: 800, height: 600 })
+    // The rows above and below the window, and the two margins of each of its rows.
+    const shadow = capture.width * (FOCUSED_SHADOW.top + FOCUSED_SHADOW.bottom + 2) + capture.height * (FOCUSED_SHADOW.left + FOCUSED_SHADOW.right + 2)
+    expect(counts.pixelReads).toBeLessThanOrEqual(shadow)
+    expect(counts.pixelReads).toBeLessThan((capture.width * capture.height) / 2)
+  })
+})
+
+describe('what prepareScreenshot reads of a capture', () => {
+  const window = { id: 'w-5', app: 'Safari', bounds: { x: 738, y: 30, width: 400, height: 300 } }
+  // Windows of other sizes, none of which the capture shows.
+  const others = Array.from({ length: 8 }, (_, i) => ({ id: `w-${20 + i}`, app: 'Finder', bounds: { x: 10 * i, y: 0, width: 300 + 10 * i, height: 300 } }))
+
+  /**
+   * A decoder as Electron's is, its pixels made when first asked for. Counts
+   * the times they are asked for and the pixels read; its shrink says what
+   * it was asked to cut out.
+   */
+  function countingDecoder(capture: Buffer) {
+    const decoded = PNG.sync.read(capture)
+    const { data, counts: reads } = countingReads(decoded.data)
+    const counts = { bitmaps: 0, reads }
+    setCaptureDecoder(() => ({
+      width: decoded.width,
+      height: decoded.height,
+      get data() {
+        counts.bitmaps++
+        return data
+      },
+      shrink: (region, width, height) => Buffer.from(JSON.stringify({ region, width, height })),
+    }))
+    return counts
+  }
+
+  afterEach(() => setCaptureDecoder(null))
+
+  it('does not ask for a display capture\'s pixels', () => {
+    const capture = PNG.sync.write(windowCapture(1024, 576, { left: 0, right: 0, top: 0, bottom: 0 }))
+    const counts = countingDecoder(capture)
+    const display = { x: 0, y: 0, width: 512, height: 288 }
+    expect(prepareScreenshot(capture, { kind: 'screen', bounds: display, label: 'display 0' }).frame?.area).toEqual(display)
+    expect(counts.bitmaps).toBe(0)
+  })
+
+  it('does not ask for them when it does not know what the capture shows, or on Windows', () => {
+    const capture = PNG.sync.write(windowCapture(1101, 1464, { left: 0, right: 0, top: 0, bottom: 0 }))
+    const counts = countingDecoder(capture)
+    prepareScreenshot(capture, null, 'it names no window')
+    const chrome = { id: 'w-921266', app: 'chrome.exe', bounds: { x: -9, y: 0, width: 1119, height: 1473 } }
+    expect(prepareScreenshot(capture, { kind: 'window', candidates: [chrome] }, undefined, 1.5, 'win32').frame?.window?.id).toBe('w-921266')
+    expect(counts.bitmaps).toBe(0)
+  })
+
+  it('asks for a window capture\'s pixels once, and finds the opaque ones once, however many windows it could show', () => {
+    const capture = PNG.sync.write(windowCapture(800, 600, FOCUSED_SHADOW))
+
+    const alone = countingDecoder(capture)
+    const one = prepareScreenshot(capture, { kind: 'window', candidates: [window] }, undefined, 2)
+    expect(alone.bitmaps).toBe(1)
+
+    const among = countingDecoder(capture)
+    const many = prepareScreenshot(capture, { kind: 'window', candidates: [...others, window] }, undefined, 2)
+    expect(among.bitmaps).toBe(1)
+    // A window tried and not found costs the pixels sampled along its edges
+    // (six places it could sit, four sides, five samples, inside and out),
+    // not the image again.
+    expect(among.reads.pixelReads - alone.reads.pixelReads).toBeLessThanOrEqual(others.length * 6 * 4 * 5 * 2)
+
+    expect(many.frame).toEqual(one.frame)
+    expect(many.png.toString()).toBe(JSON.stringify({ region: { x: 112, y: 78, width: 800, height: 600 }, width: 800, height: 600 }))
+    expect(many.png.equals(one.png)).toBe(true)
+  })
+
+  it('makes the same image whether the pixels come at once or when asked for: the window\'s own, byte for byte', () => {
+    const png = windowCapture(800, 600, FOCUSED_SHADOW)
+    paint(png, 112 + 700, 78 + 40, 150, 200)
+    const capture = PNG.sync.write(png)
+    // The window cut out by hand.
+    const cut = new PNG({ width: 800, height: 600 })
+    PNG.bitblt(png, cut, 112, 78, 800, 600, 0, 0)
+    const other = { id: 'w-6', app: 'Safari', bounds: { x: 0, y: 0, width: 300, height: 200 } }
+
+    const prepared = prepareScreenshot(capture, { kind: 'window', candidates: [other, window] }, undefined, 2)
+    expect(prepared.frame?.window?.id).toBe('w-5')
+    expect(prepared.png.equals(PNG.sync.write(cut))).toBe(true)
+
+    // A decoder whose pixels come when asked for is asked to cut out the same region.
+    countingDecoder(capture)
+    const lazy = prepareScreenshot(capture, { kind: 'window', candidates: [other, window] }, undefined, 2)
+    expect(lazy.frame).toEqual(prepared.frame)
+    expect(lazy.png.toString()).toBe(JSON.stringify({ region: { x: 112, y: 78, width: 800, height: 600 }, width: 800, height: 600 }))
+  })
+
+  it('leaves a capture to the JavaScript decoder when the native pixels are not four bytes each', () => {
+    const capture = PNG.sync.write(windowCapture(800, 600, FOCUSED_SHADOW))
+    const expected = prepareScreenshot(capture, { kind: 'window', candidates: [window] })
+    setCaptureDecoder(() => ({
+      width: 1024,
+      height: 828,
+      data: new Uint8Array(1024 * 828 * 3),
+      shrink: () => Buffer.from('native'),
+    }))
+    const prepared = prepareScreenshot(capture, { kind: 'window', candidates: [window] })
+    expect(prepared.frame).toEqual(expected.frame)
+    expect(prepared.png.equals(expected.png)).toBe(true)
   })
 })
 

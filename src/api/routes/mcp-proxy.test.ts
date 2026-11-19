@@ -68,7 +68,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     request: (agentSlug: string, details: object, options: unknown) => mockRequestReview({ ...details, agentSlug }, options),
     withdraw: vi.fn(),
-    takeDenyReason: vi.fn(),
+    takeDecisionDetail: vi.fn(async () => ({})),
   },
 }))
 

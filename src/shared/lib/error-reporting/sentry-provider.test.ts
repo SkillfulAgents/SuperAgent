@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeOptions } from '@sentry/node'
 import { GrammyError, HttpError } from 'grammy'
 import { CREDENTIAL_BODY_ROUTE, createServerProvider, redactBotTokens, scrubCredentialRequestBody } from './sentry-provider'
+import { backgroundSettled } from '../background'
 
 const sentry = vi.hoisted(() => ({
   init: vi.fn<(options: NodeOptions) => void>(),
@@ -16,8 +17,12 @@ const settings = vi.hoisted(() => ({
 
 vi.mock('@sentry/node', () => sentry)
 vi.mock('../config/settings', () => settings)
+const environment = vi.hoisted(() => ({
+  probeEnvironmentData: vi.fn<() => Promise<Record<string, unknown>>>(),
+}))
 vi.mock('./environment', () => ({
   collectEnvironmentData: () => ({ os_platform: 'test-platform' }),
+  probeEnvironmentData: environment.probeEnvironmentData,
 }))
 
 function initializeProvider() {
@@ -48,6 +53,7 @@ describe('server error reporting provider', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     settings.getSettings.mockResolvedValue({})
+    environment.probeEnvironmentData.mockResolvedValue({})
     sentry.httpIntegration.mockReturnValue({ name: 'Http' })
     sentry.flush.mockResolvedValue(true)
   })
@@ -65,6 +71,31 @@ describe('server error reporting provider', () => {
     expect(sentry.setContext).toHaveBeenCalledWith('environment_info', {
       os_platform: 'test-platform',
     })
+  })
+
+  it('has the environment context before any program answers, and adds what one says later', async () => {
+    let programAnswers: (data: Record<string, unknown>) => void = () => {}
+    environment.probeEnvironmentData.mockReturnValue(new Promise((resolve) => { programAnswers = resolve }))
+
+    initializeProvider()
+
+    // An error reported now, during startup, carries the in-process part.
+    expect(sentry.setContext.mock.calls).toEqual([['environment_info', { os_platform: 'test-platform' }]])
+
+    programAnswers({ windows_build: 'Microsoft Windows [Version 10.0.26100.2314]' })
+    await backgroundSettled()
+
+    expect(sentry.setContext.mock.calls[1]).toEqual(['environment_info', {
+      os_platform: 'test-platform',
+      windows_build: 'Microsoft Windows [Version 10.0.26100.2314]',
+    }])
+  })
+
+  it('sets the environment context once where no program has to be asked', async () => {
+    initializeProvider()
+    await backgroundSettled()
+
+    expect(sentry.setContext).toHaveBeenCalledTimes(1)
   })
 
   it('excludes credential bodies from HTTP collection while retaining other integrations', () => {
@@ -202,6 +233,7 @@ describe('Telegram bot tokens in error reports', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     settings.getSettings.mockResolvedValue({})
+    environment.probeEnvironmentData.mockResolvedValue({})
     sentry.httpIntegration.mockReturnValue({ name: 'Http' })
   })
 

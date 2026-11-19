@@ -4,7 +4,9 @@ import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
+import type { ApiMessage } from '@shared/lib/types/api'
 import { appendMentions } from '@shared/lib/utils/mentions'
+import * as orbVisibility from '@renderer/components/agents/agent-avatar/orb-visibility'
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
 vi.mock('./subagent-block', () => ({
@@ -277,6 +279,37 @@ describe('MessageItem', () => {
       const link = screen.getByText('Click here')
       expect(link).toHaveAttribute('target', '_blank')
       expect(link).toHaveAttribute('href', 'https://example.com')
+    })
+
+    it('resolves the agent\'s files in agent and user text, never in a message an integration relayed', () => {
+      const text = '![chart](/workspace/out/chart.png) [Report](/workspace/out/report.md)'
+      for (const message of [createAssistantMessage({ content: { text } }), createUserMessage({ content: { text } })]) {
+        const { container, unmount } = render(<MessageItem message={message} agentSlug="a1" />)
+        expect(container.querySelector('img')?.getAttribute('src')).toMatch(/\/api\/agents\/a1\/files\/out\/chart\.png/)
+        expect(screen.getByRole('link', { name: 'Report' })).toHaveAttribute('href', expect.stringMatching(/\/api\/agents\/a1\/files\/out\/report\.md$/))
+        unmount()
+      }
+
+      // Someone outside the app wrote it, so rendering it reads nothing.
+      const integration: NonNullable<ApiMessage['integration']> = {
+        version: 1,
+        integration: { id: 'i-1', name: 'Slack', provider: 'slack', family: 'chat' },
+        event: { type: 'message', label: 'New message' },
+        request: { text },
+        source: { kind: 'channel', identifier: 'C1' },
+      }
+      const shot = 'file:///home/claude/shot.png'
+      render(
+        <MessageItem
+          message={createUserMessage({ content: { text: `${text} ![shot](${shot})` }, integration: { ...integration, request: { text: `${text} ![shot](${shot})` } } })}
+          agentSlug="a1"
+          embeddedImageAliases={new Map([[shot, '/api/agents/a1/sessions/s/media/ref']])}
+        />,
+      )
+      for (const name of ['chart', 'shot']) {
+        expect(screen.getByRole('img', { name }).getAttribute('src') ?? '').not.toContain('/api/agents/')
+      }
+      expect(screen.queryByRole('link', { name: 'Report' })).toBeNull()
     })
 
     it('renders a container screenshot through its verified tool-result alias', () => {
@@ -777,7 +810,9 @@ describe('MessageItem', () => {
       expect(avatar.querySelector('img')).toHaveAttribute('src', 'https://example.com/alice.png')
     })
 
-    it('draws the orb and name of an agent that sent the message', () => {
+    it('draws the agent sender and holds its orb still', ({ onTestFinished }) => {
+      const observe = vi.spyOn(orbVisibility, 'observeOrbVisibility')
+      onTestFinished(() => observe.mockRestore())
       const msg = createUserMessage({
         content: { text: 'Hello' },
         createdAt: new Date(),
@@ -785,6 +820,7 @@ describe('MessageItem', () => {
       })
       render(<MessageItem message={msg} />)
       expect(document.querySelector('[data-avatar-orb]')).toBeInTheDocument()
+      expect(observe).not.toHaveBeenCalled()
       expect(screen.queryByRole('img', { name: 'Research Agent' })).not.toBeInTheDocument()
       expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Research Agentjust now$/)
     })

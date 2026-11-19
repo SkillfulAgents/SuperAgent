@@ -154,10 +154,11 @@ const RENDERED_FENCES = [
 // tail would re-render incomplete output on every delta, so it stays a code block.
 const settledPre = (htmlPreview: boolean): Components['pre'] =>
   function SettledPre({ children, node }) {
-  // A wrapper carries the lines: a scrolling pre would clip a comment pin on its corner.
+  // A wrapper carries the lines and any edit mark: a scrolling pre would clip a pin or band on its corner.
   const lines = commentLines(node)
+  const edit = typeof node?.properties?.dataEdit === 'string' ? node.properties.dataEdit : undefined
   const block = settledFence(htmlPreview, children, node)
-  return lines ? <div data-comment-lines={lines}>{block}</div> : block
+  return lines || edit ? <div data-comment-lines={lines} data-edit={edit}>{block}</div> : block
 }
 
 function settledFence(htmlPreview: boolean, children: ReactNode, node: ElementContent | undefined): ReactNode {
@@ -189,8 +190,9 @@ export const COMPACT_AGENT_TEXT = '[&_pre]:text-xs/relaxed [&_code]:text-xs [&_t
 
 export type AgentMarkdownProps = {
   text: string
-  /** Enables file:///workspace images through the authenticated workspace route. */
+  /** Opts in to this agent's files: never for text written outside the app, since resolving one reads it with the viewer's session. */
   agentSlug?: string
+  folder?: MarkdownProps['folder']
   imageAliases?: EmbeddedImageAliases
   rehypePlugins?: MarkdownProps['rehypePlugins']
   /** The people the text tags, when the caller has read them already (chat). Otherwise read from an agent's `[@Name](user:<id>)` tags. */
@@ -208,7 +210,7 @@ export type AgentMarkdownProps = {
 )
 
 // Memoized so a settled block parses once while later text streams in.
-export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, link, rehypePlugins, htmlPreview, mentions }: AgentMarkdownProps) {
+export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, folder, imageAliases, link, rehypePlugins, htmlPreview, mentions }: AgentMarkdownProps) {
   // A tag draws as a person's chip. Text still streaming in holds back a tag it has not finished.
   const tagged = mentions ? { text, mentions } : mode === 'streaming' ? { text: plainUserTags(text, { streaming: true }), mentions: [] } : parseUserTags(text)
   const plugins: MarkdownProps['rehypePlugins'] = tagged.mentions.length === 0 ? rehypePlugins : [[rehypeMentions, { mentions: tagged.mentions, agentSlug }], ...(rehypePlugins ?? [])]
@@ -217,7 +219,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug
     ? { ...base, a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} /> }
     : base
   return (
-    <Markdown components={components} rehypePlugins={plugins} imageAliases={imageAliases} agentSlug={agentSlug}>
+    <Markdown components={components} rehypePlugins={plugins} imageAliases={imageAliases} agentSlug={agentSlug} folder={folder}>
       {tagged.text}
     </Markdown>
   )

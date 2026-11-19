@@ -50,7 +50,7 @@ describe('session list staleness', () => {
     await waitFor(() => expect(second.result.current.isSuccess).toBe(true))
 
     expect(mockApiFetch).toHaveBeenCalledTimes(1)
-    expect(mockApiFetch).toHaveBeenCalledWith(url)
+    expect(mockApiFetch.mock.calls[0][0]).toBe(url)
   })
 
   it('an explicit staleTime still applies', async () => {

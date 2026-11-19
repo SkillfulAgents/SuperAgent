@@ -12,7 +12,7 @@ import { z } from 'zod'
 import { openMediaBlob, type MediaRef } from '@shared/lib/services/session-media'
 import { buildWorkflowTree } from '@shared/lib/workflows/workflow-tree'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
-import type { JsonlEntry } from '@shared/lib/types/agent'
+import { isQueuedUserPrompt, type JsonlEntry } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
 import { chunksOf, isAbsentFile, readJsonl, streamJsonl, streamLines } from './jsonl-files'
 import { sessionDirPath, sessionFilePath, transcriptPath, type SessionStore } from './session-store'
@@ -161,8 +161,8 @@ const forkContextRefSchema = z.object({
 
 /** A copied transcript entry: the copy re-ids it and names the entry it came from. */
 const forkedEntrySchema = z.object({
-  uuid: z.string(),
-  forkedFrom: z.object({ sessionId: z.string(), messageUuid: z.string() }),
+  uuid: z.string().min(1),
+  forkedFrom: z.object({ sessionId: z.string(), messageUuid: z.string().min(1) }),
 }).loose()
 
 /**
@@ -245,19 +245,16 @@ async function copiedEntryUuids(store: SessionStore, sourceSessionId: string, ta
   return uuids
 }
 
-/** A user line in a forked transcript: the SDK stamps the old uuid on every copied line. */
-const forkedUserLineSchema = z.object({
-  type: z.literal('user'),
-  uuid: z.string().min(1),
-  forkedFrom: z.object({ sessionId: z.string(), messageUuid: z.string().min(1) }),
-}).loose()
-
 /** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
 export async function forkedUserUuids(store: SessionStore, sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>> {
   const pairs: Array<{ newUuid: string; oldUuid: string }> = []
-  for await (const raw of streamJsonl(store.files, transcriptPath(store, sessionId))) {
-    const parsed = forkedUserLineSchema.safeParse(raw)
-    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
+  for await (const raw of streamJsonl<JsonlEntry>(store.files, transcriptPath(store, sessionId))) {
+    if (!raw || (raw.type !== 'user' && !isQueuedUserPrompt(raw))) continue
+    const parsed = forkedEntrySchema.safeParse(raw)
+    if (!parsed.success) continue
+    // The SDK re-keys the attachment line, but preserves its queue ID on every fork.
+    const queueId = raw.type === 'attachment' ? raw.attachment.source_uuid : undefined
+    pairs.push({ newUuid: queueId ?? parsed.data.uuid, oldUuid: queueId ?? parsed.data.forkedFrom.messageUuid })
   }
   return pairs
 }

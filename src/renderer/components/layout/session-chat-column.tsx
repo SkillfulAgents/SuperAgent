@@ -16,7 +16,7 @@ import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
 import { useStaleSession } from '@renderer/hooks/use-stale-session'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import type { PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import type { SessionUsage } from '@shared/lib/types/agent'
@@ -32,10 +32,8 @@ interface SessionChatColumnProps {
   pendingUserMessages: PendingMessage[]
   isViewOnly: boolean
   contextPercent: number | null
-  effort?: EffortLevel
-  speed?: SpeedLevel
-  llmProviderId?: string | null
-  model?: string
+  /** The runtime options last used on this session; they seed the composer. */
+  runtimeOptions?: RuntimeOptions
   onPendingMessageAppeared: (localId: string) => void
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
@@ -57,10 +55,7 @@ export function SessionChatColumn({
   pendingUserMessages,
   isViewOnly,
   contextPercent,
-  effort,
-  speed,
-  model,
-  llmProviderId,
+  runtimeOptions,
   onPendingMessageAppeared,
   onMessageSent,
   onMessageUuidAssigned,
@@ -164,9 +159,7 @@ export function SessionChatColumn({
                     onMessageSent={onMessageSent}
                     onMessageUuidAssigned={onMessageUuidAssigned}
                     onMessageFailed={onMessageFailed}
-                    initialEffort={effort}
-                    initialSpeed={speed}
-                    initialModel={model} initialLlmProviderId={llmProviderId}
+                    initialRuntimeOptions={runtimeOptions}
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
                     inputRequests={voiceInputRequests}

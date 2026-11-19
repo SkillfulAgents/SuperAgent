@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, isNull, min } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, min } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { messageAuthor } from '@shared/lib/db/schema'
@@ -33,8 +33,6 @@ export async function getSessionParticipants(
         eq(messageAuthor.agentSlug, agentSlug),
         inArray(messageAuthor.sessionId, chunk),
         isNotNull(messageAuthor.userId),
-        // A message another agent sent names the person billed, not a writer.
-        isNull(messageAuthor.authorAgentSlug),
       ))
       .groupBy(messageAuthor.sessionId, messageAuthor.userId)
       .orderBy(asc(firstAt), asc(messageAuthor.userId))

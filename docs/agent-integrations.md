@@ -23,7 +23,7 @@ classDiagram
 | --- | --- |
 | `connect`, `disconnect`, `isConnected`, `onEvent`, `onError` | Provider lifecycle and normalized input/response/hint events. The manager subscribes before connecting. |
 | `resolveRoute` | Family chooses the stable external session key before the manager serializes work. The triggering interaction and reply target are separate fields. This hook performs no I/O. |
-| `authorize`, `isAllowed` | Family supplies access policy. The manager enforces it before preparation/runtime work and rechecks it before sends and output delivery. |
+| `authorize`, `isAllowed` | Family supplies access policy. The manager enforces it before preparation/runtime work and rechecks it before sends and output delivery. On the output path the manager reads the installation once per session event and passes `{ current: true }`, so a policy decides from `context.integration` instead of reading the row again; without that flag a context's record may be as old as its session and the policy reads. A `stream_delta` rides on a check its session passed less than one second ago (`DELTA_ACCESS_REUSE_MS`); every other event is checked. A change that only reaches the database (another process's write) therefore stops streamed text within a second and everything else at the next event; a pause, removal or revocation made through the manager also tears the chat session down, which stops both without a read. |
 | `sessionPolicy` | Family supplies timeout, session name, and metadata. The manager resolves the persisted mapping and operates through `AgentActor`. |
 | `prepareInput`, `consumeInput` | Family builds context/attachments and can consume an interaction, such as a typed answer to an open question, without starting another turn. |
 | `deliver` | Host emits runtime events, messages, typed `request-opened` / `request-resolved` outputs, and lifecycle notifications. `turn-completed` and `turn-failed` are terminal signals; a runtime `stream_end` remains a segment boundary. |
@@ -57,17 +57,19 @@ author in `message_author` (`user_id` null, `integration_id` set, the card in
 `display`) before the handoff. The row is keyed by the delivery ID, which is also the
 message uuid (and `initialMessageUuid` for a new session). A retry upserts the same row,
 moving it to a replacement session after self-heal; a failed or uncertain handoff keeps
-it, since the runtime may have accepted the message. The messages API joins it onto the
-user message as `integration` by exact uuid only; people's rows keep producing `sender`.
+it, since the runtime may have accepted the message. The messages API finds the row by
+recipient, session and message uuid. Integration rows produce `integration`, people's
+rows produce `sender`, and agent calls produce `agentSender` when senders are requested.
 A message queued mid-turn keeps its uuid too: the CLI writes it as the queued command's
 `source_uuid`, which becomes its transcript id. No message text is ever matched, so an
 identical message typed in the app never picks up a card. Live watchers get the same
 card in the `user_message` event. Author rows follow the existing `message_author`
 lifecycle, now in every mode: forks re-key them, and session, agent and factory-reset
-deletion remove them. A forked copy of a message queued mid-turn keeps its uuid, which
-already keys the source's row, so it renders as text. A card that does not validate is
-not stored, and the message renders as its text. Recording and broadcasting never block
-delivery.
+deletion remove them. A queued prompt keeps its uuid in a fork. People and agent callers
+keep their attribution in each session. Integration delivery IDs are unique across
+sessions so a retry can move its card. A forked copy of a queued integration message
+renders as text, as does a message whose card fails validation. Recording and
+broadcasting never block delivery.
 
 Only the host writes these rows, so a card cannot be spoofed by message text, and the
 external text keeps its untrusted-input role. In the renderer, the `integration` kind

@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useSettings, useWarmStartOnTypeEnabled, useStartRunner, useRestartRunner, useModelSettings, RunnerSetupFailedError } from './use-settings'
+import { useSettings, useWarmStartOnTypeEnabled, useStartRunner, useRestartRunner, useModelSettings, useUpdateSettings, RunnerSetupFailedError } from './use-settings'
+import { MODEL_CATALOG_QUERY_KEY, MODEL_CATALOG_STALE_TIME } from '@renderer/lib/model-catalog-query'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
 
 const apiFetchMock = vi.fn()
@@ -262,5 +263,105 @@ describe('useModelSettings', () => {
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(result.current.error?.message).toBe('Failed to fetch saved model connection')
     expect(result.current.data).toBeUndefined()
+  })
+
+  describe('catalog requests', () => {
+    // One client for everything a page mounts, as in the app.
+    function mountPage() {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+      const shared = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      // What a session page mounts: the composer's picker and the agent
+      // default footer (no agent), Agent Home's default model (agent), and an
+      // inherited selection (agent and a saved connection).
+      const page = renderHook(() => ({
+        composer: useModelSettings(),
+        footer: useModelSettings(),
+        home: useModelSettings('my agent'),
+        inherited: useModelSettings('my agent', 'saved/id'),
+        update: useUpdateSettings(),
+      }), { wrapper: shared })
+      return { client, page }
+    }
+    const requests = (path: string) => apiFetchMock.mock.calls.filter(([url, init]) => url === path && !init).length
+    const catalogRequests = () => requests('/api/settings/models')
+
+    beforeEach(() => {
+      apiFetchMock.mockImplementation(async (url: string) => (
+        url === '/api/settings/models' ? respond(settings) : respond({ connections: [{ id: url }] })
+      ))
+    })
+
+    async function mounted() {
+      const mount = mountPage()
+      await waitFor(() => expect(mount.page.result.current.inherited.isSuccess).toBe(true))
+      await waitFor(() => expect(mount.page.result.current.home.isSuccess).toBe(true))
+      return mount
+    }
+
+    it('reads the catalog once for every consumer on a page, whatever agent they ask for', async () => {
+      const { page } = await mounted()
+
+      // Three key shapes used to mean three reads of the same 128 KB.
+      expect(catalogRequests()).toBe(1)
+      expect(page.result.current.composer.data).toEqual(settings)
+      // Each agent-scoped consumer still gets its own saved connections.
+      expect(page.result.current.home.data?.connections).toEqual([{ id: '/api/agents/my%20agent/llm-connections' }])
+      expect(page.result.current.inherited.data?.connections).toEqual([{ id: connectionsPath }])
+    })
+
+    it('does not read the catalog again when the settings prefix is invalidated', async () => {
+      const { client } = await mounted()
+
+      // What a runtime readiness change, a runner start and a settings save all do.
+      await client.invalidateQueries({ queryKey: ['settings'] })
+
+      expect(catalogRequests()).toBe(1)
+      // The small per-agent reads stay under the prefix and are refreshed.
+      expect(requests(connectionsPath)).toBe(2)
+    })
+
+    it('does not read the catalog again after a settings save that cannot change it', async () => {
+      const { page } = await mounted()
+
+      await page.result.current.update.mutateAsync({ app: { showMenuBarIcon: false } })
+      await waitFor(() => expect(requests(connectionsPath)).toBe(2))
+
+      expect(catalogRequests()).toBe(1)
+    })
+
+    it.each([
+      { modelCatalog: {} },
+      { models: { agentModel: 'opus' } },
+      { llmProvider: 'openrouter' as const },
+      { apiKeys: { anthropicApiKey: 'key' } },
+      { modelPricing: {} },
+      { enableToolSearch: false },
+      { webProvider: 'exa' as const },
+    ])('reads the catalog again after a settings save that changes it: %j', async (patch) => {
+      const { page } = await mounted()
+
+      await page.result.current.update.mutateAsync(patch)
+
+      await waitFor(() => expect(catalogRequests()).toBe(2))
+    })
+
+    it('keeps serving a mounted catalog for five minutes, then reads it again on the next mount', async () => {
+      const { client } = await mounted()
+      const state = client.getQueryCache().find({ queryKey: MODEL_CATALOG_QUERY_KEY })
+      const fetchedAt = state?.state.dataUpdatedAt ?? 0
+      const now = vi.spyOn(Date, 'now')
+      const remount = () => renderHook(() => useModelSettings(), {
+        wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+      })
+
+      now.mockReturnValue(fetchedAt + MODEL_CATALOG_STALE_TIME - 1)
+      remount()
+      expect(catalogRequests()).toBe(1)
+
+      now.mockReturnValue(fetchedAt + MODEL_CATALOG_STALE_TIME + 1)
+      remount()
+      await waitFor(() => expect(catalogRequests()).toBe(2))
+      now.mockRestore()
+    })
   })
 })

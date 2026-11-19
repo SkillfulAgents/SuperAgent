@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { EFFORT_LEVELS, SPEED_LEVELS } from '@shared/lib/container/types'
 
 export const xAgentFileTransferSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('send'), paths: z.array(z.string()).min(1) }),
@@ -6,12 +7,29 @@ export const xAgentFileTransferSchema = z.discriminatedUnion('kind', [
 ])
 export type XAgentFileTransfer = z.infer<typeof xAgentFileTransferSchema>
 
+/** The model a new invoked session will run on: ids for the start, the label and effort for a person. */
+export const xAgentRuntimeSchema = z.object({
+  model: z.string().min(1),
+  llmProviderId: z.string().optional(),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+  speed: z.enum(SPEED_LEVELS).optional(),
+  label: z.string().min(1),
+})
+export type XAgentRuntime = z.infer<typeof xAgentRuntimeSchema>
+
+/** What the person approving the card may change: the model, effort and speed of the new session. */
+export const xAgentPickSchema = xAgentRuntimeSchema.pick({ model: true, effort: true, speed: true })
+export type XAgentPickInput = z.infer<typeof xAgentPickSchema>
+/** A pick checked against the target's connection. */
+export type XAgentPick = XAgentPickInput & { llmProviderId: string }
+
 export type XAgentReview = {
   targetAgentSlug: string
   targetAgentName: string
   operation: 'list' | 'read' | 'invoke' | 'create'
   preview?: string
   fileTransfer?: XAgentFileTransfer
+  runtime?: XAgentRuntime
   /** Compatibility with pending reviews created by an older host. */
   attachments?: string[]
 }

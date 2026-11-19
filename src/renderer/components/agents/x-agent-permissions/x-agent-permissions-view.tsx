@@ -16,6 +16,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { agentsListQuery } from '@renderer/hooks/query-options'
 
 type Operation = 'list' | 'read' | 'invoke'
 type Decision = 'allow' | 'review' | 'block'
@@ -113,12 +114,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
 
   // Fetch all agents in workspace (for the per-target rows)
   const agentsQuery = useQuery<AgentsResponse>({
-    queryKey: ['agents'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/agents')
-      if (!res.ok) throw new Error('Failed to fetch agents')
-      return res.json()
-    },
+    ...agentsListQuery,
     enabled: canManage,
   })
 

@@ -666,6 +666,47 @@ describe('"Always allow" never overwrites a Block', () => {
   })
 })
 
+describe('"Always allow" with a model picked on the card', () => {
+  const invokeCard = { targetAgentSlug: TARGET_A, targetAgentName: 'Target A', operation: 'invoke', runtime: { model: 'claude-sonnet-5-5', llmProviderId: 'platform', label: 'Sonnet 5.5' } }
+  const always = (pick: object) => app.request(`/api/agents/${CALLER}/proxy-review/review-1/always`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision: 'allow', scope: `invoke:${TARGET_A}`, accountId: TARGET_A, reviewType: 'xagent', xAgent: { operation: 'invoke', targetSlug: TARGET_A }, pick }),
+  })
+
+  const spies: { mockRestore(): void }[] = []
+  beforeEach(async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    spies.push(
+      vi.spyOn(connections, 'getConnection').mockImplementation(async (id) => (id === 'platform' ? { id, provider: 'platform', modelOverrides: '[]' } : null) as never),
+      vi.spyOn(preferences, 'readAgentPreferences').mockImplementation(async () => ({ defaultLlmProviderId: 'platform' }) as never),
+    )
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(((slug: string) => slug === CALLER ? [{ id: 'review-1', agentSlug: CALLER, xAgent: invokeCard }] : []) as never)
+    Object.assign(reviewManager, { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() })
+  })
+  afterEach(async () => {
+    spies.splice(0).forEach((spy) => spy.mockRestore())
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockImplementation(() => [])
+  })
+
+  it('saves the grant and applies the pick to this call', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    expect((await always({ model: 'claude-opus-5-5', effort: 'max', speed: 'fast' })).status).toBe(200)
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'allow', { pick: { model: 'claude-opus-5-5', effort: 'max', speed: 'fast', llmProviderId: 'platform' } })
+  })
+
+  it('saves no grant when the pick is refused', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    expect((await always({ model: 'not-a-model' })).status).toBe(409)
+    expect(await getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+  })
+})
+
 describe('allowing an agent request needs someone who uses both agents', () => {
   const readCard = { targetAgentSlug: TARGET_A, targetAgentName: 'Target A', operation: 'read' }
   let xAgent: object = readCard
@@ -702,7 +743,7 @@ describe('allowing an agent request needs someone who uses both agents', () => {
     expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can allow this request.' })
     expect(reviewManager.submitDecision).not.toHaveBeenCalled()
     expect((await once('deny')).status).toBe(200)
-    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'deny', undefined)
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith(CALLER, 'review-1', 'deny', { reason: undefined })
   })
 
   it.each([

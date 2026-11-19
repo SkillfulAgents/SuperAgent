@@ -3,12 +3,23 @@ import type { AgentPreferences } from '@shared/lib/types/agent-preferences'
 import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from './types'
 
 /**
- * Runtime options sent alongside a message: the per-invocation knobs that
- * control how the agent thinks (effort) and which model serves the response.
+ * What runs an agent's turn: the LLM connection, the model on it, and the
+ * effort and speed it runs at. The composer's model picker edits exactly
+ * this, and everything that keeps a pick (sessions, scheduled tasks, webhook
+ * triggers, chat integrations, todos, agent defaults) keeps this.
  *
  * Defined in one place so the host API, container API, and renderer all
- * validate the same shape. Add new optional fields here as they appear
- * (e.g. thinkingBudget, maxOutputTokens overrides).
+ * carry the same shape. A new knob is added here (and to
+ * `runtimeOptionsColumns` in the db schema for the tables that store one),
+ * not at each place that carries it.
+ */
+export const RUNTIME_OPTION_KEYS = ['llmProviderId', 'model', 'effort', 'speed'] as const
+export type RuntimeOptionKey = (typeof RUNTIME_OPTION_KEYS)[number]
+
+/**
+ * Runtime options in flight (a request, a session, the picker): each knob
+ * absent where it was not picked, so the default applies. `llmProviderId: null`
+ * is a pick that names no connection, which is not the same as leaving it out.
  */
 export const RuntimeOptionsSchema = z
   .object({
@@ -16,7 +27,6 @@ export const RuntimeOptionsSchema = z
     speed: z.enum(SPEED_LEVELS).optional(),
     model: z.string().optional(),
     llmProviderId: z.string().min(1).nullable().optional(),
-    shouldQuery: z.boolean().optional(),
   })
   .strict()
 
@@ -36,6 +46,90 @@ export const RuntimeOptionsPatchSchema = z
     llmProviderId: z.string().min(1).nullish(),
   })
   .strict()
+
+export type RuntimeOptionsPatch = z.infer<typeof RuntimeOptionsPatchSchema>
+
+/**
+ * Runtime options as a row stores them (see `runtimeOptionsColumns`), null
+ * where nothing was picked. Effort and speed stay plain strings: a level
+ * written by a newer build must not break this one, so they are checked where
+ * they are used (`resolveRuntimeInherit`), not where they are read.
+ */
+export interface StoredRuntimeOptions {
+  llmProviderId: string | null
+  model: string | null
+  effort: string | null
+  speed: string | null
+}
+
+/**
+ * The column values an edit writes to stored runtime options: a value sets the
+ * knob, null clears it, an absent key leaves it. A model is a pick on a
+ * connection, so clearing the model clears the connection too, and a model
+ * picked without one stays on the connection the row already has, or goes to
+ * the app's default when it has none. `appDefaultLlmProviderId` is asked only
+ * for that last case, so most edits never read the settings.
+ */
+export async function storedRuntimeOptionsUpdate(
+  patch: Partial<StoredRuntimeOptions>,
+  current: Pick<StoredRuntimeOptions, 'llmProviderId'>,
+  appDefaultLlmProviderId: () => Promise<string | null | undefined>,
+): Promise<Partial<StoredRuntimeOptions>> {
+  const update: Partial<StoredRuntimeOptions> = {}
+  if ('llmProviderId' in patch) update.llmProviderId = patch.llmProviderId ?? null
+  if ('model' in patch) {
+    update.model = patch.model ?? null
+    if (!patch.model) update.llmProviderId = null
+    else if (patch.llmProviderId === undefined) {
+      const appDefault = await appDefaultLlmProviderId()
+      if (appDefault) update.llmProviderId = current.llmProviderId ?? appDefault
+    }
+  }
+  if ('effort' in patch) update.effort = patch.effort ?? null
+  if ('speed' in patch) update.speed = patch.speed ?? null
+  return update
+}
+
+type CarriesRuntimeOptions = Partial<Record<RuntimeOptionKey, unknown>>
+type PickedRuntimeOptions<T> = Pick<T, Extract<keyof T, RuntimeOptionKey>>
+
+/**
+ * Just the runtime options of something that carries them (a session, a
+ * stored row, an edit on its way to the server); absent knobs stay absent.
+ */
+export function pickRuntimeOptions<T extends CarriesRuntimeOptions>(source: T): PickedRuntimeOptions<T> {
+  const picked: CarriesRuntimeOptions = {}
+  for (const key of RUNTIME_OPTION_KEYS) if (source[key] !== undefined) picked[key] = source[key]
+  return picked as PickedRuntimeOptions<T>
+}
+
+/**
+ * Stored runtime options as a request takes them. A level this build does not
+ * know is dropped, and so is a connection with no model: a model is what is
+ * picked, on a connection. A model stored with no connection is a pick of none.
+ */
+export function fromStoredRuntimeOptions(stored: Partial<StoredRuntimeOptions>): RuntimeOptions {
+  const effort = optionalEffort(stored.effort)
+  const speed = optionalSpeed(stored.speed)
+  return {
+    ...(stored.model ? { model: stored.model, llmProviderId: stored.llmProviderId ?? null } : {}),
+    ...(effort ? { effort } : {}),
+    ...(speed ? { speed } : {}),
+  }
+}
+
+/** Agent preferences keep their runtime options as `defaultModel`, `defaultEffort`, …. */
+export type AgentDefaultRuntimeOptions = Pick<AgentPreferences, 'defaultLlmProviderId' | 'defaultModel' | 'defaultEffort' | 'defaultSpeed'>
+
+/** An agent's default runtime options, from its preferences: the same knobs under their own names. */
+export function agentDefaultRuntimeOptions(prefs: AgentDefaultRuntimeOptions | null | undefined): RuntimeOptions {
+  return {
+    llmProviderId: prefs?.defaultLlmProviderId,
+    model: prefs?.defaultModel,
+    effort: prefs?.defaultEffort,
+    speed: prefs?.defaultSpeed,
+  }
+}
 
 /**
  * Lenient parser: returns whatever fields are individually valid and drops
@@ -59,10 +153,6 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
 
   if (obj.llmProviderId === null || (typeof obj.llmProviderId === 'string' && obj.llmProviderId.length > 0)) {
     result.llmProviderId = obj.llmProviderId
-  }
-
-  if (typeof obj.shouldQuery === 'boolean') {
-    result.shouldQuery = obj.shouldQuery
   }
 
   return result
@@ -92,12 +182,8 @@ function asRecord(raw: unknown): Record<string, unknown> | null {
   return raw as Record<string, unknown>
 }
 
-export type RuntimeInherit = {
-  model: string
-  llmProviderId?: string | null
-  effort?: EffortLevel
-  speed?: SpeedLevel
-}
+/** Fully resolved runtime options: a model always, the rest where some rung set them. */
+export type RuntimeInherit = RuntimeOptions & { model: string }
 
 /**
  * Surface override → agent default → app default.

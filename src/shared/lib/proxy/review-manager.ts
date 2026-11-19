@@ -1,12 +1,12 @@
-import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
-import type { AgentReviews, ReviewDecision, ReviewOutcome, ReviewRequest, ReviewRequestOptions, XAgentOperation } from './agent-reviews'
+import type { AgentReviews, ReviewDecision, ReviewDecisionDetail, ReviewOutcome, ReviewRequest, ReviewRequestOptions, XAgentOperation } from './agent-reviews'
 import type { ReviewDetails } from './review-display'
 import { awaitReview, type ReviewReevaluator, type ReviewResult } from './review-request'
 import type { ScopeLabel } from './scope-metadata'
 
 export { generateReviewDisplayText, humanizeActionName, type ReviewDetails } from './review-display'
-export { AgentReviews, type ReviewDecision, type ReviewOutcome, type ReviewRequest, type XAgentOperation } from './agent-reviews'
+export { AgentReviews, type ReviewDecision, type ReviewDecisionDetail, type ReviewOutcome, type ReviewRequest, type XAgentOperation } from './agent-reviews'
 
 /**
  * The router in front of every agent's reviews. The reviews live in each
@@ -51,12 +51,12 @@ export class ReviewManager {
    * to A's URL finds nothing — the same `false` as "review not found", so
    * nothing leaks to an unauthorized caller.
    */
-  submitDecision(agentSlug: string, id: string, decision: ReviewDecision, reason?: string): boolean {
-    return this.agents.peek(agentSlug)?.submit(id, decision, reason) ?? false
+  submitDecision(agentSlug: string, id: string, decision: ReviewDecision, detail?: ReviewDecisionDetail): boolean {
+    return this.agents.peek(agentSlug)?.submit(id, decision, detail) ?? false
   }
 
-  takeDenyReason(agentSlug: string, id: string): Promise<string | undefined> {
-    return this.agents.peek(agentSlug)?.takeDenyReason(id) ?? Promise.resolve(undefined)
+  takeDecisionDetail(agentSlug: string, id: string): Promise<ReviewDecisionDetail> {
+    return this.agents.peek(agentSlug)?.takeDecisionDetail(id) ?? Promise.resolve({})
   }
 
   resolveMatchingPending(agentSlug: string, scope: string, decision: ReviewDecision): void {
@@ -92,7 +92,7 @@ export class ReviewManager {
   /** `AgentReviews.requestXAgent` on the calling agent's reviews: the outcome as data. */
   requestXAgent(
     callerAgentSlug: string,
-    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer; callerSessionId?: string },
+    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer; runtime?: XAgentRuntime; callerSessionId?: string },
     options: ReviewRequestOptions,
   ): Promise<ReviewOutcome> {
     return this.agents.get(callerAgentSlug).requestXAgent(request, options)

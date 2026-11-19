@@ -1,1 +1,0 @@
-ALTER TABLE `message_author` ADD `author_agent_slug` text;

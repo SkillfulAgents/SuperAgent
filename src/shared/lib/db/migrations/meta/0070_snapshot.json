@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c7bd3708-6b70-49b9-8c54-3939f2f2f52f",
+  "id": "36956a49-74f0-49db-bdc1-5f0f299162f8",
   "prevId": "b0e688e7-a7e4-4514-94b4-01b903b5f207",
   "tables": {
     "agent_acl": {
@@ -2674,13 +2674,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "author_agent_slug": {
-          "name": "author_agent_slug",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -4378,7 +4371,21 @@
           "isUnique": false
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "todos_llm_provider_id_llm_connections_id_fk": {
+          "name": "todos_llm_provider_id_llm_connections_id_fk",
+          "tableFrom": "todos",
+          "tableTo": "llm_connections",
+          "columnsFrom": [
+            "llm_provider_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {

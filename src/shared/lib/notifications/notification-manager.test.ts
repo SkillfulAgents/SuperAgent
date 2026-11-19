@@ -45,8 +45,14 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
 vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentRecord: mocks.getAgentRecord,
 }))
+// The batched read answers from the same per-user mock, so a test sets one.
+const getUserSettingsForUsers = vi.hoisted(() =>
+  vi.fn(async (userIds: readonly string[]) =>
+    new Map(userIds.map((userId) => [userId, mocks.getUserSettings(userId)])))
+)
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
+  getUserSettingsForUsers,
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: mocks.isAuthMode,
@@ -199,6 +205,28 @@ describe('triggerSessionComplete — automated-session gating', () => {
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'A concise completion summary.' }),
     )
+  })
+
+  it('reads every recipient’s preferences in one call, however many there are', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    const members = Array.from({ length: 20 }, (_, i) => `user-${i}`)
+    mocks.getAgentAccessUserIds.mockResolvedValue(members)
+    mocks.getUserSettings.mockImplementation((userId: string) => ({
+      notifications: {
+        enabled: true,
+        sessionComplete: userId === 'user-19',
+        sessionWaiting: true,
+        sessionScheduled: true,
+      },
+    }))
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(getUserSettingsForUsers).toHaveBeenCalledTimes(1)
+    expect(getUserSettingsForUsers).toHaveBeenCalledWith(members)
+    expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
   })
 
   it('runs the summarizer under the agent owner request scope', async () => {

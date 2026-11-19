@@ -3,60 +3,40 @@ import { useState, useRef, useMemo, useCallback, useEffect, useLayoutEffect } fr
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, ChevronDown, Loader2, Eye, Maximize2, Minimize2, MoreHorizontal, Search } from 'lucide-react'
+import { ChevronDown, Loader2, Eye, MoreHorizontal, Search } from 'lucide-react'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
 import { AgentIdentityEditor, type AgentIdentityEditorHandle } from '@renderer/components/agents/agent-avatar/agent-identity-editor'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
-import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
-import { readAloud } from '@renderer/lib/voice/services/read-aloud'
-import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
-import { UploadError } from '@renderer/components/ui/upload-error'
-import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
 import { RelatedSessions, toSessionItem, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
-import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
-import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
-import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
-import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
-import { registerSessionComposerFocus } from '@renderer/components/messages/composer-focus'
-import { useIsMobile } from '@renderer/hooks/use-mobile'
-import { ComposerOptions } from '@renderer/components/messages/composer-options'
-import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
-import { HOME_GLASS_COMPOSER_CLASS, HomeGlassPanel } from './home-glass-panel'
+import { HomeGlassPanel } from './home-glass-panel'
+import { AgentHomeComposer, type AgentHomeComposerHandle } from './agent-home-composer'
 import { HomeHalftoneBackdrop } from './home-halftone-backdrop'
 import { ContentBackdrop } from '@renderer/components/layout/content-shell'
 import { HomeSidePanel, SIDE_PANEL_BESIDE_PAGE } from './home-side-panel'
 import { useMediaQuery } from '@renderer/hooks/use-media-query'
 import { HomeBookmarks } from './home-bookmarks'
+import { HomePanel } from './home-collapsible'
+import { HomeVolumes } from './home-volumes'
 import { AgentSettingsColumn } from './agent-settings-column'
 import { useRefreshWidgetsOnVisit } from '@renderer/hooks/use-widgets'
 import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
-import {
-  useTypewriterPlaceholder,
-  DEFAULT_AGENT_PROMPT_EXAMPLES,
-  DISABLED as TYPEWRITER_DISABLED,
-} from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
-import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
-import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
-import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
-import { agentHomeId, useDraftsStore } from '@renderer/context/drafts-context'
+import { useDraftsStore } from '@renderer/context/drafts-context'
 import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
 
@@ -103,7 +83,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
   useRefreshWidgetsOnVisit(isOwner ? agent.slug : null)
-  const [isExpanded, setIsExpanded] = useState(false)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [allSessions, setAllSessions] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -111,16 +90,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const { data: sessionsData } = useSessions(agent.slug)
   const carryover = useNewSessionCarryover(agent.slug)
   const sessionSearchRef = useRef<HTMLInputElement>(null)
-  const composerTextareaRef = useRef<HTMLDivElement>(null)
-  // The file drawer's Submit adds comments to this composer's draft and focuses it here.
-  useEffect(() => registerSessionComposerFocus(agentHomeId(agent.slug), () => composerTextareaRef.current?.focus()), [agent.slug])
-  const isMobile = useIsMobile()
-  const { track } = useAnalyticsTracking()
-  // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
-  // Reset when the message clears (e.g. after submit).
-  const userCollapsedRef = useRef(false)
   const deleteAgent = useDeleteAgent()
-  const renameUntitledAgent = useRenameUntitledAgent()
   const identityRef = useRef<AgentIdentityEditorHandle>(null)
   // The three-dot button opens the title's context menu (see below).
   const menuTriggerRef = useRef<HTMLDivElement>(null)
@@ -167,90 +137,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
-  const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
-    agentSlug: agent.slug,
-    draftKey: `session:${agentHomeId(agent.slug)}`,
-    initialAttachments: carryover?.attachments,
-    initialOptions: {
-      initialModel: carryover?.model,
-      initialEffort: carryover?.effort,
-      initialSpeed: carryover?.speed,
-    },
-    // The default-model card sits next to this composer; untouched selections track its edits.
-    followDefaults: true,
-    submitDisabled: !isRuntimeReady,
-    agentRuntimeErrorsShownInline: true,
-    onSessionCreated: ({ session, content }) => {
-      // Preserve the server's message identity for the optimistic pending copy.
-      onSessionCreated(session.id, content, session.initialMessageUuid)
-      // This mutation survives navigation because its query client is app-scoped.
-      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0) {
-        renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
-      }
-    },
-  })
-
-  const warmStartEnabled = useWarmStartOnTypeEnabled()
-  const { noteProgrammaticChange } = useWarmStartOnType({
-    agentSlug: agent.slug,
-    message: composer.message,
-    enabled: warmStartEnabled,
-  })
-
-  // Reset the manual-collapse flag once the message clears.
-  useEffect(() => {
-    if (composer.message.trim() === '') userCollapsedRef.current = false
-  }, [composer.message])
-
-  // Auto-flip to expanded when the textarea content overflows its max-height
-  // (CSS-driven 6-line cap). field-sizing handles the actual sizing — this only
-  // decides whether to switch into the full-view layout.
-  useEffect(() => {
-    const el = composerTextareaRef.current
-    if (!el || isExpanded || userCollapsedRef.current) return
-    if (el.scrollHeight > el.clientHeight) {
-      setIsExpanded(true)
-    }
-  }, [composer.message, isExpanded])
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault()
-      if (!composer.canSubmit) return
-      void composer.handleSubmit(e)
-    }
-  }
-
-  // Voice mode from the home page: the session opens with the voice-mode
-  // notice as its first message, and its composer comes up listening. The
-  // composer button and the empty-state "Brainstorm with Voice" card both land here.
-  const startVoiceSession = useCallback(async (origin: 'home' | 'home_card') => {
-    if (isDisabled) return
-    // Audio output is unlocked here, inside the click, for the reply to use.
-    readAloud.unlockAudio()
-    try {
-      const session = await createSession.mutateAsync({
-        agentSlug: agent.slug,
-        message: VOICE_MODE_ENTERED_MESSAGE,
-        inputMode: 'voice',
-        ...composerOptions.toRuntimeOptions(),
-      })
-      onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
-      track('voice_mode_entered', { origin })
-    } catch (error) {
-      console.error('Failed to start a voice session:', error)
-      readAloud.releaseUnlockedAudio()
-      track('voice_mode_start_failed', { origin })
-    }
-  }, [isDisabled, createSession, agent.slug, composerOptions, onSessionCreated, track])
-
+  // The composer keeps its own state (see AgentHomeComposer); the cards around it reach it through this handle.
+  const composerRef = useRef<AgentHomeComposerHandle>(null)
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
-  const typewriterPlaceholder = useTypewriterPlaceholder(
-    isFreshUntitled ? DEFAULT_AGENT_PROMPT_EXAMPLES : TYPEWRITER_DISABLED,
-  )
-  const composerPlaceholder = isFreshUntitled
-    ? typewriterPlaceholder
-    : 'How can I help? Press cmd+enter to send'
 
   const handleImportComplete = useCallback(
     async (imported: ImportResult) => {
@@ -260,7 +149,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         hasOnboarding: imported.hasOnboarding,
         templatePrompt: imported.templatePrompt,
         onboardingFirstPrompt: imported.onboardingFirstPrompt,
-        noteProgrammaticChange,
+        noteProgrammaticChange: (prompt) => composerRef.current?.noteProgrammaticChange(prompt),
         openAgent: () => {
           void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
           if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
@@ -270,7 +159,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         startOnboardingSession,
       })
     },
-    [draftsStore, noteProgrammaticChange, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [draftsStore, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -312,11 +201,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   )
 
   const sidePanelContent = (
-    <AgentSettingsColumn agent={agent} scheduledTasks={scheduledTasks} onRunSkill={(skillPath) => {
-      composer.setMessage(`/${skillPath} `)
-      composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      setTimeout(() => composerTextareaRef.current?.focus(), 0)
-    }} />
+    <AgentSettingsColumn agent={agent} scheduledTasks={scheduledTasks} onRunSkill={(skillPath) => composerRef.current?.runSkill(skillPath)} />
   )
   const lastActive = lastActiveAt ? (
     <span data-testid="agent-home-last-active">Last active {formatDate(lastActiveAt)}</span>
@@ -444,132 +329,14 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   </div>
                 )}
 
-                <MountChoiceDialog
-                  open={composer.mountDialog.open}
-                  onChoice={composer.mountDialog.onChoice}
-                  folderName={composer.mountDialog.folderName}
+                <AgentHomeComposer
+                  ref={composerRef}
+                  agent={agent}
+                  isFreshUntitled={isFreshUntitled}
+                  isRuntimeReady={isRuntimeReady}
+                  carryover={carryover}
+                  onSessionCreated={onSessionCreated}
                 />
-                {composer.chipDialog}
-                  <form
-                    onSubmit={composer.handleSubmit}
-                    className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-dialog ring-2 ring-primary ring-inset')}
-                    {...composer.dragHandlers}
-                  >
-                    <ChatComposerBox
-                      // The session composer's glass with the panels' glass edge: the sessions pass under it once it docks.
-                      className={HOME_GLASS_COMPOSER_CLASS}
-                      textareaRef={composerTextareaRef}
-                      attachments={composer.attachments}
-                      onRemoveAttachment={composer.removeAttachment}
-                      onRetryAttachment={composer.retryAttachment}
-                      value={composer.message}
-                      onChange={composer.setMessage}
-                      onKeyDown={handleKeyDown}
-                      onPaste={composer.handlePaste}
-                      placeholder={composerPlaceholder}
-                      disabled={isDisabled}
-                      rows={2}
-                      autoFocus={!isMobile}
-                      dataTestId="home-message-input"
-                      secureSecrets={{
-                        agentSlug: agent.slug,
-                        potentialSecrets: composer.potentialSecrets,
-                        onDismiss: composer.dismissPotentialSecret,
-                        onSecure: composer.securePotentialSecret,
-                      }}
-                      chipContext={composer.chipContext}
-                      textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[40px] max-h-[120px]'}`}
-                      leftActions={(
-                        <>
-                          <AttachmentPicker
-                            buttonClassName="h-7 w-7 shrink-0 p-0"
-                            onFileSelect={composer.handleFileSelect}
-                            onFolderSelect={composer.handleFolderSelect}
-                            onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-                            disabled={isDisabled}
-                          />
-                          <ComposerOptions
-                            state={composerOptions}
-                            disabled={isDisabled}
-                            size="sm"
-                            footer={
-                              <AgentDefaultFooter
-                                agentSlug={agent.slug}
-                                state={composerOptions}
-                                agentHomeLink={false}
-                              />
-                            }
-                          />
-                        </>
-                      )}
-                      topRightActions={(
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
-                          onClick={() => setIsExpanded((v) => {
-                            // If user is collapsing, remember it so the auto-expand
-                            // effect doesn't immediately re-flip a still-overflowing message.
-                            userCollapsedRef.current = v
-                            return !v
-                          })}
-                          aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
-                        >
-                          {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-                        </Button>
-                      )}
-                      rightActions={(
-                        <>
-                          <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
-                          {!isFreshUntitled && (
-                            <VoiceModeButton onClick={() => void startVoiceSession('home')} disabled={isDisabled} className="h-7 w-7" />
-                          )}
-                          {isFreshUntitled ? (
-                            <Button
-                              type="submit"
-                              size="sm"
-                              className="ml-1.5 h-7"
-                              disabled={!composer.canSubmit}
-                              data-testid="home-send-button"
-                            >
-                              {isDisabled ? (
-                                <>
-                                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                                  Creating...
-                                </>
-                              ) : (
-                                'Create Agent'
-                              )}
-                            </Button>
-                          ) : (
-                            <Button
-                              type="submit"
-                              size="icon"
-                              // 6px before it: the plain buttons' own 6px padding is the rest of the gap (chat-composer-box.tsx).
-                              className="ml-1.5 h-7 w-7"
-                              disabled={!composer.canSubmit}
-                              data-testid="home-send-button"
-                              aria-label="Send message"
-                            >
-                              {isDisabled ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <ArrowUp className="h-4 w-4" />
-                              )}
-                            </Button>
-                          )}
-                        </>
-                      )}
-                      footer={(
-                        <>
-                          <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
-                          <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
-                          <AgentRuntimeErrorView error={createSession.error} className="mt-2" />
-                        </>
-                      )}
-                    />
-                  </form>
 
                 <div className="space-y-6 intro-step intro-step-3">
                   {sessions.length > 0 ? (
@@ -638,7 +405,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                     </HomeGlassPanel>
                   ) : (
                     <AgentCreationAids
-                      onStartVoiceMode={() => void startVoiceSession('home_card')}
+                      onStartVoiceMode={() => void composerRef.current?.startVoiceSession('home_card')}
                       onImportComplete={handleImportComplete}
                     />
                   )}
@@ -649,6 +416,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 </div>
               </>
             )}
+            {!isOwner && <HomePanel><HomeVolumes agentSlug={agent.slug} /></HomePanel>}
           </div>
 
           {sidePanelBeside && (

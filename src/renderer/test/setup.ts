@@ -188,3 +188,10 @@ vi.mock('@renderer/context/dialog-context', async () => {
 vi.mock('@renderer/router/use-route-location', () => ({
   useRouteLocation: () => ({ selectedAgentSlug: null, view: { kind: 'home' } }),
 }))
+
+// The same for the per-agent route selections (sidebar rows, the agent menu):
+// off every agent's route by default.
+vi.mock('@renderer/router/use-route-agent', () => ({
+  useRouteAgentRow: () => ({ isSelected: false, isViewingSubItem: false }),
+  useIsRouteAgent: () => false,
+}))

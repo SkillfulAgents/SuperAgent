@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { noteTurnStarted } from '@renderer/lib/session-turns'
 import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
@@ -538,6 +539,9 @@ function getOrCreateEventSource(
       const current = streamStates.get(sessionId)
 
       if (data.type === 'connected') {
+        // A snapshot stands in for frames this viewer never got, and a turn may have started
+        // among them. Counting it as one can split an edit highlight, but never merges two turns.
+        noteTurnStarted(sessionId)
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
@@ -633,7 +637,11 @@ function getOrCreateEventSource(
         // opting it out is an explicit line in the turn-scoped group.
         const queuedMidTurn = data.queuedMidTurn === true
         // The thinking stream lives outside StreamState but is turn-scoped too.
-        if (!queuedMidTurn) sessionThinking.delete(sessionId)
+        // A message queued mid-turn waits for its own turn; so does the next edit highlight.
+        if (!queuedMidTurn) {
+          sessionThinking.delete(sessionId)
+          noteTurnStarted(sessionId)
+        }
         streamStates.set(sessionId, {
           ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,

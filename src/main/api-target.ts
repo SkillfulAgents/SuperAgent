@@ -6,8 +6,7 @@ import {
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { closeQuickDispatchWindow } from './quick-dispatch-window'
 import { closeAllDashboardWindows } from './dashboard-window'
-import { refreshTrayMenu } from './tray'
-import { refreshAppMenu } from './app-menu'
+import { agentStatusSource } from './agent-status-source'
 
 /**
  * Main-process side of "which Superagent is this app driving?".
@@ -73,10 +72,10 @@ export async function applyPreferredApiTarget(target: unknown): Promise<void> {
   closeAllDashboardWindows()
   // Awaited so the flights are registered before the renderer reloads into them.
   if (next === 'cloud') await startCloudBootPrefetch()
-  // The tray and the app menu's Agents submenu resolve the effective base URL
-  // on every fetch, so the preference write above is all they need — but they
-  // poll on a 30s interval, which would leave the previous Superagent's agents
-  // on screen for up to that long. Kick them now.
-  refreshTrayMenu()
-  refreshAppMenu()
+  // The tray and the app menu's Agents submenu share one agent list, which
+  // resolves the effective base URL on every fetch, so the preference write
+  // above is all it needs. But it would leave the previous Superagent's agents
+  // on screen until its next poll, or for as long as the window that pushed
+  // them takes to reload. Drop that list and ask the new target now.
+  agentStatusSource.targetSwitched()
 }

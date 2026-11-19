@@ -2,7 +2,7 @@ import { getToolDefinition } from '../registry'
 import { parseRuleOutcomes, parseRuleProposal, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
-import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { xAgentFileTransferSchema, xAgentRuntimeSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -361,6 +361,7 @@ export function reviewFromEnvelope(
       operation: raw.operation,
       preview: typeof raw.preview === 'string' ? raw.preview : undefined,
       fileTransfer: xAgentFileTransferSchema.safeParse(raw.fileTransfer).data,
+      runtime: xAgentRuntimeSchema.safeParse(raw.runtime).data,
       attachments: Array.isArray(raw.attachments)
         ? raw.attachments.filter((item): item is string => typeof item === 'string')
         : undefined,

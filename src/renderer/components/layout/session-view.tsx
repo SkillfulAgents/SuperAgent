@@ -1,4 +1,5 @@
 import { SessionChatColumn } from './session-chat-column'
+import { pickRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { CalendarClock, GitFork, Plug, Wrench, Zap } from 'lucide-react'
@@ -198,7 +199,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
         />
       )}
 
-      <FilePreviewProvider commentsEnabled={!isViewOnly}>
+      <FilePreviewProvider sessionAgentSlug={agentSlug} commentsEnabled={!isViewOnly}>
         <WorkflowProvider>
           <div className="flex-1 flex flex-col min-h-0">
             {sessionId && <SessionSearchBar search={search} />}
@@ -210,9 +211,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
               pendingUserMessages={getPendingMessages(sessionId)}
               isViewOnly={isViewOnly}
               contextPercent={contextPercent}
-              effort={session?.effort}
-              speed={session?.speed}
-              model={session?.model} llmProviderId={session?.llmProviderId}
+              runtimeOptions={session ? pickRuntimeOptions(session) : undefined}
               onPendingMessageAppeared={onPendingMessageAppeared}
               onMessageSent={onMessageSent}
               onMessageUuidAssigned={onMessageUuidAssigned}

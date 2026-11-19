@@ -555,14 +555,23 @@ test.describe('Auth Flow', () => {
     await user2Page.goto(`/agents/${agentSlug}`)
     await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
 
-    // Expire the session out from under the open app. The app's background
-    // polling fires the next apiFetch within seconds — don't drive the UI
-    // here: any element clicked can detach mid-action when the gate swaps in.
+    // Write a message while the session is still live, so the composer is
+    // certainly there and the warm start that typing fires succeeds; then wait
+    // until the message can be sent.
+    await user2Page.locator('[data-testid="home-message-input"]').fill('sent after the session expired')
+    await expect(user2Page.locator('[data-testid="home-send-button"]')).toBeEnabled()
+
+    // Expire the session out from under the open app, then send: that POST is
+    // the apiFetch that 401s. Waiting for a background poll instead is a race
+    // with its interval (30–60 s). Send with the keyboard, not by clicking:
+    // if a poll does 401 first, the gate replaces the composer and a click
+    // would wait for a button that is gone, while a keypress is harmless.
     await user2Page.context().clearCookies()
+    await user2Page.keyboard.press('ControlOrMeta+Enter')
 
     // Auth gate renders IN PLACE: the address bar stays on the agent URL and
     // the URL is stashed for restore.
-    await expect(user2Page.locator('[data-testid="auth-page"]')).toBeVisible({ timeout: 20000 })
+    await expect(user2Page.locator('[data-testid="auth-page"]')).toBeVisible({ timeout: 10000 })
     await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
     const stashed = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
     expect(stashed).toBe(`/agents/${agentSlug}`)

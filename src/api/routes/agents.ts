@@ -2,10 +2,11 @@ import { agentNotificationPreview } from '@shared/lib/notifications/agent-notifi
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
-import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
+import { listConnections, getConnection, connectionCatalogFrom, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
-import { requiresOneTimeXAgentReview, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { requiresOneTimeXAgentReview, xAgentPickSchema, xAgentReviewNamesTarget, type XAgentPick, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
@@ -18,8 +19,8 @@ import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
 import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
+import { directoryRefSchema } from '@shared/lib/team-directory/candidate-schema'
 import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
-import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
@@ -174,7 +175,7 @@ import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
-import { afterMountChange } from '../lib/mount-change'
+import { afterMountChange, changeDrives } from '../lib/mount-change'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -199,7 +200,7 @@ import {
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
+import { eq, and, inArray, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
@@ -244,7 +245,7 @@ import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, 
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents } from '@shared/lib/services/session-unread-service'
 import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
-import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
+import { annotateMessageAuthors } from '@shared/lib/services/message-author-annotation-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
@@ -571,6 +572,7 @@ const sessionsListQuerySchema = z.object({
   sortBy: z.literal('last_activity_at').optional(),
   notable: strictBooleanQuerySchema.optional(),
   limit: positiveIntegerQuerySchema.optional(),
+  withTotal: strictBooleanQuerySchema.optional(),
 })
 
 const agentsListQuerySchema = z.object({
@@ -1592,7 +1594,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     // Turning Team Brain off: no other agent keeps reading a brain that no longer syncs. The drive and its files stay.
     const teamBrain = await getTeamBrain()
     // Running agents drop it on their next start.
-    if (teamBrain?.agentSlug === slug) for (const agent of await releaseVolume(teamBrain.volumeId, slug)) await afterMountChange(agent)
+    if (teamBrain?.agentSlug === slug) await changeDrives(() => releaseVolume(teamBrain.volumeId, slug))
 
     // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
     // This runs BEFORE the irreversible workspace removal: if any peripheral
@@ -1723,7 +1725,6 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
   }
 })
 
-const directoryRefSchema = z.object({ directoryId: z.string().min(1).max(200), remoteId: z.string().min(1).max(200) })
 const grantAccessBodySchema = z.object({
   userId: z.string().min(1).optional(),
   // A team-directory person with no account: an invited user is made for them.
@@ -2067,6 +2068,10 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 // those targeted IDs with server-visible sessions before sort_by and limit,
 // avoiding a read of every session. Supported ordering is deterministic
 // newest-first activity via sort_by=last_activity_at.
+// ?with_total=true (visible-list path only) answers { sessions, total }: the
+// limited rows plus how many visible sessions there are, for a caller that
+// shows the first few and a count (the sidebar). Only the returned rows are
+// enriched, so the participants lookup is bounded by the limit.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
@@ -2074,10 +2079,12 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const sortByRaw = c.req.query('sort_by')
     const notableRaw = c.req.query('notable')
     const limitRaw = c.req.query('limit')
+    const withTotalRaw = c.req.query('with_total')
     const parsedQuery = sessionsListQuerySchema.safeParse({
       ...(sortByRaw === undefined ? {} : { sortBy: sortByRaw }),
       ...(notableRaw === undefined ? {} : { notable: notableRaw }),
       ...(limitRaw === undefined ? {} : { limit: limitRaw }),
+      ...(withTotalRaw === undefined ? {} : { withTotal: withTotalRaw }),
     })
     if (!parsedQuery.success) {
       return c.json({ error: 'Invalid sessions query' }, 400)
@@ -2089,6 +2096,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       ? undefined
       : Math.min(parsedQuery.data.limit, SESSIONS_LIST_MAX_LIMIT)
     const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
+    const withTotal = parsedQuery.data.withTotal === true && !isNotable
 
     if (isNotable) {
       // Both halves of the unread projection are table lookups — overlap them,
@@ -2127,17 +2135,20 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     // Independent lookups (session index, notifications table, unread
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
-    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
+    const [listedSessions, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
       actor.sessions.list({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
-        ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+        // The total is the length of the visible list, so that list is asked
+        // for whole and cut here. The index read is the same either way.
+        ...(resultLimit === undefined || withTotal ? {} : { limit: resultLimit }),
       }),
       getSessionIdsWithUnreadNotifications(slug, undefined, getCurrentUserId(c)),
       getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       listPendingWakesByAgent(slug),
       isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
+    const sessionList = withTotal && resultLimit !== undefined ? listedSessions.slice(0, resultLimit) : listedSessions
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const [live, participants] = await Promise.all([
       actor.live(),
@@ -2162,7 +2173,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       }
     })
 
-    return c.json(sessionsWithStatus)
+    return c.json(withTotal ? { sessions: sessionsWithStatus, total: listedSessions.length } : sessionsWithStatus)
   } catch (error) {
     console.error('Failed to fetch sessions:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)
@@ -2269,7 +2280,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, launch.agentPrefs.defaultLlmProviderId)
     const resolved = await launch.resolve(runtimeOptions)
-    const prewarm = await launch.resolve({})
+    // The prewarm is what the agent's next default session runs on. A request
+    // that picks nothing starts that default session, so its resolution is the
+    // prewarm's: it is not resolved a second time.
+    const prewarm = Object.keys(runtimeOptions).length === 0 ? resolved : await launch.resolve({})
 
     // Runtime choices are SESSION state once the first turn starts, including
     // inherited defaults. Persist the effective values, not merely explicit
@@ -2428,6 +2442,7 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
   }
 }
 
+/** Rows authored by a person; an integration's rows carry its card instead (see annotateIntegrationMessages). */
 // The faces on a session row are decoration: a lookup failure leaves the list without them.
 async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: string[]) {
   try {
@@ -2438,78 +2453,46 @@ async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: stri
   }
 }
 
-// Agent names and orbs are decoration: a failed read draws the slug, never fails the transcript.
-async function authorAgentsBestEffort(slugs: string[]) {
-  try {
-    return await agentCatalog.getMany(slugs)
-  } catch (error) {
-    captureException(error, { tags: { component: 'agents', operation: 'message-author-agents' }, level: 'warning' })
-    return []
-  }
-}
-
-/** A row naming an agent draws that agent; its person is only the one billed. */
-async function attachAuthors(
-  transformed: TransformedItem[],
-  rows: { messageId: string; userId: string | null; authorAgentSlug: string | null }[],
-): Promise<void> {
-  const agentSlugs = [...new Set(rows.flatMap(row => row.authorAgentSlug ? [row.authorAgentSlug] : []))]
-  const agents = new Map((await authorAgentsBestEffort(agentSlugs)).map(agent => [agent.slug, agent]))
-  const profiles = await getUserSummaries(rows.flatMap(row => !row.authorAgentSlug && row.userId ? [row.userId] : []))
-  const byMessage = new Map(rows.map(row => [row.messageId, row]))
-  for (const msg of transformed) {
-    if (msg.type !== 'user') continue
-    const row = byMessage.get(msg.id)
-    if (row?.authorAgentSlug) {
-      const agent = agents.get(row.authorAgentSlug)
-      msg.agentSender = { slug: row.authorAgentSlug, name: agent?.name ?? row.authorAgentSlug, avatar: agent?.avatar ?? null }
-    } else if (row?.userId) {
-      const profile = profiles.get(row.userId)
-      if (profile) msg.sender = profile
-    }
-  }
-}
-
-// Integration cards are decoration: a lookup failure leaves the messages as text.
-async function annotateIntegrationMessagesBestEffort(
+// One message_author read for cards and senders. Integration cards are
+// decoration: without auth a failed read leaves the messages as text. With
+// auth the same read names who wrote each message, and its failure fails the
+// response as the sender lookup always has.
+async function annotateMessageAuthorsFor(
   transformed: TransformedItem[],
   agentSlug: string,
   sessionId: string,
+  scope: 'items' | 'session',
 ): Promise<void> {
+  const senders = isAuthMode()
   try {
-    await annotateIntegrationMessages(agentSlug, sessionId, transformed)
+    await annotateMessageAuthors(agentSlug, sessionId, transformed, { senders, scope })
   } catch (error) {
+    if (senders) throw error
     captureException(error, { tags: { component: 'agents', operation: 'annotate-integration-messages' }, level: 'warning' })
   }
 }
 
+// `items` reads the author rows of the messages in hand: a delta window is a
+// handful of items, and loading the whole session's author history per refetch
+// would erase the bounded-memory benefit. `session` is for the whole transcript.
 async function annotateAndRecoverMessages(
   transformed: TransformedItem[],
   agentSlug: string,
   sessionId: string,
+  scope: 'items' | 'session' = 'items',
 ): Promise<void> {
-  await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
-  await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-  await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
-
-  await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
-
-  if (!isAuthMode()) return
-
-  const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
-  if (userMessageIds.length === 0) return
-
-  // Scope the lookup to the ids actually in this response — a delta window is
-  // a handful of items, and loading the whole session's author history per
-  // refetch would erase the bounded-memory benefit on auth deployments.
-  await attachAuthors(transformed, await db
-    .select({
-      messageId: messageAuthor.id,
-      userId: messageAuthor.userId,
-      authorAgentSlug: messageAuthor.authorAgentSlug,
-    })
-    .from(messageAuthor)
-    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds), isNotNull(messageAuthor.userId))))
+  // The actor steps write assistant items (errorPresentation, a tool call's
+  // subagent and result) and the author read writes user items (integration,
+  // sender); neither reads what the other writes, so the database round trip
+  // overlaps the actor's.
+  await Promise.all([
+    (async () => {
+      await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
+      await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+      await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
+    })(),
+    annotateMessageAuthorsFor(transformed, agentSlug, sessionId, scope),
+  ])
 }
 
 // Buffers, not strings: Readable.toWeb hands chunks straight to the web
@@ -2525,7 +2508,6 @@ function* messagesPageJsonChunks(page: {
   yield Buffer.from(`],"nextCursor":${JSON.stringify(page.nextCursor)}}`)
 }
 
-// Unpaginated path stays inlined so the stream-pipe PR can still land on `return c.json(transformed)`.
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
@@ -2632,31 +2614,10 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
-    await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
-
-    // Discover subagent IDs for interrupted Task tool calls that have no result
-    await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-    await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
-
-    await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
-
-    // In auth mode, annotate user messages with sender info
-    if (isAuthMode()) {
-      const userMessageIds = transformed
-        .filter((m) => m.type === 'user')
-        .map((m) => m.id)
-
-      if (userMessageIds.length > 0) {
-        await attachAuthors(transformed, await db
-          .select({
-            messageId: messageAuthor.id,
-            userId: messageAuthor.userId,
-            authorAgentSlug: messageAuthor.authorAgentSlug,
-          })
-          .from(messageAuthor)
-          .where(and(eq(messageAuthor.sessionId, sessionId), isNotNull(messageAuthor.userId))))
-      }
-    }
+    // Provider errors, interrupted subagents, open tool calls, then cards and
+    // senders: the whole transcript is here, so the author rows are read by
+    // session rather than by id.
+    await annotateAndRecoverMessages(transformed, agentSlug, sessionId, 'session')
 
     const source = Readable.from(transformed)
     const stringify = createJsonArrayStringifyTransform()
@@ -2900,6 +2861,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+    // Per message, not a runtime option: false appends without starting a turn.
+    let shouldQuery: boolean | undefined = typeof body.shouldQuery === 'boolean' ? body.shouldQuery : undefined
 
     // The delivery below is keyed by session id alone: an unowned id would
     // cancel another agent's pending input request, re-bind its session to
@@ -2915,7 +2878,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // only notifies them: it joins the transcript, and no turn runs.
     const mentions = await readSessionMentions(c, agentSlug, content.trim())
     if ('error' in mentions) return c.json({ error: mentions.error }, 400)
-    if (mentions.silent) runtimeOptions.shouldQuery = false
+    if (mentions.silent) shouldQuery = false
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2929,7 +2892,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // cannot bind outright is one it may only continue, and the delivery
     // refuses it unless the session still holds it. An append starts no turn
     // and keeps the session's runtime, so its connection is not looked at.
-    const requireStoredProvider = runtimeOptions.shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
+    const requireStoredProvider = shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
 
     const metadataUpdates: Partial<SessionMetadata> = {}
     if (isAuthMode()) {
@@ -2958,7 +2921,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         sessionId,
         content: await attributedForAgent(c, agentSlug, text),
         uuid: messageUuid,
-        options: runtimeOptions,
+        options: { ...runtimeOptions, ...(shouldQuery !== undefined ? { shouldQuery } : {}) },
         metadataUpdates,
         promote: true,
         requireStoredProvider,
@@ -2972,11 +2935,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     } catch (error) {
       // A message that certainly never went (refused, or the session is
       // gone) leaves no attribution behind.
-      if (isAuthMode() && deliveryFailure(error)?.accepted === false) await deleteMessageAuthorBestEffort(messageUuid)
+      if (isAuthMode() && deliveryFailure(error)?.accepted === false) await deleteMessageAuthorBestEffort(agentSlug, sessionId, messageUuid)
       throw error
     }
     const queued = delivery.status !== 'sent' || delivery.queued
-    if (delivery.status === 'sent' && runtimeOptions.shouldQuery !== false) {
+    if (delivery.status === 'sent' && shouldQuery !== false) {
       await nameSessionFromFirstHumanMessage(actor, sessionId, text, agent.name)
     }
     if (mentions.teammates.length > 0) {
@@ -5102,6 +5065,19 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       grantType,
       ...(grantAnyApp && { grantAnyApp: true }),
     })
+    // Declines already report as request_declined; this is the approval side.
+    // 'claimed' and 'abandoned' decided nothing, so they report nothing.
+    if (outcome.status === 'resolved' || outcome.status === 'failed') {
+      trackServerEvent('computer_use_approved', {
+        method,
+        permission_level: permissionLevel || 'use_application',
+        grant_type: grantType ?? 'once',
+        any_app: !!grantAnyApp,
+        command_failed: outcome.status === 'failed',
+      })
+    } else if (outcome.status === 'missing_permissions' || outcome.status === 'undeliverable') {
+      trackServerEvent('computer_use_approve_failed', { method, reason: outcome.status })
+    }
     return hostRunResponse(c, outcome, 'computer use')
   } catch (error) {
     console.error('Failed to execute computer use:', error)
@@ -5127,6 +5103,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     // next command starts a new one, under whatever permission it then has.
     await endComputerUseSessions({ sessionId })
 
+    trackServerEvent('computer_use_revoked', { had_app: !!appName })
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
     console.error('Failed to revoke computer use:', error)
@@ -6827,7 +6804,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const mounts = await getMountsWithHealth(agentSlug)
+    const mounts = await getMountsWithHealth(agentSlug, volumeViewer(c))
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
@@ -6871,7 +6848,7 @@ agents.patch('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const parsed = updateMountSchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'Invalid drive update' }, 400)
-    if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly))) {
+    if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly, volumeViewer(c)))) {
       return c.json({ error: 'Drive not found' }, 404)
     }
     await afterMountChange(agentSlug)
@@ -6891,7 +6868,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
-    if (!(await removeMount(agentSlug, mountId))) {
+    if (!(await removeMount(agentSlug, mountId, volumeViewer(c), getAuthorizedAgentRole(c)))) {
       return c.json({ error: 'Drive not found' }, 404)
     }
 
@@ -6910,10 +6887,10 @@ function foldersFirstByName(a: { name: string; type: string }, b: { name: string
   return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
 }
 
-/** One level of a folder in one of the agent's drives. Whoever may view the agent may list any of them, as they may open its files. */
+/** One level of a folder in one of the agent's drives. The viewer also needs access to the resolved drive. */
 async function listMountFolder(c: Context, agentSlug: string, rawRoot: string, rawCurrentPath: string) {
   try {
-    const mount = await resolveMountPath(agentSlug, rawCurrentPath)
+    const mount = await resolveMountPath(agentSlug, rawCurrentPath, volumeViewer(c))
     if (!mount) return c.json({ error: 'Drive not found' }, 404)
     const currentPath = rawCurrentPath.replace(/\/+$/, '')
     const entries = (await mount.ops.list(mount.path))
@@ -7298,6 +7275,9 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
+    // What an open preview compares to learn the file changed, from a HEAD.
+    // Weak, so no client sends it back as an If-Range this route does not read.
+    c.header('ETag', `W/"${stat.mtimeMs}-${stat.size}"`)
 
     if (heicPreview) {
       if (c.req.method === 'HEAD') return c.body(null)
@@ -7350,7 +7330,7 @@ agents.get('/:id/mount-files/*', AgentRead(), async (c) => {
   }
   if (!drivePath) return c.json({ error: 'Invalid path' }, 400)
   try {
-    const mount = await resolveMountPath(getAgentId(c), `/mounts/${drivePath}`)
+    const mount = await resolveMountPath(getAgentId(c), `/mounts/${drivePath}`, volumeViewer(c))
     if (!mount) return c.json({ error: 'Drive not found' }, 404)
     return await serveVolumeFile(c, mount.ops, mount.path)
   } catch (error) {
@@ -8174,11 +8154,39 @@ async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview
   return canUseAgent(c, review.targetAgentSlug)
 }
 
+/**
+ * The model the person allowing the card picked for the new session: a name in
+ * the catalog of the connection the card showed, whoever clicks. A deny, a
+ * review already gone, or nothing picked has nothing to check.
+ */
+async function checkXAgentPick(
+  decision: 'allow' | 'deny',
+  pending: { xAgent?: XAgentReview } | null,
+  raw: unknown,
+): Promise<{ pick?: XAgentPick } | { error: string }> {
+  if (decision !== 'allow' || !pending || raw === undefined) return {}
+  const review = pending.xAgent
+  const parsed = xAgentPickSchema.safeParse(raw)
+  if (!parsed.success) return { error: 'Invalid model choice' }
+  const connectionId = review?.operation === 'invoke' ? review.runtime?.llmProviderId : undefined
+  if (!review || !connectionId) return { error: "This request doesn't start a new session, so its model can't be changed." }
+  // The target may have moved to another connection while the card waited.
+  const settings = await getSettings()
+  const prefs = await readAgentPreferences(review.targetAgentSlug, settings)
+  const current = prefs.defaultLlmProviderId ?? (await resolveGlobalSelection(undefined, settings))?.llmProviderId
+  const row = current === connectionId ? await getConnection(connectionId) : null
+  if (!row) return { error: "This agent's model connection changed. Your choice was cleared." }
+  if (!resolveSelection({ llmProviderId: connectionId, model: parsed.data.model }, [{ id: connectionId, catalog: connectionCatalogFrom(row, settings) }])) {
+    return { error: "That model isn't available to this agent. Pick another one." }
+  }
+  return { pick: { ...parsed.data, llmProviderId: connectionId } }
+}
+
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const reviewId = c.req.param('reviewId')
-  const body = await c.req.json<{ decision: 'allow' | 'deny'; reason?: string }>()
+  const body = await c.req.json<{ decision: 'allow' | 'deny'; reason?: string; pick?: unknown }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
@@ -8198,10 +8206,14 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
     }
   }
 
+  // A gone review is answered below with the 404 the card already reads as settled.
+  const checked = await checkXAgentPick(body.decision, pendingReview, body.pick)
+  if ('error' in checked) return c.json({ error: checked.error }, 409)
+
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
-  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, cleanUserReason(body.reason))
+  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, { reason: cleanUserReason(body.reason), pick: checked.pick })
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -8223,6 +8235,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     reviewType?: 'mcp' | 'api' | 'xagent'
     // For xagent: { operation: 'list' | 'read' | 'invoke', targetSlug?: string }
     xAgent?: { operation: 'list' | 'read' | 'invoke'; targetSlug: string | null }
+    pick?: unknown
   }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
@@ -8253,6 +8266,9 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   if (body.decision === 'allow' && body.reviewType === 'xagent' && body.xAgent && await evaluateXAgentPolicy(slug, body.xAgent.operation, checkTarget) === 'block') {
     return blockedResponse()
   }
+  // Checked before the grant is saved, so a refused pick leaves none behind. A gone review saves the grant as before.
+  const checked = await checkXAgentPick(body.decision, pendingReview, body.pick)
+  if ('error' in checked) return c.json({ error: checked.error }, 409)
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
@@ -8385,7 +8401,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   // Submit decision for this review (and any others matching the same scope).
   // Pass slug so submitDecision rejects cross-agent attempts (see B1).
-  await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, { pick: checked.pick })
   await agentRegistry.get(slug).inputs.reviews.resolveMatching(body.scope, body.decision)
 
   // "Allow all <label>" saves a label sentinel ('*read'/'*write'/'*destructive'),

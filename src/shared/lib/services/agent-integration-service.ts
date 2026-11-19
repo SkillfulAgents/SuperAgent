@@ -1,4 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 /**
  * Agent integration persistence. Physical table names are retained for upgrades.
  */
@@ -35,7 +36,7 @@ export class DuplicateIntegrationIdentityError extends Error {
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-export interface CreateAgentIntegrationParams {
+export interface CreateAgentIntegrationParams extends Partial<StoredRuntimeOptions> {
   agentSlug: string
   provider: string
   name?: string
@@ -43,23 +44,15 @@ export interface CreateAgentIntegrationParams {
   config: Record<string, unknown>
   showToolCalls?: boolean
   sessionTimeout?: number | null
-  llmProviderId?: string | null
-  model?: string | null
-  effort?: string | null
-  speed?: string | null
   createdByUserId?: string
 }
 
-export interface UpdateAgentIntegrationParams {
+export interface UpdateAgentIntegrationParams extends Partial<StoredRuntimeOptions> {
   name?: string
   config?: Record<string, unknown>
   showToolCalls?: boolean
   requireApproval?: boolean
   sessionTimeout?: number | null
-  llmProviderId?: string | null
-  model?: string | null
-  effort?: string | null
-  speed?: string | null
   status?: IntegrationStatus
   errorMessage?: string | null
 }

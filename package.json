@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.6.13-rc.1",
+  "version": "0.6.14",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -183,6 +183,7 @@
     "cronstrue": "^3.32.0",
     "cross-env": "^7.0.3",
     "d3-force": "^3.0.0",
+    "diff": "^8.0.4",
     "dompurify": "3.4.17",
     "drizzle-kit": "^0.31.9",
     "electron": "^45.0.0",

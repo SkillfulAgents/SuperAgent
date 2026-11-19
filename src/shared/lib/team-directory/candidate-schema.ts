@@ -1,8 +1,7 @@
-/**
- * What `GET /api/agents/:id/access/search-users` answers: the people an agent
- * could be shared with. Gamut accounts come first, then people from connected
- * team directories who have no account yet. Shared with the renderer.
- */
+import { z } from 'zod'
+
+/** Identifies a person picked from a connected directory when sharing an agent or a drive. */
+export const directoryRefSchema = z.object({ directoryId: z.string().min(1).max(200), remoteId: z.string().min(1).max(200) })
 
 /** A Gamut account. */
 export interface AccountInviteCandidate {
@@ -19,7 +18,7 @@ export interface AccountInviteCandidate {
 export interface DirectoryInviteCandidate {
   kind: 'directory'
   /** Names the person to the server: the directory that listed them first, and their id there. */
-  directoryRef: { directoryId: string; remoteId: string }
+  directoryRef: z.infer<typeof directoryRefSchema>
   name: string
   email: string
   image: string | null

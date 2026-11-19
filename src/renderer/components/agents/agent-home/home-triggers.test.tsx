@@ -74,6 +74,7 @@ const task: ApiScheduledTask = {
   lastSessionId: null,
   createdBySessionId: null,
   timezone: 'UTC',
+  llmProviderId: null,
   model: null,
   effort: null,
   speed: null,

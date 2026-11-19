@@ -20,7 +20,7 @@ export const AUDIT_EVENT_MAP = {
   secret:           ['created', 'updated', 'deleted', 'revealed'],
   file:             ['uploaded'],
   mount:            ['created', 'updated', 'deleted'],
-  volume:           ['created', 'updated', 'deleted'],
+  volume:           ['created', 'updated', 'deleted', 'granted', 'revoked'],
   settings:         ['updated', 'factory_reset'],
   policy:           ['updated'],
   proxy_rule:       ['created', 'updated', 'deleted', 'approved', 'rejected'],

@@ -60,7 +60,7 @@ describe('getSessionParticipants', () => {
   })
 
   it('leaves out the person billed for a message another agent sent', async () => {
-    await testDb.insert(schema.messageAuthor).values({ id: 'm-agent', sessionId: 's1', agentSlug: 'agent-a', userId: 'ann', authorAgentSlug: 'agent-b', createdAt: new Date(100) }).run()
+    await testDb.insert(schema.messageAuthor).values({ id: 'm-agent', sessionId: 's1', agentSlug: 'agent-a', billedUserId: 'ann', authorAgentSlug: 'agent-b', createdAt: new Date(100) }).run()
     await authored('s1', 'bob', 200)
 
     const result = await getSessionParticipants('agent-a', ['s1'])

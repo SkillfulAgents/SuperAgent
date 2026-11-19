@@ -21,7 +21,7 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
   const { isAuthMode } = useUser()
   const [details, setDetails] = useState<VolumeDetails>({
     name: volume?.name ?? '',
-    visibility: volume ? volume.userId === null ? 'public' : 'private' : isAuthMode ? 'private' : 'public',
+    visibility: volume ? volume.visibility : isAuthMode ? 'private' : 'public',
   })
   const [selected, setSelected] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
   const [starting, setStarting] = useState<string | null>(null)
@@ -61,7 +61,7 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
       {volume ? <>
         <DialogHeader><DialogTitle>Drive settings</DialogTitle><DialogDescription>Manage this saved drive. Existing agents keep their current folder paths.</DialogDescription></DialogHeader>
         <form onSubmit={event => { event.preventDefault(); void save(details) }} className="space-y-4">
-          <VolumeDetailsFields value={details} onChange={value => { setDetails(value); setError(null) }} disabled={isSaving} inUse={volume.attachmentCount > 0}>
+          <VolumeDetailsFields value={details} onChange={value => { setDetails(value); setError(null) }} disabled={isSaving} isGlobal={!!volume.globalAccess}>
             <div className="space-y-2"><p className="text-sm font-medium">Folder</p><p className="break-all font-mono text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
           </VolumeDetailsFields>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

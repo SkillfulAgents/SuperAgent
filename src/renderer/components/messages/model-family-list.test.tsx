@@ -15,6 +15,7 @@ import {
 } from './model-family-list'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
+import { getProviderCatalog } from '@shared/lib/llm-provider/model-catalog'
 import { QwenSubscriptionLlmProvider } from '@shared/lib/llm-provider/qwen-subscription-provider'
 
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => ({}) }))
@@ -51,6 +52,7 @@ describe('familyDisplayName', () => {
     expect(familyDisplayName('gemini-carbon')).toBe('Gemini Carbon')
     expect(familyDisplayName('gemini-argon')).toBe('Gemini Argon')
     expect(familyDisplayName('gemini-hydrogen')).toBe('Gemini Hydrogen')
+    expect(familyDisplayName('gemini-neon')).toBe('Gemini Neon')
     expect(familyDisplayName('muse-ember')).toBe('Muse Ember')
     expect(familyDisplayName('muse')).toBe('Muse Spark')
     expect(familyDisplayName('muse-contributor')).toBe('Muse Spark Contributor')
@@ -367,6 +369,19 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent(/^5\.6$/)
     await user.click(screen.getByTestId('model-family-gpt-luna'))
     expect(onPick).toHaveBeenLastCalledWith('gpt-6-luna')
+  })
+
+  it('ranks the Platform Google rows in Google\'s own order, not by price', () => {
+    // Neon's output rate ($15) is above Carbon's intro rate ($10), so price alone would put Neon first.
+    const { container } = render(
+      <ModelFamilyList catalog={getProviderCatalog('platform')} value="gemini-4-carbon" onPick={vi.fn()} />,
+    )
+    expect(testIds(container).filter((id) => /^model-family-gemini-[a-z]+$/.test(id))).toEqual([
+      'model-family-gemini-carbon',
+      'model-family-gemini-neon',
+      'model-family-gemini-argon',
+      'model-family-gemini-hydrogen',
+    ])
   })
 
   it('shows a stored legacy family alias as that family\'s latest', () => {

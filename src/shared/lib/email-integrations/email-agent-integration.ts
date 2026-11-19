@@ -9,7 +9,7 @@ import { emailDirectory, workspaceEmailContacts, type EmailHistoryPage } from '.
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { AgentIntegration } from '../agent-integrations/agent-integration'
-import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationInputContext, IntegrationSessionContext, IntegrationOutput, IntegrationRoute, IntegrationTool } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationAccessCheck, IntegrationInputEvent, IntegrationInputContext, IntegrationSessionContext, IntegrationOutput, IntegrationRoute, IntegrationTool } from '../agent-integrations/types'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { agentRegistry } from '../agent-actor'
 import { sanitizeUploadFilename } from '../utils/path-safety'
@@ -46,7 +46,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     return { action: 'run', externalId: event.externalId, displayName: message.subject || 'Email conversation', interactionId: message.id, replyTarget: { messageId: message.id } }
   }
   sessionPolicy = emailSessionPolicy
-  async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
+  async isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean> {
     if (!(await this.isAvailable())) return false
     let admission = this.admissions.get(context.externalId)
     if (!admission || (context.replyTarget?.messageId && context.replyTarget.messageId !== admission.message.id)) {
@@ -58,7 +58,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     }
     // Cache gateway facts for this live session, never authorization: every
     // check still reads current configuration, status and agent membership.
-    return emailSessionAllowed(context, admission)
+    return emailSessionAllowed(context, admission, check?.current ? context.integration : undefined)
   }
   async authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean> {
     const current = await getAgentIntegration(context.integration.id)

@@ -11,14 +11,18 @@ function decodeCapture(png: Buffer): DecodedCapture | null {
   const image = nativeImage.createFromBuffer(png, { scaleFactor: 1 })
   if (image.isEmpty()) return null
   const { width, height } = image.getSize()
-  // Four bytes a pixel in the platform's order (BGRA), alpha last as the
-  // frame finder reads it. Anything else is left to the JavaScript decoder.
-  const data = image.toBitmap()
-  if (data.length !== width * height * 4) return null
+  let bitmap: Buffer | undefined
   return {
     width,
     height,
-    data,
+    // Four bytes a pixel in the platform's order (BGRA), alpha last as the
+    // frame finder reads it; anything else it leaves to the JavaScript
+    // decoder. A copy of every pixel (24 MB for a Retina display), so made
+    // only when asked for: a display capture is placed by its size alone.
+    get data() {
+      bitmap ??= image.toBitmap()
+      return bitmap
+    },
     shrink: (region, toWidth, toHeight) => image.crop(region).resize({ width: toWidth, height: toHeight, quality: 'best' }).toPNG(),
   }
 }

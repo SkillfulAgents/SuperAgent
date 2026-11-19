@@ -5,7 +5,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
+import { VolumeVisibilityLabel, VolumeVisibilitySelect } from './volume-visibility-select'
 import type { VolumeDetails } from './volume-details-schema'
 
 export function VolumeSetupHeader({ title, description, Logo, steps, step }: {
@@ -30,24 +30,23 @@ export function VolumeSetupHeader({ title, description, Logo, steps, step }: {
 /** A host whose drive every member must reach (Team Brain's set-up) makes it Everyone's and leaves out "Who can add this drive?". */
 export const VolumeEveryoneOnlyContext = createContext(false)
 
-export function VolumeDetailsFields({ value, onChange, disabled, inUse = false, showName = true, children }: {
-  value: VolumeDetails; onChange: (value: VolumeDetails) => void; disabled: boolean; inUse?: boolean; showName?: boolean; children: ReactNode
+export function VolumeDetailsFields({ value, onChange, disabled, isGlobal = false, children }: {
+  value: VolumeDetails; onChange: (value: VolumeDetails) => void; disabled: boolean; isGlobal?: boolean; children: ReactNode
 }) {
   const { isAuthMode, isAdmin } = useUser()
   const everyoneOnly = useContext(VolumeEveryoneOnlyContext)
   return <>
-    {showName && <div className="space-y-2">
+    <div className="space-y-2">
       <Label htmlFor="volume-name">Name</Label>
       <Input id="volume-name" value={value.name} onChange={event => onChange({ ...value, name: event.target.value })} maxLength={255} disabled={disabled} required />
-    </div>}
+    </div>
     {children}
     {isAuthMode && !everyoneOnly && <div className="space-y-2">
       <Label htmlFor="volume-access">Who can add this drive?</Label>
-      {isAdmin ? <Select value={value.visibility} onValueChange={visibility => onChange({ ...value, visibility: visibility as VolumeDetails['visibility'] })} disabled={disabled || inUse}>
-        <SelectTrigger id="volume-access"><SelectValue /></SelectTrigger>
-        <SelectContent><SelectItem value="private">Only me</SelectItem><SelectItem value="public">Everyone</SelectItem></SelectContent>
-      </Select> : <p className="text-sm">Only me</p>}
-      {inUse && isAdmin && <p className="text-xs text-muted-foreground">Remove from all agents before changing access.</p>}
+      {isAdmin ? <VolumeVisibilitySelect id="volume-access" value={value.visibility} disabled={disabled || isGlobal}
+        onValueChange={visibility => onChange({ ...value, visibility })} />
+        : <p className="text-sm"><VolumeVisibilityLabel value={value.visibility} /></p>}
+      {isGlobal && isAdmin && <p className="text-xs text-muted-foreground">Turn off global access before changing visibility.</p>}
     </div>}
   </>
 }

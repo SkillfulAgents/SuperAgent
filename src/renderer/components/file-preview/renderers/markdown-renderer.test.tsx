@@ -17,14 +17,35 @@ vi.mock('./use-file-content', () => ({
   useFileContent: () => ({ data: { text, truncated: false }, isLoading: false, error: null }),
 }))
 
-const { comments } = vi.hoisted(() => ({ comments: [] as { anchor: unknown }[] }))
+const { comments, edits } = vi.hoisted(() => ({ comments: [] as { anchor: unknown }[], edits: { current: undefined as unknown } }))
 
 vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ commentsFor: () => comments, addComment: vi.fn(), commentsEnabled: true }),
+  useFilePreview: () => ({
+    commentsFor: () => comments, addComment: vi.fn(), commentsEnabled: true, editsFor: () => edits.current, recordShownText: vi.fn(),
+  }),
 }))
 
 describe('MarkdownRenderer', () => {
   beforeEach(() => { comments.length = 0 })
+
+  it('resolves a relative image from the previewed file\'s folder', () => {
+    text = '![chart](shots/chart.png)'
+    render(<MarkdownRenderer url="/doc.md" filePath="/workspace/blog/draft.md" agentSlug="test-agent" />)
+    expect(screen.getByRole('img', { name: 'chart' }).getAttribute('src')).toMatch(/\/api\/agents\/test-agent\/files\/blog\/shots\/chart\.png\?inline=true$/)
+  })
+
+  it('resolves a relative image from the workspace root for a file named without a folder', () => {
+    text = '![chart](shots/chart.png)'
+    render(<MarkdownRenderer url="/doc.md" filePath="report.md" agentSlug="test-agent" />)
+    expect(screen.getByRole('img', { name: 'chart' }).getAttribute('src')).toMatch(/\/api\/agents\/test-agent\/files\/shots\/chart\.png\?inline=true$/)
+  })
+
+  it('resolves no agent file on a page from another source', () => {
+    text = '[Out](/workspace/out/a.md) ![chart](/workspace/out/chart.png) ![shot](shots/b.png)'
+    render(<MarkdownRenderer url="/doc.md" filePath="/Team Brain/policies/a.md" agentSlug="team-brain" />)
+    expect(screen.queryByRole('link')).toBeNull()
+    for (const name of ['chart', 'shot']) expect(screen.getByRole('img', { name }).getAttribute('src') ?? '').not.toContain('/api/agents/')
+  })
 
   it('folds the frontmatter into a closed Properties row and draws only what follows', () => {
     text = '---\ntitle: Overview\n---\n# Overview'
@@ -91,7 +112,7 @@ describe('MarkdownRenderer', () => {
 
   it('draws mermaid and math fences, keeps other fences as copyable code, and resolves workspace images', async () => {
     text = FENCES
-    const { container } = render(<MarkdownRenderer url="/doc.md" filePath="/doc.md" agentSlug="test-agent" />)
+    const { container } = render(<MarkdownRenderer url="/doc.md" filePath="/workspace/doc.md" agentSlug="test-agent" />)
 
     expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
     expect(await screen.findByTestId('math-block')).toBeInTheDocument()
@@ -124,6 +145,18 @@ describe('MarkdownRenderer', () => {
     expect(boxes[0].className).toContain('[li:has(>p>&)]:list-none')
     const view = screen.getByTestId('markdown-renderer')
     expect([...view.querySelectorAll('ul > li')].map(li => li.getAttribute('data-comment-lines'))).toEqual(['1-1', '2-2', '3-3'])
+  })
+
+  it('marks an edited code block on the one wrapper that carries its comment lines', () => {
+    text = '# Title\n\n```ts\nconst x = 2\n```'
+    edits.current = { now: text, before: '# Title\n\n```ts\nconst x = 1\n```', show: true, fresh: false }
+    const { container } = render(<MarkdownRenderer url="/doc.md" filePath="/workspace/doc.md" agentSlug="test-agent" />)
+    edits.current = undefined
+
+    const wrapper = container.querySelector('pre')?.parentElement
+    expect(wrapper?.getAttribute('data-edit')).toBe('changed')
+    expect(wrapper?.getAttribute('data-comment-lines')).toBe('3-5')
+    expect(wrapper?.parentElement?.closest('[data-edit]')).toBeNull()
   })
 
   it('leaves chat code blocks bare: only the drawer stamps lines', () => {
