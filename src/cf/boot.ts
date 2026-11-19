@@ -67,9 +67,14 @@ export async function prepareOrg(env: Env, options: { seed: boolean; origin: str
   await prepareDeployment()
 }
 
-/** One API request; the work it leaves running keeps the invocation alive until it settles. */
+/**
+ * One API request; the work it leaves running keeps the invocation alive until it settles. So does
+ * the request itself: a client that leaves must not cancel a lookup that later requests wait on.
+ */
 export function serve(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  return runWithBackground(ctx, async () => api.fetch(request, env, ctx))
+  const response = runWithBackground(ctx, async () => api.fetch(request, env, ctx))
+  ctx.waitUntil(response.catch(() => {}))
+  return response
 }
 
 /** This isolate's TaskManager, whose handlers the org's task manager object runs jobs through. */
