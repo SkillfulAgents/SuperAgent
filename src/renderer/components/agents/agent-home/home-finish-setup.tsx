@@ -54,11 +54,14 @@ function PendingChannels({ agentSlug, isOwner, steps, refresh }: {
             reason = provider.unavailableReason ?? `${label} is unavailable in this workspace.`
           }
           return (
-            <div key={provider.slug} className="flex items-center gap-2 py-2">
+            <div key={provider.slug} className="group/reminder relative flex items-center gap-2 py-2">
               <ServiceIcon slug={provider.slug} fallback="mcp" className={`size-4 shrink-0 ${provider.iconClassName ?? ''}`} />
               <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
-              <ChannelAction action="Finish setup" title={label} reason={reason} onSetup={() => setTarget(setup)} />
-              <Button type="button" size="icon" variant="ghost" className="size-8" aria-label={`Dismiss ${label} setup`}
+              <div className="ml-10 shrink-0 transition-transform duration-150 ease-out group-hover/reminder:-translate-x-10 group-focus-within/reminder:-translate-x-10 has-touch:-translate-x-10 motion-reduce:transition-none">
+                <ChannelAction action="Finish setup" title={label} reason={reason} onSetup={() => setTarget(setup)} />
+              </div>
+              <Button type="button" size="icon" variant="ghost" aria-label={`Dismiss ${label} setup`}
+                className="pointer-events-none absolute right-0 size-8 translate-x-1 opacity-0 transition-[opacity,transform] duration-150 ease-out group-hover/reminder:pointer-events-auto group-hover/reminder:translate-x-0 group-hover/reminder:opacity-100 group-focus-within/reminder:pointer-events-auto group-focus-within/reminder:translate-x-0 group-focus-within/reminder:opacity-100 has-touch:pointer-events-auto has-touch:translate-x-0 has-touch:opacity-100 motion-reduce:transition-none"
                 disabled={dismiss.isPending && dismiss.variables?.provider === provider.slug}
                 onClick={() => dismiss.mutate({ provider: provider.slug, deferred: false })}>
                 <X className="size-4" />

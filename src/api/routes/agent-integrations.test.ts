@@ -54,7 +54,10 @@ let files: InMemoryFileOps
 beforeEach(async () => {
   vi.clearAllMocks(); auth.role = 'owner'
   files = new InMemoryFileOps()
-  const registry = createFakeRegistry([createFakeAgentActor('agent', { config: createInMemoryConfigOps(files) })])
+  const registry = createFakeRegistry([createFakeAgentActor('agent', {
+    config: createInMemoryConfigOps(files),
+    files: { getDoc: files.getDoc.bind(files), delete: files.delete.bind(files) },
+  })])
   vi.spyOn(agentRegistry, 'get').mockImplementation(registry.get)
   handle = await createTestDatabase(); testDb = handle.db
   id = (await createAgentIntegration({ agentSlug: 'agent', provider: 'linear', name: 'Helper', config: {
@@ -70,11 +73,11 @@ describe('shared integration API', () => {
   const step = (provider: string) => ({ type: 'channel', provider })
   const save = (provider: string) => app.request(reminders + '/' + provider, { method: 'PUT' })
   const dismiss = (provider: string) => app.request(reminders + '/' + provider, { method: 'DELETE' })
-  const stored = async () => new TextDecoder().decode(await files.getDoc('finished-setup.json') ?? undefined)
+  const stored = async () => new TextDecoder().decode(await files.getDoc('finish-setup.json') ?? undefined)
 
   it('keeps one workspace row per deferred channel across retries and concurrent changes', async () => {
     expect(await (await app.request(reminders)).json()).toEqual({ steps: [] })
-    expect(await files.getDoc('finished-setup.json')).toBeNull()
+    expect(await files.getDoc('finish-setup.json')).toBeNull()
     const results = await Promise.all([save('slack'), save('telegram'), save('slack')])
     expect(results.map(response => response.status)).toEqual([204, 204, 204])
     const doc = JSON.parse(await stored())
@@ -86,6 +89,25 @@ describe('shared integration API', () => {
     await createAgentIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'telegram-secret' } })
     expect(await (await app.request(reminders)).json()).toEqual({ steps: [] })
     expect(JSON.parse(await stored())).toEqual({ steps: [] })
+  })
+
+  it('renames existing reminders on first use and preserves concurrent edits', async () => {
+    await files.putDoc('finished-setup.json', JSON.stringify({ steps: [step('slack')] }))
+    await Promise.all([app.request(reminders), save('telegram'), dismiss('slack')])
+    expect(JSON.parse(await stored())).toEqual({ steps: [step('telegram')] })
+    expect(await files.getDoc('finished-setup.json')).toBeNull()
+
+    // A restart after copying the file must not bring back a dismissed reminder.
+    await files.putDoc('finished-setup.json', JSON.stringify({ steps: [step('slack')] }))
+    expect(await (await app.request(reminders)).json()).toEqual({ steps: [step('telegram')] })
+    expect(await files.getDoc('finished-setup.json')).toBeNull()
+  })
+
+  it('preserves an unreadable previous file if it cannot migrate the reminders', async () => {
+    await files.putDoc('finished-setup.json', '{')
+    expect((await save('telegram')).status).toBe(500)
+    expect(new TextDecoder().decode(await files.getDoc('finished-setup.json') ?? undefined)).toBe('{')
+    expect(await files.getDoc('finish-setup.json')).toBeNull()
   })
 
   it('removes the connected channel from disk when setup succeeds without reopening Home', async () => {
@@ -108,7 +130,7 @@ describe('shared integration API', () => {
     expect((await dismiss('linear')).status).toBe(403)
     expect((await save('unknown')).status).toBe(400)
     const malformed = JSON.stringify({ steps: [{ ...step('slack'), token: 'unrecognized' }] })
-    await files.putDoc('finished-setup.json', malformed)
+    await files.putDoc('finish-setup.json', malformed)
     expect((await save('slack')).status).toBe(500)
     expect(await stored()).toBe(malformed)
   })

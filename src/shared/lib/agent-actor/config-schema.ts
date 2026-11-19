@@ -53,7 +53,7 @@ export const CONFIG_DOCS = {
   secrets: { kind: 'text', path: '.env', shared: true, mode: 0o666 },
   /** Per-agent defaults for new sessions. The agent may edit it by hand; the host re-reads before every write. */
   preferences: { kind: 'json', path: 'agent-preferences.json', shared: false, schema: agentPreferencesSchema },
-  finishedSetup: { kind: 'json', path: 'finished-setup.json', shared: false, schema: finishedSetupSchema },
+  finishSetup: { kind: 'json', path: 'finish-setup.json', shared: false, schema: finishedSetupSchema },
   /**
    * The portable form of the agent's session index (names, stars, how each
    * session was started): what a full export carries and what an import, or
