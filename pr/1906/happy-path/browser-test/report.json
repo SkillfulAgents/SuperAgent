@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: tated as \"Example Domain\".\n\n---\n\n**Result:** All test requirements met. The browser-use feature works correctly - the agent successfully executed browser operations including opening a browser, navigating to a URL, capturing the page title, and reporting the results back through the chat interface.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 86630,
+  "sessionId": "36e1db4e-0b05-45a6-bc8a-d5284830c8c4",
+  "cost": {
+    "inputTokens": 410,
+    "outputTokens": 12147,
+    "cacheCreationTokens": 123862,
+    "cacheReadTokens": 1144455,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.330418
+  }
+}

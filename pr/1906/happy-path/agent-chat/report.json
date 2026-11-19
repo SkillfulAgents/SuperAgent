@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: Step 9: Took screenshot for verification — Full page screenshot captured showing complete conversation with correct response.\n\n---\n\n**Summary:** All test steps executed successfully with no bugs found. The agent responded correctly to the arithmetic question with the expected answer containing \"4\".\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 64350,
+  "sessionId": "f97ebdc2-ee64-4f5e-b1ae-f783d41d6d2c",
+  "cost": {
+    "inputTokens": 330,
+    "outputTokens": 9005,
+    "cacheCreationTokens": 104560,
+    "cacheReadTokens": 828806,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.258936
+  }
+}
