@@ -306,10 +306,10 @@ export async function getAgentWithListing(record: AgentRecord): Promise<ListedAg
  * Create a new agent (returns API format with stopped status)
  */
 export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
-  const { name: rawName, description, instructions } = input
+  const { name: rawName, description, instructions, avatar } = input
   const name = String(rawName)
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
-  const record = await writeNewAgent({ name, description: description || undefined }, body)
+  const record = await writeNewAgent({ name, description: description || undefined, avatar }, body)
   return newAgentResponse(record, await teamBrainOf(), body)
 }
 
@@ -320,29 +320,36 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
  * nothing lists. A workspace write that fails takes the row with it.
  */
 async function writeNewAgent(
-  identity: { name: string; description?: string },
+  identity: { name: string; description?: string; avatar?: AgentAvatar },
   body: string,
 ): Promise<AgentRecord> {
   // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
   // promptless-create flow can't poison it.
   const slug = await agentCatalog.mint()
   const createdAt = new Date()
-  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt })
+  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, avatar: identity.avatar, createdAt })
 
-  const frontmatter: AgentFrontmatter = { name: identity.name, createdAt: createdAt.toISOString() }
-  if (identity.description) {
-    frontmatter.description = identity.description
-  }
   try {
-    const actor = agentRegistry.get(slug)
-    await actor.files.mkdir('')
-    await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body))
+    await writeAgentWorkspace(record, body)
   } catch (error) {
     await agentCatalog.remove(slug).catch(() => undefined)
     throw error
   }
 
   return record
+}
+
+/** Replaying a create after a restart must preserve any instructions edited since. */
+export function ensureAgentWorkspace(record: AgentRecord) {
+  return writeAgentWorkspace(record, DEFAULT_AGENT_INSTRUCTIONS, { ifRevision: null })
+}
+
+async function writeAgentWorkspace(record: AgentRecord, body: string, options?: { ifRevision: null }) {
+  const frontmatter: AgentFrontmatter = { name: record.name, createdAt: record.createdAt.toISOString() }
+  if (record.description) frontmatter.description = record.description
+  const actor = agentRegistry.get(record.slug)
+  await actor.files.mkdir('')
+  await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body), options)
 }
 
 /**

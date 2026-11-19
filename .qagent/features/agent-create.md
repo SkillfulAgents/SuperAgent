@@ -2,24 +2,15 @@
 
 This feature covers creating an agent, starting its container, and deleting it from the sidebar.
 
-## Prerequisites
+## Create an agent
 
-- The app is loaded and the sidebar is visible.
+- Click **New Agent** in the sidebar, home page, app menu, or a section’s **+**.
+- Enter a name, choose a gem, and continue. The agent is saved and the job composer opens. A section’s **+** also files it there.
+- **Browse Templates** opens the template roster. **Import an Agent** opens the package dialog on that page. Back restores the name and gem. Expanding a category keeps the installation in the selected sidebar section.
+- **Skip** on the job step opens the named agent’s empty home. Entering a job and continuing opens the add-ons step.
+- Self-Improvement installs Dream from the public skillset and adds the scheduling instruction to the job sent by Start session. Skip leaves the skill installed and sends no job. Memories controls Claude auto memory for new sessions. Team Brain uses the workspace’s configured shared drive. Inbox and Slack open their setup forms. An unfinished Slack installation offers Finish setup.
+- **Start session** sends the job to this agent. Refreshing during setup preserves the saved agent, its job draft, and applied add-ons. Retrying an accepted first job opens its original session.
 
-## Sidebar - Create Agent
-
-### Components
-- **New Agent button** (`data-testid='new-agent-button'`) - immediately creates an Untitled agent and lands on its AgentHome.
-- **Prompt composer** (`data-testid='home-message-input'`) - textarea for the agent's first instruction; the agent's name auto-updates from the prompt after the first send.
-- **Create Agent / Send button** (`data-testid='home-send-button'`) - submits the prompt. Labeled "Create Agent" on a fresh Untitled agent, the normal send icon thereafter.
-- **Voice / Import cards** - below the composer in the empty-session state. Voice fills the composer with an AI-drafted prompt; Import creates a new agent from a .zip template (the Untitled agent is removed on success).
-
-### Interactions
-- Click "Create Agent" in the sidebar — a new Untitled agent appears and the AgentHome for it is shown.
-- Type a prompt describing what the agent should do, then click Create Agent (or cmd+enter).
-- A first session is started; the sidebar row renames from Untitled based on the prompt.
-
-> **Note:** Agent sidebar entries have a random slug suffix in their `data-testid`, e.g. `agent-item-smoke-test-agent-9qux7n`. Always use a **prefix match**: `[data-testid^="agent-item-<agent-name>"]`.
 
 ## Home - Template Cards
 

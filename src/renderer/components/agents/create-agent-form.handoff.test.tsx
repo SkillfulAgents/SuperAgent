@@ -3,6 +3,8 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useState } from 'react'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DraftsProvider } from '@renderer/context/drafts-context'
 import type { SignupHandoff } from '@renderer/context/nav-transient-context'
@@ -33,8 +35,6 @@ let mockCatalog = catalogFixture()
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
-    justCreatedSlug: null,
-    setJustCreatedSlug: vi.fn(),
     get signupHandoff() {
       return mockSignupHandoff
     },
@@ -84,6 +84,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   }),
+  useUpdateAgentAvatar: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeleteAgent: () => ({
     mutateAsync: vi.fn(),
     isPending: false,
@@ -193,17 +194,23 @@ function discoverable(slug: string, skillsetId: string = DEFAULT_PUBLIC_SKILLSET
   }
 }
 
-function renderForm() {
+function WizardForm({ saved }: { saved?: RuntimeOptions }) {
+  const [options, setOptions] = useState(saved)
+  return <CreateAgentForm initialRuntimeOptions={options} onRuntimeOptionsChange={setOptions} />
+}
+
+function renderForm(form = <CreateAgentForm />) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <DraftsProvider>
-        <CreateAgentForm />
+        {form}
       </DraftsProvider>
     </QueryClientProvider>,
   )
+  return { ...view, queryClient }
 }
 
 describe('CreateAgentForm signup handoff', () => {
@@ -300,10 +307,10 @@ describe('CreateAgentForm signup handoff', () => {
     })
   })
 
-  it('seeds the model picker from the carried model', async () => {
+  it('keeps the signup model when the wizard saves the picker state', async () => {
     mockSignupHandoff = { prompt: 'hello', model: 'claude-sonnet-4-6' }
     const user = userEvent.setup()
-    renderForm()
+    renderForm(<WizardForm />)
 
     await waitFor(() => {
       expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6')
@@ -315,6 +322,24 @@ describe('CreateAgentForm signup handoff', () => {
         expect.objectContaining({ model: 'claude-sonnet-4-6' }),
       )
     })
+  })
+
+  it.each([false, true])('retains the restored connection on submit (connections loaded: %s)', async (loaded) => {
+    mockSignupHandoff = { prompt: 'Prepare a weekly brief' }
+    const saved = { model: 'claude-sonnet-4-6', llmProviderId: 'personal' }
+    const { queryClient } = renderForm(<WizardForm saved={saved} />)
+    if (loaded) {
+      const connections = ['global', 'personal'].map(id => ({
+        id, label: id, provider: 'anthropic', defaultModel: 'claude-opus-5', catalog: catalogFixture(),
+      }))
+      await act(async () => {
+        queryClient.setQueryData(['settings', 'llm-connections', undefined, undefined, 'personal'], {
+          connections, defaultSelection: { llmProviderId: 'global', model: 'claude-opus-5' }, summarizerSelection: null,
+        })
+      })
+    }
+    await userEvent.click(screen.getByTestId('create-agent-submit'))
+    await waitFor(() => expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining(saved)))
   })
 
   it('submits the picked model when the user overrides the carried one', async () => {

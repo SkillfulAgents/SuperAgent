@@ -52,7 +52,7 @@ test.describe('Local skill code editor', () => {
     const app = new AppPage(page)
     await app.goto()
     await app.waitForAgentsLoaded()
-    await new AgentPage(page).clickCreateAgent()
+    await new AgentPage(page).openEmptyAgent()
     await expect(page.getByTestId('agent-breadcrumb')).toHaveText('Untitled')
 
     temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-code-editor-'))

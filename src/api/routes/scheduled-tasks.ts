@@ -302,12 +302,13 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
     // One read of the settings for this run. Model/effort/speed preference
     // order: task override > agent default > global default.
-    const { models, resolve } = await resolveSessionDefaults(await getSettings(), task.agentSlug)
+    const { models, resolve, agentEnvVars } = await resolveSessionDefaults(await getSettings(), task.agentSlug)
     const resolved = await resolve({ model: task.model, llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed })
 
     const { id: sessionId } = await actor.sessions.start({
       create: {
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        customEnvVars: agentEnvVars,
         initialMessage: task.prompt,
         model: resolved.model,
         llmProviderId: resolved.llmProviderId,

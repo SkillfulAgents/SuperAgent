@@ -21,7 +21,7 @@ import {
   useTypewriterPlaceholder,
   DEFAULT_AGENT_PROMPT_EXAMPLES,
 } from '@renderer/hooks/use-typewriter-placeholder'
-import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
+import { UNTITLED_AGENT_NAME } from '@renderer/lib/untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useDraftsStore } from '@renderer/context/drafts-context'
 import { useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
@@ -33,8 +33,12 @@ import {
 } from '@renderer/components/messages/composer-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
+import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
+import { DREAM_SETUP_PROMPT } from '@shared/lib/skillset-provider/dream-skill'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
-import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiAgent, ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { CreateAgentSurface } from '@renderer/router/search-schemas'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 
 /**
  * Ceiling, not a delay: the offer resolves the instant the discoverable list
@@ -78,15 +82,48 @@ export interface CreateAgentFormProps {
    * to.
    */
   onNavigateAway?: () => Promise<void> | void
-  /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
-  onAgentCreated?: () => Promise<void> | void
+  /**
+   * Fires after an agent is successfully created (via any path), with the
+   * agent's canonical slug. The wizard uses it to finish itself; the create
+   * page to file the agent into the section it was opened from.
+   */
+  onAgentCreated?: (agent: { slug: string }) => Promise<void> | void
+  /**
+   * The button that opened the form, for `agent_created`'s `surface`. Omitted
+   * by the onboarding wizard, which nothing opens.
+   */
+  surface?: CreateAgentSurface
+  dreamSelected?: boolean
+  namedFlow?: boolean
+  sessionRequestId?: string
+  existingAgent?: Pick<ApiAgent, 'slug' | 'displaySlug'>
+  initialPrompt?: string
+  onPromptChange?: (prompt: string) => void
+  initialRuntimeOptions?: RuntimeOptions
+  onRuntimeOptionsChange?: (options: RuntimeOptions) => void
+  /**
+   * Makes the form a step rather than the end: once a prompt is typed,
+   * Cmd+Enter (or the host's own Continue, through `continueRef`) calls this
+   * instead of creating, and the composer has no button of its own. The host
+   * creates later through `submitRef` (the create screen's add-ons step).
+   */
+  onContinue?: (prompt: string, options: RuntimeOptions) => void | Promise<void>
+  /** Filled with the form's continue action, for the host's Continue button (`onContinue`). */
+  continueRef?: React.MutableRefObject<(() => Promise<void>) | null>
+  /**
+   * The template roster under the composer (default on). Off on the
+   * from-scratch page: templates have a page of their own there.
+   */
+  showTemplates?: boolean
+  /** Filled with the form's create action, for a host that defers it (`onContinue`). */
+  submitRef?: React.MutableRefObject<(() => Promise<void>) | null>
   /** Form max width in the layout. Defaults to no cap (wrapper decides). */
   className?: string
   /** When true, play the reverse (exit) animation on the same items. */
   exiting?: boolean
 }
 
-export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, dreamSelected, namedFlow, existingAgent, sessionRequestId, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -162,9 +199,14 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
     () => (handoffModel ? findCatalogModel(handoffModel, catalog)?.id : undefined),
     [handoffModel, catalog],
   )
-  // No agent exists yet to supply a per-agent override. The hook falls back
-  // to the app-wide selection, then the active provider's catalog default.
-  const composerOptions = useComposerOptions({ initial: { model: handoffSeedModel } })
+  // The parent keeps a copy for the next mount. Feeding that copy back into
+  // this picker would replace its seed while connections or signup data load.
+  const [restoredOptions] = useState(initialRuntimeOptions)
+  const composerOptions = useComposerOptions({ initial: { ...restoredOptions, model: restoredOptions?.model ?? handoffSeedModel } })
+  const { model, effort, speed, llmProviderId } = composerOptions.toRuntimeOptions()
+  useEffect(() => {
+    onRuntimeOptionsChange?.({ model, effort, speed, llmProviderId })
+  }, [onRuntimeOptionsChange, model, effort, speed, llmProviderId])
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)
@@ -215,6 +257,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
       await discardWarmAgent()
       track('agent_created', {
         source,
+        ...(surface ? { surface } : {}),
         num_skills_added_at_creation: 0,
         has_template_prompt: Boolean(agent.templatePrompt),
       })
@@ -227,13 +270,15 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
         openAgent: () => { void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } }) },
         startOnboardingSession,
       })
-      await onAgentCreated?.()
+      await onAgentCreated?.({ slug: agent.slug })
     },
-    [discardWarmAgent, track, draftsStore, navigate, startOnboardingSession, onAgentCreated],
+    [discardWarmAgent, track, surface, draftsStore, navigate, startOnboardingSession, onAgentCreated],
   )
 
   const composer = useMessageComposer({
-    agentSlug: '',
+    agentSlug: existingAgent?.slug ?? '',
+    initialMessage: initialPrompt,
+    messageSuffix: dreamSelected ? DREAM_SETUP_PROMPT : undefined,
     onVoiceTranscript: forfeitHandoffTemplate,
     // No agent workspace exists yet, so this host does not offer attachments.
     // These throw if a caller still reaches them.
@@ -254,12 +299,14 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
         // retrying creates a duplicate agent and session.
         const { newAgent, session } = await (async () => {
           try {
-            const warmSlug = await awaitWarmStartRef.current()
-            const newAgent = await createAgentForPrompt(content, warmSlug)
+            if (namedFlow && !existingAgent) throw new Error('Your agent is still being saved.')
+            const warmSlug = namedFlow ? null : await awaitWarmStartRef.current()
+            const newAgent = existingAgent ?? await createAgentForPrompt(content, warmSlug)
             if (warmSlug) warmConsumedRef.current = true
             const session = await createSession.mutateAsync({
               agentSlug: newAgent.slug,
               message: content,
+              ...(existingAgent && { requestId: sessionRequestId }),
               ...composerOptions.toRuntimeOptions(),
               // An untouched model is omitted from the runtime options, but a brand
               // new agent has no stored default for the server to resolve against —
@@ -268,8 +315,9 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
             })
             return { newAgent, session }
           } catch (error) {
-            console.error('Failed to create agent:', error)
-            toast.error('Failed to create agent', {
+            const title = existingAgent ? 'Failed to start session' : 'Failed to create agent'
+            console.error(title, error)
+            toast.error(title, {
               description: error instanceof Error ? error.message : 'Please try again.',
             })
             // Rethrow so useMessageComposer keeps the typed prompt for a genuine
@@ -278,15 +326,13 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           }
         })()
 
-        seedPendingSessionMessage(
-          session.id,
-          content,
-          session.initialMessageUuid,
-        )
-        track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
+        if (!session.replayed) {
+          seedPendingSessionMessage(session.id, content, session.initialMessageUuid)
+        }
+        if (!existingAgent) track('agent_created', { source: 'new', ...(surface ? { surface } : {}), num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
         try {
-          await onAgentCreated?.()
+          await onAgentCreated?.({ slug: newAgent.slug })
         } catch (error) {
           console.error('Agent created, but failed to finish setup:', error)
           toast.error('Agent created, but setup could not be completed', {
@@ -296,13 +342,15 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgentForPrompt, createSession, navigate, track, onAgentCreated, composerOptions]),
+    }, [createAgentForPrompt, namedFlow, existingAgent, sessionRequestId, createSession, navigate, track, surface, onAgentCreated, composerOptions]),
   })
+
+  useEffect(() => { onPromptChange?.(composer.message) }, [composer.message, onPromptChange])
 
   const { awaitWarmStart, noteProgrammaticChange } = useWarmStartOnType({
     agentSlug: null,
     message: composer.message,
-    enabled: warmStartEnabled,
+    enabled: !namedFlow && warmStartEnabled,
     ensureAgent: ensureWarmAgent,
   })
   useEffect(() => {
@@ -396,11 +444,36 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
     [forfeitHandoffTemplate],
   )
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault()
-      void composer.handleSubmit(e)
+  // As a step (`onContinue`): move on once there is a prompt to create from.
+  // A dictation still running is finished first, as a submit would.
+  const handleContinue = async () => {
+    let text = composer.message
+    if (composer.voiceInput.isRecording || composer.voiceInput.isConnecting) {
+      const spoken = await composer.voiceInput.stopRecording()
+      if (spoken !== undefined) {
+        composer.setMessage(spoken)
+        text = spoken
+      }
     }
+    if (!text.trim()) {
+      textareaRef.current?.focus()
+      return
+    }
+    await onContinue?.(text, composerOptions.toRuntimeOptions())
+  }
+  const handleSubmitOrContinue = (e: Pick<React.FormEvent, 'preventDefault'>) => {
+    e.preventDefault()
+    if (onContinue) void handleContinue()
+    else void composer.handleSubmit(e)
+  }
+  // The deferred continue and create, for the host's own buttons.
+  useEffect(() => {
+    if (continueRef) continueRef.current = handleContinue
+    if (submitRef) submitRef.current = () => composer.handleSubmit({ preventDefault() {} })
+  })
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmitOrContinue(e)
   }
 
   const isDisabled = isSubmitting
@@ -446,10 +519,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
 
       <form
         ref={composerBlockRef}
-        onSubmit={(e) => {
-          e.preventDefault()
-          void composer.handleSubmit(e)
-        }}
+        onSubmit={handleSubmitOrContinue}
         // The -glass reveal variant: the plain item's filter/will-change
         // would make this a backdrop root and blind the composer's
         // backdrop-blur to the roster behind it (see globals.css). z-10: the
@@ -489,22 +559,25 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           rightActions={(
             <>
               <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
-              <Button
-                type="submit"
-                size="sm"
-                // The composer's 28px row, 6px off the plain mic (chat-composer-box.tsx).
-                className="ml-1.5 h-7"
-                data-testid="create-agent-submit"
-              >
-                {isDisabled ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  'Create Agent'
-                )}
-              </Button>
+              {/* As a step, the host's bottom row carries Continue. */}
+              {!onContinue && (
+                <Button
+                  type="submit"
+                  size="sm"
+                  // The composer's 28px row, 6px off the plain mic (chat-composer-box.tsx).
+                  className="ml-1.5 h-7"
+                  data-testid="create-agent-submit"
+                >
+                  {isDisabled ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    'Create Agent'
+                  )}
+                </Button>
+              )}
             </>
           )}
           footer={(
@@ -521,6 +594,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           without shifting the flex layout. The 2px side padding gives hovered
           cards' lift shadow room inside the scroller instead of clipping at
           its edge. */}
+      {showTemplates ? (
       <div {...itemProps(160, 70, 'relative z-0 min-h-0 flex-[5_1_0%]')}>
         <div
           // Scrollbar hidden: it would run up behind the glass composer and
@@ -546,7 +620,13 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           />
         </div>
       </div>
+      ) : (
+        // No roster to make room for: the block sits in the middle, level
+        // with the other from-scratch steps (CREATE_STEP_BOTTOM_SPACER).
+        <div className="min-h-0" style={CREATE_STEP_BOTTOM_SPACER} aria-hidden />
+      )}
 
+      {composer.chipDialog}
       <TemplateInstallDialog
         template={templateToInstall}
         onClose={() => setTemplateToInstall(null)}

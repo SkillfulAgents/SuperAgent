@@ -20,10 +20,10 @@ import { agentAvatarState, getAgentActivityStatus } from '@shared/lib/types/agen
 import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { useOpenCreateAgent } from '@renderer/hooks/use-open-create-agent'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { useIsDark } from '@renderer/hooks/use-theme'
 import { AGENT_HALFTONE_GRID, AVATAR_INK_OPACITY, HALFTONE_STATE, avatarHalftoneInk, hashSlug } from '@renderer/components/agents/agent-halftone'
-import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
 import { AppLink } from '@renderer/components/ui/app-link'
@@ -830,15 +830,12 @@ function HomeArrangeMenu({
 const SKELETON_PATTERN: WidgetSizeKey[] = ['W', 'S', 'S', 'S', 'S', 'W', 'S', 'W', 'S', 'S', 'W', 'S']
 
 function HomeEmptySkeletonBoard({
-  onCreate,
-  isCreating,
   ctaRef,
 }: {
-  onCreate: () => void
-  isCreating: boolean
   /** The live cell, exposed so the bloom can centre itself on it. */
   ctaRef?: React.Ref<HTMLDivElement>
 }) {
+  const openCreateAgent = useOpenCreateAgent()
   return (
     <div
       data-testid="home-empty-skeleton"
@@ -857,11 +854,9 @@ function HomeEmptySkeletonBoard({
         <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-item bg-muted/30" />
         {/* Backgrounded like the ghost title pills it stands in for; hover
             firms it up so it still declares itself interactive. */}
-        <Button
+        <Button onClick={() => openCreateAgent({ surface: 'home' })}
           variant="secondary"
           className="absolute bottom-3 left-4 bg-muted/40 hover:bg-muted/40 text-foreground"
-          onClick={onCreate}
-          disabled={isCreating}
           data-testid="home-empty-create-button"
         >
           <Sparkle className="h-4 w-4 mr-1" />
@@ -886,6 +881,7 @@ function HomeEmptySkeletonBoard({
 }
 
 export function HomePage() {
+  const openCreateAgent = useOpenCreateAgent()
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useListedAgents()
   const { data: userSettings } = useUserSettings()
@@ -1122,7 +1118,6 @@ export function HomePage() {
     commitHiddenApps(next)
   }
 
-  const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
   // The empty state's live card — the bloom anchors to it.
   const emptyCtaRef = useRef<HTMLDivElement>(null)
   const { state: sidebarState } = useSidebar()
@@ -1276,8 +1271,8 @@ export function HomePage() {
             >
               <Waypoints className="h-8 w-8" />
               <p className="text-sm">No agents yet — the graph lights up once you create one.</p>
-              <Button size="sm" onClick={() => { void createUntitledAgent({ surface: 'home' }) }} disabled={isCreatingAgent}>
-                {isCreatingAgent ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+              <Button onClick={() => openCreateAgent({ surface: 'home' })} size="sm">
+                <Plus className="h-4 w-4 mr-1" />
                 New Agent
               </Button>
             </div>
@@ -1311,13 +1306,8 @@ export function HomePage() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => { void createUntitledAgent({ surface: 'home' }) }}
-                    className="app-no-drag"
-                    disabled={isCreatingAgent}
-                  >
-                    {isCreatingAgent ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+                  <Button onClick={() => openCreateAgent({ surface: 'home' })} size="sm" className="app-no-drag">
+                    <Plus className="h-4 w-4 mr-1" />
                     New Agent
                   </Button>
                   <HomeArrangeMenu
@@ -1455,8 +1445,6 @@ export function HomePage() {
                 <HomeEmptyClouds anchorTo={emptyCtaRef} fill={0.625} masked={false} />
                 <HomeEmptySkeletonBoard
                   ctaRef={emptyCtaRef}
-                  onCreate={() => { void createUntitledAgent({ surface: 'home' }) }}
-                  isCreating={isCreatingAgent}
                 />
               </div>
             )}

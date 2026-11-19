@@ -202,7 +202,7 @@ test.describe('voice mode', () => {
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
     // A new agent with no sessions yet: the only home that shows the card.
-    await agentPage.clickCreateAgent()
+    await agentPage.openEmptyAgent()
     await expect(page.getByTestId('agent-breadcrumb')).toHaveText('Untitled', { timeout: 10_000 })
 
     await page.getByRole('button', { name: /Brainstorm with Voice/ }).click()

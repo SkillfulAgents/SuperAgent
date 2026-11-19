@@ -1,3 +1,4 @@
+import { agentPoliciesQuery, effectiveAgentPolicy } from '@renderer/lib/agent-policies'
 import { useState, type ReactNode } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { AgentRole } from '@shared/lib/types/agent'
@@ -22,7 +23,6 @@ import { agentForSlug } from './mention-chip'
 
 type Decision = 'allow' | 'review' | 'block'
 type Operation = 'read' | 'invoke'
-interface Policy { operation: 'list' | Operation; targetAgentSlug: string | null; decision: Decision }
 
 /** What the agent may do with the agent it was told about. */
 type Reach = 'both' | 'invoke' | 'read' | 'ask'
@@ -42,13 +42,6 @@ const REACH_OPERATIONS: Record<Exclude<Reach, 'ask'>, Operation[]> = {
 function reachPolicies(reach: Reach, blocked: Operation[]): Array<{ operation: Operation; decision: Decision }> {
   if (reach === 'ask') return blocked.map((operation) => ({ operation, decision: 'review' }))
   return REACH_OPERATIONS[reach].map((operation) => ({ operation, decision: 'allow' }))
-}
-
-/** A target-specific policy, else the caller's global one, else review (x-agent-policy-service evaluate()). */
-function effective(policies: Policy[], operation: Operation, target: string): Decision {
-  return policies.find((p) => p.operation === operation && p.targetAgentSlug === target)?.decision
-    ?? policies.find((p) => p.operation === operation && p.targetAgentSlug === null)?.decision
-    ?? 'review'
 }
 
 const names = (chips: Chip[]) => chips.map((chip) => chip.label).join(', ')
@@ -85,19 +78,12 @@ export async function offerReach(tagged: Chip[], { agentSlug, context, silent, m
   // A silent message runs no turn, so there is nothing to reach yet.
   const agents = tagged.filter((chip) => agentForSlug(context.agents, chip.referent))
   if (silent || !manages || agents.length === 0) return context
-  const { policies } = await queryClient.fetchQuery<{ policies: Policy[] }>({
-    queryKey: ['x-agent-policies', agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`)
-      if (!res.ok) throw new Error('Failed to fetch policies')
-      return res.json()
-    },
-  })
+  const { policies } = await queryClient.fetchQuery(agentPoliciesQuery(agentSlug))
   const unreachable = agents.filter((chip) =>
-    effective(policies, 'read', chip.referent) !== 'allow' && effective(policies, 'invoke', chip.referent) !== 'allow')
+    effectiveAgentPolicy(policies, 'read', chip.referent) !== 'allow' && effectiveAgentPolicy(policies, 'invoke', chip.referent) !== 'allow')
   if (unreachable.length === 0) return context
   const blocked = new Map(unreachable.map((chip) => [chip.referent,
-    (['read', 'invoke'] as const).filter((operation) => effective(policies, operation, chip.referent) === 'block')]))
+    (['read', 'invoke'] as const).filter((operation) => effectiveAgentPolicy(policies, operation, chip.referent) === 'block')]))
   const agentName = agentForSlug(context.agents, agentSlug)?.name
   const allowed = await ask((done) => (
     <ReachDialog agentSlug={agentSlug} agentName={agentName} agents={unreachable} blocked={blocked} onDone={done} />

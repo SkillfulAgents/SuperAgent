@@ -10,9 +10,13 @@
  * the app runs is not picked up. A row placed elsewhere is the only record of
  * its workspace handle.
  */
+import { randomUUID } from 'node:crypto'
+import { batch } from '@shared/lib/db/batch'
+import { agentCreationReceiptSchema } from '@shared/lib/app-records/record-schemas'
+import { serializeRecordValue } from '@shared/lib/app-records/records'
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl, agents, type AgentRow } from '@shared/lib/db/schema'
+import { agentAcl, agents, appRecords, type AgentRow } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { randomAgentAvatar } from './agent-avatar'
 import { AGENT_ID_LENGTH, directoryExists, getAgentDir } from '@shared/lib/utils/file-storage'
@@ -144,9 +148,9 @@ export function createAgentCatalog(): AgentCatalog {
     },
     exists: async (slug) => (await rowFor(slug)) !== undefined,
     mint,
-    insert: async ({ slug, name, description, createdAt }) => {
-      const avatar = randomAgentAvatar()
-      await db.insert(agents).values({
+    insert: async ({ slug, name, description, avatar: chosen, createdAt }, request) => {
+      const avatar = chosen ? agentAvatarSchema.parse(chosen) : randomAgentAvatar()
+      const insertAgent = db.insert(agents).values({
         slug,
         name,
         avatarColor: avatar.color,
@@ -155,7 +159,21 @@ export function createAgentCatalog(): AgentCatalog {
         createdAt,
         runtime: LOCAL_RUNTIME,
         workspaceHandle: null,
-      }).run()
+      })
+      if (request) {
+        const { receiptKey, ownerId } = request
+        await batch([
+          db.insert(appRecords).values({
+            key: receiptKey,
+            value: serializeRecordValue(receiptKey, { slug, ready: false }, agentCreationReceiptSchema),
+            revision: 1, updatedAt: createdAt,
+          }),
+          insertAgent,
+          ...(ownerId ? [db.insert(agentAcl).values({ id: randomUUID(), userId: ownerId, agentSlug: slug, role: 'owner', createdAt })] : []),
+        ])
+      } else {
+        await insertAgent.run()
+      }
       return toRecord((await rowFor(slug))!)
     },
     update: async (slug, changes: AgentIdentityChanges) => {

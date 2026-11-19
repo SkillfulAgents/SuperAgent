@@ -264,6 +264,10 @@ A manifest moves one way through three states:
 - Files `toFile` wrote that are older than an hour go too, unless the upload is `finalizing`. So does anything left in the layout from before manifests, by age alone.
 
 With `LocalAppState` the manifests live in memory, so a restart forgets uploads in progress, and their bytes are swept later. A client that goes on sending gets 409 for its next chunk and sends the file again.
+## Agent creation
+
+The New Agent page saves a request ID before submitting the confirmed name and avatar. The strong `flow:agent-creation` namespace scopes that ID to the current user for 24 hours. An atomic claim lets only one request create the agent and grant ownership. A concurrent request receives HTTP 202 while creation is in progress. Once the agent is ready, a replay checks the user's current access and returns the same agent.
+
 ## Team directory listings
 
 Each connected team directory's people (`src/shared/lib/team-directory/cache.ts`; [docs/team-directory.md](team-directory.md#the-cache) has the rules). The eventual namespace `cache:team-directory` is keyed by directory id and credentials revision, so reconnecting starts afresh. It is a plain, non-atomic cache: an entry is `{ listedAt, attemptedAt, users }`, fresh for 10 minutes and kept 6 hours after its last write. A stale entry is answered at once while a new listing runs in the background, and a failed listing keeps the previous people and only moves `attemptedAt`, at the entry's own expiry. Two processes may list the same stale directory at once; the later write wins. The listing in progress is a Promise in a process-local map, so concurrent searches in one process share it.

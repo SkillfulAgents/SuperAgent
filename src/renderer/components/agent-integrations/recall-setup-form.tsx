@@ -15,7 +15,7 @@ import type { IntegrationSetupProps } from './setup-types'
  * edited) and standing instructions for every meeting it joins. The form is
  * offered only where the deployment can host meeting bots (see provider availability).
  */
-export function RecallSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
+export function RecallSetupForm({ agentSlug, onClose, onIntegrationCreated }: IntegrationSetupProps) {
   const formId = useId()
   const { data: agent } = useAgent(agentSlug)
   // null until the person types: the field follows the agent's name as it loads.
@@ -56,7 +56,8 @@ export function RecallSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
       try {
         const result = await create.mutateAsync({ agentSlug, provider: 'recall', name: parsed.data.botName ?? agent?.name, config: parsed.data })
         onClose()
-        void navigate({ to: '/agents/$slug/chat/$integrationId', params: { slug: agentSlug, integrationId: result.id } })
+        if (onIntegrationCreated) onIntegrationCreated(result.id)
+        else void navigate({ to: '/agents/$slug/chat/$integrationId', params: { slug: agentSlug, integrationId: result.id } })
       } catch (err) { setError(err instanceof Error ? err.message : 'Could not set up meetings') }
     }}>
       <IntegrationSetupField id="recall-bot-name" label="Name in calls" placeholder="Agent" value={botName} onChange={event => setTypedName(event.target.value)} maxLength={100} disabled={create.isPending} />

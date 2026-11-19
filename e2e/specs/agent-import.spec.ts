@@ -48,12 +48,9 @@ test.describe('Agent Import Onboarding', () => {
       { name: agentName, withOnboardingSkill: true },
     )
 
-    // Land on a fresh Untitled agent's AgentHome — this is where the import card lives.
+    // Import from the identity page opens the package dialog on the templates page.
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-
-    // Open the Import dialog via the AgentCreationAids card.
-    await page.getByRole('button', { name: 'Import an Agent — Import' }).click()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 
@@ -82,9 +79,7 @@ test.describe('Agent Import Onboarding', () => {
     )
 
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-
-    await page.getByRole('button', { name: 'Import an Agent — Import' }).click()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 
@@ -112,9 +107,7 @@ test.describe('Agent Import Onboarding', () => {
     )
 
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-
-    await page.getByRole('button', { name: 'Import an Agent — Import' }).click()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 
@@ -122,9 +115,9 @@ test.describe('Agent Import Onboarding', () => {
     await dialog.locator('button[type="submit"]').click()
     await expect(dialog).not.toBeVisible({ timeout: 15000 })
 
-    // No onboarding skill → the imported agent's AgentHome stays put. The
-    // breadcrumb updates to the imported agent's name and the home composer
-    // (not a session message list) is what's visible.
+    // No onboarding skill → the create page hands off to the imported agent's
+    // AgentHome: its breadcrumb and the home composer (not a session message
+    // list) are what's visible.
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName, { timeout: 15000 })
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(sessionPage.getMessageList()).not.toBeVisible()
@@ -140,9 +133,7 @@ test.describe('Agent Import Onboarding', () => {
     )
 
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-
-    await page.getByRole('button', { name: 'Import an Agent — Import' }).click()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 

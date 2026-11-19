@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen } from '@testing-library/react'
+import { DREAM_SETUP_PROMPT } from '@shared/lib/skillset-provider/dream-skill'
+import { toast } from 'sonner'
 import { CreateAgentForm } from './create-agent-form'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import {
@@ -30,6 +32,7 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@renderer/hooks/use-agents', () => ({
   useCreateAgent: () => mockCreateAgent,
   useUpdateAgent: () => mockUpdateAgent,
+  useUpdateAgentAvatar: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeleteAgent: () => mockDeleteAgent,
 }))
 
@@ -91,6 +94,7 @@ vi.mock('@renderer/hooks/use-typewriter-placeholder', () => ({
 
 const mockComposer = {
   message: '',
+  chipDialog: <div role="dialog" aria-label="Confirm mention" />,
   setMessage: vi.fn(),
   attachments: [],
   removeAttachment: vi.fn(),
@@ -103,6 +107,7 @@ const mockComposer = {
 }
 
 let capturedComposerOptions: {
+  messageSuffix?: string
   keepMessageUntilComplete?: boolean
   submitDisabled?: boolean
   onSubmit: (content: string) => Promise<void>
@@ -184,6 +189,29 @@ describe('CreateAgentForm', () => {
     expect(mockNavigate).not.toHaveBeenCalled()
   })
 
+  it('appends Dream setup to the wizard job and shows that same text in the session', async () => {
+    const agent = { slug: 'scout', displaySlug: 'scout-id' }
+    const job = 'Review our customer feedback.'
+    const initialMessage = job + '\n\n' + DREAM_SETUP_PROMPT
+    renderWithProviders(<CreateAgentForm dreamSelected namedFlow existingAgent={agent} sessionRequestId="saved-request" />)
+    expect(capturedComposerOptions.messageSuffix).toBe(DREAM_SETUP_PROMPT)
+    await act(async () => { await capturedComposerOptions.onSubmit(initialMessage) })
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      agentSlug: agent.slug, message: initialMessage, requestId: 'saved-request',
+    }))
+    expect(peekPendingSessionSeed('session-123')).toMatchObject({ text: initialMessage })
+  })
+
+  it('mounts the confirmation dialog and reports a failed first session on an existing agent', async () => {
+    const error = vi.spyOn(toast, 'error')
+    mockCreateSession.mutateAsync.mockRejectedValueOnce(new Error('Container offline'))
+    renderWithProviders(<CreateAgentForm namedFlow existingAgent={{ slug: 'scout', displaySlug: 'scout' }} />)
+    expect(screen.getByRole('dialog', { name: 'Confirm mention' })).toBeInTheDocument()
+    await act(async () => { await expect(capturedComposerOptions.onSubmit('A job')).rejects.toThrow('Container offline') })
+    expect(error).toHaveBeenCalledWith('Failed to start session', { description: 'Container offline' })
+    error.mockRestore()
+  })
+
   it('does not make a created session retryable when wizard finalization fails', async () => {
     const onAgentCreated = vi.fn().mockRejectedValue(new Error('settings failed'))
     renderWithProviders(<CreateAgentForm onAgentCreated={onAgentCreated} />)
@@ -195,6 +223,39 @@ describe('CreateAgentForm', () => {
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
     expect(peekPendingSessionSeed('session-123')).toBeDefined()
     expect(mockNavigate).toHaveBeenCalled()
+  })
+
+  describe('as a step that defers creating (onContinue)', () => {
+    afterEach(() => {
+      mockComposer.message = ''
+    })
+
+    it('leaves its button to the host and moves on without creating once a prompt is typed', async () => {
+      mockComposer.message = 'Watch our support inbox'
+      const onContinue = vi.fn()
+      const continueRef: { current: (() => Promise<void>) | null } = { current: null }
+      renderWithProviders(<CreateAgentForm onContinue={onContinue} continueRef={continueRef} />)
+
+      expect(screen.queryByTestId('create-agent-submit')).toBeNull()
+      await act(async () => { await continueRef.current?.() })
+      expect(onContinue).toHaveBeenCalled()
+      expect(mockComposer.handleSubmit).not.toHaveBeenCalled()
+    })
+
+    it('does not move on with an empty prompt', async () => {
+      const onContinue = vi.fn()
+      const continueRef: { current: (() => Promise<void>) | null } = { current: null }
+      renderWithProviders(<CreateAgentForm onContinue={onContinue} continueRef={continueRef} />)
+      await act(async () => { await continueRef.current?.() })
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('hands the host its create action', async () => {
+      const submitRef: { current: (() => Promise<void>) | null } = { current: null }
+      renderWithProviders(<CreateAgentForm onContinue={vi.fn()} submitRef={submitRef} />)
+      await act(async () => { await submitRef.current?.() })
+      expect(mockComposer.handleSubmit).toHaveBeenCalled()
+    })
   })
 
   it('does not offer file attachments', () => {

@@ -327,18 +327,41 @@ test.describe('agent folders in the left nav', () => {
       response.url().endsWith('/api/agents') && response.request().method() === 'POST' && response.status() === 201,
     )
     await page.getByTestId(`new-agent-in-folder-${id}`).click()
+    await page.getByTestId('agent-identity-name').fill('Section teammate')
+    await page.getByTestId('agent-identity-continue').click()
     const agent = await (await created).json() as { slug: string }
     try {
       await expect.poll(() => assignmentStarted).toBe(true)
-      expect(new URL(page.url()).pathname).toBe('/')
+      expect(new URL(page.url()).pathname).toBe('/new-agent')
     } finally {
       release()
     }
+    await page.getByTestId('create-agent-skip').click()
     await expect(page).toHaveURL(/\/agents\//)
     await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
     await expect(body.locator('[data-avatar-orb="ghost"]')).toHaveCount(0)
     await page.reload()
     await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
+  })
+
+  test('files a template selected via Show more into the opening section', async ({ page, request }, testInfo) => {
+    await createAgent(request, uniqueName(testInfo, 'Section Anchor'))
+    const { agents } = await (await request.get('/api/agents/discoverable-agents')).json()
+    const source = agents.find((item: { name: string }) => item.name === 'E2E Onboarding Template')
+    const previews = Array.from({ length: 6 }, (_, i) => ({ ...source, name: `Preview ${i}`, path: `agents/preview-${i}`, category: 'Test' }))
+    await page.route('**/api/agents/discoverable-agents*', route => route.fulfill({
+      json: { agents: [...previews, { ...source, category: 'Test' }] },
+    }))
+    await page.goto('/')
+    const folder = await createFolder(page, uniqueName(testInfo, 'Templates'))
+    const id = await folderIdOf(folder)
+    await page.getByTestId(`new-agent-in-folder-${id}`).click()
+    await page.getByRole('button', { name: 'Browse Templates' }).click()
+    await page.getByTestId('explore-see-more').last().click()
+    const installed = page.waitForResponse(r => r.url().endsWith('/api/agents/install-from-skillset') && r.status() === 201)
+    await page.getByRole('button', { name: 'E2E Onboarding Template — install' }).last().click()
+    const { slug } = await (await installed).json()
+    await expect.poll(async () => (await (await request.get('/api/user-settings')).json()).agentFolderAssignments?.[slug]).toBe(id)
   })
 
   test('opens the section menu with the keyboard and cancels a rename through its actions', async ({

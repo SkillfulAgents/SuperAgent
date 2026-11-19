@@ -115,13 +115,7 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
 }))
 
 
-vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
-  useCreateUntitledAgent: () => ({
-    createUntitledAgent: vi.fn(),
-    isPending: false,
-  }),
-  UNTITLED_AGENT_NAME: 'Untitled',
-}))
+vi.mock('@renderer/hooks/use-open-create-agent', () => ({ useOpenCreateAgent: () => vi.fn() }))
 
 vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarTrigger: () => <button>sidebar</button>,

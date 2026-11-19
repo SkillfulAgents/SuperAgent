@@ -301,7 +301,8 @@ vi.mock('@shared/lib/skillset-provider', () => ({
   getSkillsetProvider: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/runtime-options', () => ({
+vi.mock('@shared/lib/container/runtime-options', async (original) => ({
+  ...await original<typeof import('@shared/lib/container/runtime-options')>(),
   parseRuntimeOptions: vi.fn(),
 }))
 

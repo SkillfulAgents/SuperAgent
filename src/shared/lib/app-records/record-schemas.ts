@@ -46,3 +46,9 @@ export const platformClientInstanceIdRecordSchema = z.string().trim().min(1)
 
 /** The legacy `host-container-tokens.json` and Browserbase context files: one string per key. */
 export const legacyStringMapSchema = z.record(z.string(), z.string())
+
+/** The catalog row and its request receipt are inserted together. A replay can finish its workspace. */
+export const agentCreationReceiptSchema = z.object({ slug: z.string().min(1), ready: z.boolean() })
+export function agentCreationReceiptKey(userId: string, requestId: string) {
+  return `agent-creation:${encodeURIComponent(userId)}:${requestId}`
+}

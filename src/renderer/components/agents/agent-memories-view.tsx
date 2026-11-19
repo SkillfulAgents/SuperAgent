@@ -1,3 +1,5 @@
+import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { Switch } from '@renderer/components/ui/switch'
 import { useState } from 'react'
 import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { Brain, ChevronRight, FileText, Loader2, Pencil, RefreshCw } from 'lucide-react'
@@ -16,6 +18,8 @@ export function AgentMemoriesView({ agentSlug }: { agentSlug: string }) {
   const navigate = useNavigate()
   const { isAuthMode, rolesReady, canAdminAgent } = useUser()
   const canManage = !isAuthMode || (rolesReady && canAdminAgent(agentSlug))
+  const preferences = useAgentPreferences(canManage ? agentSlug : '')
+  const updatePreferences = useUpdateAgentPreferences(agentSlug)
   const memories = useAgentMemories(canManage ? agentSlug : null)
   const [selected, setSelected] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -38,6 +42,12 @@ export function AgentMemoriesView({ agentSlug }: { agentSlug: string }) {
           <RefreshCw className="mr-2 h-4 w-4" />Refresh
         </Button>
       )} />
+      {canManage && <label className="mb-5 flex items-center justify-between gap-4 rounded-card border px-4 py-3">
+        <span className="text-sm">Use Claude auto memory in new sessions</span>
+        <Switch checked={preferences.data?.autoMemoryEnabled !== false}
+          disabled={!preferences.data || updatePreferences.isPending}
+          onCheckedChange={autoMemoryEnabled => updatePreferences.mutate({ autoMemoryEnabled })} />
+      </label>}
       {!canManage ? (
         <p className="text-sm text-muted-foreground">{isAuthMode && !rolesReady ? 'Loading permissions…' : 'Only agent admins can view and edit memories.'}</p>
       ) : memories.isLoading ? (

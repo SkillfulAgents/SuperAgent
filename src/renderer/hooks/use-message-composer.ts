@@ -39,6 +39,9 @@ interface UseMessageComposerOptions {
    * unmount and starts from whatever is already there.
    */
   draftKey?: string
+  initialMessage?: string
+  /** Appended only to the outgoing text, before mention and dictation metadata. */
+  messageSuffix?: string
   /** Fires on composer-mic transcript updates (before message state changes). */
   onVoiceTranscript?: () => void
   /**
@@ -77,7 +80,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       draftsStore.update(previous, { text: undefined, attachments: undefined })
     }
   }, [draftKey, draftsStore])
-  const [message, setMessage] = useState(draft ?? '')
+  const [message, setMessage] = useState(draft ?? options.initialMessage ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
   const chips = useComposerChips(agentSlug)
   const chipContext = chips.context
@@ -383,7 +386,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     const editableContent = content
     const dictated = dictatedRef.current
-    const agentText = chipsToAgentText(content, sendContext, { silent })
+    const text = options.messageSuffix ? `${content}\n\n${options.messageSuffix}` : content
+    const agentText = chipsToAgentText(text, sendContext, { silent })
     const submittedContent = dictated ? appendDictationNote(agentText) : agentText
 
     try {

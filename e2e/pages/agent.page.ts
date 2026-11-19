@@ -1,5 +1,6 @@
 import { slideToConfirm } from '../helpers/slide-to-confirm'
 import { Page, expect } from '@playwright/test'
+import { createAgent as createAgentViaApi, gotoAgentHome, type TestAgent } from '../helpers/agents'
 
 export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
@@ -13,48 +14,60 @@ type CreateAgentOptions = {
 export class AgentPage {
   constructor(private page: Page) {}
 
-  /**
-   * Click the "Create Agent" button in the sidebar
-   */
   async clickCreateAgent() {
-    await this.page.locator('[data-testid="new-agent-button"]').click()
+    await this.page.getByTestId('new-agent-button').click()
+    await expect(this.page.locator('[data-testid="new-agent-page"]')).toBeVisible({ timeout: 10000 })
+    await expect(this.page.locator('[data-testid="agent-identity-name"]')).toBeVisible()
   }
 
   /**
-   * Click "New Agent" — this immediately creates an Untitled agent and lands on
-   * its AgentHome. Type the prompt, submit via the Create Agent button, then
-   * click the agent breadcrumb so the caller lands on agent-home (where
-   * agent-settings-button lives) rather than the first session view.
+   * On the create page's name step: name the teammate (keeping the drawn
+   * avatar) and continue to its job composer.
+   */
+  async nameNewAgent(name: string) {
+    await this.page.locator('[data-testid="agent-identity-name"]').fill(name)
+    await this.page.locator('[data-testid="agent-identity-continue"]').click()
+    await expect(this.page.locator('[data-testid="create-agent-prompt"]')).toBeVisible()
+  }
+
+  /**
+   * Save a named agent, give it a job, and start its first session. Return
+   * to the agent's home so callers can open its settings or sidebar row.
    */
   async createAgent(prompt: string, options: CreateAgentOptions = {}) {
     const { waitForSidebarName = true } = options
 
     await this.clickCreateAgent()
+    await this.nameNewAgent(prompt)
 
-    // Wait until we've actually landed on the fresh Untitled agent's AgentHome
-    // (the breadcrumb shows "Untitled") before filling — otherwise fills can
-    // race the A→B remount and end up on the outgoing agent's textbox.
-    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-    // The input can land seconds after the breadcrumb on a slow runner: same budget.
-    await expect(this.page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 10000 })
+    await this.page.locator('[data-testid="create-agent-prompt"]').fill(prompt)
+    await this.page.locator('[data-testid="create-agent-continue"]').click()
+    await expect(this.page.locator('[data-testid="agent-addons-step"]')).toBeVisible()
+    await this.page.locator('[data-testid="create-agent-finish"]').click()
 
-    await this.page.locator('[data-testid="home-message-input"]').fill(prompt)
-    await this.page.locator('[data-testid="home-send-button"]').click()
-
-    // First submit creates a session and navigates to it. Wait for the session
-    // message list so we know navigation landed, then go back to agent-home.
+    // Wait for the session before following its breadcrumb back home.
     await expect(this.page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
     await this.page.locator('[data-testid="agent-breadcrumb"]').click()
     await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
-    // The agent is created as "Untitled" then renamed async after session
-    // creation. Downstream tests that re-select agents by name need the
-    // sidebar row to be indexed, but session-only tests can avoid coupling to
-    // the sidebar refresh.
+    // Downstream tests that re-select agents by name need the sidebar row to
+    // be indexed, but session-only tests can avoid coupling to the sidebar
+    // refresh.
     await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(prompt, { timeout: 15000 })
     if (waitForSidebarName) {
       await this.waitForAgentInSidebar(prompt)
     }
+  }
+
+  /**
+   * Land on the home of a fresh agent with no sessions — the empty state with
+   * the creation aids (voice card, import) and the home composer. Made through
+   * the API for callers that exercise the home page independently of creation.
+   */
+  async openEmptyAgent(name = 'Untitled'): Promise<TestAgent> {
+    const agent = await createAgentViaApi(this.page.request, name)
+    await gotoAgentHome(this.page, agent)
+    return agent
   }
 
   private async waitForAgentInSidebar(name: string) {

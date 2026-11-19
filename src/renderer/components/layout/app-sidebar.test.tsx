@@ -76,13 +76,8 @@ function mockResolveAgentId(slug: string | undefined) {
 // running over the mocked router state below.
 vi.mock('@renderer/router/use-route-agent', async (importOriginal) => importOriginal())
 
-const mockCreateUntitledAgent = vi.fn()
-vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
-  useCreateUntitledAgent: () => ({
-    createUntitledAgent: mockCreateUntitledAgent,
-    isPending: false,
-  }),
-}))
+const mockOpenCreateAgent = vi.fn()
+vi.mock('@renderer/hooks/use-open-create-agent', () => ({ useOpenCreateAgent: () => mockOpenCreateAgent }))
 
 const mockUseAgentMembers = vi.fn()
 vi.mock('@renderer/hooks/use-agent-members', () => ({
@@ -623,11 +618,11 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByTestId('home-button')).toHaveAttribute('data-to', '/')
   })
 
-  it('creates an untitled agent when New Agent is clicked', async () => {
-    const user = userEvent.setup()
+  it('opens the creation page from New Agent', async () => {
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('new-agent-button'))
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'nav' })
+    expect(screen.getByTestId('new-agent-button')).toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('new-agent-button'))
+    expect(mockOpenCreateAgent).toHaveBeenCalledWith({ surface: 'nav' })
   })
 
   it('keeps the title bar row in non-Electron mode, minus the traffic-light spacer', () => {
@@ -1659,7 +1654,7 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
   })
 
-  it('creates a new agent filed into the folder whose + was pressed', async () => {
+  it('opens the creation page for the folder whose + was pressed', async () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
@@ -1667,14 +1662,15 @@ describe('AppSidebar — agent folders', () => {
     })
     renderWithProviders(<AppSidebar />)
 
+    expect(screen.getByTestId('new-agent-in-folder-f1')).toBeInTheDocument()
     await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
 
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
+    expect(mockOpenCreateAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
     // Already open: nothing to expand, so no settings write from the sidebar.
     expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
-  it('opens a collapsed folder before creating an agent in it', async () => {
+  it('opens a collapsed folder as a way to make its new agent is picked', async () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
@@ -1689,17 +1685,18 @@ describe('AppSidebar — agent folders', () => {
       { collapsedAgentFolders: [] },
       expect.anything()
     )
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
+    expect(mockOpenCreateAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
     expect(screen.getByTestId('agent-item-test-agent')).toBeVisible()
   })
 
-  it('offers + on the default folder as well, creating an unfiled agent', async () => {
+  it('offers + on the default folder as well, for an unfiled agent', async () => {
     mockUserSettings.mockReturnValue({ agentOrder: ['test-agent', 'other-agent'] })
     renderWithProviders(<AppSidebar />)
 
+    expect(screen.getByTestId('new-agent-in-folder-root')).toBeInTheDocument()
     await userEvent.click(screen.getByTestId('new-agent-in-folder-root'))
 
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'root' })
+    expect(mockOpenCreateAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'root' })
   })
 
   it('defaults the default folder first before anything is arranged', () => {

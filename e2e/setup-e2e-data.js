@@ -111,6 +111,12 @@ fs.writeFileSync(
     version: '1.0.0',
     skills: [
       {
+        name: 'dream',
+        path: 'skills/dream/SKILL.md',
+        description: 'Schedule a recurring review',
+        version: '1.0.0',
+      },
+      {
         name: 'e2e-public-skill',
         path: 'skills/e2e-public-skill/SKILL.md',
         description: 'A skill from the public skillset',
@@ -144,6 +150,10 @@ metadata:
 This skill is seeded from a public provider for end-to-end tests.
 `,
 )
+
+const dreamDir = path.join(PUBLIC_SKILLSET_DIR, 'skills', 'dream')
+fs.mkdirSync(dreamDir, { recursive: true })
+fs.writeFileSync(path.join(dreamDir, 'SKILL.md'), '---\nname: dream\ndescription: Schedule a recurring review\n---\nReview prior work.\n')
 
 const PUBLIC_AGENT_DIR = path.join(PUBLIC_SKILLSET_DIR, 'agents', 'e2e-onboarding-template')
 fs.mkdirSync(path.join(PUBLIC_AGENT_DIR, '.claude', 'skills', 'agent-onboarding'), { recursive: true })

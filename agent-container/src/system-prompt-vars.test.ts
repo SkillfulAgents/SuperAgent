@@ -48,6 +48,20 @@ describe('buildSystemPromptVars', () => {
 })
 
 describe('generateSystemPrompt rendering', () => {
+  it('omits the auto-memory instructions when memory is disabled and keeps the cached prefix identical', () => {
+    process.env.HOST_PLATFORM = 'darwin'
+    vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Notes', path: '/mounts/notes', readOnly: false }])
+    const on = generateSystemPrompt()
+    const off = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, false)
+    const tail = on.slice(on.indexOf('## Other Guidelines'))
+    expect(tail).toMatch(/- Computer use: [^\n]+\n+## Auto Memory\n/)
+    const memory = tail.split('## Auto Memory\n')[1].split('\n## Mounted Drives')[0]
+    expect(memory).toContain('\n### Types of memory\n')
+    expect(memory).not.toMatch(/^#{1,2} /m)
+    expect(off).not.toContain('/projects/-workspace/memory/')
+    expect(off.split('## Other Guidelines')[0]).toBe(on.split('## Other Guidelines')[0])
+  })
+
   it.each(['active', 'auth_required'])('explains agent-owned identities and parent lifecycle (%s)', status => {
     process.env.REMOTE_MCPS = JSON.stringify([{ id: 'integration:id', name: 'agent_integration_id', status,
       proxyUrl: 'http://host/api/mcp-proxy/agent/integration:id', tools: [{ name: 'save_comment' }],

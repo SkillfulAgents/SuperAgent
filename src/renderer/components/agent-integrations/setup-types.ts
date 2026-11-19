@@ -19,6 +19,8 @@ export interface IntegrationSetupProps {
 export interface IntegrationSetupProvider {
   slug: string
   label: string
+  description: string
+  unavailableReason?: string
   managementAccess?: 'user' | 'owner'
   Setup: ComponentType<IntegrationSetupProps>
   Settings?: ComponentType<{ integration: PublicAgentIntegration; canManageAccess?: boolean }>

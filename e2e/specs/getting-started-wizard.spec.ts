@@ -144,7 +144,7 @@ test.describe('Getting Started Wizard', () => {
     // Step 6: Create Agent (skippable)
     await wizardPage.clickNext()
     await wizardPage.expectStep(6)
-    await expect(page.getByRole('heading', { name: /describe your first ai teammate/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: /name your first ai teammate/i })).toBeVisible()
 
     // Skip on last step finishes
     await wizardPage.clickSkip()
@@ -247,10 +247,15 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
-    // The template roster renders inline under the composer; clicking a card
-    // installs it in place (no marketplace detour, no naming step — the agent
-    // takes the template's own name) and finishing the install completes the
-    // wizard.
+    // On a short phone the last tile sits below the footer. Wheel the list itself to reach it.
+    await page.setViewportSize({ width: 390, height: 400 })
+    await page.getByRole('button', { name: 'Browse Templates' }).click()
+    const importTile = page.getByTestId('import-agent-card')
+    await expect(importTile).not.toBeInViewport()
+    await page.mouse.move(180, 160)
+    await page.mouse.wheel(0, 2000)
+    await expect(importTile).toBeInViewport({ ratio: 0.9 })
+    await page.setViewportSize({ width: 1280, height: 800 })
     const installed = page.waitForResponse(response =>
       response.request().method() === 'POST' && response.url().endsWith('/api/agents/install-from-skillset'),
     )
@@ -277,6 +282,39 @@ test.describe('Getting Started Wizard', () => {
     const settings = await response.json()
     expect(settings.setupCompleted).toBe(true)
     expect(settings.onboardingProgress).toBeNull()
+  })
+
+  test('resumes Add-ons in a fresh window with the same agent, first job, and model', async ({ page, request, context }) => {
+    await request.put('/api/user-settings', { data: { setupCompleted: false, onboardingProgress: { path: 'manual', stepId: 'agent' } } })
+    await appPage.goto()
+    const name = 'Resume onboarding ' + Date.now()
+    await page.getByTestId('agent-identity-name').fill(name)
+    await page.getByTestId('agent-identity-continue').click()
+    await expect.poll(async () => (await (await request.get('/api/user-settings')).json()).onboardingProgress.agentDraft?.agent?.slug).toBeTruthy()
+    await page.getByTestId('composer-options-trigger').click()
+    await page.getByTestId('model-pinned-claude-sonnet-4-6').click()
+    await page.keyboard.press('Escape')
+    await wizardPage.clickBack()
+    await wizardPage.clickBack()
+    await wizardPage.clickNext()
+    await page.getByTestId('agent-identity-continue').click()
+    await expect(page.getByTestId('composer-options-trigger')).toContainText('Sonnet')
+    const job = 'Prepare the weekly briefing'
+    await page.getByTestId('create-agent-prompt').fill(job)
+    await page.getByTestId('create-agent-continue').click()
+    await expect(page.getByTestId('agent-addons-step')).toBeVisible()
+    await page.close()
+    const fresh = await context.newPage()
+    await fresh.goto('/')
+    await expect(fresh.getByTestId('agent-addons-step')).toBeVisible()
+    await new WizardPage(fresh).clickBack()
+    await expect(fresh.getByTestId('agent-identity-name-label')).toHaveText(name)
+    await expect(fresh.getByTestId('create-agent-prompt')).toHaveText(job)
+    await expect(fresh.getByTestId('composer-options-trigger')).toContainText('Sonnet')
+    await fresh.getByTestId('create-agent-skip').click()
+    await expect(fresh.getByTestId('agent-breadcrumb')).toHaveText(name)
+    const rows = await (await request.get('/api/agents')).json()
+    expect(rows.filter((agent: { name: string }) => agent.name === name)).toHaveLength(1)
   })
 
   test('sets setupCompleted after finishing', async ({ request }) => {

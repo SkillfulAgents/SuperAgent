@@ -1,7 +1,7 @@
 import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { isRetryableRequestError } from '@renderer/lib/http-error'
+import { HttpError, isRetryableRequestError } from '@renderer/lib/http-error'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -149,14 +149,18 @@ export function useCreateAgent() {
 
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (data: { name: string; description?: string }) => {
+    retry: (count, error) => error instanceof HttpError && error.status === 202 && count < 30,
+    retryDelay: 1000,
+    mutationFn: async (data: { name: string; description?: string; avatar?: AgentAvatar; requestId?: string }) => {
       const res = await apiFetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('Failed to create agent')
-      return res.json() as Promise<ApiAgent>
+      if (res.status === 202) throw new HttpError(202, 'Agent creation is still in progress')
+      if (!res.ok) throw new HttpError(res.status, 'Failed to create agent')
+      const agent: ApiAgent = await res.json()
+      return { ...agent, replayed: res.status === 200 }
     },
     onSuccess: (agent) => {
       // Seed the per-slug cache so consumers reading useAgent(slug) right

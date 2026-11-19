@@ -11,6 +11,7 @@ import {
   connectionsSearchSchema,
   exploreSearchSchema,
   homeSearchSchema,
+  newAgentSearchSchema,
   notificationsSearchSchema,
   rootSearchSchema,
   sessionSearchSchema,
@@ -72,6 +73,8 @@ const WebhookRoute = lazyRouteComponent(() => import('./lazy-routes/webhook-rout
 const SettingsLayout = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsLayout')
 const SettingsIndexRoute = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsIndexRoute')
 const SettingsTabRoute = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsTabRoute')
+const NewAgentRoute = lazyRouteComponent(() => import('./lazy-routes/new-agent-route'), 'NewAgentRoute')
+const NewAgentTemplatesRoute = lazyRouteComponent(() => import('./lazy-routes/new-agent-route'), 'NewAgentTemplatesRoute')
 
 /**
  * Code-based route tree. No file-based codegen — the tree is small and fully
@@ -330,6 +333,22 @@ export const settingsTabRoute = createRoute({
   component: SettingsTabRoute,
 })
 
+// ── NEW AGENT: SIBLINGS of app-shell → the focused create pages ──────────────
+// Both creation pages sit outside the sidebar and share the originating location and section.
+export const newAgentRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'new-agent',
+  validateSearch: lenient(newAgentSearchSchema),
+  component: NewAgentRoute,
+})
+
+export const newAgentTemplatesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'new-agent/templates',
+  validateSearch: lenient(newAgentSearchSchema),
+  component: NewAgentTemplatesRoute,
+})
+
 // ── MEETING PARTICIPANT: the page a meeting bot presents as its camera ────────
 // Sibling of the app shell: no sidebar, no chrome. The bot's browser has no
 // app session; the page authenticates with the one-time token in its URL.
@@ -370,4 +389,6 @@ export const routeTree = rootRoute.addChildren([
     ]),
   ]),
   settingsRoute.addChildren([settingsIndexRoute, settingsTabRoute]),
+  newAgentRoute,
+  newAgentTemplatesRoute,
 ])

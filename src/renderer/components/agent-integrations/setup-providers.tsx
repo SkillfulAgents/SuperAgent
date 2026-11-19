@@ -24,12 +24,14 @@ import { MeetingPanel } from './meeting-panel'
 import { MeetingSettingsCard } from './meeting-settings-card'
 
 function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<IntegrationMessageProps>, Settings: IntegrationSetupProvider['Settings'] = ChatIntegrationSettingsCard): IntegrationSetupProvider {
-  return { slug, label, Message, Settings, Setup: props => <ChatIntegrationSetupForm {...props} provider={slug} /> }
+  return { slug, label, description: `Talk to this agent in ${label}.`, Message, Settings, Setup: props => <ChatIntegrationSetupForm {...props} provider={slug} /> }
 }
 
 /** Composition point for provider UI; the home list, dialog and transcript only consume definitions. */
 export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
-  { slug: 'platform-email', label: 'Email', managementAccess: 'owner', Setup: EmailIntegrationSetupForm, Message: EmailIntegrationMessage, Settings: props => <>
+  { slug: 'platform-email', label: 'Email', description: 'Give this agent its own email address.',
+    unavailableReason: 'Connect your Gamut account to set up Inbox.',
+    managementAccess: 'owner', Setup: EmailIntegrationSetupForm, Message: EmailIntegrationMessage, Settings: props => <>
     <EmailSettingsCard {...props} />
     <EmailDeliveryCard integration={props.integration} />
   </> },
@@ -46,8 +48,13 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
     <ChatIntegrationSettingsCard {...props} />
     <IMessageDeliveryCard integration={props.integration} />
   </>),
-  { slug: 'github', label: 'GitHub', managementAccess: 'owner', iconClassName: 'dark:invert', Setup: GitHubSetupForm, ConnectionSettings: GitHubConnectionSettings },
-  { slug: 'linear', label: 'Linear', managementAccess: 'owner', iconClassName: 'dark:invert', Setup: LinearSetupForm, ConnectionSettings: LinearConnectionSettings, Settings: LinearIntegrationSettings, Message: LinearIntegrationMessage },
-  { slug: 'recall', label: 'Meetings', managementAccess: 'owner', Setup: RecallSetupForm, ConnectionSettings: MeetingPanel, Settings: MeetingSettingsCard },
+  { slug: 'github', label: 'GitHub', description: 'Mention this agent in issues and pull requests.',
+    unavailableReason: 'GitHub requires a connected Gamut account and an available webhook relay.',
+    managementAccess: 'owner', iconClassName: 'dark:invert', Setup: GitHubSetupForm, ConnectionSettings: GitHubConnectionSettings },
+  { slug: 'linear', label: 'Linear', description: 'Delegate issues to this agent in Linear.',
+    managementAccess: 'owner', iconClassName: 'dark:invert', Setup: LinearSetupForm, ConnectionSettings: LinearConnectionSettings, Settings: LinearIntegrationSettings, Message: LinearIntegrationMessage },
+  { slug: 'recall', label: 'Meetings', description: 'Invite this agent to Zoom, Google Meet, and Microsoft Teams calls.',
+    unavailableReason: 'To enable meetings, this workspace needs a public HTTPS address and a connected Gamut account or Recall API key.',
+    managementAccess: 'owner', Setup: RecallSetupForm, ConnectionSettings: MeetingPanel, Settings: MeetingSettingsCard },
 
 ]

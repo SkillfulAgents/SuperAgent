@@ -177,12 +177,13 @@ async function startRepairSession(
       resolveSessionDefaults(settings, agentSlug),
       readWidgetLogTail(agentSlug, widgetSlug),
     ])
-    const { models } = launch
+    const { models, agentEnvVars } = launch
     const resolved = await launch.resolve({})
 
     const session = await actor.sessions.start({
       create: {
         ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
+        customEnvVars: agentEnvVars,
         initialMessage: buildPrompt(widgetSlug, error, logTail),
         model: resolved.model,
         llmProviderId: resolved.llmProviderId,

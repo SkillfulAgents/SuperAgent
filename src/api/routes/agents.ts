@@ -29,6 +29,8 @@ import { createHash, randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+import { startWithCreationSetup } from '@shared/lib/services/session-creation-setup'
+import { completeAgentCreation, reserveAgentCreation } from './agent-creation-request'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
@@ -52,6 +54,7 @@ import {
   getAgentWithListing,
   type AgentToList,
   createAgent,
+  ensureAgentWorkspace,
   getAgentWithStatus,
   getAgent,
   getAgentRecord,
@@ -1504,15 +1507,34 @@ agents.post('/', async (c) => {
     if (!name?.trim()) {
       return c.json({ error: 'Name is required' }, 400)
     }
+    // The orb picked on the create page; absent, the catalog picks one.
+    const avatar = agentAvatarSchema.optional().safeParse(body.avatar)
+    if (!avatar.success) {
+      return c.json({ error: 'Invalid avatar' }, 400)
+    }
 
-    const agent = await createAgent({
-      name: name.trim(),
-      description: description?.trim(),
-    })
-
-    await createOwnerAclOrRollback(c, agent.slug)
-
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'created', details: { name: name.trim() } })
+    const requestId = z.string().uuid().optional().safeParse(body.requestId)
+    if (!requestId.success) return c.json({ error: 'Invalid creation request ID' }, 400)
+    const userId = getCurrentUserId(c)
+    const input = { name: name.trim(), description: description?.trim(), avatar: avatar.data }
+    let agent: ApiAgent
+    if (requestId.data) {
+      const receipt = await reserveAgentCreation(userId, requestId.data, input, isAuthMode())
+      const { slug, ready } = receipt.value
+      if (!(await canUseAgent(c, slug))) return c.json({ error: 'Agent is unavailable' }, 403)
+      const record = await getAgentRecord(slug)
+      if (!record) return c.json({ error: 'Agent no longer exists' }, 404)
+      if (!ready) await ensureAgentWorkspace(record)
+      const existing = await getAgentWithStatus(record, { includeSummary: false })
+      if (!existing) return c.json({ error: 'Agent no longer exists' }, 404)
+      if (ready || !(await completeAgentCreation(receipt))) return c.json(existing)
+      agent = existing
+      if (isAuthMode()) announceAgentCreated(slug, [userId])
+    } else {
+      agent = await createAgent(input)
+      await createOwnerAclOrRollback(c, agent.slug)
+    }
+    await logAuditEvent({ userId, object: 'agent', objectId: agent.slug, action: 'created', details: { name: agent.name } })
     return c.json(agent, 201)
   } catch (error) {
     console.error('Failed to create agent:', error)
@@ -2235,6 +2257,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       return c.json({ error: 'Message is required' }, 400)
     }
 
+    const requestId = z.string().uuid().optional().safeParse(body.requestId)
+    if (!requestId.success) return c.json({ error: 'Invalid session creation request ID' }, 400)
     const runtimeOptions = parseRuntimeOptions(body)
 
     // The dispatch launcher's computer-use toggle: the session may list and
@@ -2275,18 +2299,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const actor = agentRegistry.get(slug)
 
-    await actor.container.start()
-    const availableEnvVars = await getSecretEnvVars(slug)
-
     // One read of the settings for this session's start: limits, custom env,
     // tab limit, models and the runtime below all come from it.
     const launch = await resolveSessionDefaults(await getSettings(), slug)
     const { agentLimits, customEnvVars, maxBrowserTabs, models } = launch
-
-    // Server-generated uuid for the initial message (never client-supplied —
-    // it keys the messageAuthor attribution row). Returned in the response so
-    // the client can materialize its optimistic copy by exact id match.
-    const initialMessageUuid = randomUUID()
 
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, launch.agentPrefs.defaultLlmProviderId)
@@ -2329,40 +2345,51 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // as soon as create returns, and a session whose attach or registration
     // fails is revoked rather than left running unseen. The registration
     // carries the commands the container listed.
-    const containerSession = await actor.sessions.start({
-      create: {
-        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-        initialMessage: await attributedForAgent(c, slug, message.trim()),
-        initialMessageUuid,
-        model: resolved.model,
-        llmProviderId: resolved.llmProviderId,
-        browserModel: models.browserModel,
-        dashboardBuilderModel: models.dashboardBuilderModel,
-        maxOutputTokens: agentLimits.maxOutputTokens,
-        maxThinkingTokens: agentLimits.maxThinkingTokens,
-        maxTurns: agentLimits.maxTurns,
-        maxBudgetUsd: agentLimits.maxBudgetUsd,
-        customEnvVars,
-        maxBrowserTabs,
-        effort: resolved.effort,
-        speed: resolved.speed,
-        ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
-        // Same preference chain MINUS the per-session pick: this is what the
-        // composer will send next time (it only puts model/effort/speed on the
-        // wire when the user explicitly chooses one), so it is what the
-        // container should pre-warm for.
-        prewarmDefaults: {
-          llmProviderId: prewarm.llmProviderId ?? undefined,
-          model: prewarm.model,
-          effort: prewarm.effort,
-          speed: prewarm.speed,
+    const { id: sessionId, initialMessageUuid, replayed } = await startWithCreationSetup(actor, {
+      userId: getCurrentUserId(c),
+      requestId: requestId.data,
+    }, async (initialMessageUuid, receipt) => {
+      await actor.container.start()
+      const availableEnvVars = await getSecretEnvVars(slug)
+      return actor.sessions.start({
+        create: {
+          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+          initialMessage: await attributedForAgent(c, slug, message.trim()),
+          initialMessageUuid,
+          model: resolved.model,
+          llmProviderId: resolved.llmProviderId,
+          browserModel: models.browserModel,
+          dashboardBuilderModel: models.dashboardBuilderModel,
+          maxOutputTokens: agentLimits.maxOutputTokens,
+          maxThinkingTokens: agentLimits.maxThinkingTokens,
+          maxTurns: agentLimits.maxTurns,
+          maxBudgetUsd: agentLimits.maxBudgetUsd,
+          customEnvVars,
+          maxBrowserTabs,
+          effort: resolved.effort,
+          speed: resolved.speed,
+          ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
+          // Same preference chain MINUS the per-session pick: this is what the
+          // composer will send next time (it only puts model/effort/speed on the
+          // wire when the user explicitly chooses one), so it is what the
+          // container should pre-warm for.
+          prewarmDefaults: {
+            llmProviderId: prewarm.llmProviderId ?? undefined,
+            model: prewarm.model,
+            effort: prewarm.effort,
+            speed: prewarm.speed,
+          },
         },
-      },
-      name: name || 'New Session',
-      metadata: initialMetadata,
-      ...(computerUse ? { grantComputerUse: true } : {}),
+        name: name || 'New Session',
+        metadata: receipt ? { ...initialMetadata, creationSetup: receipt } : initialMetadata,
+        ...(computerUse ? { grantComputerUse: true } : {}),
+      })
     })
-    const sessionId = containerSession.id
+    if (replayed) {
+      const existing = await actor.sessions.get(sessionId)
+      if (!existing) return c.json({ error: 'The original session is no longer available' }, 410)
+      return c.json({ ...existing, initialMessageUuid, replayed: true })
+    }
 
     // The session runs now, so a failed attribution row leaves the message
     // unattributed rather than failing a session the user can already see.
