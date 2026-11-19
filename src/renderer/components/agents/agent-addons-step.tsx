@@ -76,7 +76,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
               }}>Retry loading skills</Button>}
             </Section>
             <Section title="Knowledge & Context">
-              <Row icon={<NotebookPen />} title="Memories" description="Remembers what it learns across Claude sessions."
+              <Row icon={<NotebookPen />} title="Memories" description="Remembers what it learns across sessions."
                 checked={preferences.data?.autoMemoryEnabled !== false} disabled={!preferences.data || updatePreferences.isPending}
                 onChange={autoMemoryEnabled => updatePreferences.mutate({ autoMemoryEnabled })} />
               <Row icon={<Brain />} title="Team Brain" description="Reads the shared drive and can message Team Brain."
