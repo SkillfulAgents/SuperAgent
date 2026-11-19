@@ -1,17 +1,26 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: browser session closure.\n\n**No bugs found.** All functionality worked as expected:\n- Browser tool calls executed successfully (3 tool calls)\n- Agent correctly identified \"Example Domain\" as the page title\n- Response time was fast (5 seconds)\n- UI properly displayed tool execution status and results\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Agent successfully opened browser, navigated to example.com, retrieved page title \"Example Domain\", and reported it back correctly.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded Gamut application with agent list displayed.",
+    "Clicked on \"QA-20261119-014543-03qu\" agent in sidebar — Agent page opened with chat interface ready.",
+    "Clicked on message input field — Input field focused and ready for typing.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in input field.",
+    "Clicked \"Send message\" button — Message was sent and a new session \"Browser Page Title Check\" was created. Agent status changed to \"working\".",
+    "Waited 3 seconds for agent to process — Agent completed work (took ~4 seconds total).",
+    "Took screenshot of response — Screenshot captured showing complete agent response with page title information.",
+    "Verified response content — Response reads: \"I opened https://example.com in the browser, and the page title is **\"Example Domain\"**. I've closed the browser since that was all you needed.\""
+  ],
   "bugs": [],
-  "durationMs": 100140,
-  "sessionId": "c02262d7-c7fc-4d83-bc6a-d306a3f0f5eb",
+  "durationMs": 89901,
+  "sessionId": "51d8dbc0-2485-4f8b-bdaa-537927f50f0f",
   "cost": {
-    "inputTokens": 386,
-    "outputTokens": 11123,
-    "cacheCreationTokens": 66767,
-    "cacheReadTokens": 1080230,
+    "inputTokens": 374,
+    "outputTokens": 10154,
+    "cacheCreationTokens": 70523,
+    "cacheReadTokens": 1028514,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.247483
+    "totalCostUsd": 0.242149
   }
 }
