@@ -18,6 +18,33 @@ test.describe('composer Markdown blocks', () => {
     await agentPage.createAgent(agentName)
   })
 
+  test('saves and clears Markdown in the Agent Home system prompt', async ({ page }) => {
+    await page.getByTestId('home-advanced-settings-toggle').click()
+    const openPrompt = page.getByRole('button', { name: 'System Prompt' })
+    const dialog = page.getByRole('dialog', { name: 'System Prompt' })
+    const editor = dialog.getByRole('textbox')
+    const save = dialog.getByRole('button', { name: 'Save', exact: true })
+
+    await openPrompt.click()
+    await expect(save).toBeDisabled()
+    await editor.fill('')
+    await editor.pressSequentially('## Writing style')
+    await expect(editor.getByRole('heading', { level: 2 })).toHaveText('Writing style')
+    await save.click()
+    await expect(dialog).toBeHidden()
+
+    await openPrompt.click()
+    await expect(editor.getByRole('heading', { level: 2 })).toHaveText('Writing style')
+    await editor.press('ControlOrMeta+A')
+    await editor.press('Backspace')
+    await save.click()
+    await expect(dialog).toBeHidden()
+
+    await openPrompt.click()
+    await expect(editor).toHaveAttribute('data-empty', 'true')
+    await expect(save).toBeDisabled()
+  })
+
   test('live-renders headings and lists from keyboard input and pasted Markdown', async ({ page }) => {
     const input = page.locator('[data-testid="home-message-input"]')
 

@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import {
   Dialog,
   DialogContent,
@@ -8,7 +9,6 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
-import { Textarea } from '@renderer/components/ui/textarea'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 
@@ -36,7 +36,7 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
   const handleSave = async () => {
     await updateAgent.mutateAsync({
       slug: agent.slug,
-      instructions: instructions.trim() || undefined,
+      instructions: instructions.trim(),
     })
     onOpenChange(false)
   }
@@ -51,12 +51,13 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
-          <Textarea
+          <MarkdownComposerEditor
             value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
+            onChange={setInstructions}
             placeholder="Enter custom instructions for this agent..."
-            className="min-h-[300px] font-mono text-sm"
+            className="min-h-[min(300px,50dvh)] max-h-[50dvh] rounded-control border border-input px-3 py-2 shadow-sm focus-visible:ring-1 focus-visible:ring-ring"
             disabled={locked}
+            autoFocus={!locked}
           />
           {locked && (
             <div
