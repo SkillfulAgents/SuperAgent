@@ -21,9 +21,11 @@ import {
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { UndeliveredMessageError } from '@shared/lib/chat-integrations/chat-delivery'
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
-import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
-import { integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
+import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
+import { requiresRelay, supportedTransports } from '@shared/lib/agent-integrations/transport'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -73,19 +75,41 @@ xAgentChat.post('/list', async (c) => {
   }
 })
 
+// POST /providers — every provider, with how this agent sets it up
+xAgentChat.post('/providers', async (c) => {
+  try {
+    const webhookRelay = getWebhookRelay().snapshot().available
+    const providers = await Promise.all(agentIntegrationRegistry.listDefinitions().map(async (definition) => {
+      const { provider, name } = definition
+      const setup = agentIntegrationRegistry.getProvider(provider).setup
+      const unavailable = !setup || !(await agentIntegrationRegistry.isAvailable(provider)) ? 'Not available on this host.'
+        : requiresRelay(supportedTransports(definition)) && !webhookRelay ? 'Needs a webhook relay, which this host does not have.'
+          : null
+      if (unavailable) return { provider, name, unavailable }
+      return { provider, name, guide: setup?.agentGuide ?? `Pass its fields in config: ${definition.setup.credentialFields.join(', ') || 'none'}.` }
+    }))
+    return c.json({ providers, webhookRelay })
+  } catch (error) {
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'providers' } })
+    return c.json({ error: 'Failed to list integration providers' }, 500)
+  }
+})
+
 // POST /add — create and connect a new integration
 xAgentChat.post('/add', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
     const body = await c.req.json()
-    const { provider, config, name } = body
+    const { provider, config = {}, name } = body
 
-    if (!provider || !config) {
-      return c.json({ error: 'Missing required fields: provider, config' }, 400)
+    if (!provider) {
+      return c.json({ error: 'Missing required field: provider' }, 400)
     }
 
     // Setup done later in the creator's name (a webhook endpoint) needs a member of the org.
     // Until a session can name who asked, the agent's first owner is the creator.
+    // Links are on the address the container calls from: the agent's browser
+    // runs the setup, and the bundled one reaches the host there.
     const createdByUserId = await getAgentOwnerUserId(callerSlug) ?? undefined
     const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug, createdByUserId), true)
 
@@ -127,12 +151,79 @@ xAgentChat.post('/add', async (c) => {
       provider: created.provider,
       status: created.status,
       name: created.name,
+      ...(created.status !== 'active' ? { nextStep: agentNextStep(created) } : {}),
     }, 201)
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'add' } })
     return c.json({ error: 'Failed to add chat integration' }, 500)
+  }
+})
+
+/** What the agent does with an installation it created that is not connected yet. */
+function agentNextStep(integration: AgentIntegrationRecord): string | undefined {
+  const setup = getIntegrationSetup(integration.provider)
+  return setup.agentNextStep?.(integration)
+    ?? (setup.authorize ? `Call authorize_agent_integration with integration_id "${integration.id}" and open the link it returns in your browser.` : undefined)
+}
+
+/** The caller's own installation and its provider's setup, or a response saying why not. */
+async function ownIntegrationSetup(callerSlug: string, integrationId: string) {
+  const integration = await getAgentIntegration(integrationId)
+  if (!integration || integration.agentSlug !== callerSlug) return { error: 'Integration not found', status: 404 as const }
+  await assertIntegrationAvailable(integration.provider)
+  return { integration, setup: getIntegrationSetup(integration.provider) }
+}
+
+// POST /authorize — the provider's authorization link for an installation the agent set up
+const authorizeSchema = z.object({ integration_id: z.string(), config: z.record(z.string(), z.unknown()).optional() })
+xAgentChat.post('/authorize', async (c) => {
+  try {
+    const { integration_id, config } = authorizeSchema.parse(await c.req.json())
+    const found = await ownIntegrationSetup(getCallerSlug(c), integration_id)
+    if ('error' in found) return c.json({ error: found.error }, found.status)
+    const authorization = found.setup.authorize
+    if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
+    const context = await integrationSetupContext(found.integration.provider, c.req.raw, found.integration.agentSlug, await getAgentOwnerUserId(found.integration.agentSlug) ?? undefined)
+    const result = await authorization.run(found.integration, authorization.inputSchema.parse(config ?? {}), context)
+    // As in the owner's route: the account keeps running until there is a usable link.
+    await agentIntegrationManager.pauseIntegration(found.integration.id)
+    return c.json(result)
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'authorize' } })
+    return c.json({ error: 'Could not authorize integration' }, 500)
+  }
+})
+
+// POST /complete-authorization — the provider's redirect, for a browser that could not load the callback
+const completeAuthorizationSchema = z.object({ integration_id: z.string(), url: z.url() })
+xAgentChat.post('/complete-authorization', async (c) => {
+  try {
+    const { integration_id, url } = completeAuthorizationSchema.parse(await c.req.json())
+    const found = await ownIntegrationSetup(getCallerSlug(c), integration_id)
+    if ('error' in found) return c.json({ error: found.error }, found.status)
+    const redirect = new URL(url)
+    const query = Object.fromEntries(redirect.searchParams)
+    // Only this provider's callback, as the browser would have loaded it.
+    if (!redirect.pathname.endsWith(`/${found.integration.provider}/callback`) || !query.state || !found.setup.callback) {
+      return c.json({ error: `Not a ${found.integration.provider} authorization callback URL` }, 400)
+    }
+    const result = await found.setup.callback({ state: query.state, code: query.code, error: query.error, parameters: query })
+    // A further step in the provider (GitHub installs the app it just created).
+    if (result.redirectUrl) return c.json({ status: 'continue', url: result.redirectUrl })
+    if (result.cancelled || !result.integrationId) return c.json({ error: 'Authorization was cancelled' }, 400)
+    if (result.integrationId !== found.integration.id) return c.json({ error: 'This authorization belongs to another integration' }, 400)
+    await agentIntegrationManager.resumeIntegration(result.integrationId)
+    const integration = await getAgentIntegration(result.integrationId)
+    return c.json({ status: integration?.status ?? 'unknown' })
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'complete-authorization' } })
+    return c.json({ error: 'Could not complete authorization' }, 500)
   }
 })
 

@@ -57,11 +57,12 @@ import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
 import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
 import { downloadAgentFileTool } from './tools/agents/download-agent-file'
-import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
+import { listAvailableIntegrationProvidersTool } from './tools/chat/list-available-integration-providers'
 import { listAgentIntegrationsTool } from './tools/integrations/list-agent-integrations'
 import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
-import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
+import { addAgentIntegrationTool } from './tools/chat/add-agent-integration'
+import { authorizeAgentIntegrationTool } from './tools/chat/authorize-agent-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
 import { meetingTools } from './tools/meetings/meeting-tools'
 
@@ -189,11 +190,12 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
     name: 'chat',
     version: '1.0.0',
     tools: [
-      listAvailableChatProvidersTool,
+      listAvailableIntegrationProvidersTool,
       listAgentIntegrationsTool,
       listChatUsersTool,
       listChatChannelsTool,
-      addChatIntegrationTool,
+      addAgentIntegrationTool,
+      authorizeAgentIntegrationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
   })

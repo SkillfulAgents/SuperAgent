@@ -101,6 +101,11 @@ describe('email access levels', () => {
   it('previews the actual connected account as the permitted address in non-auth mode', async () => {
     expect(await platformEmailProvider.setup!.describe!({ agentSlug: 'agent-a', callbackUrl: '' })).toMatchObject({ agentUserEmails: ['owner@company.com'] })
   })
+  it('lets an agent name the inbox it creates, and leaves who may write to it to the owner', async () => {
+    const asAgent = { agentSlug: 'agent-a', callbackUrl: '', fromAgent: true }
+    await expect(platformEmailProvider.setup!.prepare({ localPart: 'helper', displayName: 'Helper', accessLevel: 'anyone' }, asAgent))
+      .rejects.toThrow(/An agent sets only localPart and displayName/)
+  })
   it('reads current verified agent ACL members and deployment admins only', async () => {
     platform.auth = true
     for (const [id, role, verified, banned] of [['owner', null, true, false], ['viewer', null, true, false], ['admin', 'admin', true, false], ['unverified', 'admin', false, false], ['banned', 'admin', true, true]] as const) {

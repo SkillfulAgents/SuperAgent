@@ -78,7 +78,7 @@ it('creates a registered non-chat provider through the canonical route without s
   expect(prepare).toHaveBeenCalledWith({}, expect.objectContaining({ callbackUrl: 'https://public.example/api/agent-integrations/providers/test-oauth/callback', agentSlug: 'agent' }))
   expect(runtime.add).not.toHaveBeenCalled()
 })
-it('checks the owner before setup or authorization side effects, including agent-side creation', async () => {
+it('checks the owner before setup or authorization side effects in the app', async () => {
   owner = false
   expect((await create()).status).toBe(403)
   expect(prepare).not.toHaveBeenCalled()
@@ -86,7 +86,11 @@ it('checks the owner before setup or authorization side effects, including agent
   const response = await app.request(`/api/agent-integrations/${row.id}/authorize`, { method: 'POST', headers, body: JSON.stringify({ clientId: 'client' }) })
   expect(response.status).toBe(403)
   expect(runtime.pause).not.toHaveBeenCalled()
-  await expect(prepareIntegrationSetup('test-oauth', {}, { agentSlug: 'agent', callbackUrl: 'https://host/callback' }, true)).rejects.toMatchObject({ status: 403 })
+})
+it('prepares any provider for the agent itself, telling the provider who asks', async () => {
+  await prepareIntegrationSetup('test-oauth', {}, { agentSlug: 'agent', callbackUrl: 'https://host/callback' }, true)
+  expect(prepare).toHaveBeenCalledExactlyOnceWith({}, { agentSlug: 'agent', callbackUrl: 'https://host/callback', fromAgent: true })
+  await expect(prepareIntegrationSetup('test-oauth', { provision: { directoryId: 'directory', name: 'App' } }, { agentSlug: 'agent', callbackUrl: 'https://host/callback' }, true)).rejects.toMatchObject({ status: 403 })
 })
 it.each(['providers/test-oauth', 'test-oauth'])('accepts a provider-validated callback without user cookies and rejects state replay (%s)', async path => {
   const row = await (await create()).json()

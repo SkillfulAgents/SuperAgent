@@ -22,6 +22,10 @@ function installationUrl(app: NonNullable<GitHubConfig['app']>, state: string) {
 }
 
 export const githubSetup: IntegrationProviderSetup = {
+  agentGuide: `The agent's own GitHub App: mentioning it in an issue or pull request starts work, and it acts as its own bot.
+You create and install the app in your browser. The user only logs in to GitHub when a login page appears (ask with request_browser_input).
+1. add_agent_integration with \`name\` (the app name, up to 34 characters) and config {organization} to use an organization's repositories (config {} for the user's own).
+2. authorize_agent_integration, open the link it returns, create the preconfigured app, then install it on the repositories the user chooses.`,
   async prepare(input, context) {
     const { organization } = githubSetupInputSchema.parse(input)
     return { config: githubConfigSchema.parse({ redirectUri: context.callbackUrl, organization }), status: 'disconnected' }
