@@ -243,7 +243,7 @@ export class AgentDurableObject extends DurableObject<Env> {
   /** One op on this agent's actor, for the rest of the org (cloudflareAgentActor). */
   actorCall(path: string, args: unknown[], callerVersion?: string, actingUserId?: string): Promise<ActorOutcome | Restarting | Checked<ActorOutcome>> {
     // An isolate's first call here carries its version, so the check costs no call of its own.
-    if (callerVersion !== undefined) return checkedCall(this.ctx, this.env.VERSION, callerVersion, () => this.runActorCall(path, args, actingUserId))
+    if (callerVersion !== undefined) return checkedCall(this.ctx, this.env.VERSION, callerVersion, () => this.runActorCall(path, args, actingUserId), this.mayRestart)
     return this.runActorCall(path, args, actingUserId)
   }
 
@@ -334,8 +334,11 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   checkVersion(callerVersion: string): boolean {
-    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion, this.mayRestart)
   }
+
+  // A running container may be in a session, which a restart would cut off from its host.
+  private readonly mayRestart = (): boolean => !this.ctx.container?.running
 
   startAgent(envVars: Record<string, string>): Promise<void> {
     this.starting ??= this.bootAgent(envVars).finally(() => {

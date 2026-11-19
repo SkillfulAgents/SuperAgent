@@ -206,8 +206,10 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     sql.exec('CREATE TABLE IF NOT EXISTS deploy_step (step TEXT NOT NULL, version TEXT NOT NULL, PRIMARY KEY (step, version))')
   }
 
+  // The org's services and the scheduling calls run here: a caller's restart would end them, so the
+  // object moves to new code by Cloudflare's deferred update. The deploy step still restarts it (runsDeployOf).
   checkVersion(callerVersion: string): boolean {
-    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion, () => false)
   }
 
   /**

@@ -5,6 +5,10 @@
  * restarting, then restarts, and the caller's next call reaches the new code. Compared by time,
  * not by id: during a rollout an older Worker can still reach a newer object, which must not
  * restart for it.
+ *
+ * A restart ends every call the object is running. An object doing long work (an agent's running
+ * session, the org's services) does not restart for a caller: it keeps its code until Cloudflare's
+ * deferred code update moves it, when it hibernates or after `max_delay` (300 s by default).
  */
 import type { DurableObjectNamespace, DurableObjectState } from 'cloudflare:workers'
 
@@ -104,15 +108,22 @@ export async function callOnCurrentCode<T extends VersionedObject, R>(
   return (await call(object())) as R
 }
 
+/** When an object may restart for a newer caller: false while it does work a restart would end. */
+export type MayRestart = () => boolean
+
 /** For an object's method that takes the caller's version: runs it once the check passes. */
-export async function checkedCall<R>(ctx: DurableObjectState, own: VersionMetadata | undefined, callerVersion: string, run: () => Promise<R>): Promise<Restarting | Checked<R>> {
-  if (restartIfOlder(ctx, own, callerVersion)) return RESTARTING
+export async function checkedCall<R>(ctx: DurableObjectState, own: VersionMetadata | undefined, callerVersion: string, run: () => Promise<R>, mayRestart?: MayRestart): Promise<Restarting | Checked<R>> {
+  if (restartIfOlder(ctx, own, callerVersion, mayRestart)) return RESTARTING
   return { checked: true, outcome: await run() }
 }
 
-/** For an object's `checkVersion`: restarts it once this call has answered when the caller runs newer code. */
-export function restartIfOlder(ctx: DurableObjectState, own: VersionMetadata | undefined, callerVersion: string): boolean {
+/**
+ * For an object's `checkVersion`: restarts it once this call has answered when the caller runs newer
+ * code, unless `mayRestart` says it is busy: then it answers on its own code.
+ */
+export function restartIfOlder(ctx: DurableObjectState, own: VersionMetadata | undefined, callerVersion: string, mayRestart?: MayRestart): boolean {
   if (!(Date.parse(callerVersion) > Date.parse(own?.timestamp ?? ''))) return false
+  if (mayRestart && !mayRestart()) return false
   console.warn(`[${ctx.id.name ?? ctx.id.toString()}] running code from ${own?.timestamp}, a caller runs newer code: restarting`)
   setTimeout(() => ctx.abort('newer code deployed'), 0)
   return true

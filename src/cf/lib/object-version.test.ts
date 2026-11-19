@@ -88,6 +88,28 @@ describe('restartIfOlder', () => {
       vi.restoreAllMocks()
     }
   })
+
+  it('does not restart a busy object for a newer caller: it keeps its code until it may', () => {
+    vi.useFakeTimers()
+    try {
+      const abort = vi.fn()
+      const ctx = { id: { name: 'sales-agent', toString: () => 'sales-agent' }, abort } as unknown as DurableObjectState
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      let busy = true
+
+      expect(restartIfOlder(ctx, { id: 'v1', timestamp: OLD }, NEW, () => !busy)).toBe(false)
+      vi.runAllTimers()
+      expect(abort).not.toHaveBeenCalled()
+
+      busy = false
+      expect(restartIfOlder(ctx, { id: 'v1', timestamp: OLD }, NEW, () => !busy)).toBe(true)
+      vi.runAllTimers()
+      expect(abort).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
+  })
 })
 
 describe('callOnCurrentCode', () => {
@@ -158,5 +180,14 @@ describe('checkedCall', () => {
     expect(await checkedCall(ctx, { id: 'v', timestamp: OLD }, NEW, run)).toEqual({ restarting: true })
     expect(run).toHaveBeenCalledTimes(1)
     vi.restoreAllMocks()
+  })
+
+  it('runs the call on its own code for a newer caller while the object is busy', async () => {
+    const abort = vi.fn()
+    const ctx = { id: { name: 'sales-agent' }, abort } as unknown as DurableObjectState
+    const run = vi.fn(async () => 'done')
+
+    expect(await checkedCall(ctx, { id: 'v', timestamp: OLD }, NEW, run, () => false)).toEqual({ checked: true, outcome: 'done' })
+    expect(abort).not.toHaveBeenCalled()
   })
 })
