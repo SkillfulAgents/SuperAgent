@@ -4305,10 +4305,11 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
   })
 })
 
-// POST /api/agents/:id/sessions/:sessionId/login-request/method - "Also add an
-// authenticator app" on a step of two-step verification: the request stays on
-// the account until an agent answers it, and this session's agent is asked, as
-// the user's own message, once this card is answered (method-request).
+// POST /api/agents/:id/sessions/:sessionId/login-request/method - "Also add a
+// passkey or authenticator app" on a step of two-step verification: the
+// request stays on the account until an agent answers it, and this session's
+// agent is asked, as the user's own message, once this card is answered
+// (method-request).
 agents.post('/:id/sessions/:sessionId/login-request/method', AgentUser(), zValidator('json', requestLoginMethodBodySchema), async (c) => {
   const body = c.req.valid('json')
   const gated = await gateOpenRequestAccess(c, body.toolUseId, 'login')
@@ -4321,7 +4322,7 @@ agents.post('/:id/sessions/:sessionId/login-request/method', AgentUser(), zValid
   const site = siteOfOrigin(read.context.origin)
   const viewer = getViewerUserId(c)
   const account = site ? await twoStepAccount(viewer, agentSlug, body.toolUseId, read.context, site) : null
-  if (!account) return c.json({ error: 'There is no saved account of yours to add an authenticator app to here' }, 409)
+  if (!account) return c.json({ error: 'There is no saved account of yours to add a passkey or authenticator app to here' }, 409)
   await setSignInMethodRequest(viewer, account.id, true, 'card')
   background(requestedOnCard({ agentSlug, sessionId, account }), { name: 'login-request.requested-on-card' })
   return c.json({ requested: true })
@@ -4365,8 +4366,9 @@ async function saveAndGrant(
 
 /**
  * The account a step of two-step verification is for (the ways to verify, or
- * a code), when it is the viewer's own and the vault holds no app for it: the
- * card offers to have the agent add one. Not one an agent found none to add for.
+ * a code), when it is the viewer's own and the vault holds neither a passkey
+ * nor an app for it: the card offers to have the agent add one. Not one an
+ * agent found none to add for.
  */
 async function twoStepAccount(viewer: VaultOwner, agentSlug: string, toolUseId: string, context: LoginContext, site: string): Promise<VaultAccount | null> {
   const twoStep = context.ways.length > 0 || (context.fields.length > 0 && context.fields.every((field) => field.kind === 'otp'))
@@ -4377,7 +4379,8 @@ async function twoStepAccount(viewer: VaultOwner, agentSlug: string, toolUseId: 
   const { accountId, username } = vault.data
   const account = (await listOwnedAccountsOnSite(viewer, site))
     .find((candidate) => (accountId ? candidate.id === accountId : usernameKey(candidate.username) === usernameKey(username ?? '')))
-  if (!account || account.via || account.signInMethods.authenticator || account.signInMethods.unavailable) return null
+  const { authenticator, passkeys, unavailable } = account?.signInMethods ?? {}
+  if (!account || account.via || authenticator || passkeys?.length || unavailable) return null
   return account
 }
 

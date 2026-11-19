@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   forgetSessions: vi.fn(),
   requestMethod: vi.fn(),
   removeApp: vi.fn(),
+  removeKey: vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-browser-accounts', async (importOriginal) => ({
@@ -27,6 +28,7 @@ vi.mock('@renderer/hooks/use-browser-accounts', async (importOriginal) => ({
   useForgetBrowserAccountSessions: () => ({ mutateAsync: state.forgetSessions, isPending: false }),
   useRequestSignInMethod: () => ({ mutateAsync: state.requestMethod, isPending: false }),
   useRemoveAuthenticator: () => ({ mutateAsync: state.removeApp, isPending: false }),
+  useRemovePasskey: () => ({ mutateAsync: state.removeKey, isPending: false }),
 }))
 const auth = vi.hoisted(() => ({ isAuthMode: false, usable: new Set<string>() }))
 vi.mock('@renderer/context/user-context', () => ({
@@ -58,7 +60,7 @@ function account(over: Partial<BrowserAccount> = {}): BrowserAccount {
     agentSlugs: ['a1'],
     agents: [{ slug: 'a1', name: 'Ada' }],
     sessions: [],
-    signInMethods: { authenticator: null, requestedAt: null, unavailable: null },
+    signInMethods: { authenticator: null, passkeys: [], requestedAt: null, unavailable: null },
     ...over,
   }
 }
@@ -121,7 +123,7 @@ describe('Settings → Logins', () => {
     await waitFor(() => expect(state.requestMethod).toHaveBeenCalledWith({ accountId: 'acc-1', requested: true }))
     cleanup()
 
-    state.accounts = [account({ signInMethods: { authenticator: null, requestedAt: null, unavailable: { at: new Date(Date.now() - 2 * 3_600_000).toISOString(), reason: 'Two-factor authentication is off.' } } })]
+    state.accounts = [account({ signInMethods: { authenticator: null, passkeys: [], requestedAt: null, unavailable: { at: new Date(Date.now() - 2 * 3_600_000).toISOString(), reason: 'Two-factor authentication is off.' } } })]
     render(<LoginsTab />)
     expect(screen.getByTestId('login-authenticator-unavailable')).toHaveTextContent('An agent found none it could add, 2h ago: Two-factor authentication is off.')
     expect(screen.getByTestId('login-authenticator-request')).toHaveAttribute('data-state', 'unchecked')
@@ -129,18 +131,31 @@ describe('Settings → Logins', () => {
 
   it('shows the authenticator app an agent added, and removes it from the vault', async () => {
     const addedAt = new Date(Date.now() - 3 * 86_400_000).toISOString()
-    state.accounts = [account({ signInMethods: { authenticator: { addedAt, issuer: 'GitHub', accountName: 'octocat', name: 'Gamut', rejectedAt: null }, requestedAt: null, unavailable: null } })]
+    state.accounts = [account({ signInMethods: { authenticator: { addedAt, issuer: 'GitHub', accountName: 'octocat', name: 'Gamut', rejectedAt: null }, passkeys: [], requestedAt: null, unavailable: null } })]
     state.selectedId = 'acc-1'
     state.removeApp.mockResolvedValue(undefined)
     render(<LoginsTab />)
-    expect(screen.getByTestId('login-authenticator-saved')).toHaveTextContent('Added by an agent 3d ago · named Gamut · GitHub')
+    expect(screen.getByTestId('login-authenticator-saved')).toHaveTextContent('Authenticator app, added by an agent 3d ago · named Gamut · GitHub')
     expect(screen.queryByTestId('login-authenticator-request')).toBeNull()
     await userEvent.click(screen.getByTestId('login-authenticator-remove'))
     await waitFor(() => expect(state.removeApp).toHaveBeenCalledWith('acc-1'))
   })
 
+  it('shows the passkeys an agent added, and removes one from the vault', async () => {
+    const addedAt = new Date(Date.now() - 2 * 86_400_000).toISOString()
+    state.accounts = [account({ signInMethods: { authenticator: null, passkeys: [{ credentialId: 'Y3JlZC0x', rpId: 'github.com', addedAt, name: 'Gamut', userName: 'octocat' }], requestedAt: null, unavailable: null } })]
+    state.selectedId = 'acc-1'
+    state.removeKey.mockResolvedValue(undefined)
+    render(<LoginsTab />)
+    expect(screen.getByTestId('login-passkey-0')).toHaveTextContent('Passkey, added by an agent 2d ago · named Gamut · github.com')
+    // It holds a method: no switch asking for one.
+    expect(screen.queryByTestId('login-authenticator-request')).toBeNull()
+    await userEvent.click(screen.getByTestId('login-passkey-remove-0'))
+    await waitFor(() => expect(state.removeKey).toHaveBeenCalledWith({ accountId: 'acc-1', credentialId: 'Y3JlZC0x' }))
+  })
+
   it('lists the authenticator app with what a login holds', () => {
-    state.accounts = [account({ signInMethods: { authenticator: { addedAt: new Date().toISOString(), issuer: null, accountName: null, name: null, rejectedAt: null }, requestedAt: null, unavailable: null } })]
+    state.accounts = [account({ signInMethods: { authenticator: { addedAt: new Date().toISOString(), issuer: null, accountName: null, name: null, rejectedAt: null }, passkeys: [], requestedAt: null, unavailable: null } })]
     render(<LoginsTab />)
     expect(screen.getByTestId('login-row-acc-1')).toHaveTextContent('Password, workspace, authenticator app')
   })

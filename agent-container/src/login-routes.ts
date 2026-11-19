@@ -138,6 +138,11 @@ export interface LoginRouteDeps {
   pageSubmitWaitMs?: number
   /** The same after a one-time code, which a page may verify on its last digit, after a debounce. */
   codeSubmitWaitMs?: number
+  /**
+   * Before a passkey way is clicked: the browser's passkeys on the tab now, not
+   * in the moment after a connection of ours left it (which turns them off).
+   */
+  passkeysReady?(): Promise<void>
   /** How long a page's only way (a prompt on the user's device) is watched for the page to move on. */
   lonePromptWaitMs?: number
   /** How often the page's URL is read meanwhile. */
@@ -393,6 +398,8 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
         ...(body.username ? { username: body.username } : {}),
       }
       if (way.ref) {
+        // The page asks the browser for the passkey as soon as it is clicked.
+        if (way.method === 'passkey') await deps.passkeysReady?.()
         const outcome = await deps.submit({
           submitRef: way.ref,
           // Nothing was written: the page has nothing of ours to react to.

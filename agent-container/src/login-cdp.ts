@@ -27,6 +27,16 @@ export interface CdpEvent {
   sessionId: string | undefined
 }
 
+/**
+ * Called after any of our connections closes. A DevTools session leaving a
+ * tab turns off that tab's virtual authenticator, whoever enabled it (probed
+ * on Chrome 156): the passkey keeper arms it again.
+ */
+let afterClose: (() => void) | null = null
+export function onCdpConnectionClosed(callback: (() => void) | null): void {
+  afterClose = callback
+}
+
 const CALL_TIMEOUT_MS = 5_000
 const OPEN_TIMEOUT_MS = 5_000
 /** How long an out-of-process frame's target may take to attach. */
@@ -147,6 +157,7 @@ export class CdpConnection {
     this.closed = true
     this.failAll('CDP connection closed')
     this.ws.close()
+    afterClose?.()
   }
 
   private autoAttach(sessionId: string | undefined): Promise<unknown> {

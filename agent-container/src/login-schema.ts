@@ -189,6 +189,8 @@ const vaultAccountViewSchema = z.object({
   authenticator: z.enum(['ready', 'rejected']).optional(),
   /** The name the vault's app has on the site, when the site asked for one. */
   authenticatorName: z.string().optional(),
+  /** How many passkeys the vault holds for it. */
+  passkeys: z.number().int().min(1).optional(),
 })
 export type VaultAccountView = z.infer<typeof vaultAccountViewSchema>
 
@@ -196,9 +198,12 @@ export type VaultAccountView = z.infer<typeof vaultAccountViewSchema>
 export const loginAccountsReportSchema = z.object({
   type: z.literal('accounts'),
   site: z.string(),
-  accounts: z.array(vaultAccountViewSchema).min(1),
+  /** Empty: none, and the call mapped nothing for a form to ask. */
+  accounts: z.array(vaultAccountViewSchema),
   /** The agent named this account but mapped no field to fill. */
   named: z.boolean().optional(),
+  /** The agent named this username, not one it may use here, and mapped nothing for a form to ask. */
+  missing: z.string().max(320).optional(),
 })
 
 /** The user signs in to the site through an account on another site (Continue with Google). */
@@ -258,6 +263,18 @@ export const loginAuthenticatorReportSchema = z.object({
   username: z.string(),
 })
 
+/**
+ * The vault holds a passkey of the account for this site: the browser holds it
+ * on the agent's tab for the rest of the sign-in, and nothing was filled.
+ */
+export const loginPasskeyReportSchema = z.object({
+  type: z.literal('passkey'),
+  site: z.string(),
+  username: z.string(),
+  /** Its name on the site, when the site asked for one. */
+  name: z.string().optional(),
+})
+
 export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginFillReportSchema,
   loginManualReportSchema,
@@ -267,6 +284,7 @@ export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginSessionReportSchema,
   loginAuthenticatorReportSchema,
   loginWayReportSchema,
+  loginPasskeyReportSchema,
 ])
 export type LoginResolution = z.infer<typeof loginResolutionSchema>
 
@@ -277,9 +295,12 @@ export type LoginResolution = z.infer<typeof loginResolutionSchema>
  * - authenticator_not_added: the key was read, but its code did not go in,
  *   so nothing was saved;
  * - unavailable_noted: the agent found none to add; the user's request is
- *   answered with why.
+ *   answered with why;
+ * - passkey_ready: the agent's tab records the passkey a page creates for the
+ *   next half hour, and the vault keeps it.
  */
 export const signInMethodResolutionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('passkey_ready'), site: z.string(), username: z.string() }),
   z.object({ type: z.literal('authenticator_added'), site: z.string(), username: z.string(), issuer: z.string().nullable(), report: loginFillReportSchema }),
   z.object({ type: z.literal('authenticator_not_added'), site: z.string(), username: z.string(), report: loginFillReportSchema }),
   z.object({ type: z.literal('unavailable_noted'), site: z.string(), username: z.string() }),

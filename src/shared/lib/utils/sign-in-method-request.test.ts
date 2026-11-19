@@ -26,11 +26,11 @@ describe('sign-in method request messages', () => {
 
   it('says where the user asked, in their own words', () => {
     expect(buildSignInMethodRequestMessage({ username: 'octocat', site: 'github.com', from: 'logins' }))
-      .toMatch(/^From Settings → Logins: once you are signed in, also add an authenticator app to my account octocat on github\.com with add_sign_in_method,/)
+      .toMatch(/^From Settings → Logins: once you are signed in, also add a passkey to my account octocat on github\.com,/)
   })
 
   it('reads no request from any other message', () => {
-    expect(parseSignInMethodRequestMessage('Please add an authenticator app to my GitHub')).toBeNull()
+    expect(parseSignInMethodRequestMessage('Please add a passkey to my GitHub')).toBeNull()
     expect(parseSignInMethodRequestMessage('Hi\n\n[Sent from my phone]')).toBeNull()
     expect(parseSignInMethodRequestMessage('Hi\n\n[Sent from the sign-in form for x on y] and more')).toBeNull()
   })

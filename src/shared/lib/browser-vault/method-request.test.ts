@@ -30,6 +30,13 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 vi.mock('@shared/lib/db', () => ({ db: {} }))
+const recording = vi.hoisted(() => ({
+  recordPasskeyFor: vi.fn(async () => {
+    actor.order.push('arm')
+    return true
+  }),
+}))
+vi.mock('./passkey-capture', () => recording)
 const vault = vi.hoisted(() => ({ first: true, open: true, askedIn: undefined as string | undefined }))
 vi.mock('./vault-service', () => ({
   markSignInMethodAsked: async () => {
@@ -57,17 +64,19 @@ describe('askForSignInMethod', () => {
     vault.first = true
     vault.open = false
     vault.askedIn = undefined
+    recording.recordPasskeyFor.mockClear()
   })
 
-  it('queues the user\'s request into the session at once, once per session', async () => {
+  it('arms the tab, then queues the user\'s request into the session at once, once per session', async () => {
     expect(await ask()).toBe(true)
     await backgroundSettled()
-    expect(actor.order).toEqual(['mark', 'deliver s-1', 'wait s-1'])
+    expect(actor.order).toEqual(['mark', 'arm', 'deliver s-1', 'wait s-1'])
+    expect(recording.recordPasskeyFor).toHaveBeenCalledWith({ agentSlug: 'agent-a', sessionId: 's-1', account, asked: { request: true } })
     const [message] = actor.delivered
     // Queued like a message the user sends mid-turn: never cancelling the sign-in card it waits behind.
     expect(message).toMatchObject({ sessionId: 's-1', options: { shouldQuery: true }, promote: true, coalesce: true, echo: { content: message.content } })
     expect(message).not.toHaveProperty('cancelAwaiting')
-    expect(message.content).toMatch(/^From the sign-in form: once you are signed in, also add an authenticator app to my account octocat on github\.com/)
+    expect(message.content).toMatch(/^From the sign-in form: once you are signed in, also add a passkey to my account octocat on github\.com/)
     expect(parseSignInMethodRequestMessage(String(message.content))).toEqual({ username: 'octocat', site: 'github.com', from: 'card' })
     // Answered in that turn: nothing more.
     expect(actor.delivered).toHaveLength(1)
@@ -80,7 +89,7 @@ describe('askForSignInMethod', () => {
     vault.open = true
     await ask()
     await backgroundSettled()
-    expect(actor.order).toEqual(['mark', 'deliver s-1', 'wait s-1', 'deliver s-1'])
+    expect(actor.order).toEqual(['mark', 'arm', 'deliver s-1', 'wait s-1', 'arm', 'deliver s-1'])
     expect(parseSignInMethodRequestMessage(String(actor.delivered[1].content))).toEqual({ username: 'octocat', site: 'github.com', from: 'card', again: true })
   })
 
@@ -89,7 +98,7 @@ describe('askForSignInMethod', () => {
     actor.queued = false
     await ask()
     await backgroundSettled()
-    expect(actor.order).toEqual(['mark', 'deliver s-1'])
+    expect(actor.order).toEqual(['mark', 'arm', 'deliver s-1'])
 
     vault.first = true
     actor.order = []
@@ -97,16 +106,16 @@ describe('askForSignInMethod', () => {
     actor.idle = 'timeout'
     await ask()
     await backgroundSettled()
-    expect(actor.order).toEqual(['mark', 'deliver s-1', 'wait s-1'])
+    expect(actor.order).toEqual(['mark', 'arm', 'deliver s-1', 'wait s-1'])
   })
 
-  it('on a ticked card, leaves the ask to the card\'s answer, or else to the turn\'s end', async () => {
+  it('on a ticked card, arms the tab at once and leaves the ask to the card\'s answer, or else to the turn\'s end', async () => {
     vault.open = true
     actor.queued = false
     await requestedOnCard({ agentSlug: 'agent-a', sessionId: 's-1', account })
     await backgroundSettled()
     // The card was answered with no sign-in step: asked once the turn ended.
-    expect(actor.order).toEqual(['wait s-1', 'mark', 'deliver s-1'])
+    expect(actor.order).toEqual(['arm', 'wait s-1', 'mark', 'arm', 'deliver s-1'])
 
     // Asked already, with the step that answered the card: nothing more.
     actor.order = []
@@ -114,7 +123,7 @@ describe('askForSignInMethod', () => {
     vault.askedIn = 's-1'
     await requestedOnCard({ agentSlug: 'agent-a', sessionId: 's-1', account })
     await backgroundSettled()
-    expect(actor.order).toEqual(['wait s-1'])
+    expect(actor.order).toEqual(['arm', 'wait s-1'])
     expect(actor.delivered).toEqual([])
   })
 })

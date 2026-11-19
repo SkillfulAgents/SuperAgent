@@ -3,7 +3,7 @@ import { parseSignInMethodRequestMessage } from '@shared/lib/utils/sign-in-metho
 import type { UserMessageKindSpec, UserMessageRenderProps } from './types'
 
 /**
- * The user's request for an authenticator app, made in the sign-in
+ * The user's request for a passkey or authenticator app, made in the sign-in
  * card or Settings → Logins: the agent reads it as their message, and the
  * transcript draws it as what they did there, not as something they typed.
  */
@@ -23,7 +23,7 @@ export function SignInMethodRequestNotice({ text, message }: UserMessageRenderPr
             {`Asked ${request.again ? 'again ' : ''}from ${request.from === 'card' ? 'the sign-in form' : 'Settings → Logins'}`}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground break-words">
-            Add an authenticator app to {request.username} on {request.site}. The agent was told to add one once it is signed in.
+            Add a passkey or authenticator app to {request.username} on {request.site}. The agent was told to add one once it is signed in.
           </p>
         </div>
       </div>
