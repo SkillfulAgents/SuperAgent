@@ -27,9 +27,11 @@ delivery.
    `redirect_url` set to that page's address.
 5. List integrations again to confirm that setup succeeded.
 
-Do the setup yourself by default. Hand it to the user with
-`mcp__user-input__request_integration_setup` instead when the provider listing
-marks the provider "one click", when the user wants to do it themselves or will
+Follow the provider's entry in the listing. Some (Linear, GitHub) say to hand
+the setup to the user by default, because it is quicker for them in their own
+browser, where they are already logged in. Otherwise do the setup yourself, and
+hand it to the user with `mcp__user-input__request_integration_setup` when the
+listing marks the provider "one click", when the user wants to do it themselves or will
 not log in to the service in your browser, when only they can get past a step
 (single sign-on, a second factor, an admin's approval), or when you have no
 browser. It opens the provider's setup form for them in this session, starting

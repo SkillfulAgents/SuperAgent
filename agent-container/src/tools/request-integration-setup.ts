@@ -19,8 +19,8 @@ export const requestIntegrationSetupTool = tool(
   'request_integration_setup',
   `Hand the setup of an agent integration (a chat bot, the agent's own email inbox, its own Linear or GitHub app) to the user. A card in this session opens the provider's setup form in the app, starting from the values you suggest. This returns once the integration is connected, or with an error if the user declines; that can take a while.
 
-By default set integrations up yourself, with add_agent_integration and your browser. Hand the setup over instead when:
-- list_available_integration_providers says this workspace can create the provider's app in one click (only the user can use that);
+Follow the provider's entry in list_available_integration_providers: some say to hand the setup over by default, because it is quicker for the user in their own browser than for you. Otherwise set integrations up yourself, with add_agent_integration and your browser, and hand the setup over when:
+- the listing marks the provider "one click" (this workspace can create its app, which only the user can use);
 - the user wants to do it themselves, or will not log in to the service in your browser;
 - only they can get past a step (single sign-on, a second factor, an admin's approval);
 - you have no browser.

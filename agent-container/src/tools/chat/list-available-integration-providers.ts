@@ -12,7 +12,7 @@ export const listAvailableIntegrationProvidersTool = tool(
 
 Each gives this agent its own identity on a service. Offer to do the setup for the user with your browser tools: create the app or bot in the service and fill in what it gives you. The user only logs in when a login page appears (ask with request_browser_input).
 
-A provider marked "one click" is the exception: hand its setup to the user with request_integration_setup, which also suits a user who would rather do the setup themselves.`,
+Where a provider's entry says to hand its setup to the user, or marks it "one click", do that with request_integration_setup instead; it also suits a user who would rather do the setup themselves.`,
   {},
   async () => {
     try {

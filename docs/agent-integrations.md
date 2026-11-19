@@ -197,7 +197,9 @@ connects for the agent, whichever screen set it up; declining rejects it
 (`POST /api/agents/:id/sessions/:sessionId/decline-integration-setup`). The
 provider listing marks a provider whose app a connected team directory can
 create (`oneClickWorkspace`), which only the form can use, so the agent hands
-those over by default.
+those over by default. A provider whose setup is quicker for a person in their
+own browser says so in its `agentGuide` (Linear, GitHub): the agent hands those
+over unless asked to do them or its browser is already logged in.
 
 Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
 credential panel, fields, feedback and actions. Providers supply their content and
