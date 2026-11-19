@@ -1649,10 +1649,20 @@ export async function installDiscoverableSkill(
   const skill = (await getDiscoverableSkills(agentSlug, [config])).find((s) => s.path === skillPath)
   if (!skill) return null
 
-  // A link at the destination is not listed as an installed skill, and the copy would follow
-  // it out of the workspace, so anything already at that path refuses the install.
+  // A link at the destination or its parent folder (.claude/skills) is not listed as an installed
+  // skill, and the copy would follow it out of the workspace, so refuse any link or occupied path.
+  const files = agentFiles(agentSlug)
   const directory = skillPathToDirName(skill.path)
-  if (await agentFiles(agentSlug).stat(skillWorkspacePath(directory))) return null
+  const destDir = skillWorkspacePath(directory)
+  try {
+    const resolvedRoot = await files.resolve(skillWorkspacePath())
+    if (resolvedRoot !== null && resolvedRoot !== skillWorkspacePath()) return null
+    if (await files.resolve(destDir)) return null
+  } catch (error) {
+    if (error instanceof WorkspaceFileError && error.code === 'outside-workspace') return null
+    throw error
+  }
+  if (await files.stat(destDir)) return null
 
   await installSkillFromSkillset(agentSlug, toSkillsetRefFromConfig(config), skill.path, skill.name, skill.version)
   return { name: skill.name, directory }

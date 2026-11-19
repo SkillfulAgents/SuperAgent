@@ -1849,6 +1849,17 @@ Instructions here`
       expect(await installDiscoverableSkill('test-agent', [config], config.id, SKILL_PATH)).toBeNull()
       expect(await fs.promises.readdir(elsewhere)).toEqual([])
     })
+
+    it('does not write outside the workspace when .claude/skills itself is a link', async () => {
+      const config = await teamSkillset()
+      const elsewhere = path.join(testDir, 'agents', 'other-agent', 'workspace', 'stolen')
+      await fs.promises.mkdir(elsewhere, { recursive: true })
+      await fs.promises.mkdir(path.dirname(skillsDir()), { recursive: true })
+      await fs.promises.symlink(elsewhere, skillsDir())
+
+      expect(await installDiscoverableSkill('test-agent', [config], config.id, SKILL_PATH)).toBeNull()
+      expect(await fs.promises.readdir(elsewhere)).toEqual([])
+    })
   })
 
   // ============================================================================
