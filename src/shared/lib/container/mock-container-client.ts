@@ -2614,6 +2614,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       ].join('\n'),
       'Here are the search results.'
     )],
+    // Integration setup handed to the user
+    ['ask integration setup', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_integration_setup',
+        input: { provider: 'linear', prefill: { name: 'Support Triage' }, reason: 'Finish setting up my Linear app, so the team can delegate support issues to me' },
+      },
+    ])],
     // Connected account request scenario
     ['ask account', new UserInputRequestScenario([
       {

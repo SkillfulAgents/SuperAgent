@@ -26,6 +26,7 @@ import { z } from 'zod'
 import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
 import { requiresRelay, supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
+import { findProvisioner } from '@shared/lib/team-directory/provisioning'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -86,7 +87,14 @@ xAgentChat.post('/providers', async (c) => {
         : requiresRelay(supportedTransports(definition)) && !webhookRelay ? 'Needs a webhook relay, which this host does not have.'
           : null
       if (unavailable) return { provider, name, unavailable }
-      return { provider, name, guide: setup?.agentGuide ?? `Pass its fields in config: ${definition.setup.credentialFields.join(', ') || 'none'}.` }
+      // A connected team directory creates this provider's app for the user in the
+      // setup form; an agent can't use it, so it hands the setup over instead.
+      const oneClick = webhookRelay && supportedTransports(definition).includes('relay') ? await findProvisioner(provider) : null
+      return {
+        provider, name,
+        guide: setup?.agentGuide ?? `Pass its fields in config: ${definition.setup.credentialFields.join(', ') || 'none'}.`,
+        ...(oneClick ? { oneClickWorkspace: oneClick.workspace } : {}),
+      }
     }))
     return c.json({ providers, webhookRelay })
   } catch (error) {

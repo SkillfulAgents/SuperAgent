@@ -109,6 +109,17 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
 
 const mockCaptureException = vi.fn()
 
+// A host with a webhook relay and a team directory that creates apps, when a test turns them on.
+const setupHost = vi.hoisted(() => ({ relay: false, directory: null as { directoryId: string; workspace: string } | null }))
+vi.mock('@shared/lib/webhook-relay', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/webhook-relay')>()
+  return { ...actual, getWebhookRelay: () => setupHost.relay ? { snapshot: () => ({ available: true }) } : actual.getWebhookRelay() }
+})
+vi.mock('@shared/lib/team-directory/provisioning', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/team-directory/provisioning')>()),
+  findProvisioner: async () => setupHost.directory,
+}))
+
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
 }))
@@ -131,6 +142,9 @@ vi.mock('fs', () => ({
 import xAgentChat from './x-agent-chat'
 import { chatDefinitions } from '@shared/lib/chat-integrations/definitions'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { answerSetupRequests } from '@shared/lib/agent-integrations/setup-request'
+import type { AgentIntegrationRecord } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
 
 const FIXED_TIME = new Date('2026-11-03T12:00:00Z')
@@ -362,6 +376,20 @@ describe('x-agent chat route', () => {
       for (const listed of providers) expect(listed.guide ?? listed.unavailable).toBeTruthy()
     })
 
+    it('marks a provider whose app the user can create in one click', async () => {
+      setupHost.relay = true
+      setupHost.directory = { directoryId: 'directory-1', workspace: 'Acme' }
+      try {
+        const { providers } = await (await post('providers', {})).json() as { providers: Array<{ provider: string; oneClickWorkspace?: string }> }
+        expect(providers.find(listed => listed.provider === 'slack')?.oneClickWorkspace).toBe('Acme')
+        // This one can't receive webhooks, so no directory creates its app.
+        expect(providers.find(listed => listed.provider === provider)).not.toHaveProperty('oneClickWorkspace')
+      } finally {
+        setupHost.relay = false
+        setupHost.directory = null
+      }
+    })
+
     it('completes the provider callback from the address the browser was sent to', async () => {
       mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider, status: 'active' }))
       callback.mockResolvedValue({ integrationId: 'oauth-1' })
@@ -398,6 +426,25 @@ describe('x-agent chat route', () => {
       expect(other.status).toBe(400)
       expect(mockResumeIntegration).not.toHaveBeenCalled()
     })
+  })
+
+  it('answers a setup the agent handed to the user when that provider connects', async () => {
+    const fetch = vi.fn(async (_path: string, _init?: RequestInit) => Response.json({ success: true }))
+    mockEnsureRunning.mockResolvedValue({ fetch })
+    const inputs = agentRegistry.get('agent-one').inputs
+    const ask = (id: string, provider: string) => inputs.register({ id, kind: 'integration_setup', scope: { sessionId: 'session-9' }, blocking: true, payload: { provider } })
+    await ask('tool-linear', 'linear')
+    await ask('tool-github', 'github')
+
+    await answerSetupRequests({ id: 'integration-9', agentSlug: 'agent-one', provider: 'linear' } as AgentIntegrationRecord)
+
+    expect(fetch).toHaveBeenCalledOnce()
+    const [path, init] = fetch.mock.calls[0]
+    expect(path).toBe('/inputs/tool-linear/resolve')
+    expect(JSON.parse(String(init?.body)).value).toContain('integration ID: integration-9')
+    expect(await inputs.get('tool-linear')).toBeNull()
+    expect(await inputs.get('tool-github')).not.toBeNull()
+    await inputs.resolve('tool-github', 'cancelled')
   })
 
   it('lists integrations with only active chat sessions', async () => {

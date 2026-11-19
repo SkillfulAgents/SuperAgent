@@ -12,6 +12,7 @@ import { todoWriteRenderer } from './todo-write/renderer'
 import { askUserQuestionRenderer } from './ask-user-question/renderer'
 import { requestSecretRenderer } from './request-secret/renderer'
 import { requestConnectedAccountRenderer } from './request-connected-account/renderer'
+import { requestIntegrationSetupRenderer } from './request-integration-setup/renderer'
 import { scheduleTaskRenderer } from './schedule-task/renderer'
 import { scheduleResumeRenderer } from './schedule-resume/renderer'
 import { deliverFileRenderer } from './deliver-file/renderer'
@@ -93,6 +94,7 @@ const toolRenderers = new Map([
   askUserQuestionRenderer,
   requestSecretRenderer,
   requestConnectedAccountRenderer,
+  requestIntegrationSetupRenderer,
   scheduleTaskRenderer,
   scheduleResumeRenderer,
   deliverFileRenderer,
