@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
-import { SERVICES } from './tools/search-connected-account-services'
 import { BROWSER_USE_GUIDANCE_HINT } from './tools/browser'
 import { COMPUTER_USE_GUIDANCE_HINT } from './tools/computer-use'
 import { fitIndex, mountedDrives, mountedVolumeIndexes } from './volume-mounts'
@@ -433,31 +432,17 @@ describe('generateSystemPrompt rendering', () => {
     const line = generateSystemPrompt()
       .split('\n')
       .find(candidate => candidate.startsWith('**Discover supported services:**'))
-    expect(line).toContain('mcp__user-input__search_connected_account_services')
+    expect(line).toContain('mcp__user-input__search_connection_options')
     expect(line).toContain('exact toolkit slugs before requesting a new account')
     expect(generateSystemPrompt()).not.toContain('**Supported services include:**')
   })
 
-  // The catalog reads the env at import, so platform mode needs a fresh import.
-  it('makes platform-specific accounts discoverable on Gamut\'s Composio', async () => {
-    process.env.COMPOSIO_PLATFORM_MODE = 'true'
-    vi.resetModules()
-    const { SERVICES: platformServices } = await import('./tools/search-connected-account-services')
-    const catalogSlugs = platformServices.map(service => service.slug)
-    expect(catalogSlugs).toContain('twitter')
-    expect(catalogSlugs).toContain('plaid')
-    expect(catalogSlugs).toContain('shopify')
-    expect(generateSystemPrompt()).toContain('mcp__user-input__search_connected_account_services')
-  })
-
-  // The FAQ may clarify restricted account types, but should not maintain a
-  // second full service catalog that can drift from discovery.
-  it('does not let the integrations FAQ grow a second toolkit list', () => {
-    const faq = readFileSync(join(__dirname, '..', 'docs', 'faqs', 'what-integrations-are-supported.md'), 'utf8')
-    const catalogSlugs = SERVICES.map(service => service.slug)
-    const accountTypeExamples = new Set(['facebook', 'whatsapp', 'notebook_lm'])
-    const echoed = catalogSlugs.filter(slug => !accountTypeExamples.has(slug) && new RegExp(`\`${slug}\``).test(faq))
-    expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
+  it('sends every way into a service through one search before any of them is set up', () => {
+    const out = generateSystemPrompt()
+    const section = out.slice(out.indexOf('## Choosing How to Connect a Service'), out.indexOf('## Requesting Connected Accounts (OAuth)'))
+    expect(section).toContain('mcp__user-input__search_connection_options')
+    expect(section).toMatch(/connected account.*remote MCP server.*agent integration/)
+    expect(out).not.toMatch(/search_connected_account_services|search_remote_mcp_services/)
   })
 
   it('tells the agent to keep reusable work on /workspace and large ephemeral files on /tmp', () => {

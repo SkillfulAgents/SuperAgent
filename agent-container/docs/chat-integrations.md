@@ -14,7 +14,10 @@ delivery.
    status, capabilities, and active chats.
 2. If a provider is not configured, call
    `mcp__chat__list_available_integration_providers`. It lists every provider
-   this host supports with its setup steps and the fields it needs.
+   this host supports with its setup steps and the fields it needs; pass
+   `provider` for one. When the same service also offers the user's own
+   account or MCP, `mcp__user-input__search_connection_options` shows them side
+   by side with guidance on which to use.
 3. Follow the provider's steps. Offer to do the setup yourself in your browser
    (create the bot or app, copy what it gives you); the user only logs in when a
    login page appears. For a value only the user has, use the secret-request

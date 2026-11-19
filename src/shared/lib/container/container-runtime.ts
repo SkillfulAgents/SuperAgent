@@ -41,7 +41,7 @@ import { firstCopies, listVolumes, remounted } from '@shared/lib/services/mount-
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
 import { isPlatformComposioActiveFrom } from '@shared/lib/composio/client'
 import { getDefaultAccountProvider } from '@shared/lib/account-providers/provider-factory'
-import { getAllProviders } from '@shared/lib/account-providers/service-catalog'
+import { getAgentOfferedProviders } from '@shared/lib/account-providers/service-catalog'
 import { platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
@@ -788,8 +788,7 @@ export class ContainerRuntime {
     }
     // Discovery and account requests must offer the same services as /api/providers.
     // Toolkit slugs contain no commas; an empty string explicitly offers none.
-    envVars['CONNECTED_ACCOUNT_TOOLKITS'] = getAllProviders((await getDefaultAccountProvider()).name)
-      .filter((provider) => !provider.unlisted && (!provider.platformOnly || platformComposio))
+    envVars['CONNECTED_ACCOUNT_TOOLKITS'] = getAgentOfferedProviders((await getDefaultAccountProvider()).name, platformComposio)
       .map((provider) => provider.slug)
       .join(',')
 

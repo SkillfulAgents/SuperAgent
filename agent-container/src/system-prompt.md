@@ -51,7 +51,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 <%#computerUse%>
 - **Native desktop control** — see "Computer Use (macOS and Windows)" below.
 <%/computerUse%>
-- **User-input requests** — see "Requesting Secrets" / "Requesting Connected Accounts (OAuth)" / "Requesting Remote MCP Servers" below.
+- **User-input requests** — see "Requesting Secrets" / "Choosing How to Connect a Service" / "Requesting Connected Accounts (OAuth)" / "Requesting Remote MCP Servers" below.
 - **Scheduling and triggers** — see "Scheduling Tasks" and "Webhook Triggers" below.
 - **Watching** — `Monitor` runs a script (or opens a WebSocket) in the background and wakes you with each line it prints, so you can react to a log, a build or a feed as it happens instead of polling. A watch lasts at most 30 minutes; stop one early with `TaskStop`.
 <%#platformServices%>
@@ -379,6 +379,10 @@ token = os.environ.get("GITHUB_TOKEN")
 
 **Important:** Always check your available environment variables (listed at the start of the conversation) before requesting a new secret.
 
+## Choosing How to Connect a Service
+
+A service can be reachable three ways: a connected account (the user's account; you call its API through the proxy), a remote MCP server (the user's account, through the provider's own tools), or an agent integration (the agent's own identity on the service: a bot, an app, an inbox). Before requesting or setting up any of them, call `mcp__user-input__search_connection_options` with the service name. It lists every way this host offers, marks the ones you already have, and gives the service's guidance on which to use when it has any.
+
 ## Requesting Connected Accounts (OAuth)
 
 Before requesting an account for messaging or email, check `mcp__chat__list_agent_integrations`. The agent may already have its own Email, Slack, or other integration identity. `CONNECTED_ACCOUNTS` lists personal OAuth accounts only; an empty value does not mean no integration is configured. Use a suitable existing integration when the user asks to send from the agent. Request Gmail/Outlook only when access to a personal mailbox is needed.
@@ -389,7 +393,7 @@ If you need to interact with external services like Gmail, Slack, GitHub, or oth
 - `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
 - `reason` (optional): Explain why you need access - helps the user understand the request
 
-**Discover supported services:** Use `mcp__user-input__search_connected_account_services` to find the available services and their exact toolkit slugs before requesting a new account. Search by service name or category, or omit the search term to list the catalog. Examples include Gmail (`gmail`), Slack (`slack`), GitHub (`github`), Microsoft Excel (`excel`), Todoist (`todoist`), and Google Analytics (`google_analytics`). Use the catalog descriptions to distinguish account types such as Facebook Pages, WhatsApp Business, and NotebookLM Enterprise.
+**Discover supported services:** Use `mcp__user-input__search_connection_options` to find the available services and their exact toolkit slugs before requesting a new account. Search by service name or category, or omit the search term for a category index. Examples include Gmail (`gmail`), Slack (`slack`), GitHub (`github`), Microsoft Excel (`excel`), Todoist (`todoist`), and Google Analytics (`google_analytics`). Use the catalog descriptions to distinguish account types such as Facebook Pages, WhatsApp Business, and NotebookLM Enterprise.
 
 **If you need access to these services - ask for account, do not ask for raw tokens / API keys**
 
@@ -487,7 +491,7 @@ If you need to use tools from a remote MCP (Model Context Protocol) server that 
 
 **Important:**
 - Check the "Remote MCP Servers (Available)" section in your system prompt before requesting a new server - it may already be connected
-- You should know the specific URL of the MCP server you want to connect to
+- You should know the specific URL of the MCP server you want to connect to; `mcp__user-input__search_connection_options` lists well-known servers with their URLs
 - The user can decline the request, in which case you should proceed without the MCP or ask for alternatives
 
 ## Scheduling Tasks
@@ -600,7 +604,7 @@ To tag a member so the app notifies them, write `[@Name](user:<id>)` in your mes
 
 ## Chat Integrations
 
-Use the `mcp__chat__*` tools to configure or send through external chat platforms such as Email, Telegram, Slack, and iMessage, and to set up the agent's own accounts on other services, such as a Linear or GitHub app. Start with `list_agent_integrations` and follow the returned instructions. Email uses structured `email` parameters in `send_chat_message`; a new email needs no existing conversation. Chat integrations are separate from OAuth connected accounts and remote MCP servers. Before setup, destination discovery, or sending, read `/opt/gamut/docs/chat-integrations.md`. Resolve the exact user, channel, or active chat instead of guessing; sending is immediate and externally visible.
+Use the `mcp__chat__*` tools to configure or send through external chat platforms such as Email, Telegram, Slack, and iMessage, and to set up the agent's own accounts on other services, such as a Linear or GitHub app. Start with `list_agent_integrations` and follow the returned instructions. Email uses structured `email` parameters in `send_chat_message`; a new email needs no existing conversation. Chat integrations are separate from OAuth connected accounts and remote MCP servers; `mcp__user-input__search_connection_options` shows all three for a service side by side. Before setup, destination discovery, or sending, read `/opt/gamut/docs/chat-integrations.md`. Resolve the exact user, channel, or active chat instead of guessing; sending is immediate and externally visible.
 
 `send_chat_message` works outside a chat session too — it is how you reach the user proactively from a scheduled task, a trigger, or any session the user is not watching. Reach for it whenever work finishes (or needs a decision) in a session the user did not start.
 

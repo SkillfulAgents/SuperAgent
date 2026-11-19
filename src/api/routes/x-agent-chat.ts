@@ -24,9 +24,7 @@ import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-inte
 import type { AgentIntegrationRecord, IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
 import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
-import { requiresRelay, supportedTransports } from '@shared/lib/agent-integrations/transport'
-import { getWebhookRelay } from '@shared/lib/webhook-relay'
-import { findProvisioner } from '@shared/lib/team-directory/provisioning'
+import { listAgentIntegrationProviders } from '@shared/lib/agent-integrations/agent-provider-listing'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -79,24 +77,7 @@ xAgentChat.post('/list', async (c) => {
 // POST /providers — every provider, with how this agent sets it up
 xAgentChat.post('/providers', async (c) => {
   try {
-    const webhookRelay = getWebhookRelay().snapshot().available
-    const providers = await Promise.all(agentIntegrationRegistry.listDefinitions().map(async (definition) => {
-      const { provider, name } = definition
-      const setup = agentIntegrationRegistry.getProvider(provider).setup
-      const unavailable = !setup || !(await agentIntegrationRegistry.isAvailable(provider)) ? 'Not available on this host.'
-        : requiresRelay(supportedTransports(definition)) && !webhookRelay ? 'Needs a webhook relay, which this host does not have.'
-          : null
-      if (unavailable) return { provider, name, unavailable }
-      // A connected team directory creates this provider's app for the user in the
-      // setup form; an agent can't use it, so it hands the setup over instead.
-      const oneClick = webhookRelay && supportedTransports(definition).includes('relay') ? await findProvisioner(provider) : null
-      return {
-        provider, name,
-        guide: setup?.agentGuide ?? `Pass its fields in config: ${definition.setup.credentialFields.join(', ') || 'none'}.`,
-        ...(oneClick ? { oneClickWorkspace: oneClick.workspace } : {}),
-      }
-    }))
-    return c.json({ providers, webhookRelay })
+    return c.json(await listAgentIntegrationProviders())
   } catch (error) {
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'providers' } })
     return c.json({ error: 'Failed to list integration providers' }, 500)

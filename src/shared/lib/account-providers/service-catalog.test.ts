@@ -1,43 +1,34 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import ts from 'typescript'
-import { getToolkitSlugFromProviderSlug, getProviderSlug, getProvider, isProviderSupported, SUPPORTED_PROVIDERS } from './service-catalog'
+import { getToolkitSlugFromProviderSlug, getProviderSlug, getProvider, isProviderSupported, SUPPORTED_PROVIDERS, getAgentOfferedProviders } from './service-catalog'
 
-// The container ships separately, so its catalog cannot import host code. Read
-// its literal catalog without loading the container SDK into the host suite.
-function agentCatalog(name: 'ALL_SERVICES' | 'GAMUT_PLATFORM_ACCOUNTS') {
-  const filename = path.resolve(__dirname, '../../../../agent-container/src/tools/search-connected-account-services.ts')
-  const source = ts.createSourceFile(filename, readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true)
-  const declaration = source.statements
-    .filter(ts.isVariableStatement)
-    .flatMap((statement) => statement.declarationList.declarations)
-    .find((item) => ts.isIdentifier(item.name) && item.name.text === name)
-  if (!declaration?.initializer || !ts.isArrayLiteralExpression(declaration.initializer)) {
-    throw new Error(`Missing literal agent catalog: ${name}`)
-  }
-  return declaration.initializer.elements.map((element) => {
-    if (!ts.isObjectLiteralExpression(element)) throw new Error('Expected a service object')
-    const fields: Record<string, string> = {}
-    for (const property of element.properties) {
-      if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || !ts.isStringLiteral(property.initializer)) {
-        throw new Error('Expected literal service metadata')
-      }
-      fields[property.name.text] = property.initializer.text
-    }
-    return { slug: fields.slug, displayName: fields.displayName, description: fields.description }
+describe('the account catalog agents search', () => {
+  it.each([false, true])('offers platform-only accounts only on Gamut\'s Composio (platform mode %s)', (platformMode) => {
+    const offered = getAgentOfferedProviders('composio', platformMode).map((provider) => provider.slug)
+    for (const slug of ['twitter', 'plaid', 'highlevel', 'shopify']) expect(offered.includes(slug)).toBe(platformMode)
+    for (const slug of ['jira', 'gong', 'pagerduty', 'todoist', 'excel']) expect(offered).toContain(slug)
   })
-}
 
-describe('host and agent account catalogs', () => {
-  it.each([false, true])('exposes the same account types and descriptions with platform mode %s', (platformMode) => {
-    const host = SUPPORTED_PROVIDERS
-      .filter((provider) => !provider.unlisted && (!provider.platformOnly || platformMode))
-      .map(({ slug, displayName, description }) => ({ slug, displayName, description }))
-    const agent = [...agentCatalog('ALL_SERVICES'), ...(platformMode ? agentCatalog('GAMUT_PLATFORM_ACCOUNTS') : [])]
-    const bySlug = (a: { slug: string }, b: { slug: string }) => a.slug.localeCompare(b.slug)
-    expect(agent.sort(bySlug)).toEqual(host.sort(bySlug))
-    expect(new Set(agent.map((service) => service.slug)).size).toBe(agent.length)
+  it('offers only the toolkits the selected account provider has', () => {
+    const offered = getAgentOfferedProviders('nango', true)
+    expect(offered.length).toBeGreaterThan(0)
+    expect(offered.every((provider) => provider.nangoSlug)).toBe(true)
+  })
+
+  it('gives every account a category its search and index can use', () => {
+    const missing = SUPPORTED_PROVIDERS.filter((provider) => !provider.category.trim()).map((provider) => provider.slug)
+    expect(missing).toEqual([])
+  })
+
+  // The FAQ may clarify restricted account types, but should not maintain a
+  // second full service catalog that can drift from discovery.
+  it('does not let the integrations FAQ grow a second toolkit list', () => {
+    const faq = readFileSync(path.resolve(__dirname, '../../../../agent-container/docs/faqs/what-integrations-are-supported.md'), 'utf8')
+    const accountTypeExamples = new Set(['facebook', 'whatsapp', 'notebook_lm'])
+    const echoed = SUPPORTED_PROVIDERS.map((provider) => provider.slug)
+      .filter((slug) => !accountTypeExamples.has(slug) && new RegExp(`\`${slug}\``).test(faq))
+    expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
   })
 
   it('keeps toolkit mappings unambiguous', () => {

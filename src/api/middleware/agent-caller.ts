@@ -5,7 +5,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
  * Who a container-to-host request is from: the agent its proxy token belongs to.
  *
  * `/api/x-agent` and the routers mounted beneath it (`/chat`, `/integrations`,
- * `/meetings`, `/rules`, `/sessions`) each guard themselves with this
+ * `/connections`, `/meetings`, `/rules`, `/sessions`) each guard themselves with this
  * middleware, and the parent's `use('*')` also matches the routes beneath it,
  * so one request passes through it twice. The token is looked up once: the
  * first pass records its answer against the request, and the second reads it.

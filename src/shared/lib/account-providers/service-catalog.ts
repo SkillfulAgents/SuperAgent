@@ -5,6 +5,8 @@ export interface Provider {
   displayName: string
   icon: string
   description: string
+  /** Groups the agent's connection search and its no-term index. */
+  category: string
   composioSlug?: string
   nangoSlug?: string
   /**
@@ -38,6 +40,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Gmail',
     icon: 'mail',
     description: 'Google email service',
+    category: 'Google Workspace',
     composioSlug: 'gmail',
     nangoSlug: 'google-mail',
   },
@@ -46,6 +49,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Calendar',
     icon: 'calendar',
     description: 'Google calendar and scheduling',
+    category: 'Google Workspace',
     composioSlug: 'googlecalendar',
     nangoSlug: 'google-calendar',
   },
@@ -54,6 +58,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Drive',
     icon: 'hard-drive',
     description: 'Google cloud storage',
+    category: 'Google Workspace',
     composioSlug: 'googledrive',
     nangoSlug: 'google-drive',
   },
@@ -62,6 +67,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Sheets',
     icon: 'table',
     description: 'Google spreadsheets',
+    category: 'Google Workspace',
     composioSlug: 'googlesheets',
     nangoSlug: 'google-sheets',
   },
@@ -70,6 +76,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Docs',
     icon: 'file-text',
     description: 'Google documents',
+    category: 'Google Workspace',
     composioSlug: 'googledocs',
     nangoSlug: 'google-docs',
   },
@@ -78,6 +85,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Slides',
     icon: 'presentation',
     description: 'Google presentations',
+    category: 'Google Workspace',
     composioSlug: 'googleslides',
     nangoSlug: 'google-slides',
   },
@@ -86,6 +94,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Meet',
     icon: 'video',
     description: 'Google video conferencing',
+    category: 'Google Workspace',
     composioSlug: 'googlemeet',
     nangoSlug: 'google-meet',
   },
@@ -94,6 +103,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Tasks',
     icon: 'check-square',
     description: 'Google task management',
+    category: 'Google Workspace',
     composioSlug: 'googletasks',
     nangoSlug: 'google-tasks',
   },
@@ -102,6 +112,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'YouTube',
     icon: 'play-circle',
     description: 'Video platform',
+    category: 'Google Workspace',
     composioSlug: 'youtube',
     nangoSlug: 'youtube',
   },
@@ -112,6 +123,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Outlook',
     icon: 'mail',
     description: 'Microsoft email and calendar',
+    category: 'Microsoft',
     composioSlug: 'outlook',
     nangoSlug: 'outlook',
   },
@@ -120,6 +132,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Microsoft Teams',
     icon: 'message-square',
     description: 'Microsoft team communication',
+    category: 'Microsoft',
     composioSlug: 'microsoft_teams',
     nangoSlug: 'microsoft-teams',
   },
@@ -130,6 +143,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Slack',
     icon: 'message-square',
     description: 'Team communication platform',
+    category: 'Communication',
     composioSlug: 'slack',
     nangoSlug: 'slack',
   },
@@ -138,6 +152,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Discord',
     icon: 'message-circle',
     description: 'Community chat platform',
+    category: 'Communication',
     composioSlug: 'discord',
     nangoSlug: 'discord',
   },
@@ -148,6 +163,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'GitHub',
     icon: 'github',
     description: 'Code repository and collaboration',
+    category: 'Developer Tools',
     composioSlug: 'github',
     nangoSlug: 'github',
   },
@@ -156,6 +172,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'GitLab',
     icon: 'git-branch',
     description: 'Code repository and CI/CD',
+    category: 'Developer Tools',
     composioSlug: 'gitlab',
     nangoSlug: 'gitlab',
   },
@@ -164,6 +181,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Bitbucket',
     icon: 'git-branch',
     description: 'Code repository and pipelines',
+    category: 'Developer Tools',
     composioSlug: 'bitbucket',
     nangoSlug: 'bitbucket',
   },
@@ -172,6 +190,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Sentry',
     icon: 'bug',
     description: 'Error tracking and monitoring',
+    category: 'Developer Tools',
     composioSlug: 'sentry',
     nangoSlug: 'sentry',
   },
@@ -182,6 +201,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Notion',
     icon: 'file-text',
     description: 'Workspace and documentation',
+    category: 'Project Management',
     composioSlug: 'notion',
     nangoSlug: 'notion',
   },
@@ -190,6 +210,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Linear',
     icon: 'check-square',
     description: 'Issue tracking and project management',
+    category: 'Project Management',
     composioSlug: 'linear',
     nangoSlug: 'linear',
   },
@@ -198,6 +219,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Confluence',
     icon: 'book-open',
     description: 'Team documentation and wiki',
+    category: 'Project Management',
     composioSlug: 'confluence',
     nangoSlug: 'confluence',
   },
@@ -206,6 +228,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Asana',
     icon: 'check-circle',
     description: 'Project and task management',
+    category: 'Project Management',
     composioSlug: 'asana',
     nangoSlug: 'asana',
   },
@@ -214,6 +237,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Monday.com',
     icon: 'layout-grid',
     description: 'Work management platform',
+    category: 'Project Management',
     composioSlug: 'monday',
     nangoSlug: 'monday',
   },
@@ -222,6 +246,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'ClickUp',
     icon: 'check-circle',
     description: 'Project management and productivity',
+    category: 'Project Management',
     composioSlug: 'clickup',
     nangoSlug: 'clickup',
   },
@@ -230,6 +255,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Trello',
     icon: 'layout-grid',
     description: 'Project boards and task management',
+    category: 'Project Management',
     composioSlug: 'trello',
     nangoSlug: 'trello',
   },
@@ -240,6 +266,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'HubSpot',
     icon: 'users',
     description: 'CRM and marketing platform',
+    category: 'CRM & Sales',
     composioSlug: 'hubspot',
     nangoSlug: 'hubspot',
   },
@@ -248,6 +275,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Salesforce',
     icon: 'cloud',
     description: 'CRM and sales platform',
+    category: 'CRM & Sales',
     composioSlug: 'salesforce',
     nangoSlug: 'salesforce',
   },
@@ -256,6 +284,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zendesk',
     icon: 'headphones',
     description: 'Customer support and ticketing',
+    category: 'CRM & Sales',
     composioSlug: 'zendesk',
     nangoSlug: 'zendesk',
   },
@@ -264,6 +293,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Intercom',
     icon: 'message-circle',
     description: 'Customer messaging platform',
+    category: 'CRM & Sales',
     composioSlug: 'intercom',
     nangoSlug: 'intercom',
   },
@@ -272,6 +302,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'HighLevel',
     icon: 'briefcase',
     description: 'CRM: contacts, conversations, calendars',
+    category: 'CRM & Sales',
     composioSlug: 'highlevel',
     platformOnly: true,
   },
@@ -282,6 +313,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Airtable',
     icon: 'table',
     description: 'Spreadsheet-database hybrid',
+    category: 'Cloud Storage & Documents',
     composioSlug: 'airtable',
     nangoSlug: 'airtable',
   },
@@ -290,6 +322,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Dropbox',
     icon: 'hard-drive',
     description: 'Cloud file storage',
+    category: 'Cloud Storage & Documents',
     composioSlug: 'dropbox',
     nangoSlug: 'dropbox',
   },
@@ -298,6 +331,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Box',
     icon: 'box',
     description: 'Cloud content management',
+    category: 'Cloud Storage & Documents',
     composioSlug: 'box',
     nangoSlug: 'box',
   },
@@ -308,6 +342,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'LinkedIn',
     icon: 'briefcase',
     description: 'Professional networking',
+    category: 'Social Media',
     composioSlug: 'linkedin',
     nangoSlug: 'linkedin',
   },
@@ -316,6 +351,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Instagram',
     icon: 'camera',
     description: 'Photo and video sharing',
+    category: 'Social Media',
     composioSlug: 'instagram',
     nangoSlug: 'instagram',
   },
@@ -324,6 +360,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'X',
     icon: 'at-sign',
     description: 'Posts, timelines, and direct messages',
+    category: 'Social Media',
     composioSlug: 'twitter',
     platformOnly: true,
   },
@@ -334,6 +371,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Shopify',
     icon: 'shopping-bag',
     description: 'Online store: products, orders, customers',
+    category: 'E-commerce',
     composioSlug: 'shopify',
     platformOnly: true,
     // Shopify only allows installing Gamut's app from its App Store listing (rule 2.3.1).
@@ -348,6 +386,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Stripe',
     icon: 'credit-card',
     description: 'Payment processing',
+    category: 'Finance',
     composioSlug: 'stripe',
     nangoSlug: 'stripe',
   },
@@ -356,6 +395,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'QuickBooks',
     icon: 'calculator',
     description: 'Accounting and bookkeeping',
+    category: 'Finance',
     composioSlug: 'quickbooks',
     nangoSlug: 'quickbooks',
   },
@@ -364,6 +404,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Xero',
     icon: 'calculator',
     description: 'Accounting software',
+    category: 'Finance',
     composioSlug: 'xero',
     nangoSlug: 'xero',
   },
@@ -372,6 +413,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Plaid',
     icon: 'landmark',
     description: 'Bank accounts, balances, and transactions',
+    category: 'Finance',
     // Plaid Link is not OAuth: the platform's toolkit bridge hosts it as a custom toolkit.
     composioSlug: 'custom_plaid',
     platformOnly: true,
@@ -383,6 +425,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Mailchimp',
     icon: 'mail',
     description: 'Email marketing platform',
+    category: 'Marketing',
     composioSlug: 'mailchimp',
     nangoSlug: 'mailchimp',
   },
@@ -393,6 +436,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Figma',
     icon: 'pen-tool',
     description: 'Collaborative design tool',
+    category: 'Design',
     composioSlug: 'figma',
     nangoSlug: 'figma',
   },
@@ -401,6 +445,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Canva',
     icon: 'pen-tool',
     description: 'Designs, exports, and brand templates',
+    category: 'Design',
     composioSlug: 'canva',
   },
 
@@ -410,6 +455,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Calendly',
     icon: 'calendar',
     description: 'Scheduling and appointments',
+    category: 'Scheduling & Forms',
     composioSlug: 'calendly',
     nangoSlug: 'calendly',
   },
@@ -418,6 +464,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Typeform',
     icon: 'file-text',
     description: 'Forms and surveys',
+    category: 'Scheduling & Forms',
     composioSlug: 'typeform',
     nangoSlug: 'typeform',
   },
@@ -428,6 +475,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoom',
     icon: 'video',
     description: 'Video conferencing',
+    category: 'Communication',
     composioSlug: 'zoom',
     nangoSlug: 'zoom',
   },
@@ -438,6 +486,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Aircall',
     icon: 'phone',
     description: 'Business calls, contacts, teams, and phone numbers',
+    category: 'Communication',
     composioSlug: 'aircall',
   },
   {
@@ -445,6 +494,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Dialpad',
     icon: 'phone',
     description: 'Business phone, messaging, and contact center',
+    category: 'Communication',
     composioSlug: 'dialpad',
   },
   {
@@ -452,6 +502,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Discord Bot',
     icon: 'message-circle',
     description: 'Discord server access through a bot',
+    category: 'Communication',
     composioSlug: 'discordbot',
   },
   {
@@ -459,6 +510,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Fathom',
     icon: 'video',
     description: 'Meeting recordings, transcripts, and summaries',
+    category: 'Communication',
     composioSlug: 'fathom',
   },
   {
@@ -466,6 +518,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Roam',
     icon: 'message-square',
     description: 'Roam HQ messaging, files, and collaboration',
+    category: 'Communication',
     composioSlug: 'roam',
   },
   {
@@ -473,6 +526,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Slack Bot',
     icon: 'message-square',
     description: 'Workspace search and history with messaging as a Slack bot',
+    category: 'Communication',
     composioSlug: 'slackbot',
   },
   {
@@ -480,6 +534,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Webex',
     icon: 'video',
     description: 'Meetings, messaging, and team collaboration',
+    category: 'Communication',
     composioSlug: 'webex',
   },
   {
@@ -487,6 +542,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'WhatsApp Business',
     icon: 'message-circle',
     description: 'Customer messaging through the WhatsApp Business API',
+    category: 'Communication',
     composioSlug: 'whatsapp',
   },
   {
@@ -494,6 +550,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoho Mail',
     icon: 'mail',
     description: 'Business email and mailbox management',
+    category: 'Communication',
     composioSlug: 'zoho_mail',
   },
 
@@ -503,6 +560,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Apaleo',
     icon: 'building',
     description: 'Property management, reservations, and billing',
+    category: 'Hospitality',
     composioSlug: 'apaleo',
   },
 
@@ -512,6 +570,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Attio',
     icon: 'users',
     description: 'Customer records, relationship data, tasks, and comments',
+    category: 'CRM & Sales',
     composioSlug: 'attio',
   },
   {
@@ -519,6 +578,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Blackbaud',
     icon: 'heart',
     description: 'Nonprofit fundraising and donor management',
+    category: 'CRM & Sales',
     composioSlug: 'blackbaud',
   },
   {
@@ -526,6 +586,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Capsule CRM',
     icon: 'users',
     description: 'Customer relationships, sales pipelines, and tasks',
+    category: 'CRM & Sales',
     composioSlug: 'capsule_crm',
   },
   {
@@ -533,6 +594,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Microsoft Dynamics 365',
     icon: 'users',
     description: 'Business customer records and operations',
+    category: 'CRM & Sales',
     composioSlug: 'dynamics365',
   },
   {
@@ -540,6 +602,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Gong',
     icon: 'phone',
     description: 'Sales calls, transcripts, and revenue intelligence',
+    category: 'CRM & Sales',
     composioSlug: 'gong',
   },
   {
@@ -547,6 +610,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Gorgias',
     icon: 'headphones',
     description: 'E-commerce support tickets and customer conversations',
+    category: 'CRM & Sales',
     composioSlug: 'gorgias',
   },
   {
@@ -554,6 +618,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoho CRM',
     icon: 'users',
     description: 'Customer records, sales pipelines, and CRM workflows',
+    category: 'CRM & Sales',
     composioSlug: 'zoho',
   },
   {
@@ -561,6 +626,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoho Bigin',
     icon: 'users',
     description: 'Small business sales pipelines and contacts',
+    category: 'CRM & Sales',
     composioSlug: 'zoho_bigin',
   },
   {
@@ -568,6 +634,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoho Desk',
     icon: 'headphones',
     description: 'Support tickets and customer service',
+    category: 'CRM & Sales',
     composioSlug: 'zoho_desk',
   },
 
@@ -577,6 +644,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Basecamp',
     icon: 'check-square',
     description: 'Projects, tasks, and team collaboration',
+    category: 'Project Management',
     composioSlug: 'basecamp',
   },
   {
@@ -584,6 +652,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Dart',
     icon: 'check-square',
     description: 'Projects, tasks, and team planning',
+    category: 'Project Management',
     composioSlug: 'dart',
   },
   {
@@ -591,6 +660,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Jira',
     icon: 'check-square',
     description: 'Issues, projects, and agile planning',
+    category: 'Project Management',
     composioSlug: 'jira',
   },
   {
@@ -598,6 +668,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Productboard',
     icon: 'layout-grid',
     description: 'Customer feedback, features, and product roadmaps',
+    category: 'Project Management',
     composioSlug: 'productboard',
   },
   {
@@ -605,6 +676,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Wrike',
     icon: 'check-square',
     description: 'Projects, tasks, and team workflows',
+    category: 'Project Management',
     composioSlug: 'wrike',
   },
 
@@ -614,6 +686,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'BoldSign',
     icon: 'pen-tool',
     description: 'Electronic signatures and document signing',
+    category: 'Cloud Storage & Documents',
     composioSlug: 'boldsign',
   },
 
@@ -623,6 +696,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Cal.com',
     icon: 'calendar',
     description: 'Booking pages, availability, and scheduling',
+    category: 'Scheduling & Forms',
     composioSlug: 'cal',
   },
 
@@ -632,6 +706,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Contentful',
     icon: 'file-text',
     description: 'Content management and publishing',
+    category: 'Content & Marketing',
     composioSlug: 'contentful',
   },
   {
@@ -639,6 +714,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Crowdin',
     icon: 'languages',
     description: 'Translation and localization management',
+    category: 'Content & Marketing',
     composioSlug: 'crowdin',
   },
   {
@@ -646,6 +722,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Dub',
     icon: 'link',
     description: 'Branded short links and link analytics',
+    category: 'Content & Marketing',
     composioSlug: 'dub',
   },
   {
@@ -653,6 +730,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Ads',
     icon: 'megaphone',
     description: 'Advertising campaigns and performance reporting',
+    category: 'Content & Marketing',
     composioSlug: 'googleads',
   },
   {
@@ -660,6 +738,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Kit',
     icon: 'mail',
     description: 'Creator email marketing and subscriber management',
+    category: 'Content & Marketing',
     composioSlug: 'kit',
   },
   {
@@ -667,6 +746,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Omnisend',
     icon: 'mail',
     description: 'E-commerce email and SMS marketing',
+    category: 'Content & Marketing',
     composioSlug: 'omnisend',
   },
   {
@@ -674,6 +754,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Pinterest Ads',
     icon: 'megaphone',
     description: 'Pinterest advertising campaigns and reporting',
+    category: 'Content & Marketing',
     composioSlug: 'pinterest_ads',
   },
   {
@@ -681,6 +762,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Reddit Ads',
     icon: 'megaphone',
     description: 'Reddit advertising campaigns and account data',
+    category: 'Content & Marketing',
     composioSlug: 'reddit_ads',
   },
   {
@@ -688,6 +770,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'TikTok Ads',
     icon: 'megaphone',
     description: 'Business advertising campaigns, creatives, and reports',
+    category: 'Content & Marketing',
     composioSlug: 'tiktok_ads',
   },
 
@@ -697,6 +780,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Daytona',
     icon: 'terminal',
     description: 'Daytona account profile',
+    category: 'Developer Tools',
     composioSlug: 'daytona',
   },
   {
@@ -704,6 +788,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Hugging Face',
     icon: 'cpu',
     description: 'Hugging Face account profile',
+    category: 'Developer Tools',
     composioSlug: 'hugging_face',
   },
   {
@@ -711,6 +796,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'PagerDuty',
     icon: 'bell',
     description: 'Incident response and on-call operations',
+    category: 'Developer Tools',
     composioSlug: 'pagerduty',
   },
   {
@@ -718,6 +804,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Prisma',
     icon: 'database',
     description: 'Data Platform projects, environments, and database services',
+    category: 'Developer Tools',
     composioSlug: 'prisma',
   },
   {
@@ -725,6 +812,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Stack Exchange',
     icon: 'message-circle',
     description: 'Questions, answers, and communities',
+    category: 'Developer Tools',
     composioSlug: 'stack_exchange',
   },
   {
@@ -732,6 +820,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Supabase',
     icon: 'database',
     description: 'Supabase projects and Management API operations',
+    category: 'Developer Tools',
     composioSlug: 'supabase',
   },
   {
@@ -739,6 +828,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'WakaTime',
     icon: 'clock',
     description: 'Coding activity, projects, and time tracking',
+    category: 'Developer Tools',
     composioSlug: 'wakatime',
   },
 
@@ -748,6 +838,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Eventbrite',
     icon: 'ticket',
     description: 'Events, tickets, and attendee management',
+    category: 'Events & Ticketing',
     composioSlug: 'eventbrite',
   },
   {
@@ -755,6 +846,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Ticketmaster',
     icon: 'ticket',
     description: 'Event discovery and ticketing',
+    category: 'Events & Ticketing',
     composioSlug: 'ticketmaster',
   },
 
@@ -764,6 +856,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Microsoft Excel',
     icon: 'table',
     description: 'Workbooks in OneDrive for Business and SharePoint',
+    category: 'Microsoft',
     composioSlug: 'excel',
   },
   {
@@ -771,6 +864,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'OneDrive',
     icon: 'hard-drive',
     description: 'Microsoft cloud files and folders',
+    category: 'Microsoft',
     composioSlug: 'one_drive',
   },
   {
@@ -778,6 +872,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'SharePoint',
     icon: 'files',
     description: 'Team sites, documents, and lists',
+    category: 'Microsoft',
     composioSlug: 'share_point',
   },
 
@@ -787,6 +882,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Exist',
     icon: 'bar-chart',
     description: 'Personal activity tracking and analytics',
+    category: 'Personal Productivity',
     composioSlug: 'exist',
   },
   {
@@ -794,6 +890,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Harvest',
     icon: 'clock',
     description: 'Time tracking, projects, and invoicing',
+    category: 'Personal Productivity',
     composioSlug: 'harvest',
   },
   {
@@ -801,6 +898,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Linkhut',
     icon: 'bookmark',
     description: 'Bookmarks and shared links',
+    category: 'Personal Productivity',
     composioSlug: 'linkhut',
   },
   {
@@ -808,6 +906,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Pushbullet',
     icon: 'bell',
     description: 'Notifications, links, and files across devices',
+    category: 'Personal Productivity',
     composioSlug: 'pushbullet',
   },
   {
@@ -815,6 +914,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'TickTick',
     icon: 'check-square',
     description: 'Tasks, projects, and to-do lists',
+    category: 'Personal Productivity',
     composioSlug: 'ticktick',
   },
   {
@@ -822,6 +922,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Timely',
     icon: 'clock',
     description: 'Time tracking, projects, and timesheets',
+    category: 'Personal Productivity',
     composioSlug: 'timely',
   },
   {
@@ -829,6 +930,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Todoist',
     icon: 'check-square',
     description: 'Tasks, projects, and reminders',
+    category: 'Personal Productivity',
     composioSlug: 'todoist',
   },
   {
@@ -836,6 +938,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Yandex',
     icon: 'search',
     description: 'Yandex account profile',
+    category: 'Personal Productivity',
     composioSlug: 'yandex',
   },
 
@@ -845,6 +948,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Facebook Pages',
     icon: 'message-circle',
     description: 'Facebook Pages, posts, and audience engagement',
+    category: 'Social Media',
     composioSlug: 'facebook',
   },
   {
@@ -852,6 +956,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Pinterest',
     icon: 'image',
     description: 'Pins, boards, and visual discovery',
+    category: 'Social Media',
     composioSlug: 'pinterest',
   },
   {
@@ -859,6 +964,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Reddit',
     icon: 'message-circle',
     description: 'Communities, posts, and discussions',
+    category: 'Social Media',
     composioSlug: 'reddit',
   },
   {
@@ -866,6 +972,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Twitch',
     icon: 'video',
     description: 'Live streams, channels, and communities',
+    category: 'Social Media',
     composioSlug: 'twitch',
   },
 
@@ -875,6 +982,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'FreeAgent',
     icon: 'calculator',
     description: 'Small business accounting, invoices, and expenses',
+    category: 'Finance',
     composioSlug: 'freeagent',
   },
   {
@@ -882,6 +990,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'FreshBooks',
     icon: 'calculator',
     description: 'Invoices, expenses, and time tracking',
+    category: 'Finance',
     composioSlug: 'freshbooks',
   },
   {
@@ -889,6 +998,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Moneybird',
     icon: 'calculator',
     description: 'Invoices, expenses, and small business accounting',
+    category: 'Finance',
     composioSlug: 'moneybird',
   },
   {
@@ -896,6 +1006,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Splitwise',
     icon: 'receipt',
     description: 'Shared expenses, groups, and balances',
+    category: 'Finance',
     composioSlug: 'splitwise',
   },
   {
@@ -903,6 +1014,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Square',
     icon: 'credit-card',
     description: 'Payments, orders, customers, and inventory',
+    category: 'Finance',
     composioSlug: 'square',
   },
   {
@@ -910,6 +1022,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'YNAB',
     icon: 'calculator',
     description: 'Budgets, accounts, and spending',
+    category: 'Finance',
     composioSlug: 'ynab',
   },
   {
@@ -917,6 +1030,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoho Books',
     icon: 'calculator',
     description: 'Accounting, invoices, and expenses',
+    category: 'Finance',
     composioSlug: 'zoho_books',
   },
   {
@@ -924,6 +1038,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoho Invoice',
     icon: 'receipt',
     description: 'Invoices, recurring billing, and expenses',
+    category: 'Finance',
     composioSlug: 'zoho_invoice',
   },
 
@@ -933,6 +1048,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Analytics',
     icon: 'bar-chart',
     description: 'Website and app traffic reports',
+    category: 'Analytics & Data',
     composioSlug: 'google_analytics',
   },
   {
@@ -940,6 +1056,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google BigQuery',
     icon: 'database',
     description: 'Cloud data warehouse and SQL queries',
+    category: 'Analytics & Data',
     composioSlug: 'googlebigquery',
   },
   {
@@ -947,6 +1064,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Search Console',
     icon: 'search',
     description: 'Search performance, sitemaps, and URL inspection',
+    category: 'Analytics & Data',
     composioSlug: 'google_search_console',
   },
   {
@@ -954,6 +1072,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'NotebookLM Enterprise',
     icon: 'book-open',
     description: 'Enterprise notebooks and sources in a Google Cloud project',
+    category: 'Analytics & Data',
     composioSlug: 'notebook_lm',
   },
 
@@ -963,6 +1082,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Classroom',
     icon: 'graduation-cap',
     description: 'Classes, coursework, and student submissions',
+    category: 'Google Workspace',
     composioSlug: 'google_classroom',
   },
   {
@@ -970,6 +1090,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Photos',
     icon: 'image',
     description: 'Photo albums and media management',
+    category: 'Google Workspace',
     composioSlug: 'googlephotos',
   },
   {
@@ -977,6 +1098,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Super',
     icon: 'cloud',
     description: 'Multiple Google services through one connection',
+    category: 'Google Workspace',
     composioSlug: 'googlesuper',
   },
 
@@ -986,6 +1108,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Google Maps',
     icon: 'map',
     description: 'Location data, places, and directions',
+    category: 'Maps & Location',
     composioSlug: 'google_maps',
   },
 
@@ -995,6 +1118,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Greenhouse',
     icon: 'users',
     description: 'Recruiting, candidates, and job applications',
+    category: 'Recruiting',
     composioSlug: 'greenhouse',
   },
 
@@ -1004,6 +1128,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Gumroad',
     icon: 'shopping-bag',
     description: 'Product sales, customers, and memberships',
+    category: 'E-commerce',
     composioSlug: 'gumroad',
   },
   {
@@ -1011,6 +1136,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Shippo',
     icon: 'package',
     description: 'Shipping labels, packages, and tracking',
+    category: 'E-commerce',
     composioSlug: 'shippo',
   },
   {
@@ -1018,6 +1144,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zoho Inventory',
     icon: 'package',
     description: 'Stock, orders, and inventory management',
+    category: 'E-commerce',
     composioSlug: 'zoho_inventory',
   },
 
@@ -1027,6 +1154,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Miro',
     icon: 'layout-grid',
     description: 'Collaborative whiteboards and visual planning',
+    category: 'Design',
     composioSlug: 'miro',
   },
   {
@@ -1034,6 +1162,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Mural',
     icon: 'layout-grid',
     description: 'Visual collaboration and digital whiteboards',
+    category: 'Design',
     composioSlug: 'mural',
   },
   {
@@ -1041,6 +1170,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Zeplin',
     icon: 'pen-tool',
     description: 'Design projects, screens, components, and assets',
+    category: 'Design',
     composioSlug: 'zeplin',
   },
 
@@ -1050,6 +1180,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'ServiceM8',
     icon: 'wrench',
     description: 'Field service jobs, scheduling, quotes, and invoices',
+    category: 'Field Services',
     composioSlug: 'servicem8',
   },
 ]
@@ -1072,6 +1203,11 @@ export function getAllProviders(providerName?: ProviderName): Provider[] {
   if (!providerName) return SUPPORTED_PROVIDERS
   const key = SLUG_KEY[providerName]
   return SUPPORTED_PROVIDERS.filter((p) => p[key] != null)
+}
+
+/** The accounts an agent may discover and request: the agent's search and account requests both offer exactly these. */
+export function getAgentOfferedProviders(providerName: ProviderName, platformComposio: boolean): Provider[] {
+  return getAllProviders(providerName).filter((provider) => !provider.unlisted && (!provider.platformOnly || platformComposio))
 }
 
 export function isProviderSupported(slug: string, providerName?: ProviderName): boolean {

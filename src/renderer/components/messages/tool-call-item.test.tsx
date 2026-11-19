@@ -72,7 +72,7 @@ describe('ToolCallItem', () => {
       'mcp__user-input__schedule_task',
       'mcp__user-input__deliver_file',
       'mcp__user-input__deliver_session',
-      'mcp__user-input__search_remote_mcp_services',
+      'mcp__user-input__search_connection_options',
     ])('preserves the waiting label for %s independently of blocking', (name) => {
       render(<ToolCallItem
         toolCall={createToolCall({ name, result: undefined })}
