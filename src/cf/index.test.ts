@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deployAuthorized, serveAppShell, withClientAddress } from './index'
+import { deployAuthorized, serveAppShell, servedByApi, withClientAddress } from './index'
 
 describe('withClientAddress', () => {
   it("replaces the address a client sent with Cloudflare's", () => {
@@ -49,6 +49,16 @@ describe('deployAuthorized', () => {
   it('lets nobody in while no deploy secret is set', async () => {
     expect(await deployAuthorized(step('Bearer '), undefined)).toBe(false)
     expect(await deployAuthorized(step('Bearer '), '')).toBe(false)
+  })
+})
+
+describe('servedByApi', () => {
+  it('sends the API and the Platform sign-in launcher to the API, and every other path to the UI', () => {
+    expect(servedByApi('/api/agents')).toBe(true)
+    expect(servedByApi('/auth/platform/start')).toBe(true)
+    expect(servedByApi('/agents/sales')).toBe(false)
+    expect(servedByApi('/authors')).toBe(false)
+    expect(servedByApi('/')).toBe(false)
   })
 })
 

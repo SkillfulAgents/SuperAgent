@@ -63,7 +63,7 @@ export default {
       }
       return Response.json({ version: env.VERSION?.id ?? null })
     }
-    if (!pathname.startsWith('/api/')) return serveAppShell(request, env.ASSETS)
+    if (!servedByApi(pathname)) return serveAppShell(request, env.ASSETS)
     try {
       // Before this isolate boots: the task manager object serves the request whole.
       if (needsLiveConnections(pathname)) {
@@ -88,6 +88,15 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>
+
+/**
+ * True for a path the API answers rather than the UI: everything under /api/, and the Platform
+ * sign-in launcher the API mounts at /auth in auth mode (src/api/index.ts), which Platform's
+ * "Open Cloud Agents" link targets.
+ */
+export function servedByApi(pathname: string): boolean {
+  return pathname.startsWith('/api/') || pathname.startsWith('/auth/')
+}
 
 /**
  * True when the request carries the deploy secret as a bearer token; with no secret set, nobody is
