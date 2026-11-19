@@ -8,6 +8,7 @@ import xAgentRules from './routes/x-agent-rules'
 import xAgentIntegrations from './routes/x-agent-integrations'
 import xAgentMeetings from './routes/x-agent-meetings'
 import xAgentSessions from './routes/x-agent-sessions'
+import xAgentSkills from './routes/x-agent-skills'
 import webSearch from './routes/web-search'
 import volumes from './routes/volumes'
 import volumeDefinitions from './routes/volume-definitions'
@@ -233,6 +234,7 @@ app.route('/api/x-agent/integrations', xAgentIntegrations)
 app.route('/api/x-agent/meetings', xAgentMeetings)
 app.route('/api/x-agent/rules', xAgentRules)
 app.route('/api/x-agent/sessions', xAgentSessions)
+app.route('/api/x-agent/skills', xAgentSkills)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)

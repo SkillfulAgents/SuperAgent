@@ -146,6 +146,7 @@ import {
   refreshAgentSkills,
   removeSkillsetCache,
   publishSkillToSkillset,
+  installDiscoverableSkill,
   getSkillPublishInfo,
   validateSkillsetUrl,
   createSkillPR,
@@ -1615,6 +1616,65 @@ Instructions here`
       )
       const storedOriginal = await fs.promises.readFile(originalPath, 'utf-8')
       expect(storedOriginal).toBe(SKILL_MD_PLAIN)
+    })
+  })
+
+  // ============================================================================
+  // Install a team skill on an agent's request
+  // ============================================================================
+
+  describe('installDiscoverableSkill', () => {
+    const SKILL_PATH = 'skills/invoice-parser/SKILL.md'
+    const teamSkillset = async () => {
+      const config = buildSkillsetConfig({ id: 'team-skills', name: 'Team Skills' })
+      await createSkillsetCache(
+        config.id,
+        buildIndex({ skills: [{ name: 'invoice-parser', path: SKILL_PATH, description: 'Read fields from invoice PDFs', version: '1.2.0' }] }),
+        { [SKILL_PATH]: '# Invoice Parser\nSteps for the agent.' },
+      )
+      return config
+    }
+    const skillsDir = () => path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills')
+
+    it('installs a listed skill with the name and version the index gives', async () => {
+      const config = await teamSkillset()
+
+      const installed = await installDiscoverableSkill('test-agent', [config], config.id, SKILL_PATH)
+
+      expect(installed).toEqual({ name: 'invoice-parser', directory: 'invoice-parser' })
+      expect(await readMetadata('test-agent', 'invoice-parser')).toMatchObject({ skillPath: SKILL_PATH, installedVersion: '1.2.0' })
+    })
+
+    it('installs nothing for a path the index does not list or a skill the agent already has', async () => {
+      const config = await teamSkillset()
+
+      expect(await installDiscoverableSkill('test-agent', [config], config.id, '../../outside/SKILL.md')).toBeNull()
+      expect(await installDiscoverableSkill('test-agent', [config], 'unknown-skillset', SKILL_PATH)).toBeNull()
+
+      await installDiscoverableSkill('test-agent', [config], config.id, SKILL_PATH)
+      expect(await installDiscoverableSkill('test-agent', [config], config.id, SKILL_PATH)).toBeNull()
+    })
+
+    it('does not write through a link the agent put where the skill would go', async () => {
+      const config = await teamSkillset()
+      const elsewhere = path.join(testDir, 'agents', 'other-agent', 'workspace', 'reports')
+      await fs.promises.mkdir(elsewhere, { recursive: true })
+      await fs.promises.mkdir(skillsDir(), { recursive: true })
+      await fs.promises.symlink(elsewhere, path.join(skillsDir(), 'invoice-parser'))
+
+      expect(await installDiscoverableSkill('test-agent', [config], config.id, SKILL_PATH)).toBeNull()
+      expect(await fs.promises.readdir(elsewhere)).toEqual([])
+    })
+
+    it('does not write outside the workspace when .claude/skills itself is a link', async () => {
+      const config = await teamSkillset()
+      const elsewhere = path.join(testDir, 'agents', 'other-agent', 'workspace', 'stolen')
+      await fs.promises.mkdir(elsewhere, { recursive: true })
+      await fs.promises.mkdir(path.dirname(skillsDir()), { recursive: true })
+      await fs.promises.symlink(elsewhere, skillsDir())
+
+      expect(await installDiscoverableSkill('test-agent', [config], config.id, SKILL_PATH)).toBeNull()
+      expect(await fs.promises.readdir(elsewhere)).toEqual([])
     })
   })
 

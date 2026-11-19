@@ -284,7 +284,7 @@ When you need to write code to accomplish a task:
 1. **FIRST**: Check existing Skills - they are already listed in the Skill tool's "Available skills" section in your context. You do NOT need to run bash commands or search the filesystem to see available skills.
 2. **THEN**:
    - If a **similar Skill exists but doesn't quite fit** → **Evolve it!** Update the Skill to support the new use case
-   - If **no matching Skill exists** → **Create a new Skill** before solving the task
+   - If **no matching Skill exists** → search your team's skills with `mcp__user-input__search_team_skills`. Install a match with `mcp__user-input__install_team_skill`; otherwise **Create a new Skill** before solving the task
 3. **FINALLY**: Use the Skill tool to invoke the skill and complete the task
 
 This applies to most recurring tasks - fetching data, parsing files, calling APIs, processing text, sending notifications, etc. If you're writing more than a trivial snippet and the work could plausibly come up again, it should be a Skill. One-off debugging, ad-hoc data checks, and exploration scoped to the current task stay inline.

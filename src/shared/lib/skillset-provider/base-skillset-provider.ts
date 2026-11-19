@@ -113,6 +113,8 @@ export abstract class BaseSkillsetProvider {
   readonly supportsSuggestions: boolean = true
   readonly supportsRemoteSync: boolean = false
   readonly usesGitCache: boolean = true
+  /** Whether the skillsets are the team's own library, not a public catalog or a linked repository. */
+  readonly holdsTeamSkills: boolean = false
 
   normalizeProviderData(source?: { providerData?: SkillsetProviderData } | null): SkillsetProviderData | undefined {
     return source?.providerData
