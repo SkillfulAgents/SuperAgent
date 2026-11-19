@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA-20261119-012506-u0n1 agent can successfully open a browser, navigate to https://example.com, retrieve the page title, and return a response mentioning \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut interface showing \"Your Agents\" page with the sidebar containing the agent list",
+    "Located and clicked the \"QA-20261119-012506-u0n1\" agent in the sidebar — Successfully opened the agent page, redirected to /agents/qa-20261119-012506-u0n1-jcnvbb5x7f",
+    "Clicked on the message input box — Input box focused and ready for text entry",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered into the textbox",
+    "Clicked the \"Send message\" button — Message sent successfully, page redirected to session URL /agents/qa-20261119-012506-u0n1-jcnvbb5x7f/sessions/d00bdec2-10fd-4bad-aae7-22ec5768c10d, agent status changed to \"working\"",
+    "Waited for agent response (5 seconds) — Agent completed processing with 3 tool calls and 160,943 tokens",
+    "Verified response mentions \"Example Domain\" — Response confirms: \"The page title of https://example.com is \"Example Domain\". I've closed the browser.\" - The expected text \"Example Domain\" is present in the response"
+  ],
+  "bugs": [],
+  "durationMs": 90898,
+  "sessionId": "b6ee560b-31f2-4153-a159-e57136db0fb5",
+  "cost": {
+    "inputTokens": 380,
+    "outputTokens": 12208,
+    "cacheCreationTokens": 78197,
+    "cacheReadTokens": 1084902,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.267656
+  }
+}
