@@ -194,7 +194,9 @@ suggested starting values (`initial`; a form reads the keys it knows, never
 credentials), for whoever may add that provider from the agent's home page.
 `answerSetupRequests` answers the call when an integration of that provider
 connects for the agent, whichever screen set it up; declining rejects it
-(`POST /api/agents/:id/sessions/:sessionId/decline-integration-setup`). The
+(`POST /api/agents/:id/sessions/:sessionId/decline-integration-setup`), and the
+card's "Do it for me" rejects it with the instruction to set the provider up
+itself. The
 provider listing marks a provider whose app a connected team directory can
 create (`oneClickWorkspace`), which only the form can use, so the agent hands
 those over by default. A provider whose setup is quicker for a person in their

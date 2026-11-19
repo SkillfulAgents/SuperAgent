@@ -62,6 +62,19 @@ describe('IntegrationSetupRequestItem', () => {
     expect(screen.getByTestId('integration-setup-open-btn')).toBeEnabled()
   })
 
+  it('hands the setup back to the agent', async () => {
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) })
+    render(<IntegrationSetupRequestItem {...props} />)
+
+    await userEvent.click(screen.getByTestId('integration-setup-do-it-btn'))
+
+    await waitFor(() => expect(props.onComplete).toHaveBeenCalledOnce())
+    const [url, init] = mockApiFetch.mock.calls[0]
+    expect(url).toBe('/api/agents/my-agent/sessions/s-1/decline-integration-setup')
+    expect(JSON.parse(init.body).declineReason).toMatch(/^The user wants you to set up Email yourself/)
+    expect(screen.getByText('Agent setting it up...')).toBeInTheDocument()
+  })
+
   it('declines through the session route', async () => {
     mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) })
     render(<IntegrationSetupRequestItem {...props} />)

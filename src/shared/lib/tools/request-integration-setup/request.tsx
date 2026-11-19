@@ -1,7 +1,9 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
+import { ArrowUpRight, Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useUser } from '@renderer/context/user-context'
 import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
 import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
@@ -48,7 +50,7 @@ export function IntegrationSetupRequestItem({
   const ownerOnly = setupProvider?.managementAccess === 'owner'
   const canSetUp = !!setupProvider && (ownerOnly ? canAdminAgent(agentSlug) : canUseAgent(agentSlug))
 
-  const decline = (declineReason?: string) => submit(async (signal) => {
+  const settle = (declineReason: string | undefined, outcome: 'declined' | 'fetch-requested') => submit(async (signal) => {
     const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/decline-integration-setup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -59,7 +61,13 @@ export function IntegrationSetupRequestItem({
       const data = await response.json().catch(() => ({}))
       throw new Error(data.error || 'Failed to decline')
     }
-  }, 'declined')
+  }, outcome)
+  const decline = (declineReason?: string) => settle(declineReason, 'declined')
+  // The hand-back: the agent's call ends with what to do instead, as the secret card's "fetch it for me" does.
+  const doItForMe = () => settle(
+    `The user wants you to set up ${label} yourself instead of handing it to them. Follow its steps in list_available_integration_providers: add_agent_integration with the values you suggested, then your browser where the steps need it. If a login page appears, ask the user to log in with request_browser_input. Hand the setup over again only if you cannot finish it, and say why.`,
+    'fetch-requested',
+  )
 
   const icon = <ServiceIcon slug={provider} fallback="mcp" className={cn('h-4 w-4', setupProvider?.iconClassName)} />
 
@@ -72,11 +80,13 @@ export function IntegrationSetupRequestItem({
       sessionId={sessionId}
       agentSlug={agentSlug}
       waitingText="Waiting for setup"
-      completed={status === 'declined' ? { icon, label: `${label} setup`, statusLabel: 'Declined', isSuccess: false } : null}
+      completed={status === 'declined' ? { icon, label: `${label} setup`, statusLabel: 'Declined', isSuccess: false }
+        : status === 'fetch-requested' ? { icon: <Globe className="h-4 w-4 shrink-0 text-blue-500" />, label: `${label} setup`, statusLabel: 'Agent setting it up...', isSuccess: true }
+          : null}
       readOnly={readOnly ? {} : false}
       error={error}
       data-testid="integration-setup-request"
-      data-status={status === 'declined' ? status : undefined}
+      data-status={status === 'declined' || status === 'fetch-requested' ? status : undefined}
     >
       <p className="pt-3 text-xs text-muted-foreground">
         {canSetUp
@@ -86,26 +96,50 @@ export function IntegrationSetupRequestItem({
             : `${label} can't be set up from here.`}
       </p>
 
-      <RequestItemActions>
-        <DeclineButton
-          onDecline={decline}
-          disabled={status === 'submitting'}
-          showIcon={false}
-          size="xs"
-          className="border-border text-foreground hover:bg-muted"
-          data-testid="integration-setup-decline-btn"
-        />
-        {canSetUp && (
-          <Button
-            onClick={() => setSetupOpen(true)}
+      <RequestItemActions className="items-center">
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                onClick={doItForMe}
+                disabled={status === 'submitting'}
+                variant="outline"
+                size="xs"
+                className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                data-testid="integration-setup-do-it-btn"
+              >
+                <span>Do it for me</span>
+                <ArrowUpRight className="ml-1 h-3.5 w-3.5 text-muted-foreground" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-[240px]">
+              Rather not do this yourself? Your agent can set {label} up for you, using its browser where it needs to.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
+        <div className="ml-auto flex flex-wrap justify-end gap-2">
+          <DeclineButton
+            onDecline={decline}
             disabled={status === 'submitting'}
+            showIcon={false}
             size="xs"
-            className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
-            data-testid="integration-setup-open-btn"
-          >
-            Set up {label}
-          </Button>
-        )}
+            className="border-border text-foreground hover:bg-muted"
+            data-testid="integration-setup-decline-btn"
+          />
+          {canSetUp && (
+            <Button
+              onClick={() => setSetupOpen(true)}
+              disabled={status === 'submitting'}
+              size="xs"
+              className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
+              data-testid="integration-setup-open-btn"
+            >
+              Set up {label}
+            </Button>
+          )}
+        </div>
       </RequestItemActions>
 
       <AgentIntegrationSetupDialog

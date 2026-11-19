@@ -39,4 +39,15 @@ test.describe('Integration setup request', () => {
     await expect(card).toBeHidden({ timeout: 10000 })
     await sessionPage.waitForInputEnabled(15000)
   })
+
+  test('"Do it for me" hands the setup back to the agent', async ({ page }) => {
+    await sessionPage.sendMessage('ask integration setup')
+
+    const card = page.getByTestId('integration-setup-request')
+    await expect(card).toBeVisible({ timeout: 15000 })
+    await card.getByTestId('integration-setup-do-it-btn').click()
+
+    await expect(card).toBeHidden({ timeout: 10000 })
+    await sessionPage.waitForInputEnabled(15000)
+  })
 })
