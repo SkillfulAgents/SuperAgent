@@ -426,7 +426,7 @@ export class AgentReviews {
     options: ReviewRequestOptions,
   ): Promise<ReviewOutcome> {
     const { targetAgentSlug, targetAgentName, operation, preview, fileTransfer, runtime, callerSessionId } = request
-    const onModel = runtime ? ` on ${runtime.label}` : ''
+    const onModel = runtime ? ` on ${runtime.label}${runtime.account ? ` (${runtime.account})` : ''}` : ''
     const scope =
       operation === 'list'
         ? 'list'

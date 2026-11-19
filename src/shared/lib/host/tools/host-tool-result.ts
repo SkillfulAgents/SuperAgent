@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { HostToolResult } from '@shared/lib/agent-actor/host-port'
 import { bindAgentModelChoice } from '@shared/lib/llm-provider/connection-runtime'
@@ -20,9 +21,20 @@ export async function sessionOwnerOf(agentSlug: string, sessionId: string): Prom
   return (await agentRegistry.get(agentSlug).sessions.metadata(sessionId))?.createdByUserId ?? undefined
 }
 
-/** The model an automation tool names, bound to the agent's connection; throws on an unknown model. */
-export async function agentModelChoice(agentSlug: string, model: string | undefined): Promise<{ model?: string; llmProviderId?: string }> {
-  return model ? bindAgentModelChoice(model, await readAgentPreferences(agentSlug)) : {}
+// The shape create_webhook_endpoint's schema gives these fields, for every tool.
+const modelChoiceSchema = z.object({ model: z.string().trim().min(1).nullish(), connection: z.string().trim().min(1).nullish() })
+
+/** The model and account an automation tool names, checked as the session's creator, who the run is attributed to; throws on a refused choice. */
+export async function agentModelChoice(
+  agentSlug: string,
+  sessionId: string,
+  choice: { model?: unknown; connection?: unknown },
+): Promise<{ model?: string; llmProviderId?: string }> {
+  const parsed = modelChoiceSchema.safeParse({ model: choice.model, connection: choice.connection })
+  if (!parsed.success) throw new Error('model and connection must be non-empty text.')
+  const picked = { model: parsed.data.model ?? undefined, connection: parsed.data.connection ?? undefined }
+  if (!picked.model && !picked.connection) return {}
+  return bindAgentModelChoice(picked, await readAgentPreferences(agentSlug), await sessionOwnerOf(agentSlug, sessionId))
 }
 
 /** The tool input as JSON, or undefined when it does not parse. */

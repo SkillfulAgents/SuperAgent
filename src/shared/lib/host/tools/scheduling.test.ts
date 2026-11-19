@@ -293,6 +293,29 @@ describe('schedule_task', () => {
     expect(publish).toHaveBeenCalledExactlyOnceWith({ type: 'scheduled_task_created', taskId: 'task_new_id', agentSlug: AGENT_SLUG })
   })
 
+  it("checks a named connection as the session's creator, the person the task runs as", async () => {
+    const runtime = await import('@shared/lib/llm-provider/connection-runtime')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    const bind = vi.spyOn(runtime, 'bindAgentModelChoice').mockResolvedValue({ model: 'gpt-astra', llmProviderId: 'chatgpt' })
+    const prefs = vi.spyOn(preferences, 'readAgentPreferences').mockResolvedValue({} as never)
+    mockSessionMetadata.mockResolvedValue({ createdByUserId: 'user_owner' })
+    await scheduleTask(request('schedule_task', 'tool-sched-connection', {
+      scheduleType: 'cron', scheduleExpression: '0 9 * * 1-5', prompt: 'Review', model: 'gpt-astra', connection: 'ChatGPT',
+    }))
+    expect(bind).toHaveBeenCalledWith({ model: 'gpt-astra', connection: 'ChatGPT' }, {}, 'user_owner')
+    expect(mockCreateScheduledTask).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-astra', llmProviderId: 'chatgpt' }))
+    bind.mockRestore()
+    prefs.mockRestore()
+  })
+
+  it('refuses a model or connection that is not text, instead of scheduling on the default', async () => {
+    const result = await scheduleTask(request('schedule_task', 'tool-sched-bad-choice', {
+      scheduleType: 'cron', scheduleExpression: '0 9 * * 1-5', prompt: 'Review', model: 'gpt-astra', connection: 42,
+    }))
+    expect(reasonOf(result)).toContain('must be non-empty text')
+    expect(mockCreateScheduledTask).not.toHaveBeenCalled()
+  })
+
   it('rejects (no false success) when persistence throws', async () => {
     mockCreateScheduledTask.mockRejectedValue(new Error('disk full'))
 

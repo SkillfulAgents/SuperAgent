@@ -67,6 +67,7 @@ import {
   listConnectionsWithSelection,
   resolveGlobalSelection,
   connectionCatalog,
+  selectableConnectionRows,
 } from './connections'
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
 import { runDataMigrations } from '../db/data-migrations'
@@ -1066,22 +1067,68 @@ describe('a model an agent names for an automation', () => {
     const deepseek = await addDeepSeek()
     await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
     const agent = { defaultModel: 'deepseek-v4', defaultLlmProviderId: deepseek }
-    expect(await bindAgentModelChoice('deepseek-v4', agent)).toEqual({ model: 'deepseek-v4', llmProviderId: deepseek })
-    expect(await bindAgentModelChoice('deepseek', agent)).toEqual({ model: 'deepseek', llmProviderId: deepseek })
-    expect(await bindAgentModelChoice('deepseek-r2', agent)).toEqual({ model: 'deepseek-r2', llmProviderId: deepseek })
-    expect(await bindAgentModelChoice('model-a', null)).toEqual({ model: 'model-a', llmProviderId: first })
+    expect(await bindAgentModelChoice({ model: 'deepseek-v4' }, agent, undefined)).toEqual({ model: 'deepseek-v4', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice({ model: 'deepseek' }, agent, undefined)).toEqual({ model: 'deepseek', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice({ model: 'deepseek-r2' }, agent, undefined)).toEqual({ model: 'deepseek-r2', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice({ model: 'model-a' }, null, undefined)).toEqual({ model: 'model-a', llmProviderId: first })
   })
 
-  it('rejects a model the connection does not have and lists the valid ids', async () => {
+  it('rejects a model the connection does not have, lists its ids, and echoes nothing', async () => {
     const first = await add()
     const deepseek = await addDeepSeek()
     await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
-    await expect(bindAgentModelChoice('deepseek-v4', null)).rejects.toThrow(
-      'Unknown model "deepseek-v4". Models available to this agent: model-a.'
-    )
+    const refusal = bindAgentModelChoice({ model: 'deepseek-v4' }, null, undefined).catch((error: Error) => error.message)
+    expect(await refusal).toContain("Unknown model. Models on this agent's account: model-a.")
+    expect(await refusal).not.toContain('deepseek-v4')
     const agent = { defaultModel: 'deepseek-v4', defaultLlmProviderId: deepseek }
-    await expect(bindAgentModelChoice('model-a', agent)).rejects.toThrow(
-      'Unknown model "model-a". Models available to this agent: deepseek-v4, deepseek-r2.'
+    await expect(bindAgentModelChoice({ model: 'model-a' }, agent, undefined)).rejects.toThrow(
+      "Unknown model. Models on this agent's account: deepseek-v4, deepseek-r2."
     )
+  })
+
+  it('binds a named connection, by id or by a unique name, that the person can pick', async () => {
+    const first = await add()
+    const deepseek = await addDeepSeek()
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    expect(await bindAgentModelChoice({ model: 'deepseek-v4', connection: deepseek }, null, undefined)).toEqual({ model: 'deepseek-v4', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice({ model: 'deepseek-v4', connection: 'DeepSeek' }, null, undefined)).toEqual({ model: 'deepseek-v4', llmProviderId: deepseek })
+    await expect(bindAgentModelChoice({ model: 'model-a', connection: deepseek }, null, undefined)).rejects.toThrow(
+      'Unknown model. Models on that account: deepseek-v4, deepseek-r2.'
+    )
+  })
+
+  it("checks a named personal connection as the run's person, never as the ambient request user", async () => {
+    await state.db!.insert(user).values({ id: 'alice', name: 'Alice', email: 'alice@example.com' }).run()
+    const first = await add()
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    const personal = await add('Personal', 'alice')
+    expect(await bindAgentModelChoice({ model: 'model-a', connection: personal }, null, 'alice')).toEqual({ model: 'model-a', llmProviderId: personal })
+    const refused = 'That account is not one you can use.'
+    await expect(bindAgentModelChoice({ model: 'model-a', connection: personal }, null, 'bob')).rejects.toThrow(refused)
+    await expect(bindAgentModelChoice({ model: 'model-a', connection: 'Personal' }, null, 'bob')).rejects.toThrow(refused)
+    await expect(runWithRequestUser('alice', () => bindAgentModelChoice({ model: 'model-a', connection: personal }, null, undefined))).rejects.toThrow(refused)
+    expect((await selectableConnectionRows('bob')).map((row) => row.id)).toEqual([first])
+    expect((await selectableConnectionRows('alice')).map((row) => row.id).sort()).toEqual([first, personal].sort())
+  })
+
+  it("lets the agent's own connection be named even when it is another person's", async () => {
+    await state.db!.insert(user).values({ id: 'alice', name: 'Alice', email: 'alice@example.com' }).run()
+    const first = await add()
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    const personal = await add('Personal', 'alice')
+    const agent = { defaultModel: 'model-a', defaultLlmProviderId: personal }
+    expect(await bindAgentModelChoice({ model: 'model-a', connection: personal }, agent, 'bob')).toEqual({ model: 'model-a', llmProviderId: personal })
+  })
+
+  it('refuses a name two connections share, and a connection with no model', async () => {
+    const first = await add()
+    await add('Twin')
+    await add('Twin')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    await expect(bindAgentModelChoice({ model: 'model-a', connection: 'Twin' }, null, undefined)).rejects.toThrow('More than one account has that name')
+    await expect(bindAgentModelChoice({ connection: first }, null, undefined)).rejects.toThrow('Name a model together with connection.')
+    expect(await bindAgentModelChoice({}, null, undefined)).toEqual({})
+    state.settings.llmDefault = undefined
+    await expect(bindAgentModelChoice({ model: 'model-a', connection: first }, null, undefined)).rejects.toThrow('This app has no accounts to choose from.')
   })
 })

@@ -750,13 +750,15 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
 // ----------------------------------------------------------------------------
 
 /**
- * The model a new invoked session starts on: the caller's pick, checked
- * against the target agent's models and the member's plan, else the target's
- * default. Returns the pick for the start and what the card shows.
+ * The model a new invoked session starts on: the caller's pick, on the target
+ * agent's connection or one the attributed person could pick, checked against
+ * that connection's models and the person's plan, else the target's default.
+ * Returns the pick for the start and what the card shows.
  */
 async function invokeRuntime(
   targetSlug: string,
-  model: string | undefined,
+  choice: { model?: string; connection?: string },
+  userId: string | undefined,
   effort: EffortLevel | undefined,
   speed: SpeedLevel | undefined,
 ): Promise<{ error: string } | { pick: SessionRuntimePick; runtime?: XAgentRuntime }> {
@@ -764,7 +766,7 @@ async function invokeRuntime(
   const { agentPrefs, resolve } = await resolveSessionDefaults(settings, targetSlug)
   let bound: { model?: string; llmProviderId?: string }
   try {
-    bound = await bindAgentModelChoice(model, agentPrefs, settings)
+    bound = await bindAgentModelChoice(choice, agentPrefs, userId, settings)
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
@@ -772,7 +774,7 @@ async function invokeRuntime(
   const resolved = await resolve(pick)
   // The resolve passes over a pick the member's plan cannot run.
   if (bound.model && (resolved.model !== bound.model || resolved.llmProviderId !== bound.llmProviderId)) {
-    return { error: `Model "${model}" is not available on this plan. Leave out model to use the agent's default.` }
+    return { error: "That model is not available on this plan. Leave out model to use the agent's default." }
   }
   // Only a catalog model is named to the person: without a connections setup the name is the agent's own text.
   if (!('connection' in resolved)) return { pick }
@@ -790,6 +792,7 @@ async function invokeRuntime(
       ...(shownEffort ? { effort: shownEffort } : {}),
       ...(shownSpeed ? { speed: shownSpeed } : {}),
       label: catalogModel.label,
+      ...(resolved.connection.name ? { account: resolved.connection.name } : {}),
     },
   }
 }
@@ -801,6 +804,7 @@ const invokeBodySchema = z.object({
   sync: z.boolean().optional(),
   attachments: xAgentAttachmentsSchema.optional(),
   model: z.string().min(1).optional(),
+  connection: z.string().min(1).optional(),
   effort: z.enum(EFFORT_LEVELS).optional(),
   speed: z.enum(SPEED_LEVELS).optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
@@ -825,6 +829,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     sync,
     attachments = [],
     model,
+    connection,
     effort,
     speed,
     _callerSessionId,
@@ -849,8 +854,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const savedDecision = targetSlug === callerSlug
     ? undefined
     : startRead(evaluatePolicy(callerSlug, 'invoke', targetSlug))
-  if (existingSessionId && (model || effort || speed)) {
-    return c.json({ error: 'model, effort and speed apply to new sessions only. Leave them out to continue session_id on its own model.' }, 400)
+  if (existingSessionId && (model || connection || effort || speed)) {
+    return c.json({ error: 'model, connection, effort and speed apply to new sessions only. Leave them out to continue session_id on its own model.' }, 400)
   }
 
   // One-hop rule: sessions started by an agent invoke cannot invoke further.
@@ -908,7 +913,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     }
     let checked: Awaited<ReturnType<typeof invokeRuntime>>
     try {
-      checked = await runWithOptionalUser(attributedUserId, () => invokeRuntime(targetSlug, model, effort, speed))
+      checked = await runWithOptionalUser(attributedUserId, () => invokeRuntime(targetSlug, { model, connection }, attributedUserId, effort, speed))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error('[x-agent] invoke failed', { callerSlug, targetSlug, stage: 'resolve_model', error: message })

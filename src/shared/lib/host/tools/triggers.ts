@@ -76,6 +76,7 @@ interface SetupTriggerInput {
   name?: string
   trigger_config?: Record<string, unknown>
   model?: string
+  connection?: string
   effort?: string
   speed?: string
 }
@@ -106,7 +107,7 @@ export async function setupTrigger({ agentSlug, sessionId, toolUseId, input: raw
 
     let modelChoice: { model?: string; llmProviderId?: string }
     try {
-      modelChoice = await agentModelChoice(agentSlug, input.model)
+      modelChoice = await agentModelChoice(agentSlug, sessionId, input)
     } catch (error) {
       return rejected(errorMessage(error))
     }

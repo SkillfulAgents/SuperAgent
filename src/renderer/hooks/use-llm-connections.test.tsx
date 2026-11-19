@@ -170,3 +170,20 @@ describe('useLlmConnections', () => {
     expect(result.current.data).toBeUndefined()
   })
 })
+
+describe('useLlmConnections', () => {
+  it('reads the scoped list from the given path instead of the agent list', async () => {
+    apiFetchMock.mockReset()
+    apiFetchMock.mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => (url === '/api/llm-connections'
+        ? { connections: [{ id: 'root' }], defaultSelection: null, summarizerSelection: null }
+        : { connections: [{ id: url === '/api/agents/caller/proxy-review/r1/llm-connections' ? 'card' : 'agent' }] }),
+    }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const { result } = renderHook(() => useLlmConnections('target', undefined, undefined, '/api/agents/caller/proxy-review/r1/llm-connections'), { wrapper })
+    await waitFor(() => expect(result.current.data?.connections.map((c) => c.id)).toEqual(['card']))
+    expect(apiFetchMock.mock.calls.map(([url]) => url)).not.toContain('/api/agents/target/llm-connections')
+  })
+})

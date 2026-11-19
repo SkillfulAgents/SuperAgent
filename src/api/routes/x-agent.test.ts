@@ -1909,6 +1909,28 @@ describe('/invoke model and effort resolution', () => {
     expect(mockCreateSession).not.toHaveBeenCalled()
   })
 
+  it('passes a named connection to the check, as the attributed person (none in local mode)', async () => {
+    mockBindAgentModelChoice.mockResolvedValueOnce({ model: 'gpt-astra', llmProviderId: 'chatgpt' })
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'gpt-astra', connection: 'ChatGPT' })
+    expect(res.status).toBe(200)
+    expect(mockBindAgentModelChoice).toHaveBeenCalledWith({ model: 'gpt-astra', connection: 'ChatGPT' }, expect.anything(), undefined, expect.anything())
+    expect((mockCreateSession.mock.calls[0][0] as Record<string, unknown>).llmProviderId).toBe('chatgpt')
+  })
+
+  it('refuses a connection sent with session_id', async () => {
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', sessionId: 'existing', connection: 'ChatGPT' })
+    expect(res.status).toBe(400)
+    expect(xAgentReviewRequests).toHaveLength(0)
+  })
+
+  it('names no model in the plan refusal', async () => {
+    mockBindAgentModelChoice.mockResolvedValueOnce({ model: 'opus', llmProviderId: 'platform' })
+    mockResolveConnectionRuntimeInherit.mockResolvedValueOnce({ model: 'sonnet', llmProviderId: 'platform' })
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', model: 'opus' })
+    expect(res.status).toBe(400)
+    expect(JSON.stringify(await res.json())).not.toContain('opus')
+  })
+
   it('rejects a model or effort sent with session_id', async () => {
     for (const pick of [{ model: 'haiku' }, { effort: 'high' }, { speed: 'fast' }]) {
       const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', sessionId: 'existing', ...pick })

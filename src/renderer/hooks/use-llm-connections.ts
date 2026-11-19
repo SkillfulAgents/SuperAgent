@@ -12,17 +12,21 @@ export interface ConnectionsResponse {
 export function useLlmConnections(
   agentSlug?: string,
   sessionId?: string,
-  currentLlmProviderId?: string | null
+  currentLlmProviderId?: string | null,
+  /** A scoped list other than the agent's or session's (an approval card's). */
+  scopedPath?: string
 ) {
   return useQuery<ConnectionsResponse>({
-    queryKey: ['settings', 'llm-connections', agentSlug, sessionId, currentLlmProviderId],
+    queryKey: ['settings', 'llm-connections', agentSlug, sessionId, currentLlmProviderId, scopedPath],
     queryFn: async () => {
       // The two reads are independent, so both start now. They are still
       // checked in order, so a failed root read wins as it did when the
       // reads ran back to back; the catch only keeps an abandoned scoped
       // read from surfacing as an unhandled rejection.
       const rootRequest = apiFetch('/api/llm-connections')
-      const scopedRequest = agentSlug
+      const scopedRequest = scopedPath
+        ? apiFetch(scopedPath)
+        : agentSlug
         ? apiFetch(
             sessionId
               ? `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}/llm-connections`

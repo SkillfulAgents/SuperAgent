@@ -291,7 +291,7 @@ export function XAgentReviewRequestItem({
     </>
   ) : null
   const modelText = xAgent.runtime
-    ? `Model: ${xAgent.runtime.label}${xAgent.runtime.effort ? ` · ${EFFORT_LABELS[xAgent.runtime.effort]}` : ''}${xAgent.runtime.speed && xAgent.runtime.speed !== 'normal' ? ` · ${SPEED_LABELS[xAgent.runtime.speed]}` : ''}`
+    ? `Model: ${xAgent.runtime.label}${xAgent.runtime.account ? ` (${xAgent.runtime.account})` : ''}${xAgent.runtime.effort ? ` · ${EFFORT_LABELS[xAgent.runtime.effort]}` : ''}${xAgent.runtime.speed && xAgent.runtime.speed !== 'normal' ? ` · ${SPEED_LABELS[xAgent.runtime.speed]}` : ''}`
     : null
   // Truncates down to a width that still names the model; below it the button group wraps under it as one row.
   const modelLine = modelText ? (
@@ -327,7 +327,7 @@ export function XAgentReviewRequestItem({
 
       <RequestItemActions>
         {canAllow && xAgent.operation === 'invoke' && xAgent.runtime
-          ? <CardModelPicker key={pickerKey} targetAgentSlug={xAgent.targetAgentSlug} runtime={xAgent.runtime} disabled={status === 'submitting'} pickRef={pickRef} fallback={modelLine} />
+          ? <CardModelPicker key={pickerKey} targetAgentSlug={xAgent.targetAgentSlug} connectionsPath={`/api/agents/${agentSlug}/proxy-review/${reviewId}/llm-connections`} runtime={xAgent.runtime} disabled={status === 'submitting'} pickRef={pickRef} fallback={modelLine} />
           : modelLine}
         <div className="ml-auto flex flex-wrap justify-end gap-2">
           {canAllow ? (
@@ -355,9 +355,10 @@ export function XAgentReviewRequestItem({
   )
 }
 
-/** The composer's model picker on the target agent's current connection, seeded with what the card shows. */
-function CardModelPicker({ targetAgentSlug, runtime, disabled, pickRef, fallback }: {
+/** The composer's model picker over the approver's accounts and the card's own, seeded with what the card shows. */
+function CardModelPicker({ targetAgentSlug, connectionsPath, runtime, disabled, pickRef, fallback }: {
   targetAgentSlug: string
+  connectionsPath: string
   runtime: XAgentRuntime
   disabled: boolean
   pickRef: MutableRefObject<XAgentPickInput | undefined>
@@ -367,17 +368,16 @@ function CardModelPicker({ targetAgentSlug, runtime, disabled, pickRef, fallback
   const options = useComposerOptions({
     initial: { model: runtime.model, llmProviderId: runtime.llmProviderId, effort: runtime.effort, speed: runtime.speed },
     agentKey: targetAgentSlug,
-    // The session runs as whoever asked, so the pick stays on the connection the card showed.
-    onlyLlmProviderId: runtime.llmProviderId,
+    connectionsPath,
   })
   const [picked, setPicked] = useState(false)
   useEffect(() => {
-    if (picked && options.model) pickRef.current = { model: options.model, effort: options.effort, speed: options.speed }
-  }, [picked, options.model, options.effort, options.speed, pickRef])
+    if (picked && options.model) pickRef.current = { model: options.model, llmProviderId: options.llmProviderId, effort: options.effort, speed: options.speed }
+  }, [picked, options.model, options.llmProviderId, options.effort, options.speed, pickRef])
   // Until the card's connection loads, or when this viewer's plan swaps the model for another, the picker would show something else than what runs.
   const ready = !!options.connections?.some((connection) => connection.id === runtime.llmProviderId)
   if (!ready) pickRef.current = undefined
-  if (!ready || (!picked && options.model !== runtime.model)) return <>{fallback}</>
+  if (!ready || (!picked && (options.model !== runtime.model || options.llmProviderId !== runtime.llmProviderId))) return <>{fallback}</>
   return (
     <div className="mr-auto self-center" data-testid="xagent-review-model-picker">
       <ComposerOptions state={options} disabled={disabled} includeEffort size="sm" onUserChange={() => setPicked(true)} />

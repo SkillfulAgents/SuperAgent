@@ -94,7 +94,7 @@ export async function createWebhookEndpoint({ agentSlug, sessionId, toolUseId, i
 
     let modelChoice: { model?: string; llmProviderId?: string }
     try {
-      modelChoice = await agentModelChoice(agentSlug, input.model ?? undefined)
+      modelChoice = await agentModelChoice(agentSlug, sessionId, input)
     } catch (error) {
       return rejected(errorMessage(error))
     }
