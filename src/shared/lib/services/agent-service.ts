@@ -330,7 +330,7 @@ async function writeNewAgent(
   const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, avatar: identity.avatar, createdAt })
 
   try {
-    await initializeAgentWorkspace(record, body)
+    await writeAgentWorkspace(record, body)
   } catch (error) {
     await agentCatalog.remove(slug).catch(() => undefined)
     throw error
@@ -339,13 +339,17 @@ async function writeNewAgent(
   return record
 }
 
-/** A replay after a host restart can finish a missing workspace without replacing instructions already edited. */
-export async function initializeAgentWorkspace(record: AgentRecord, body = DEFAULT_AGENT_INSTRUCTIONS) {
+/** Replaying a create after a restart must preserve any instructions edited since. */
+export function ensureAgentWorkspace(record: AgentRecord) {
+  return writeAgentWorkspace(record, DEFAULT_AGENT_INSTRUCTIONS, { ifRevision: null })
+}
+
+async function writeAgentWorkspace(record: AgentRecord, body: string, options?: { ifRevision: null }) {
   const frontmatter: AgentFrontmatter = { name: record.name, createdAt: record.createdAt.toISOString() }
   if (record.description) frontmatter.description = record.description
   const actor = agentRegistry.get(record.slug)
   await actor.files.mkdir('')
-  await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body), { ifRevision: null })
+  await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body), options)
 }
 
 /**

@@ -46,7 +46,8 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({ agentModel: 'claude-x', browserModel: 'browser-x', dashboardBuilderModel: 'dash-x' }),
   effectiveModelsFrom: () => ({ agentModel: 'claude-x', browserModel: 'browser-x', dashboardBuilderModel: 'dash-x' }),
 }))
-vi.mock('@shared/lib/container/runtime-options', () => ({
+vi.mock('@shared/lib/container/runtime-options', async (original) => ({
+  ...await original<typeof import('@shared/lib/container/runtime-options')>(),
   resolveRuntimeInherit: () => ({ model: 'claude-x', effort: 'medium' }),
 }))
 vi.mock('@shared/lib/platform-attribution/request-context', () => ({

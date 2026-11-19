@@ -25,7 +25,11 @@ vi.mock('@renderer/hooks/use-agent-preferences', () => ({
   useUpdateAgentPreferences: () => ({ mutate: vi.fn() }),
 }))
 vi.mock('@renderer/hooks/use-team-brain-access', () => ({
-  useTeamBrainAccess: () => ({ isOn: () => false, isChanging: () => false, ready: true, everyAgent: state.everyAgent, toggle }),
+  useAgentTeamBrainAccess: (slug: string) => ({
+    checked: state.everyAgent, changing: false, ready: true, partial: false,
+    reason: !state.brain ? 'Set up Team Brain in this workspace first.' : state.everyAgent ? 'Team Brain is enabled by default for all agents in this workspace.' : undefined,
+    toggle: (on: boolean) => toggle(slug, on),
+  }),
 }))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrations: () => ({ data: state.integrations, refetch: vi.fn() }),

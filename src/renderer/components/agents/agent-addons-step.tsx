@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useAgentSkills, useDiscoverableSkills, useDeleteSkill, useInstallSkill } from '@renderer/hooks/use-agent-skills'
-import { useTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
+import { useAgentTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import { DREAM_SKILL_PATH, isPublicDreamSkill } from '@shared/lib/skillset-provider/dream-skill'
 
@@ -26,7 +26,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   const updatePreferences = useUpdateAgentPreferences(agentSlug)
   const { data: agents } = useAgents()
   const brain = agents?.find(agent => agent.teamBrain)
-  const access = useTeamBrainAccess(brain?.slug ?? '', brain?.teamBrain?.volumeId)
+  const access = useAgentTeamBrainAccess(agentSlug, brain?.slug ?? '', brain?.teamBrain?.volumeId)
   const [changingSkill, setChangingSkill] = useState(false)
 
   const dream = discoverable.data?.find(s => s.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && s.path === DREAM_SKILL_PATH)
@@ -37,7 +37,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   const dreamReason = installed || dream ? undefined
     : discoverable.isError ? 'Could not load the Gamut Public Skillset. Try again.'
     : discoverable.data && skills.data ? 'Requires Dream in the Gamut Public Skillset.' : undefined
-  const busy = changingSkill || updatePreferences.isPending || access.isChanging(agentSlug)
+  const busy = changingSkill || updatePreferences.isPending || access.changing
   useEffect(() => {
     onBusyChange(busy)
     return () => onBusyChange(false)
@@ -79,10 +79,14 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
               <Row icon={<NotebookPen />} title="Memories" description="Remembers what it learns across sessions."
                 checked={preferences.data?.autoMemoryEnabled !== false} disabled={!preferences.data || updatePreferences.isPending}
                 onChange={autoMemoryEnabled => updatePreferences.mutate({ autoMemoryEnabled })} />
-              <Row icon={<Brain />} title="Team Brain" description="Reads the shared drive and can message Team Brain."
-                checked={access.everyAgent || access.isOn(agentSlug)} disabled={access.isChanging(agentSlug) || !access.ready}
-                reason={!brain ? 'Set up Team Brain in this workspace first.' : access.everyAgent ? 'Team Brain is enabled by default for all agents in this workspace.' : undefined}
-                onChange={on => access.toggle(agentSlug, on)} />
+              <Row icon={<Brain />} title="Team Brain" description="Read the shared drive and message Team Brain. Team Brain can read this agent’s sessions."
+                checked={access.checked} disabled={access.changing || !access.ready}
+                reason={access.reason} onChange={access.toggle} />
+              {access.partial && <div className="flex flex-wrap items-center gap-2 px-4 py-2">
+                <span className="flex-1 text-xs text-muted-foreground">Team Brain setup is incomplete.</span>
+                <Button variant="outline" size="sm" disabled={!!access.reason} onClick={() => access.toggle(true)}>Finish setup</Button>
+                <Button variant="ghost" size="sm" disabled={!!access.reason} onClick={() => access.toggle(false)}>Remove access</Button>
+              </div>}
             </Section>
             <Section title="Channels">
               <AgentCreationChannels agentSlug={agentSlug} />

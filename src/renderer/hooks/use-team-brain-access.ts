@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { agentPoliciesQuery, effectiveAgentPolicy } from '@renderer/lib/agent-policies'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
@@ -51,7 +52,11 @@ export function useTakeTeamBrain() {
   const removeMount = useRemoveMount()
   const queryClient = useQueryClient()
   return async (slug: string, { brainSlug, mountId }: { brainSlug: string; mountId?: string }) => {
-    await Promise.all([mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }), setLinked(queryClient, slug, brainSlug, false)])
+    const results = await Promise.allSettled([
+      mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }),
+      setLinked(queryClient, slug, brainSlug, false),
+    ])
+    for (const result of results) if (result.status === 'rejected') throw result.reason
   }
 }
 
@@ -75,7 +80,7 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
     if (!volumeId || changing.has(slug)) return
     const mountId = mountOf(slug)
     setChanging((prev) => new Map(prev).set(slug, on))
-    const change = on ? give(slug, { volumeId, brainSlug }) : take(slug, { brainSlug, mountId })
+    const change = on ? give(slug, { volumeId, brainSlug, mount: !mountId }) : take(slug, { brainSlug, mountId })
     void change
       .catch(failed)
       .then(() => queryClient.invalidateQueries({ queryKey: ['volume-agents', volumeId] }))
@@ -104,4 +109,31 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
     toggle,
     setEveryAgent,
   }
+}
+
+/** A single agent needs both permission grants and the drive to finish setup. */
+export function useAgentTeamBrainAccess(agentSlug: string, brainSlug: string, volumeId?: string) {
+  const access = useTeamBrainAccess(brainSlug, volumeId)
+  const { isAuthMode, rolesReady, canUseAgent } = useUser()
+  const enabled = access.ready && !access.everyAgent
+  const outgoing = useQuery({ ...agentPoliciesQuery(agentSlug), enabled })
+  const incoming = useQuery({ ...agentPoliciesQuery(brainSlug), enabled })
+  const outgoingPolicies = outgoing.data?.policies ?? []
+  const incomingPolicies = incoming.data?.policies ?? []
+  const hasDrive = access.isOn(agentSlug)
+  const changing = access.isChanging(agentSlug)
+  const linked = effectiveAgentPolicy(outgoingPolicies, 'invoke', brainSlug) === 'allow'
+    && effectiveAgentPolicy(incomingPolicies, 'read', agentSlug) === 'allow'
+  const checked = access.everyAgent || (hasDrive && linked)
+  const ready = access.ready && (access.everyAgent || (!!outgoing.data && !!incoming.data))
+  // A global read or invoke grant may predate enrollment. Only an explicit
+  // grant or drive attachment belongs to a partially completed setup.
+  const partial = ready && !checked && !changing && (hasDrive
+    || outgoingPolicies.some(p => p.operation === 'invoke' && p.targetAgentSlug === brainSlug && p.decision === 'allow')
+    || incomingPolicies.some(p => p.operation === 'read' && p.targetAgentSlug === agentSlug && p.decision === 'allow'))
+  const reason = !brainSlug ? 'Set up Team Brain in this workspace first.'
+    : access.everyAgent ? 'Team Brain is enabled by default for all agents in this workspace.'
+    : isAuthMode && rolesReady && !canUseAgent(brainSlug) ? 'You need permission to use Team Brain to change this setting.'
+    : undefined
+  return { checked, changing, partial, ready: ready && (!isAuthMode || rolesReady), reason, toggle: (on: boolean) => access.toggle(agentSlug, on) }
 }

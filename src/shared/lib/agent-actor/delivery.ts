@@ -275,28 +275,43 @@ export function createSessionDelivery(
     // (a question, a host action) is not replayed, only a settled turn's last
     // frames are. Its frames wait for the registration, so an automation that
     // settles at once finds its status to finalize.
-    const registering = deps.sessionService.registerSession(store, sessionId, request.name, metadata)
-    const attaching = live.subscribe(sessionId, creator, sessionId, metadata, { holdFramesUntil: registering })
-    // A failed registration revokes the session before the attach is awaited.
-    attaching.catch(() => {})
-    try {
-      await registering
-    } catch (error) {
-      await revoke(sessionId)
-      throw new StartError('register-failed', true, errorMessage(error), { cause: error })
+    const register = async () => {
+      try {
+        await deps.sessionService.registerSession(store, sessionId, request.name, metadata)
+      } catch (error) {
+        await revoke(sessionId)
+        throw new StartError('register-failed', true, errorMessage(error), { cause: error })
+      }
     }
+    // A wizard registration is also its durable success receipt. Buffer the
+    // first frames until the stream connects and that receipt is committed.
+    const releaseFrames = metadata.creationSetup ? Promise.withResolvers<void>() : undefined
+    const registering = releaseFrames ? undefined : register()
+    const attaching = live.subscribe(sessionId, creator, sessionId, metadata, { holdFramesUntil: registering ?? releaseFrames?.promise })
+    attaching.catch(() => {})
+    await registering
     try {
       await withTimeout(attaching, request.attachTimeoutMs)
     } catch (error) {
       // Nothing would persist the session's transcript: it would run unseen.
       await revoke(sessionId)
-      // Registered: an automation's run ends here, or nothing would ever end it.
-      try {
-        await deps.sessionService.finalizeAutomationStatus(store, sessionId, 'failed')
-      } catch (finalizeError) {
-        console.error(`[SessionDelivery] Failed to end the run of revoked session ${sessionId}:`, finalizeError)
+      releaseFrames?.resolve()
+      if (registering) {
+        // Registered: an automation's run ends here, or nothing would ever end it.
+        try {
+          await deps.sessionService.finalizeAutomationStatus(store, sessionId, 'failed')
+        } catch (finalizeError) {
+          console.error(`[SessionDelivery] Failed to end the run of revoked session ${sessionId}:`, finalizeError)
+        }
       }
       throw new StartError('attach-failed', true, errorMessage(error), { cause: error })
+    }
+    if (releaseFrames) {
+      try {
+        await register()
+      } finally {
+        releaseFrames.resolve()
+      }
     }
     if (commands) {
       live.setSlashCommands(sessionId, commands)

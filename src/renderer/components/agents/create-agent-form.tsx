@@ -107,7 +107,7 @@ export interface CreateAgentFormProps {
    * instead of creating, and the composer has no button of its own. The host
    * creates later through `submitRef` (the create screen's add-ons step).
    */
-  onContinue?: () => void
+  onContinue?: (prompt: string, options: RuntimeOptions) => void | Promise<void>
   /** Filled with the form's continue action, for the host's Continue button (`onContinue`). */
   continueRef?: React.MutableRefObject<(() => Promise<void>) | null>
   /**
@@ -199,7 +199,10 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
     () => (handoffModel ? findCatalogModel(handoffModel, catalog)?.id : undefined),
     [handoffModel, catalog],
   )
-  const composerOptions = useComposerOptions({ initial: { model: handoffSeedModel, ...initialRuntimeOptions } })
+  // The parent keeps a copy for the next mount. Feeding that copy back into
+  // this picker would replace its seed while connections or signup data load.
+  const [restoredOptions] = useState(initialRuntimeOptions)
+  const composerOptions = useComposerOptions({ initial: { ...restoredOptions, model: restoredOptions?.model ?? handoffSeedModel } })
   const { model, effort, speed, llmProviderId } = composerOptions.toRuntimeOptions()
   useEffect(() => {
     onRuntimeOptionsChange?.({ model, effort, speed, llmProviderId })
@@ -456,7 +459,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
       textareaRef.current?.focus()
       return
     }
-    onContinue?.()
+    await onContinue?.(text, composerOptions.toRuntimeOptions())
   }
   const handleSubmitOrContinue = (e: Pick<React.FormEvent, 'preventDefault'>) => {
     e.preventDefault()

@@ -284,7 +284,7 @@ test.describe('Getting Started Wizard', () => {
     expect(settings.onboardingProgress).toBeNull()
   })
 
-  test('resumes the named agent in a fresh window and retains model choices across steps', async ({ page, request, context }) => {
+  test('resumes Add-ons in a fresh window with the same agent, first job, and model', async ({ page, request, context }) => {
     await request.put('/api/user-settings', { data: { setupCompleted: false, onboardingProgress: { path: 'manual', stepId: 'agent' } } })
     await appPage.goto()
     const name = 'Resume onboarding ' + Date.now()
@@ -299,9 +299,18 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext()
     await page.getByTestId('agent-identity-continue').click()
     await expect(page.getByTestId('composer-options-trigger')).toContainText('Sonnet')
+    const job = 'Prepare the weekly briefing'
+    await page.getByTestId('create-agent-prompt').fill(job)
+    await page.getByTestId('create-agent-continue').click()
+    await expect(page.getByTestId('agent-addons-step')).toBeVisible()
+    await page.close()
     const fresh = await context.newPage()
     await fresh.goto('/')
+    await expect(fresh.getByTestId('agent-addons-step')).toBeVisible()
+    await new WizardPage(fresh).clickBack()
     await expect(fresh.getByTestId('agent-identity-name-label')).toHaveText(name)
+    await expect(fresh.getByTestId('create-agent-prompt')).toHaveText(job)
+    await expect(fresh.getByTestId('composer-options-trigger')).toContainText('Sonnet')
     await fresh.getByTestId('create-agent-skip').click()
     await expect(fresh.getByTestId('agent-breadcrumb')).toHaveText(name)
     const rows = await (await request.get('/api/agents')).json()

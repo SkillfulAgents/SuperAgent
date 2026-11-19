@@ -22,9 +22,12 @@ vi.mock('@shared/lib/services/session-activity', () => ({
 }))
 
 import * as sessionService from '@shared/lib/services/session-service'
+import { startWithCreationSetup } from '@shared/lib/services/session-creation-setup'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import type { ContainerClient, StreamMessage } from '@shared/lib/container/types'
 import { createSessionDelivery } from './delivery'
+import { AgentLocks } from './agent-locks'
+import { createFakeAgentActor, createFakeRegistry } from './testing/fake-agent-actor'
 import { deliveryFailure, startFailure } from './delivery-errors'
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from './testing/live-sessions-harness'
 
@@ -399,6 +402,29 @@ describe('start', () => {
       effort: 'low',
       isScheduledExecution: true,
     })
+  })
+
+  it('retries a revoked first session and replays only the one that connected', async () => {
+    const locks = new AgentLocks()
+    const actor = createFakeRegistry([createFakeAgentActor(SLUG, {
+      sessions: { readMetadata: () => sessionService.readSessionMetadata(store()) },
+      locks: { acquire: key => locks.acquire(key), release: async (key, token) => locks.release(key, token) },
+    })]).get(SLUG)
+    const request = { userId: 'user', requestId: '40dc868c-9a98-47ac-8059-143cff8dea30' }
+    const run = () => startWithCreationSetup(actor, request, (initialMessageUuid, creationSetup) => delivery().start({
+      create: { initialMessage: 'Prepare a briefing', initialMessageUuid }, name: 'First job', metadata: { creationSetup },
+    }))
+    vi.mocked(client.createSession).mockResolvedValueOnce({ id: 'revoked' } as never)
+    vi.mocked(client.subscribeToStream).mockImplementationOnce(() => ({
+      unsubscribe: vi.fn(), ready: Promise.reject(new Error('stream unavailable')),
+    }))
+
+    await expect(run()).rejects.toThrow('stream unavailable')
+    expect(client.deleteSession).toHaveBeenCalledWith('revoked')
+    const accepted = await run()
+    expect(accepted).toMatchObject({ id: 'new-session', replayed: false })
+    expect(await run()).toEqual({ ...accepted, replayed: true })
+    expect(client.createSession).toHaveBeenCalledTimes(2)
   })
 
   it('lets a session started with computer use use any app before its stream attaches', async () => {

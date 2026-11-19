@@ -92,6 +92,71 @@ async function reachAddons(page: Page) {
   return `/api/agents/${agent.slug}/sessions`
 }
 
+test('a partial Team Brain setup survives refresh and retries the missing permission', async ({ page, request }) => {
+  const brain = await (await request.post('/api/agents', { data: { name: 'Team Brain' } })).json()
+  const volumeId = 'team-brain-drive'
+  await page.route('**/api/agents', async route => {
+    if (route.request().method() !== 'GET') return route.continue()
+    const response = await route.fetch()
+    const agents = await response.json()
+    await route.fulfill({ response, json: agents.map((a: { slug: string }) =>
+      a.slug === brain.slug ? { ...a, teamBrain: { volumeId } } : a) })
+  })
+  let mountCount = 0
+  let mountedSlug: string | undefined
+  await page.route('**/api/volume-definitions', route => route.fulfill({
+    json: [{ id: volumeId, name: 'Team Brain drive', visibility: 'public', globalAccess: null }],
+  }))
+  await page.route('**/api/volume-definitions/team-brain-drive/agents', route => route.fulfill({
+    json: { attachments: mountedSlug ? [{ agentSlug: mountedSlug, mountId: 'brain-mount' }] : [] },
+  }))
+  await page.route('**/api/agents/*/mounts', route => {
+    if (route.request().method() !== 'POST') return route.continue()
+    mountedSlug = route.request().url().split('/').at(-2)
+    mountCount++
+    return route.fulfill({ status: 201, json: { id: 'brain-mount' } })
+  })
+  await page.route('**/api/agents/*/mounts/brain-mount', route => {
+    if (route.request().method() !== 'DELETE') return route.continue()
+    mountedSlug = undefined
+    return route.fulfill({ status: 200, json: { success: true } })
+  })
+  // The drive and the outgoing grant succeed. The first incoming grant fails.
+  await page.route(`**/api/agents/${brain.slug}/x-agent-policies/read/*`,
+    route => route.fulfill({ status: 403, json: { error: 'Access denied' } }), { times: 1 })
+
+  await reachAddons(page)
+  const toggle = page.getByRole('switch', { name: 'Team Brain' })
+  await expect(page.getByText(/Team Brain can read this agent’s sessions/)).toBeVisible()
+  await toggle.click()
+  await expect(page.getByText('Could not change who uses Team Brain')).toBeVisible()
+  const incomplete = page.getByText('Team Brain setup is incomplete.')
+  await expect(incomplete).toBeVisible()
+  await page.reload()
+  await expect(incomplete).toBeVisible()
+  await expect(toggle).not.toBeChecked()
+  await expect(page.getByRole('button', { name: 'Remove access' })).toBeEnabled()
+  await page.getByRole('button', { name: 'Finish setup', exact: true }).click()
+  await expect(toggle).toBeEnabled()
+  await expect(toggle).toBeChecked()
+  await page.reload()
+  await expect(toggle).toBeChecked()
+  await expect(incomplete).toBeHidden()
+  expect(mountCount).toBe(1)
+
+  // A permission can also be removed elsewhere. Let the user undo what remains.
+  const revoked = await request.delete(`/api/agents/${brain.slug}/x-agent-policies/read/${mountedSlug}`)
+  expect(revoked.ok()).toBe(true)
+  await page.reload()
+  await page.getByRole('button', { name: 'Remove access' }).click()
+  await expect(toggle).toBeEnabled()
+  await page.reload()
+  await expect(toggle).toBeEnabled()
+  await expect(toggle).not.toBeChecked()
+  await expect(incomplete).toBeHidden()
+  expect(mountedSlug).toBeUndefined()
+})
+
 test('replaying Start session after a lost response opens the one accepted job', async ({ page, request }) => {
   const sessions = await reachAddons(page)
   let accepted: string | undefined

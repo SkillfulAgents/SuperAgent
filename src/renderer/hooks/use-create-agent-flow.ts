@@ -118,6 +118,23 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface,
     saveCreationDraft(key, null)
   }
 
+  async function continueToAddons(job: string, options: NonNullable<CreationDraft['runtimeOptions']>) {
+    if (busy.current || !agent) return
+    busy.current = true
+    setSaving(true)
+    try {
+      await saveOnboardingDraft?.({ agent, identity, sessionRequestId, stage: 'addons', prompt: job, runtimeOptions: options, dreamSelected })
+      setPrompt(job)
+      setRuntimeOptions(options)
+      setStage('addons')
+    } catch (error) {
+      toast.error('Could not save your first job', { description: error instanceof Error ? error.message : undefined })
+    } finally {
+      busy.current = false
+      setSaving(false)
+    }
+  }
+
   async function finish(destination: 'home' | 'session') {
     if (busy.current || finished.current || !agent || addonBusy) return
     busy.current = true
@@ -152,7 +169,7 @@ export function useCreateAgentFlow({ onIdentityCreated, onAgentCreated, surface,
     initialRuntimeOptions: runtimeOptions, setRuntimeOptions,
     saving, addonBusy, setAddonBusy, dreamSelected, setDreamSelected, confirmIdentity, complete, finish, back, showChoices, importing,
     backToName: () => { if (!busy.current && !addonBusy) setStage('name') },
-    continueToAddons: () => { if (!busy.current && agent) setStage('addons') },
+    continueToAddons,
     submitRef, continueRef,
   }
 }

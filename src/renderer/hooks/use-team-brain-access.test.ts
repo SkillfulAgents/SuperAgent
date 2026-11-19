@@ -7,7 +7,9 @@ import { describe, expect, it, vi } from 'vitest'
 
 // Writer has the drive; taking it off takes as long as the agent's container needs.
 const { removing, adding, drive } = vi.hoisted(() => ({ removing: { done: () => {}, calls: 0 }, adding: vi.fn(), drive: { canManage: true } }))
-vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: true }) }))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: true, isAdmin: true, rolesReady: true, canUseAgent: (slug: string) => slug !== 'view-only' }),
+}))
 vi.mock('@renderer/hooks/use-mounts', () => ({
   useAddMount: () => ({ mutateAsync: adding }),
   useRemoveMount: () => ({
@@ -26,9 +28,21 @@ vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn(async () => new Response(n
 
 import { apiFetch } from '@renderer/lib/api'
 
-import { useTeamBrainAccess } from './use-team-brain-access'
+import { useAgentTeamBrainAccess, useTeamBrainAccess } from './use-team-brain-access'
 
 describe('useTeamBrainAccess', () => {
+  it('explains why a viewer cannot link the new agent to Team Brain', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } })
+    for (const slug of ['writer', 'view-only']) {
+      client.setQueryData(['x-agent-policies', slug], { policies: [] })
+    }
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useAgentTeamBrainAccess('writer', 'view-only', 'vol'), { wrapper })
+    expect(result.current).toMatchObject({
+      ready: true, partial: true, checked: false, reason: 'You need permission to use Team Brain to change this setting.',
+    })
+  })
+
   it('shows a switch where it is going at once, and holds it until the change lands', async () => {
     const client = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)

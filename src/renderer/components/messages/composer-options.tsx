@@ -420,14 +420,17 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     })
   }, [lockedModel, substituteModel, lockedReason, lockedAction, lockedConnection?.id, openAvailabilityAction])
 
+  // A restored model and connection are a pair, even on the first render
+  // before the connection catalog can validate them.
+  const outgoingConnection = connectionData === undefined ? llmProviderId : effectiveLlmProviderId
   const toRuntimeOptions = useCallback(
     (): RuntimeOptions => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
       // An untouched new chat sends nothing: the server walks the same list.
-      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
+      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(outgoingConnection ? { llmProviderId: outgoingConnection } : {}) } : {}),
     }),
-    [effort, speed, displayedModel, effectiveLlmProviderId],
+    [effort, speed, displayedModel, outgoingConnection],
   )
 
   return useMemo(

@@ -1,3 +1,4 @@
+import { agentPoliciesQuery } from '@renderer/lib/agent-policies'
 import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
@@ -29,21 +30,8 @@ function inheritedFrom(global: DecisionOrDefault) {
   return global !== 'default' ? { inheritedValue: global, inheritedLabel: 'from Global' } : globalDefault
 }
 
-interface PolicyRow {
-  id: string
-  operation: Operation
-  targetAgentSlug: string | null
-  targetAgentName: string | null
-  decision: Decision
-  updatedAt: string
-}
-
 interface XAgentPermissionsViewProps {
   agentSlug: string
-}
-
-interface PoliciesResponse {
-  policies: PolicyRow[]
 }
 
 interface PolicyChange {
@@ -104,15 +92,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   }, [agentSlug])
 
   // Fetch this caller's stored policies
-  const policiesQuery = useQuery<PoliciesResponse>({
-    queryKey: ['x-agent-policies', agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`)
-      if (!res.ok) throw new Error('Failed to fetch policies')
-      return res.json()
-    },
-    enabled: canView,
-  })
+  const policiesQuery = useQuery({ ...agentPoliciesQuery(agentSlug), enabled: canView })
 
   // Fetch all agents in workspace (for the per-target rows)
   const agentsQuery = useQuery<AgentsResponse>({

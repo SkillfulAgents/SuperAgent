@@ -54,7 +54,7 @@ import {
   getAgentWithListing,
   type AgentToList,
   createAgent,
-  initializeAgentWorkspace,
+  ensureAgentWorkspace,
   getAgentWithStatus,
   getAgent,
   getAgentRecord,
@@ -1517,7 +1517,7 @@ agents.post('/', async (c) => {
       if (!(await canUseAgent(c, slug))) return c.json({ error: 'Agent is unavailable' }, 403)
       const record = await getAgentRecord(slug)
       if (!record) return c.json({ error: 'Agent no longer exists' }, 404)
-      if (!ready) await initializeAgentWorkspace(record)
+      if (!ready) await ensureAgentWorkspace(record)
       const existing = await getAgentWithStatus(record, { includeSummary: false })
       if (!existing) return c.json({ error: 'Agent no longer exists' }, 404)
       if (ready || !(await completeAgentCreation(receipt))) return c.json(existing)

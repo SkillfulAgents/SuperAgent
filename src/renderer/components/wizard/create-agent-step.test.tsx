@@ -40,7 +40,7 @@ vi.mock('@renderer/components/agents/create-agent-form', () => ({
     formProps.current = props
     if (props.submitRef) props.submitRef.current = formSubmit
     // Continue from the bottom row: the form's own check is its concern.
-    if (props.continueRef) props.continueRef.current = async () => props.onContinue?.()
+    if (props.continueRef) props.continueRef.current = async () => props.onContinue?.('Prepare a briefing', {})
     return <div data-testid="create-agent-form">{props.header}</div>
   },
 }))
