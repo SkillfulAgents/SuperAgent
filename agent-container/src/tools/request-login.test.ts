@@ -309,6 +309,17 @@ describe('formatLoginResolution for a way to verify it\'s you', () => {
     expect(text(picked('passkey', 'Use your passkey'))).toContain('call request_browser_input')
   })
 
+  it('says the browser holds the passkey the host picked, and that it answers the page by itself', () => {
+    const { content, isError } = formatLoginResolution({
+      type: 'way', origin: 'https://github.com', picked: picked('passkey', 'Use a passkey'), by: 'vault', username: 'octocat', clicked: { ref: '@e5' },
+    })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toBe([
+      'The browser holds the passkey of octocat, so the host picked "Use a passkey", and @e5 was clicked.',
+      'The browser answers the page\'s passkey prompt by itself: check whether the page shows you signed in.',
+    ].join('\n'))
+  })
+
   it('tells the agent to click the way itself when the click failed, and what comes after', () => {
     const { content, isError } = formatLoginResolution({
       type: 'way', origin: 'https://github.com', picked: picked('text_message', 'Get a code at •••12'), by: 'user', clickError: 'clicking @e4 failed: covered',
@@ -349,6 +360,29 @@ describe('formatLoginResolution for the vault', () => {
       '- hubot: no saved password or other value yet',
       '- old@example.com: holds a password (the site rejected its saved password, as reported earlier: using it asks the user)',
       'To sign in with one, call request_login again with username set to it. To ask the user for another account, call it with ask_user: true.',
+    ].join('\n'))
+  })
+
+  it('says no account is saved and the page must be mapped, for a call that mapped nothing', () => {
+    const { content, isError } = formatLoginResolution({ type: 'accounts', site: 'github.com', accounts: [] })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toContain('the user has no saved account on github.com you may use, and this call mapped no field, so the user was not asked.')
+    expect(content[0].text).toContain('Map the page\'s sign-in fields by ref and call request_login again')
+  })
+
+  it('says the account the agent named is not saved on the site, for a call that mapped nothing', () => {
+    const none = formatLoginResolution({ type: 'accounts', site: 'myaccount.google.com', accounts: [], missing: 'ada@gmail.com' }).content[0].text
+    expect(none).toContain('the user has no saved account "ada@gmail.com" on myaccount.google.com you may use, and this call mapped no field, so the user was not asked.')
+    const others = formatLoginResolution({
+      type: 'accounts',
+      site: 'github.com',
+      missing: 'octocat',
+      accounts: [{ username: 'hubot', label: null, parts: ['password'], via: null }],
+    }).content[0].text
+    expect(others).toBe([
+      'Nothing was filled: "octocat" is not a saved account on github.com you may use, and this call mapped no field, so the user was not asked. Saved accounts there you may use:',
+      '- hubot: holds a password',
+      'To sign in with one, call request_login again with username set to it. Map the page\'s sign-in fields by ref and call request_login again: the user fills them in the form. On a page that offers only buttons like "Continue with Google", list them in providers.',
     ].join('\n'))
   })
 
@@ -585,5 +619,26 @@ describe('the vault\'s authenticator apps', () => {
 
     expect(formatSignInMethodResolution({ type: 'unavailable_noted', site: 'github.com', username: 'octocat' }).content[0].text)
       .toBe('Noted: no sign-in method can be added to octocat on github.com. The user sees why in Settings → Logins, and agents are no longer asked to add one.')
+  })
+})
+
+describe('the vault\'s passkeys', () => {
+  it('tells the agent the browser holds the passkey: use the page\'s option, else call again', () => {
+    const { content, isError } = formatLoginResolution({ type: 'passkey', site: 'github.com', username: 'octocat', name: 'Gamut' })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toContain('Nothing was filled: the browser now holds the passkey of octocat on github.com (named "Gamut" on the site) for this sign-in.')
+    expect(content[0].text).toContain('Use the page\'s passkey option')
+    expect(content[0].text).toContain('call request_login again with username "octocat"')
+  })
+
+  it('lists the passkey an account holds', () => {
+    const text = formatLoginResolution({ type: 'accounts', site: 'github.com', accounts: [{ username: 'octocat', label: null, parts: ['password'], via: null, passkeys: 1 }] }).content[0].text
+    expect(text).toContain('- octocat: holds a password; the vault also holds a passkey for it: signing in with it holds the passkey in the browser for you')
+  })
+
+  it('says the browser records the passkey the page creates, with nothing more to call', () => {
+    const ready = formatSignInMethodResolution({ type: 'passkey_ready', site: 'github.com', username: 'octocat' })
+    expect(ready.isError).toBeUndefined()
+    expect(ready.content[0].text).toBe('The browser records the passkey a page creates for octocat on github.com for the next half hour, and the vault keeps it. Create one in the site\'s security settings now, as the page asks. Tell the user what the page says at the end, including any wait or approval it puts on a new passkey.')
   })
 })

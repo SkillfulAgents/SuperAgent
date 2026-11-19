@@ -26,7 +26,9 @@ import {
   listGrantedAccounts,
   markAccountRejected,
   markAuthenticatorRejected,
+  passkeyWorksOn,
   readAccountFill,
+  readAccountPasskeys,
   recentPasswordFills,
   recordAccountUse,
   saveAccount,
@@ -298,6 +300,7 @@ export function accountView(account: VaultAccount) {
     ...(account.rejectedAt ? { rejected: true } : {}),
     ...(authenticator ? { authenticator: authenticator.rejectedAt ? 'rejected' as const : 'ready' as const } : {}),
     ...(authenticator?.name ? { authenticatorName: authenticator.name } : {}),
+    ...(account.signInMethods.passkeys?.length ? { passkeys: account.signInMethods.passkeys.length } : {}),
   }
 }
 
@@ -538,6 +541,17 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
 }
 
 /**
+ * A call that maps nothing, naming an account the agent may not use on the
+ * site (or one saved elsewhere): the agent is told the accounts it may use
+ * here, rather than the user getting an empty form.
+ */
+async function answerUnmapped(call: LoginRequestCall, context: LoginContext, site: string, missing: string | undefined): Promise<LoginDecision> {
+  const granted = await listGrantedAccounts(call.agentSlug, site)
+  const resolution = { type: 'accounts', site, accounts: granted.map(accountView), ...(missing ? { missing } : {}) }
+  return (await answerLoginRequest(call.agentSlug, call.toolUseId, resolution)) ? { action: 'settled' } : ask({ mode: 'new' }, context)
+}
+
+/**
  * The way that is the vault's authenticator app, or -1: the page's one app,
  * or among several apps listed by name (Keycloak lists each), the one with
  * the name the vault's app has on the site. Several without that name: the
@@ -552,16 +566,22 @@ function vaultAppWay(ways: LoginContext['ways'], name: string | null): number {
 
 /**
  * A page that asks how to verify it's you. A way the vault holds for the
- * account is picked by itself and clicked (its authenticator app, while the
- * site takes the app's codes and the vault has not filled too many lately);
- * else the user picks one in the card, which offers to add an app (for the
- * viewer's own account). The account is the one the agent names, or the one
- * this session's last step on the site went in as.
+ * account is picked by itself and clicked: its passkey for this page (held on
+ * the agent's tab first, so the page's prompt is answered), else its
+ * authenticator app (while the site takes the app's codes and the vault has
+ * not filled too many lately). Else the user picks one in the card, which
+ * offers to add a method (for the viewer's own account). The account is the
+ * one the agent names, or the one this session's last step on the site went in as.
  */
 async function decideWays(call: LoginRequestCall, context: LoginContext, site: string, username: string | undefined): Promise<LoginDecision> {
   const { agentSlug, sessionId, toolUseId } = call
   const identity = username ?? await recentSignInIdentity(agentSlug, sessionId, site)
   const account = identity ? await findGrantedAccount(agentSlug, site, identity) : null
+  const passkeyWay = account ? context.ways.findIndex((way) => way.method === 'passkey' && way.clickable) : -1
+  if (account && passkeyWay >= 0 && hasPasskeyFor(account, context.origin) && await holdPasskeys({ agentSlug, sessionId, account, context, site })) {
+    const picked = await chooseLoginWayInContainer({ agentSlug, sessionId, toolUseId, context, index: passkeyWay, by: 'vault', username: account.username })
+    if (picked.ok) return { action: 'settled' }
+  }
   const appWay = account ? vaultAppWay(context.ways, account.signInMethods.authenticator?.name ?? null) : -1
   if (account && appWay >= 0 && authenticatorReady(account) && !(await codesFilledTooOften(account))) {
     const picked = await chooseLoginWayInContainer({ agentSlug, sessionId, toolUseId, context, index: appWay, by: 'vault', username: account.username })
@@ -573,6 +593,82 @@ async function decideWays(call: LoginRequestCall, context: LoginContext, site: s
 
 /** How often a decision starts over after what was held for its step was taken under it. */
 const HELD_DECISION_ATTEMPTS = 3
+
+/** How long the agent's tab holds an account's passkey for a sign-in. */
+const PASSKEY_SIGN_IN_MS = 5 * 60 * 1000
+
+const passkeyStateSchema = z.object({ armed: z.boolean(), onActiveTab: z.boolean(), credentialIds: z.array(z.string()) })
+
+/** The page's hostname, or '' for an origin that does not parse. */
+export function hostnameOf(origin: string): string {
+  try {
+    return new URL(origin).hostname
+  } catch {
+    return ''
+  }
+}
+
+/** Whether the vault holds a passkey of the account that works on this page (plain record: no key read). */
+function hasPasskeyFor(account: Pick<VaultAccount, 'signInMethods'>, origin: string): boolean {
+  const hostname = hostnameOf(origin)
+  return Boolean(hostname) && (account.signInMethods.passkeys ?? []).some((held) => passkeyWorksOn(held.rpId, hostname))
+}
+
+interface PasskeyHold {
+  agentSlug: string
+  sessionId: string
+  account: VaultAccount
+  context: LoginContext
+  site: string
+}
+
+/**
+ * Hold the account's passkeys for this page on the agent's tab, for the
+ * sign-in: 'held' when the tab holds them already, 'armed' when they were
+ * held now (a sign-in step for the account: the session it leaves is watched
+ * as its, session-host), null when they could not be (none works on this
+ * page, or the browser refused). A tab the agent went on in (a window the
+ * site opened) gets them in turn.
+ */
+async function holdPasskeys(input: PasskeyHold): Promise<'armed' | 'held' | null> {
+  const { agentSlug, sessionId, account, context, site } = input
+  const passkeys = await readAccountPasskeys(account.id, hostnameOf(context.origin))
+  if (passkeys.length === 0) return null
+  const container = agentRegistry.get(agentSlug).container
+  try {
+    const state = passkeyStateSchema.safeParse(await (await container.fetch('/browser/passkey/state')).json().catch(() => null))
+    if (state.success && state.data.armed && state.data.onActiveTab && passkeys.some((held) => state.data.credentialIds.includes(held.credentialId))) return 'held'
+    const watched = await watchesStep({ agentSlug, sessionId, site, context, username: account.username })
+    beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
+    const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
+    const armed = await container.fetch('/browser/passkey/arm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, mode: 'present', credentials: passkeys, ttlMs: PASSKEY_SIGN_IN_MS }),
+    })
+    if (!armed.ok) return null
+    await rememberSignInIdentity(agentSlug, sessionId, site, account.username)
+    await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password: false, by: 'vault', passkey: true })
+    watchSignIn({ agentSlug, sessionId, account, baseline })
+  } catch (error) {
+    console.error('[login-request] Holding the passkey failed:', error instanceof Error ? error.message : error)
+    return null
+  }
+  return 'armed'
+}
+
+/**
+ * A sign-in's first call for an account with a passkey for this page: held on
+ * the agent's tab now, with its name on the site. Null when the tab holds it
+ * already (the sign-in goes on) or it could not be held (it goes on as it
+ * would without it).
+ */
+async function offerPasskey(input: PasskeyHold): Promise<{ name: string | null } | null> {
+  if ((await holdPasskeys(input)) !== 'armed') return null
+  const hostname = hostnameOf(input.context.origin)
+  const listed = input.account.signInMethods.passkeys?.find((held) => passkeyWorksOn(held.rpId, hostname))
+  return { name: listed?.name ?? null }
+}
 
 /** Whether the step asks for the code of an authenticator app (as the agent mapped it). */
 function asksAuthenticatorCode(context: Pick<LoginContext, 'fields'>): boolean {
@@ -602,9 +698,13 @@ async function codesFilledTooOften(account: VaultAccount, now = Date.now()): Pro
 async function decideFromVault(call: LoginRequestCall, context: LoginContext, site: string, username: string | undefined): Promise<LoginDecision | null> {
   const { agentSlug, sessionId, toolUseId } = call
   const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, username), context.origin)
+  // A call that maps nothing (no field, no provider) would show the user an
+  // empty form, and the agent would wait on it: unless the vault signs in
+  // with what it names, the agent is told to map the page instead.
+  const asksNothing = context.fields.length === 0 && context.held.length === 0 && context.providers.length === 0
   if (!username && !held) {
     const granted = await listGrantedAccounts(agentSlug, site)
-    if (granted.length === 0) return ask({ mode: 'new' }, context)
+    if (granted.length === 0 && !asksNothing) return ask({ mode: 'new' }, context)
     const answered = await answerLoginRequest(agentSlug, toolUseId, { type: 'accounts', site, accounts: granted.map(accountView) })
     return answered ? { action: 'settled' } : ask({ mode: 'new' }, context)
   }
@@ -613,7 +713,7 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   const named = username ?? held?.username ?? undefined
   const account = named ? await findGrantedAccount(agentSlug, site, named) : null
   // An account the agent may not use (or that does not exist): the user decides.
-  if (username && !account && !held) return ask({ mode: 'ask', username }, context)
+  if (username && !account && !held) return asksNothing ? answerUnmapped(call, context, site, username) : ask({ mode: 'ask', username }, context)
   const identity = account?.username ?? username ?? held?.username ?? null
   const asksCode = context.fields.some((field) => field.kind === 'otp')
   const firstPage = isFirstSignInPage(context)
@@ -625,6 +725,20 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
     if (restored) {
       if (restored.restored) askForRequestedMethod(agentSlug, sessionId, account)
       if (await answerLoginRequest(agentSlug, toolUseId, restored)) return { action: 'settled' }
+      return ask({ mode: 'ask', username: account.username }, context)
+    }
+  }
+
+  // A passkey the vault holds for the account on this site: held on the
+  // agent's tab for the rest of the sign-in (passkey-keeper), and the agent
+  // is told to use the page's passkey option, with nothing filled. Its next
+  // call (a page with no passkey option, or one that asks who first) goes on
+  // as usual, the passkey still there for a prompt further on.
+  if (username && account && hasPasskeyFor(account, context.origin)) {
+    const offered = await offerPasskey({ agentSlug, sessionId, account, context, site })
+    if (offered) {
+      const passkey = { type: 'passkey', site, username: account.username, ...(offered.name ? { name: offered.name } : {}) }
+      if (await answerLoginRequest(agentSlug, toolUseId, passkey)) return { action: 'settled' }
       return ask({ mode: 'ask', username: account.username }, context)
     }
   }
@@ -656,6 +770,7 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
     return ask({ mode: 'ask', username: account.username }, context)
   }
   if (context.fields.length === 0) {
+    if (!account && asksNothing) return answerUnmapped(call, context, site, named)
     // Named, but no field mapped to fill: say so, rather than list it back.
     const listed = account && await answerLoginRequest(agentSlug, toolUseId, { type: 'accounts', site, accounts: [accountView(account)], named: true })
     return listed ? { action: 'settled' } : ask({ mode: 'ask', ...(identity ? { username: identity } : {}) }, context)

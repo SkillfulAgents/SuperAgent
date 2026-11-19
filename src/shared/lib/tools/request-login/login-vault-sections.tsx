@@ -101,8 +101,8 @@ export function AccountChooser({
 
 /**
  * On a step of two-step verification (the ways to verify, or a code) for an
- * account of the user's: have the agent add an authenticator app once signed
- * in, next to the verification the account already has, so later sign-ins
+ * account of the user's: have the agent add a passkey, or an authenticator
+ * app next to the verification the account already has, once signed in, so later sign-ins
  * need nothing from them. Requested at once (the agent hears it as the
  * user's own message once its turn ends), apart from how the card is
  * answered, so it is not taken back here.
@@ -145,11 +145,11 @@ export function AddSignInMethodBox({
           aria-describedby="login-add-method-hint"
         />
         <span className="min-w-0">
-          <span className="block font-medium">Also add an authenticator app</span>
+          <span className="block font-medium">Also add a passkey or authenticator app</span>
           <span id="login-add-method-hint" className="block text-2xs text-muted-foreground">
             {requested
-              ? <>Asked: once signed in, the agent adds one to <span className="break-all">{addMethod.username}</span>, next to the two-step verification it already has.</>
-              : <>Once signed in, the agent adds one to <span className="break-all">{addMethod.username}</span>, next to the two-step verification it already has, so later sign-ins need nothing from you.</>}
+              ? <>Asked: once signed in, the agent adds a passkey to <span className="break-all">{addMethod.username}</span>, or an authenticator app next to the two-step verification it already has.</>
+              : <>Once signed in, the agent adds a passkey to <span className="break-all">{addMethod.username}</span>, or an authenticator app next to the two-step verification it already has, so later sign-ins need nothing from you.</>}
           </span>
         </span>
       </label>

@@ -5,6 +5,7 @@ import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import { fieldsWentIn, fillLoginInContainer, noteUsername } from './login-host'
 import { siteOfOrigin } from './site'
 import { freshTotpCode, parseTotpSetup } from './totp'
+import { recordPasskeyFor } from './passkey-capture'
 import { findGrantedAccount, listGrantedAccountsOnDomain, markSignInMethodUnavailable, saveAuthenticator, VaultConflictError } from './vault-service'
 
 /**
@@ -17,13 +18,19 @@ import { findGrantedAccount, listGrantedAccountsOnDomain, markSignInMethodUnavai
  * filled, and saves the seed only once that code went into the page. The seed
  * and the code never reach the agent.
  *
+ * For a passkey, the call only gets the browser ready, for a request the user
+ * made in the conversation: the agent's tab records the passkey a page creates
+ * (passkey-capture), and the agent then creates one in the site's settings as
+ * a person would. A request from the sign-in card or Settings → Logins armed
+ * the tab when it was made, with no call.
+ *
  * What the agent may add is in its prompt, not here: a method next to the
  * two-step verification the account already has, never one that turns it on
  * or replaces another. The host cannot tell from a page.
  */
 
 const inputSchema = z.object({
-  method: z.enum(['authenticator_app', 'none']),
+  method: z.enum(['passkey', 'authenticator_app', 'none']),
   username: z.string().trim().min(1).max(320),
   code_field: z.string().max(16).optional(),
   submit: z.string().max(16).optional(),
@@ -90,9 +97,9 @@ export async function addSignInMethod(request: HostToolRequest): Promise<HostToo
   const site = siteOfOrigin(origin)
   if (!site || (await isOwnOrigin(origin, []))) return refused(`the page (${origin}) is not a site the vault keeps accounts for`)
 
-  // An account the agent may use, and the user's word for it.
-  // Its settings may be on another site of its domain than its sign-in
-  // (Google's on myaccount.google.com, accounts.google.com's account): one there is it.
+  // An account the agent may use, and the user's word for it. Its settings
+  // may be on another site of its domain than its sign-in (Google's on
+  // myaccount.google.com, accounts.google.com's account): one there is it.
   let account = await findGrantedAccount(agentSlug, site, input.username)
   if (!account) {
     const nearby = await listGrantedAccountsOnDomain(agentSlug, site, input.username)
@@ -104,9 +111,16 @@ export async function addSignInMethod(request: HostToolRequest): Promise<HostToo
   if (!account) return refused(`no saved account "${input.username}" on ${site} that you may use: sign in with request_login first (the user saves the account there)`)
   const asked = account.signInMethods.requested ? { request: true as const } : input.user_request ? { words: input.user_request } : null
   if (!asked) {
-    return refused(`the user has not asked for a sign-in method on ${account.username}. Add one only when a request_login result says the user asked, or the user asked you (then pass their words in user_request)`)
+    return refused(`the user has not asked for a sign-in method on ${account.username}. Add one only when the user asked you (then pass their words in user_request)`)
   }
 
+  // The tab records the passkey the page creates for the next half hour, and
+  // the vault keeps it (passkey-capture): the agent creates one in the site's
+  // settings as a person would. A request from the card or Logins armed it already.
+  if (input.method === 'passkey') {
+    if (!(await recordPasskeyFor({ agentSlug, sessionId, account, asked }))) return refused('the browser could not get ready to create a passkey')
+    return resolved({ type: 'passkey_ready', site: account.site, username: account.username })
+  }
   if (input.method === 'none') {
     await markSignInMethodUnavailable({ agentSlug, accountId: account.id, reason: input.reason ?? '' })
     return resolved({ type: 'unavailable_noted', site: account.site, username: account.username })

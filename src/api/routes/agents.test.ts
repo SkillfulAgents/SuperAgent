@@ -12831,6 +12831,8 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect((await vaultInfo()).addMethod).toBeNull()
     vault.listOwnedAccountsOnSite.mockResolvedValue([account({ signInMethods: { unavailable: { at: 1, reason: 'No authenticator apps.' } } })])
     expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account({ signInMethods: { passkeys: [{ credentialId: 'Y3JlZC0x', rpId: 'github.com', addedAt: 1, name: 'Gamut', userName: 'octocat' }] } })])
+    expect((await vaultInfo()).addMethod).toBeNull()
     vault.listOwnedAccountsOnSite.mockResolvedValue([])
   })
 

@@ -30,15 +30,15 @@ const DESCRIPTION = `Sign the browser in to the site on the page. Map the page's
 
 Use this when the page asks for credentials: a username or email, a password, a one-time code (from SMS, email or an authenticator app), or several of these together. Each call is one step of a sign-in:
 1. Call it without username first. When the user has saved accounts on this site that you may use, the result lists them and nothing is filled. Otherwise the user gets the form.
-2. To sign in with a listed account, call again with username set to it. The host fills the mapped fields from it and submits. When the account lacks a value the page asks for (a code, a new field), the user is asked for just that. When the account has a session saved from an earlier sign-in, the host may restore that instead and load the page again: check whether it shows you signed in, and if it asks you to sign in, call again with the same username. A saved session goes in only on the first page of a sign-in (one that asks who you are, or offers signing in with another account): to use another of your accounts on a site where you are signed in, sign out there first.
+2. To sign in with a listed account, call again with username set to it. The host fills the mapped fields from it and submits. When the vault holds a passkey of the account, the first such call holds it in the browser instead and fills nothing: use the page's passkey option, or call again to go on. When the account lacks a value the page asks for (a code, a new field), the user is asked for just that. When the account has a session saved from an earlier sign-in, the host may restore that instead and load the page again: check whether it shows you signed in, and if it asks you to sign in, call again with the same username. A saved session goes in only on the first page of a sign-in (one that asks who you are, or offers signing in with another account): to use another of your accounts on a site where you are signed in, sign out there first.
 3. A sign-in split over steps (email first, then password) takes one call per step. Pass the username you used on the earlier step. When a page asks for the email or username alone, also map the password without a ref: the user enters both at once, and the host fills the password when a later call maps that field.
 4. When the site rejects the sign-in (a wrong or changed password), call again with that username, ask_user: true, and reason set to what the page said. The user enters it again; until they do, the vault fills that account's password only with them. For another account, call with ask_user: true and no username.
 
 Sign-in through another account ("Continue with Google", GitHub, Microsoft): which account to use is the user's to say. On a page with such buttons, list them in providers on every call: the user's form offers exactly those. Before you click one, call request_login on the site (without fields when the page shows none). The result names the account the user signs in with ("signs in with the Google account x@gmail.com"), or the user picks it in the form. Then click the button yourself and pick exactly that account in the provider's account chooser, never another; if the provider asks to sign in, call request_login there with that username.
 
-When the sign-in asks to verify it's you, the way is not yours to pick: call this tool on that page with its ways in ways (no fields), each with its ref, the page's words and its method, and the username you are signing in with. That is a list of ways (a code by text or email, a prompt on the phone, an authenticator app, a passkey), or one way with "Try another way": open that list first. The host picks a way the vault holds for the account (its authenticator app), or the user picks one; the host clicks it, and the result says what comes next. Never click a way yourself, nor hand the browser over on such a page before one was picked. A code then goes in with this tool: map its field with from set to where the page says it comes from. The vault fills an authenticator app's code (from: "authenticator_app") when it holds the app; any other code is the user's. After a prompt to the user's phone, wait for the page to move on by itself (up to about two minutes). When the page's only way is a prompt on the user's device with nothing to click, call this tool with that one way and no ref: it returns once the page moves on.
+When the sign-in asks to verify it's you, the way is not yours to pick: call this tool on that page with its ways in ways (no fields), each with its ref, the page's words and its method, and the username you are signing in with. That is a list of ways (a code by text or email, a prompt on the phone, an authenticator app, a passkey), or one way with "Try another way": open that list first. The host picks a way the vault holds for the account (its passkey, held in the browser, or its authenticator app), or the user picks one; the host clicks it, and the result says what comes next. Never click a way yourself, nor hand the browser over on such a page before one was picked. A code then goes in with this tool: map its field with from set to where the page says it comes from. The vault fills an authenticator app's code (from: "authenticator_app") when it holds the app; any other code is the user's. After a prompt to the user's phone, wait for the page to move on by itself (up to about two minutes). When the page's only way is a prompt on the user's device with nothing to click, call this tool with that one way and no ref: it returns once the page moves on.
 
-Hand the browser over with request_browser_input instead for what only the user can do on the page: a CAPTCHA, a consent screen, a passkey or security key the user picked or the page's only way, or a phone prompt still pending after that wait.
+Hand the browser over with request_browser_input instead for what only the user can do on the page: a CAPTCHA, a consent screen, a passkey or security key the user picked or the page's only way (unless the browser holds the vault's passkey for the account, as a result said), or a phone prompt still pending after that wait.
 
 The result says which account was used, which fields were filled on which site, whether the form was submitted, and what the page did next (like a click result). It never contains the values. When the site rejects the credentials, the page says so.`
 
@@ -204,11 +204,13 @@ type Name = (username: string) => string
 const plain: Name = (username) => username
 
 /** What the vault holds besides the parts, as a note on an account. */
-function methodNotes(account: Pick<VaultAccountView, 'authenticator' | 'authenticatorName'>): string {
+function methodNotes(account: Pick<VaultAccountView, 'authenticator' | 'authenticatorName' | 'passkeys'>): string {
+  const notes: string[] = []
+  if (account.passkeys) notes.push('the vault also holds a passkey for it: signing in with it holds the passkey in the browser for you')
   const named = account.authenticatorName ? ` (named "${account.authenticatorName}" on the site)` : ''
-  if (account.authenticator === 'ready') return `; the vault also holds its authenticator app${named}, so a code from the app needs no one (from: "authenticator_app")`
-  if (account.authenticator === 'rejected') return '; the site rejected a code from its authenticator app in the vault, as reported earlier: codes ask the user'
-  return ''
+  if (account.authenticator === 'ready') notes.push(`the vault also holds its authenticator app${named}, so a code from the app needs no one (from: "authenticator_app")`)
+  if (account.authenticator === 'rejected') notes.push('the site rejected a code from its authenticator app in the vault, as reported earlier: codes ask the user')
+  return notes.map((note) => `; ${note}`).join('')
 }
 
 /** What a saved account holds, as the agent may know it: part names, never values. */
@@ -222,6 +224,16 @@ function describeAccount(account: VaultAccountView, named: Name): string {
   return `${name}: holds ${list}${rejected}${methodNotes(account)}`
 }
 
+function formatPasskey(resolution: Extract<LoginResolution, { type: 'passkey' }>, named: Name): string {
+  const account = named(resolution.username)
+  const name = resolution.name ? ` (named "${resolution.name}" on the site)` : ''
+  return [
+    `Nothing was filled: the browser now holds the passkey of ${account} on ${resolution.site}${name} for this sign-in.`,
+    'Use the page\'s passkey option ("Sign in with a passkey", a passkey or security key prompt): the browser answers it by itself. Then check whether the page shows you signed in.',
+    `If the page has no passkey option, or asks who you are first, call request_login again with username "${account}": the vault fills what the page asks for, and the passkey stays ready for a prompt further on.`,
+  ].join('\n')
+}
+
 function formatAuthenticator(resolution: Extract<LoginResolution, { type: 'authenticator' }>, named: Name): string {
   const account = named(resolution.username)
   return [
@@ -231,6 +243,21 @@ function formatAuthenticator(resolution: Extract<LoginResolution, { type: 'authe
 }
 
 function formatAccounts(resolution: Extract<LoginResolution, { type: 'accounts' }>, named: Name): string {
+  const mapFields = 'Map the page\'s sign-in fields by ref and call request_login again: the user fills them in the form. On a page that offers only buttons like "Continue with Google", list them in providers.'
+  if (resolution.accounts.length === 0) {
+    const which = resolution.missing ? ` "${named(resolution.missing)}"` : ''
+    return [
+      `Nothing was filled: the user has no saved account${which} on ${resolution.site} you may use, and this call mapped no field, so the user was not asked.`,
+      mapFields,
+    ].join('\n')
+  }
+  if (resolution.missing) {
+    return [
+      `Nothing was filled: "${named(resolution.missing)}" is not a saved account on ${resolution.site} you may use, and this call mapped no field, so the user was not asked. Saved accounts there you may use:`,
+      ...resolution.accounts.map((account) => `- ${describeAccount(account, named)}`),
+      `To sign in with one, call request_login again with username set to it. ${mapFields}`,
+    ].join('\n')
+  }
   if (resolution.named) {
     return [
       'Nothing was filled: this call mapped no field.',
@@ -336,6 +363,7 @@ export function formatLoginResolution(resolution: LoginResolution, named: Name =
   if (resolution.type === 'session') return formatSession(resolution, named)
   if (resolution.type === 'authenticator') return { content: [{ type: 'text', text: formatAuthenticator(resolution, named) }] }
   if (resolution.type === 'way') return formatWay(resolution, named)
+  if (resolution.type === 'passkey') return { content: [{ type: 'text', text: formatPasskey(resolution, named) }] }
 
   const { origin, outcomes, lost, submitted, submitError, observation, changedSecrets, pageActivity, account } = resolution
   const filled = outcomes.filter((outcome) => outcome.status === 'filled' || outcome.status === 'changed')
@@ -406,7 +434,9 @@ function nextAfterWay(method: WayMethod, account: string | null, byVault: boolea
     case 'phone_prompt':
       return 'The user answers the prompt on their phone: wait for the page to move on by itself (browser_wait with for: "15000", repeated up to about two minutes), and if it is still pending after that, call request_browser_input.'
     case 'passkey':
-      return 'The passkey or security key is the user\'s: call request_browser_input for them to use it on the page.'
+      return byVault
+        ? 'The browser answers the page\'s passkey prompt by itself: check whether the page shows you signed in.'
+        : 'The passkey or security key is the user\'s: call request_browser_input for them to use it on the page.'
     case 'other':
       return 'Take a snapshot to see what the page asks for next.'
   }
@@ -421,9 +451,12 @@ function formatWay(resolution: Extract<LoginResolution, { type: 'way' }>, named:
       : { content: [{ type: 'text', text: `The page did not move on within three minutes of ${way}. Take a snapshot: if the prompt is still pending, call request_browser_input.` }], isError: true }
   }
   const account = resolution.username ? named(resolution.username) : null
-  const who = by === 'vault'
-    ? `The vault holds the authenticator app of ${account ?? 'this account'}, so the host picked ${way}`
-    : `The user picked ${way}`
+  const whose = account ?? 'this account'
+  const who = by === 'user'
+    ? `The user picked ${way}`
+    : picked.method === 'passkey'
+      ? `The browser holds the passkey of ${whose}, so the host picked ${way}`
+      : `The vault holds the authenticator app of ${whose}, so the host picked ${way}`
   const next = nextAfterWay(picked.method, account, by === 'vault')
   if (clickError) {
     return { content: [{ type: 'text', text: `${who}, but it was not clicked: ${sentence(clickError)} Click the way you mapped as ${way} yourself. Then: ${next}` }], isError: true }

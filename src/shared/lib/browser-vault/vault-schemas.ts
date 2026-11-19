@@ -55,14 +55,18 @@ export const totpSeedSchema = z.object({
 export type TotpSeed = z.infer<typeof totpSeedSchema>
 
 /** A passkey registered through the WebAuthn virtual authenticator (part 4). */
-const passkeySchema = z.object({
+export const passkeySchema = z.object({
   credentialId: z.string().max(1024),
   rpId: z.string().max(253),
   userHandle: z.string().max(1024).optional(),
   /** PKCS#8, base64. */
   privateKey: z.string().max(8192),
   signCount: z.number().int().min(0),
+  /** As the site named the account when it created the passkey. */
+  userName: z.string().max(320).optional(),
+  userDisplayName: z.string().max(320).optional(),
 }).strict()
+export type Passkey = z.infer<typeof passkeySchema>
 
 export const accountSecretsSchema = z.object({
   /** Saved parts by key (partKeyOf). */
@@ -95,6 +99,19 @@ export const signInMethodsSchema = z.object({
     /** An agent said the site rejected a code the vault filled: the user is asked for codes until one is added again. */
     rejectedAt: msSchema.optional(),
   }).strict().optional(),
+  /**
+   * The passkeys the vault holds for it (their private keys are in `secrets`):
+   * the site (`rpId`) each works on, and its names, never a key.
+   */
+  passkeys: z.array(z.object({
+    credentialId: z.string().max(1024),
+    rpId: z.string().max(253),
+    addedAt: msSchema,
+    /** What the agent named it on the site, when the site asked ("Gamut"). */
+    name: z.string().max(64).nullable(),
+    /** The account name the site gave it. */
+    userName: z.string().max(320).nullable(),
+  }).strict()).max(20).optional(),
   /**
    * The owner asked agents to add a sign-in method: in the sign-in card, or in
    * Settings → Logins. `askedIn`: the session last asked, as the owner's message.

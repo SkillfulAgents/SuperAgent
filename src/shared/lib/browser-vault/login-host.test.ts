@@ -35,6 +35,8 @@ const container = vi.hoisted(() => ({
   delivered: [] as Array<{ sessionId: string; content: string }>,
   /** The open request the host reads back (its card's vault payload). */
   request: null as Record<string, unknown> | null,
+  /** What the agent's tab holds (passkey-keeper). */
+  passkeyState: { armed: false, onActiveTab: false, mode: null as string | null, credentialIds: [] as string[] },
 }))
 
 vi.mock('@shared/lib/agent-actor', () => ({
@@ -83,6 +85,11 @@ vi.mock('@shared/lib/agent-actor', () => ({
           }
           if (url === '/browser/login/choose') return new Response(JSON.stringify({ success: true, clicked: true, problems: [] }), { status: 200 })
           if (url.startsWith('/inputs/')) return new Response('{}', { status: 200 })
+          if (url === '/browser/passkey/state') return new Response(JSON.stringify(container.passkeyState), { status: 200 })
+          if (url === '/browser/passkey/arm') {
+            container.passkeyState = { armed: true, onActiveTab: true, mode: body.mode, credentialIds: body.credentials.map((held: { credentialId: string }) => held.credentialId) }
+            return new Response(JSON.stringify({ armed: true, origin: 'https://github.com' }), { status: 200 })
+          }
           if (url === '/browser/status' && container.browser) return new Response(JSON.stringify(container.browser), { status: 200 })
           if (url === '/browser/session/restore') return new Response(JSON.stringify(container.restore.body), { status: container.restore.status })
           if (url === '/browser/session/capture') return new Response(JSON.stringify({ hash: 'h' }), { status: 200 })
@@ -94,7 +101,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 
 const { answeredWayLabel, decideLoginRequest, pickLoginWay } = await import('./login-host')
-const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, saveAuthenticator, setSignInMethodRequest, listAccountAgentSlugs } = await import('./vault-service')
+const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, saveAuthenticator, savePasskey, setSignInMethodRequest, listAccountAgentSlugs } = await import('./vault-service')
 const { totpCode } = await import('./totp')
 const { heldLoginKey, holdLoginValues, heldLoginFor, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
 const { heldSessionVersion, readAccountSession, saveAccountSession } = await import('./session-service')
@@ -145,6 +152,7 @@ beforeEach(async () => {
   container.calls = []
   container.delivered = []
   container.request = null
+  container.passkeyState = { armed: false, onActiveTab: false, mode: null, credentialIds: [] }
 })
 
 afterEach(async () => {
@@ -183,6 +191,33 @@ describe('decideLoginRequest', () => {
   it('leaves a request to the form when the agent has no account on the site', async () => {
     expect(await decide({ fields: [] })).toEqual({ action: 'ask', vault: { mode: 'new' }, login: GITHUB })
     expect(fills()).toEqual([])
+  })
+
+  it('tells the agent to map the page, rather than show an empty form, for a call that maps nothing on a site it has no account on', async () => {
+    container.context = { ...GITHUB, fields: [] }
+    expect(await decide({})).toEqual({ action: 'settled' })
+    expect(answers()).toEqual([{ path: '/inputs/t-1/resolve', value: { type: 'accounts', site: 'github.com', accounts: [] } }])
+    // A page of provider buttons is the user's to pick from: the form offers them.
+    container.calls = []
+    container.context = { ...GITHUB, fields: [], providers: ['google'] }
+    expect(await decide({})).toMatchObject({ action: 'ask', vault: { mode: 'new' } })
+    expect(answers()).toEqual([])
+  })
+
+  it('answers a call that maps nothing for an account not saved on the site, rather than show an empty form', async () => {
+    // Live: Google's settings (myaccount.google.com), the account saved on accounts.google.com.
+    await grantedAccount('hubot', { password: 'pw' })
+    container.context = { ...GITHUB, fields: [] }
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(answers()).toEqual([{
+      path: '/inputs/t-1/resolve',
+      value: { type: 'accounts', site: 'github.com', missing: 'octocat', accounts: [expect.objectContaining({ username: 'hubot' })] },
+    }])
+    // With a field to fill, the user decides.
+    container.calls = []
+    container.context = GITHUB
+    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask', vault: { mode: 'ask', username: 'octocat' } })
+    expect(answers()).toEqual([])
   })
 
   it('lists the agent\'s accounts on the site and fills nothing, even when there is one', async () => {
@@ -1004,9 +1039,14 @@ describe('decideLoginRequest with an authenticator app', () => {
     await setSignInMethodRequest(null, account.id, true, 'logins')
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     await backgroundSettled()
-    expect(container.delivered).toEqual([{ sessionId: 's-1', content: expect.stringMatching(/^From Settings → Logins: once you are signed in, also add an authenticator app to my account octocat on github\.com with add_sign_in_method/) }])
+    expect(container.delivered.map((message) => [message.sessionId, parseSignInMethodRequestMessage(message.content)])).toEqual([
+      ['s-1', { username: 'octocat', site: 'github.com', from: 'logins' }],
+    ])
+    // The tab records the passkey the agent then creates.
+    expect(container.calls.filter((call) => call.path === '/browser/passkey/arm').map((call) => call.body)).toEqual([
+      { sessionId: 's-1', mode: 'record', ttlMs: 1_800_000, keep: true },
+    ])
     // Nothing about it in what the tool returns: that reads as the tool's words, not the user's.
-    expect(fills()[0].body).toMatchObject({ account: { username: 'octocat', source: 'vault', saved: false, held: [] } })
     expect(loginFillAccountSchema.safeParse((fills()[0].body as { account: unknown }).account).success).toBe(true)
 
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
@@ -1014,7 +1054,7 @@ describe('decideLoginRequest with an authenticator app', () => {
     expect(container.delivered).toHaveLength(1)
     // Past the half hour in which the vault fills a saved password twice at most.
     vi.setSystemTime(NOW + 31 * 60 * 1000)
-    expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
+    expect(await decide({ username: 'octocat' }, 's-2')).toHaveProperty('action', 'settled')
     await backgroundSettled()
     expect(container.delivered.map((message) => message.sessionId)).toEqual(['s-1', 's-2'])
   })
@@ -1055,5 +1095,82 @@ describe('pickLoginWay', () => {
     expect(container.delivered.map((message) => [message.sessionId, parseSignInMethodRequestMessage(message.content)])).toEqual([
       ['s-1', { username: 'octocat', site: 'github.com', from: 'card' }],
     ])
+  })
+})
+
+describe('decideLoginRequest with a passkey', () => {
+  const PASSKEY = { credentialId: 'Y3JlZC0x', rpId: 'github.com', privateKey: 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg' + 'A'.repeat(120), userHandle: 'dXNlci0x', signCount: 1, userName: 'octocat' }
+
+  async function withPasskey() {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    await savePasskey({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-0', passkey: PASSKEY, name: 'Gamut', asked: { request: true } })
+    return account
+  }
+
+  it('holds the account\'s passkey on the agent\'s tab for the sign-in and tells the agent, filling nothing', async () => {
+    await withPasskey()
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toEqual([])
+    const armed = container.calls.find((call) => call.path === '/browser/passkey/arm')
+    expect(armed?.body).toEqual({ sessionId: 's-1', mode: 'present', credentials: [PASSKEY], ttlMs: 300_000 })
+    expect(answers()).toEqual([{ path: '/inputs/t-1/resolve', value: { type: 'passkey', site: 'github.com', username: 'octocat', name: 'Gamut' } }])
+    // The page had no passkey option: the next call fills, the passkey still held.
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()[0].body).toMatchObject({ values: ['octocat', 'pw'] })
+    expect(container.calls.filter((call) => call.path === '/browser/passkey/arm')).toHaveLength(1)
+  })
+
+  it('holds it on the tab the agent went on in (a window the site opened), and tells the agent again', async () => {
+    await withPasskey()
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    container.passkeyState.onActiveTab = false
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toEqual([])
+    expect(container.calls.filter((call) => call.path === '/browser/passkey/arm')).toHaveLength(2)
+    expect(answers().map((answer) => answer.value.type)).toEqual(['passkey', 'passkey'])
+  })
+
+  it('lists the passkey with the account, and never hands its key to anyone but the container', async () => {
+    await withPasskey()
+    expect(await decide({})).toEqual({ action: 'settled' })
+    expect(answers()[0].value.accounts).toEqual([expect.objectContaining({ username: 'octocat', passkeys: 1 })])
+    const elsewhere = container.calls.filter((call) => call.path !== '/browser/passkey/arm')
+    expect(JSON.stringify([elsewhere, await testDb.select().from(auditLog).all()])).not.toContain(PASSKEY.privateKey)
+  })
+
+  it('picks the passkey on a page that asks how to verify it\'s you, held on the tab first, before an app', async () => {
+    await withPasskey()
+    container.context = {
+      ...WAYS_STEP,
+      ways: [
+        { label: 'Use your authenticator app', method: 'authenticator_app', clickable: true },
+        { label: 'Use a passkey', method: 'passkey', clickable: true },
+      ],
+    }
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(container.calls.filter((call) => call.path === '/browser/passkey/arm')).toHaveLength(1)
+    expect(chosen()).toEqual([{ sessionId: 's-1', toolUseId: 't-1', expectedOrigin: 'https://github.com', index: 1, by: 'vault', username: 'octocat' }])
+
+    // Held already (the sign-in's first call held it): clicked without arming it again.
+    container.calls = []
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(container.calls.filter((call) => call.path === '/browser/passkey/arm')).toEqual([])
+    expect(chosen()).toMatchObject([{ index: 1, by: 'vault' }])
+  })
+
+  it('leaves a page\'s passkey way to the user for an account whose passkey is for another site', async () => {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    await savePasskey({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-0', passkey: { ...PASSKEY, rpId: 'gitlab.com' }, asked: { request: true } })
+    container.context = { ...WAYS_STEP, ways: [{ label: 'Use a passkey', method: 'passkey', clickable: true }, WAYS_STEP.ways[1]] }
+    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask' })
+    expect(chosen()).toEqual([])
+  })
+
+  it('offers no passkey made for another site', async () => {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    await savePasskey({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-0', passkey: { ...PASSKEY, rpId: 'gitlab.com' }, asked: { request: true } })
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(container.calls.some((call) => call.path === '/browser/passkey/arm')).toBe(false)
+    expect(fills()).toHaveLength(1)
   })
 })

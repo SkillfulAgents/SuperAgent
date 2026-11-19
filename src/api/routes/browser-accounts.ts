@@ -14,6 +14,7 @@ import {
   listAccountAgentSlugs,
   listOwnedAccounts,
   removeAuthenticator,
+  removePasskey,
   renameAccount,
   revokeAccount,
   setSignInMethodRequest,
@@ -69,6 +70,13 @@ function methodsDto(account: VaultAccount) {
           rejectedAt: authenticator.rejectedAt ? at(authenticator.rejectedAt) : null,
         }
       : null,
+    passkeys: (account.signInMethods.passkeys ?? []).map((passkey) => ({
+      credentialId: passkey.credentialId,
+      rpId: passkey.rpId,
+      addedAt: at(passkey.addedAt),
+      name: passkey.name,
+      userName: passkey.userName,
+    })),
     requestedAt: requested ? at(requested.at) : null,
     unavailable: unavailable ? { at: at(unavailable.at), reason: unavailable.reason } : null,
   }
@@ -76,6 +84,7 @@ function methodsDto(account: VaultAccount) {
 
 const renameBodySchema = z.object({ label: z.string().trim().max(200).nullable() }).strict()
 const methodRequestBodySchema = z.object({ requested: z.boolean() }).strict()
+const passkeyBodySchema = z.object({ credentialId: z.string().min(1).max(1024) }).strict()
 
 // GET /api/browser-accounts - The caller's saved accounts, with the agents that may use each
 browserAccounts.get('/', async (c) => {
@@ -131,6 +140,14 @@ browserAccounts.delete('/:id/authenticator', async (c) => {
   const viewer = getViewerUserId(c)
   const id = c.req.param('id')
   if (!(await removeAuthenticator(viewer, id))) return c.json({ error: 'No authenticator app is saved for this account' }, 404)
+  return c.json({ success: true })
+})
+
+// DELETE /api/browser-accounts/:id/passkeys - Remove a passkey from the vault (body:
+// its credential id): agents no longer sign in with it. The site still lists it.
+browserAccounts.delete('/:id/passkeys', zValidator('json', passkeyBodySchema), async (c) => {
+  const viewer = getViewerUserId(c)
+  if (!(await removePasskey(viewer, c.req.param('id'), c.req.valid('json').credentialId))) return c.json({ error: 'No such passkey is saved for this account' }, 404)
   return c.json({ success: true })
 })
 

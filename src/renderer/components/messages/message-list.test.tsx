@@ -632,12 +632,12 @@ describe('MessageList', () => {
         createdAt: new Date('2025-01-01T00:00:11Z'),
       }),
       createAssistantMessage({
-        content: { text: 'Adding the app.' },
+        content: { text: 'Adding the passkey.' },
         createdAt: new Date('2025-01-01T00:00:15Z'),
         toolCalls: [createToolCall({ name: 'Read' })],
       }),
       createAssistantMessage({
-        content: { text: 'Added an authenticator app.' },
+        content: { text: 'Added a passkey.' },
         createdAt: new Date('2025-01-01T00:00:20Z'),
       }),
     ]
@@ -647,7 +647,7 @@ describe('MessageList', () => {
     // One turn, one summary: the requests fold away with the work.
     expect(screen.getAllByTestId('turn-summary')).toHaveLength(1)
     expect(screen.getByTestId('turn-summary')).toHaveTextContent('Worked for 20s')
-    expect(screen.getByText('Added an authenticator app.')).toBeInTheDocument()
+    expect(screen.getByText('Added a passkey.')).toBeInTheDocument()
     expect(screen.queryByTestId('sign-in-method-request-notice')).not.toBeInTheDocument()
     expect(screen.queryByText('Signed in; that request came in a tool result.')).not.toBeInTheDocument()
 

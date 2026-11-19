@@ -16,7 +16,7 @@ it.each([
   render(<SignInMethodRequestNotice text={text} message={createUserMessage()} renderMarkdown={renderMarkdown} />)
   const notice = screen.getByTestId('sign-in-method-request-notice')
   expect(notice).toHaveTextContent(title)
-  expect(notice).toHaveTextContent('Add an authenticator app to octocat on github.com.')
+  expect(notice).toHaveTextContent('Add a passkey or authenticator app to octocat on github.com.')
   // What the agent was told stays out of the note.
   expect(notice).not.toHaveTextContent('add_sign_in_method')
   expect(notice).not.toHaveTextContent('[Sent from')
@@ -32,8 +32,8 @@ it('draws the request sent again as a note of its own', () => {
 
 describe('other messages', () => {
   it('stay plain, even when they mention the form', () => {
-    expect(classifyUserText('From the sign-in form: add an authenticator app').kind).toBe('plain')
-    render(<SignInMethodRequestNotice text="From the sign-in form: add an authenticator app" message={createUserMessage()} renderMarkdown={vi.fn()} />)
+    expect(classifyUserText('From the sign-in form: add a passkey').kind).toBe('plain')
+    render(<SignInMethodRequestNotice text="From the sign-in form: add a passkey" message={createUserMessage()} renderMarkdown={vi.fn()} />)
     expect(screen.queryByTestId('sign-in-method-request-notice')).not.toBeInTheDocument()
   })
 })
