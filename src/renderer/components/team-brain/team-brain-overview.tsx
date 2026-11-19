@@ -1,3 +1,4 @@
+import type { MountSummaryWithHealth } from '@shared/lib/types/mount'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Plus, Settings2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
@@ -126,7 +127,7 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
 /** The Team Brain agent's attachment of the drive its record names. */
 function useBrainMount(agent: ApiAgent) {
   const { data: mounts } = useAgentMounts(agent.slug)
-  return mounts?.find((mount) => mount.volumeId === agent.teamBrain?.volumeId)
+  return mounts?.find((mount): mount is MountSummaryWithHealth => !mount.restricted && mount.volumeId === agent.teamBrain?.volumeId)
 }
 
 /** Where the Team Brain agent's drive lives, from the drive itself; none while it has no drive. */
@@ -186,9 +187,9 @@ function OverviewBody({
   const { data: mounts, isError: mountsUnreadable } = useAgentMounts(agentSlug)
   // A drive still making its first copy has nothing to list yet: it is read once the copy is in, and the tree waits.
   // Until the drive list says which, nothing is read; a list that can't be read now leaves the drive to answer for itself.
-  const mount = mounts?.find((each) => each.volumeId === volumeId)
+  const mount = mounts?.find((each): each is MountSummaryWithHealth => !each.restricted && each.volumeId === volumeId)
   const copying = mount?.health === 'preparing'
-  const readable = mountsUnreadable || (mounts && !copying) ? volumeId : undefined
+  const readable = mountsUnreadable || (mount && !copying) ? volumeId : undefined
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   const { drive, ready, error, recordGroups } = useTeamBrainDrive(agentSlug, readable, expanded, record, recordLeaving)
   // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.

@@ -25,6 +25,8 @@ import { ContentBackdrop } from '@renderer/components/layout/content-shell'
 import { HomeSidePanel, SIDE_PANEL_BESIDE_PAGE } from './home-side-panel'
 import { useMediaQuery } from '@renderer/hooks/use-media-query'
 import { HomeBookmarks } from './home-bookmarks'
+import { HomePanel } from './home-collapsible'
+import { HomeVolumes } from './home-volumes'
 import { AgentSettingsColumn } from './agent-settings-column'
 import { useRefreshWidgetsOnVisit } from '@renderer/hooks/use-widgets'
 import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
@@ -414,6 +416,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 </div>
               </>
             )}
+            {!isOwner && <HomePanel><HomeVolumes agentSlug={agent.slug} /></HomePanel>}
           </div>
 
           {sidePanelBeside && (

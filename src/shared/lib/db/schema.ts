@@ -696,10 +696,11 @@ export const agentSessions = sqliteTable('agent_sessions', {
   pk: primaryKey({ columns: [table.agentSlug, table.sessionId] }),
 }))
 
-// Reusable sources. A NULL owner makes a volume available to every user.
+// The creator seeds the first ACL entry on insert. Subsequent access comes from visibility and volume_acl.
 export const volumeDefinitions = sqliteTable('volume_definitions', {
   id: text('id').primaryKey(),
-  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  createdBy: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+  visibility: text('visibility', { enum: ['public', 'private'] }).notNull(),
   name: text('name').notNull(),
   type: text('type').notNull(),
   config: text('config').notNull(),
@@ -707,7 +708,25 @@ export const volumeDefinitions = sqliteTable('volume_definitions', {
   globalAccess: text('global_access', { enum: ['read', 'write'] }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
-}, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
+}, table => ({
+  creatorIdx: index('volume_definitions_creator_idx').on(table.createdBy),
+  visibilityCheck: check('volume_visibility_check', sql`${table.visibility} in ('public', 'private') and (${table.globalAccess} is null or ${table.visibility} = 'public')`),
+}))
+
+// A NULL principal represents the workspace on old public drives with no recorded creator
+// and in single-user mode. Its managers are workspace admins. Only public drives can have one.
+export const volumeAcl = sqliteTable('volume_acl', {
+  id: text('id').primaryKey(),
+  volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  role: text('role', { enum: ['owner'] }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  memberUnique: uniqueIndex('volume_acl_member_unique').on(table.volumeId, table.userId),
+  workspaceUnique: uniqueIndex('volume_acl_workspace_unique').on(table.volumeId).where(sql`${table.userId} is null`),
+  userIdx: index('volume_acl_user_idx').on(table.userId),
+  roleCheck: check('volume_acl_role_check', sql`${table.role} = 'owner'`),
+}))
 
 // An attachment owns its mount name and WebDAV identity; renaming a definition
 // never changes a running agent's /mounts/<name> path.

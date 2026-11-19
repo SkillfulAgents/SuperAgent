@@ -52,11 +52,11 @@ async function heldMounts(options?: { orStarting?: boolean }): Promise<Map<strin
  * first read includes starts not yet at their drive read, so one that reads
  * during the change is compared too. Only a start that begins during the change is marked unread.
  */
-export async function changeDrives<T>(change: () => Promise<T>): Promise<T> {
+export async function changeDrives<T>(change: () => Promise<T>, { accessChanged = false } = {}): Promise<T> {
   const before = await heldMounts({ orStarting: true })
   const result = await change()
-  // Every open window refreshes its drive rows and drive list, whichever agent it shows.
-  globalFeed.publish({ type: 'volume_attention_changed' })
+  // Older clients refresh their drive lists too. ACL-aware clients also recheck files and sharing.
+  globalFeed.publish({ type: 'volume_attention_changed', ...(accessChanged && { accessChanged: true }) })
   const after = await heldMounts()
   await markStale([...after].filter(([slug, mounts]) => mounts !== null && before.get(slug) !== null && before.get(slug) !== mounts).map(([slug]) => slug))
   return result

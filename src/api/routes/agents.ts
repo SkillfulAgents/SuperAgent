@@ -19,6 +19,7 @@ import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
 import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
+import { directoryRefSchema } from '@shared/lib/team-directory/candidate-schema'
 import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -1724,7 +1725,6 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
   }
 })
 
-const directoryRefSchema = z.object({ directoryId: z.string().min(1).max(200), remoteId: z.string().min(1).max(200) })
 const grantAccessBodySchema = z.object({
   userId: z.string().min(1).optional(),
   // A team-directory person with no account: an invited user is made for them.
@@ -6804,7 +6804,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const mounts = await getMountsWithHealth(agentSlug)
+    const mounts = await getMountsWithHealth(agentSlug, volumeViewer(c))
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
@@ -6848,7 +6848,7 @@ agents.patch('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const parsed = updateMountSchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'Invalid drive update' }, 400)
-    if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly))) {
+    if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly, volumeViewer(c)))) {
       return c.json({ error: 'Drive not found' }, 404)
     }
     await afterMountChange(agentSlug)
@@ -6868,7 +6868,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
-    if (!(await removeMount(agentSlug, mountId))) {
+    if (!(await removeMount(agentSlug, mountId, volumeViewer(c), getAuthorizedAgentRole(c)))) {
       return c.json({ error: 'Drive not found' }, 404)
     }
 
@@ -6887,10 +6887,10 @@ function foldersFirstByName(a: { name: string; type: string }, b: { name: string
   return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
 }
 
-/** One level of a folder in one of the agent's drives. Whoever may view the agent may list any of them, as they may open its files. */
+/** One level of a folder in one of the agent's drives. The viewer also needs access to the resolved drive. */
 async function listMountFolder(c: Context, agentSlug: string, rawRoot: string, rawCurrentPath: string) {
   try {
-    const mount = await resolveMountPath(agentSlug, rawCurrentPath)
+    const mount = await resolveMountPath(agentSlug, rawCurrentPath, volumeViewer(c))
     if (!mount) return c.json({ error: 'Drive not found' }, 404)
     const currentPath = rawCurrentPath.replace(/\/+$/, '')
     const entries = (await mount.ops.list(mount.path))
@@ -7330,7 +7330,7 @@ agents.get('/:id/mount-files/*', AgentRead(), async (c) => {
   }
   if (!drivePath) return c.json({ error: 'Invalid path' }, 400)
   try {
-    const mount = await resolveMountPath(getAgentId(c), `/mounts/${drivePath}`)
+    const mount = await resolveMountPath(getAgentId(c), `/mounts/${drivePath}`, volumeViewer(c))
     if (!mount) return c.json({ error: 'Drive not found' }, 404)
     return await serveVolumeFile(c, mount.ops, mount.path)
   } catch (error) {

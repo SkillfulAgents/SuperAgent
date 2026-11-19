@@ -100,11 +100,15 @@ export async function inviteDirectoryPerson(ref: DirectoryRef, invitedByUserId: 
 /** Why someone is being told about Gamut. */
 export type InviteNotice =
   | { kind: 'shared'; agentName: string; byName: string }
+  | { kind: 'drive-shared'; driveName: string; byName: string }
   | { kind: 'mentioned'; agentName: string; byName: string; text: string }
 
 function messageFor(notice: InviteNotice, url: string): DirectoryMessage {
   if (notice.kind === 'shared') {
     return { headline: `${notice.byName} shared the agent ${notice.agentName} with you on Gamut.`, link: { label: 'Join Gamut to use it', url } }
+  }
+  if (notice.kind === 'drive-shared') {
+    return { headline: `${notice.byName} shared the drive ${notice.driveName} with you on Gamut.`, link: { label: 'Join Gamut to open it', url } }
   }
   const text = notice.text.trim()
   return {

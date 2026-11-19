@@ -1387,6 +1387,17 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     }
   })
 
+  it.each([
+    { type: 'volume_access_changed' },
+    { type: 'volume_attention_changed', accessChanged: true },
+  ])('rechecks cached drive files and invite candidates after $type changes access', (event) => {
+    const keys = [['volume-files', 'v1'], ['volume-owner-candidates', 'v1']]
+    for (const key of keys) queryClient.setQueryData(key, [])
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), event)
+    for (const key of keys) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 

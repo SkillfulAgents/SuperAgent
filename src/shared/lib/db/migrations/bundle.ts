@@ -808,5 +808,40 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1795027962529,
     "hash": "051af179d120653b096c843fc46e8d87c83ed9b61f9dd9aba7f02d135f32fe9b"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `volume_acl` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`volume_id` text NOT NULL,\n\t`user_id` text,\n\t`role` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`volume_id`) REFERENCES `volume_definitions`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"volume_acl_role_check\" CHECK(\"volume_acl\".\"role\" = 'owner')\n);\n",
+      "\nCREATE UNIQUE INDEX `volume_acl_member_unique` ON `volume_acl` (`volume_id`,`user_id`);",
+      "\nCREATE UNIQUE INDEX `volume_acl_workspace_unique` ON `volume_acl` (`volume_id`) WHERE \"volume_acl\".\"user_id\" is null;",
+      "\nCREATE INDEX `volume_acl_user_idx` ON `volume_acl` (`user_id`);",
+      "\n-- Rebuilding a referenced parent with foreign keys enabled would cascade into its\n-- attachments. Preserve every mount identity, name, timestamp and access level.\nCREATE TABLE __drive_acl_mounts AS SELECT * FROM agent_volumes;\n",
+      "\nDELETE FROM agent_volumes;",
+      "\nCREATE TABLE `__new_volume_definitions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`visibility` text NOT NULL,\n\t`name` text NOT NULL,\n\t`type` text NOT NULL,\n\t`config` text NOT NULL,\n\t`global_access` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"volume_visibility_check\" CHECK(\"__new_volume_definitions\".\"visibility\" in ('public', 'private') and (\"__new_volume_definitions\".\"global_access\" is null or \"__new_volume_definitions\".\"visibility\" = 'public'))\n);\n",
+      "\nINSERT INTO `__new_volume_definitions`(\"id\", \"user_id\", \"visibility\", \"name\", \"type\", \"config\", \"global_access\", \"created_at\", \"updated_at\") SELECT \"id\", \"user_id\", CASE WHEN user_id IS NULL THEN 'public' ELSE 'private' END, \"name\", \"type\", \"config\", \"global_access\", \"created_at\", \"updated_at\" FROM `volume_definitions`;",
+      "\nDROP TABLE `volume_definitions`;",
+      "\nALTER TABLE `__new_volume_definitions` RENAME TO `volume_definitions`;",
+      "\nINSERT INTO agent_volumes SELECT * FROM __drive_acl_mounts;\n",
+      "\nDROP TABLE __drive_acl_mounts;",
+      "\nCREATE INDEX `volume_definitions_creator_idx` ON `volume_definitions` (`user_id`);\n",
+      "\nINSERT INTO volume_acl(id, volume_id, user_id, role, created_at)\nSELECT lower(hex(randomblob(16))), id, user_id, 'owner', created_at FROM volume_definitions;\n",
+      "\n-- Creating the definition, including create-and-attach and legacy imports, always\n-- creates its first owner in the same statement. Local drives belong to the workspace.\nCREATE TRIGGER volume_seed_owner AFTER INSERT ON volume_definitions BEGIN\n  INSERT INTO volume_acl(id, volume_id, user_id, role, created_at)\n  VALUES(lower(hex(randomblob(16))), NEW.id, NEW.user_id, 'owner', NEW.created_at);\nEND;\n",
+      "\nCREATE TRIGGER volume_workspace_owner_public BEFORE INSERT ON volume_acl\nWHEN NEW.user_id IS NULL AND EXISTS (\n  SELECT 1 FROM volume_definitions WHERE id = NEW.volume_id AND visibility = 'private'\n) BEGIN\n  SELECT RAISE(ABORT, 'A private drive requires a named owner');\nEND;\n",
+      "\nCREATE TRIGGER volume_acl_immutable_principal BEFORE UPDATE OF volume_id, user_id ON volume_acl\nWHEN NEW.volume_id IS NOT OLD.volume_id OR NEW.user_id IS NOT OLD.user_id BEGIN\n  SELECT RAISE(ABORT, 'Add an owner before removing another');\nEND;\n",
+      "\nCREATE TRIGGER volume_remove_workspace_owner AFTER UPDATE OF visibility ON volume_definitions\nWHEN NEW.visibility = 'private' AND OLD.visibility = 'public' BEGIN\n  DELETE FROM volume_acl WHERE volume_id = NEW.id AND user_id IS NULL;\nEND;\n",
+      "\n-- Also covers a user's FK cascade. Deleting the drive itself is allowed because\n-- SQLite removes the parent before running its cascading deletes.\nCREATE TRIGGER volume_keep_owner BEFORE DELETE ON volume_acl\nWHEN EXISTS (SELECT 1 FROM volume_definitions WHERE id = OLD.volume_id)\nAND NOT EXISTS (SELECT 1 FROM volume_acl WHERE volume_id = OLD.volume_id AND id <> OLD.id AND role = 'owner')\nBEGIN\n  SELECT RAISE(ABORT, 'A drive must have at least one owner');\nEND;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795041346189,
+    "hash": "59e122deaf50c4bef30c9727bd3370fd00d05832d9a18020d41d8c46e69708ff"
+  },
+  {
+    "sql": [
+      "-- Drive visibility checks the current Team Brain designation in its UPDATE.\n-- Check the other direction at the settings write too: choosing a drive and\n-- making it private in another window cannot both succeed.\nCREATE TRIGGER team_brain_public_drive_insert BEFORE INSERT ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value) AND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n",
+      "\nCREATE TRIGGER team_brain_public_drive_update BEFORE UPDATE OF value ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value)\nAND json_extract(NEW.value, '$.teamBrain.volumeId') IS NOT\n  CASE WHEN json_valid(OLD.value) THEN json_extract(OLD.value, '$.teamBrain.volumeId') END\nAND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795048855087,
+    "hash": "d0708071a2b154fbf64540385e5586487a239d5460d7b7ba8737d4f6abf4c9c0"
   }
 ]

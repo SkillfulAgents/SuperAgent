@@ -7,14 +7,21 @@ import { serveVolumeFile, volumeErrorResponse } from '../lib/volume-file'
 import { afterVolumeChange, changeDrives } from '../lib/mount-change'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { background } from '@shared/lib/background'
+import { getUserSummaries } from '@shared/lib/services/user-profile-service'
+import { volumeGrantSchema } from '@shared/lib/services/mount-schema'
+import { grantVolumeOwner, requireVolumeManager, revokeVolumeOwner, volumeOwnerIds } from '@shared/lib/services/volume-access-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
+import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
 import { assertManageableVolume, createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, updateVolumeDefinition, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
 
-const routes = new Hono()
+const routes = new Hono<{ Variables: { driveName: string } }>()
 routes.use('*', Authenticated())
 routes.onError((error, c) => {
   const known = volumeErrorResponse(c, error)
   if (known) return known
+  if (error instanceof DirectoryInviteError) return c.json({ error: error.message }, error.status)
   if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: 'Invalid drive configuration' }, 400)
   console.error('[volumes] Definition request failed:', error)
   if (c.req.path.endsWith('/folders') || c.req.path.endsWith('/file')) return c.json({ error: 'This drive is unavailable. Please try again.' }, 503)
@@ -46,6 +53,43 @@ routes.get('/:id/file', async c => {
   return serveVolumeFile(c, volume, path)
 })
 
+routes.use('/:id/access/*', async (c, next) => {
+  const drive = await requireVolumeManager(c.req.param('id'), volumeViewer(c))
+  c.set('driveName', drive.name)
+  return next()
+})
+
+routes.get('/:id/access/search-users', async c => {
+  const owners = await volumeOwnerIds(c.req.param('id'))
+  return c.json(await searchInviteCandidates(c.req.query('q'), owners))
+})
+
+routes.post('/:id/access', async c => {
+  const id = c.req.param('id')
+  const viewer = volumeViewer(c)
+  const sharerId = getCurrentUserId(c)
+  const input = volumeGrantSchema.parse(await c.req.json())
+  const userId = 'userId' in input ? input.userId : (await inviteDirectoryPerson(input.directoryRef, sharerId)).userId
+  await grantVolumeOwner(id, userId, viewer)
+  globalFeed.publish({ type: 'volume_access_changed' })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'granted', details: { targetUserId: userId, role: 'owner' } })
+  background(notifyDriveInvite(userId, c.get('driveName'), sharerId), { name: 'drives.notify-invited-owner' })
+  return c.json({ userId, role: 'owner' }, 201)
+})
+
+async function notifyDriveInvite(userId: string, driveName: string, sharerId: string) {
+  const sharer = (await getUserSummaries([sharerId])).get(sharerId)
+  await notifyInvitedUser(userId, { kind: 'drive-shared', driveName, byName: sharer?.name ?? 'A teammate' })
+}
+
+routes.delete('/:id/access/:userId', async c => {
+  const { id, userId } = c.req.param()
+  await revokeVolumeOwner(id, userId, volumeViewer(c))
+  globalFeed.publish({ type: 'volume_access_changed' })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'revoked', details: { targetUserId: userId } })
+  return c.json({ success: true })
+})
+
 routes.get('/', async c => c.json(await listVolumeDefinitions(volumeViewer(c))))
 routes.post('/', async c => {
   const id = await createVolumeDefinition(await c.req.json(), volumeViewer(c))
@@ -55,9 +99,10 @@ routes.post('/', async c => {
 })
 routes.patch('/:id', async c => {
   const id = c.req.param('id')
-  await assertManageableVolume(id, volumeViewer(c))
+  const viewer = volumeViewer(c)
+  await assertManageableVolume(id, viewer)
   const body = await c.req.json()
-  await changeDrives(() => updateVolumeDefinition(id, body, volumeViewer(c)))
+  await changeDrives(() => updateVolumeDefinition(id, body, viewer), { accessChanged: body?.visibility !== undefined })
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'updated' })
   return c.json({ success: true })
 })
@@ -71,8 +116,9 @@ routes.post('/:id/reconnect', async c => {
 })
 routes.delete('/:id', async c => {
   const id = c.req.param('id')
-  await assertManageableVolume(id, volumeViewer(c))
-  await changeDrives(() => deleteVolumeDefinition(id, volumeViewer(c)))
+  const viewer = volumeViewer(c)
+  await assertManageableVolume(id, viewer)
+  await changeDrives(() => deleteVolumeDefinition(id, viewer), { accessChanged: true })
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'deleted' })
   return c.json({ success: true })
 })

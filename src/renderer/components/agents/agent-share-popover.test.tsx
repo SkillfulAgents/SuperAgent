@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   members: [] as Array<Record<string, unknown>>,
   candidates: [] as Array<Record<string, unknown>>,
   posts: [] as Array<{ url: string; body: unknown }>,
+  failNextInvite: false,
   fullExport: { mutate: vi.fn(), isPending: false },
 }))
 
@@ -25,6 +26,10 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === 'POST') {
       state.posts.push({ url, body: JSON.parse(String(init.body)) })
+      if (state.failNextInvite) {
+        state.failNextInvite = false
+        throw new Error('Connection lost')
+      }
       return new Response(JSON.stringify({ ok: true }), { status: 201 })
     }
     return new Response(JSON.stringify(state.candidates))
@@ -43,6 +48,7 @@ function renderPopover() {
 
 beforeEach(() => {
   state.posts = []
+  state.failNextInvite = false
   state.fullExport = { mutate: vi.fn(), isPending: false }
   state.members = [
     { id: 'ada', name: 'Ada Admin', email: 'ada@acme.test', image: null, role: 'owner' },
@@ -83,6 +89,29 @@ describe('sharing an agent with people not on Gamut yet', () => {
       { url: '/api/agents/support/access', body: { directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, role: 'user' } },
       { url: '/api/agents/support/access', body: { userId: 'dan-id', role: 'user' } },
     ]))
+  })
+
+  it('keeps only unsuccessful invites selected for a retry', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    const search = screen.getByRole('textbox', { name: 'Invite by name or email' })
+    for (const name of ['Dan Ortiz', 'Dana Whitfield']) {
+      await userEvent.type(search, name)
+      await userEvent.click(await screen.findByRole('checkbox', { name: new RegExp(name) }))
+    }
+    state.failNextInvite = true
+    const invite = screen.getByTestId('invite-add-button')
+    await userEvent.click(invite)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Dan Ortiz: Connection lost')
+    expect(screen.queryByRole('button', { name: 'Remove Dana Whitfield from invite' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Remove Dan Ortiz from invite' })).toBeInTheDocument()
+    await userEvent.click(invite)
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(state.posts.map(post => post.body)).toEqual([
+      { userId: 'dan-id', role: 'user' },
+      { directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, role: 'user' },
+      { userId: 'dan-id', role: 'user' },
+    ])
   })
 })
 

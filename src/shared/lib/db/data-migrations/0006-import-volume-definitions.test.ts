@@ -45,7 +45,7 @@ describe('import volume definitions', () => {
       { id: 'typed', name: 'projects', volumeId: legacyVolumeId('a', 'typed') },
     ])
     const definitions = await handle.db.select().from(volumeDefinitions).orderBy(volumeDefinitions.name).all()
-    expect(definitions).toMatchObject([{ userId: 'alice', name: 'notes-2', type: 'local' }, { userId: 'alice', name: 'projects', type: 'local' }])
+    expect(definitions).toMatchObject([{ visibility: 'private', createdBy: 'alice', name: 'notes-2', type: 'local' }, { visibility: 'private', createdBy: 'alice', name: 'projects', type: 'local' }])
     expect(z.object({ path: z.string() }).parse(JSON.parse(definitions[0].config))).toEqual({ path: '/missing/disk' })
     expect(fs.readFileSync(file, 'utf8')).toBe(original)
   })
@@ -57,7 +57,7 @@ describe('import volume definitions', () => {
     await importVolumeDefinitions.run(handle.db)
     const definitions = await handle.db.select().from(volumeDefinitions).all()
     expect(new Set(definitions.map(v => v.id)).size).toBe(3)
-    expect(definitions.map(v => v.userId).sort()).toEqual(['alice', 'bob', null].sort())
+    expect(definitions.map(v => v.createdBy).sort()).toEqual(['alice', 'bob', null].sort())
     expect(await handle.db.select().from(agentVolumes).all()).toHaveLength(3)
   })
   it('repairs partial imports on retry without overwriting a renamed source', async () => {

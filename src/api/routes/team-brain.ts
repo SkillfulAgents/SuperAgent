@@ -24,6 +24,12 @@ const routes = new Hono()
 routes.use('*', Authenticated(), IsAdmin())
 routes.onError((error, c) => {
   if (error instanceof TeamBrainSetupError) return c.json({ error: error.message, reason: error.reason }, error.status)
+  // A visibility change can win the race between setup's check and its settings write.
+  for (let cause: unknown = error; cause instanceof Error; cause = cause.cause) {
+    if (cause.message.includes('Team Brain requires a public drive')) {
+      return c.json({ error: 'Team Brain requires a public drive', reason: 'drive' }, 409)
+    }
+  }
   if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: 'Invalid Team Brain set-up request' }, 400)
   console.error('[team-brain] Set-up request failed:', error)
   return c.json({ error: 'Team Brain set-up failed' }, 500)

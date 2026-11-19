@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
+
+Element.prototype.scrollIntoView = vi.fn()
+Element.prototype.hasPointerCapture = vi.fn(() => false)
+Element.prototype.releasePointerCapture = vi.fn()
 
 const state = vi.hoisted(() => ({
   definitions: [] as VolumeDefinitionSummary[],
@@ -11,6 +16,7 @@ const state = vi.hoisted(() => ({
   agents: [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }] as Array<{ slug: string; displaySlug: string; name: string; status?: string; stale?: boolean }>,
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
+  useRemoveVolumeOwner: () => ({}),
   useVolumeAgents: () => ({ data: { attachments: [] }, isLoading: false }),
   useVolumeDefinitions: () => ({ data: state.definitions, isLoading: false }),
   useSaveVolumeDefinition: () => ({ mutateAsync: state.save, isPending: false }),
@@ -18,6 +24,11 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useReconnectLocalVolume: () => ({ mutateAsync: state.reconnect, isPending: false }),
 }))
 vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host }))
+vi.mock('@renderer/hooks/use-invite-candidates', async importOriginal => ({
+  ...await importOriginal<typeof import('@renderer/hooks/use-invite-candidates')>(),
+  useInviteCandidates: () => ({ data: [] }),
+}))
+vi.mock('@renderer/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
 vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
@@ -33,7 +44,7 @@ beforeEach(() => {
   state.host = true
   state.isAdmin = true
   state.agents = [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }]
-  state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok', globalAccess: null }]
+  state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', visibility: 'private', owners: [{ userId: 'alice', name: 'Alice', role: 'owner' }], canManage: true, attachmentCount: 0, health: 'ok', globalAccess: null }]
   window.electronAPI = { openDirectory: vi.fn().mockResolvedValue({ path: '/new/folder' }) } as never
 })
 afterEach(() => {
@@ -60,7 +71,10 @@ describe('volume settings', () => {
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Select folder location/ })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: /who can add/i })).toBeDisabled()
+    const visibility = screen.getByRole('combobox', { name: 'Drive visibility' })
+    expect(visibility).toBeEnabled()
+    const people = screen.getByRole('button', { name: 'People with access to Notes' })
+    expect(within(people).getByText('AL')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Rename drive' }))
     await userEvent.clear(screen.getByTestId('volume-title-input'))
     await userEvent.type(screen.getByTestId('volume-title-input'), 'Team notes{Enter}')
@@ -74,7 +88,7 @@ describe('volume settings', () => {
     expect(screen.getByText('Only drives Everyone can add can be global.')).toBeInTheDocument()
   })
   it('turns a public drive global after a confirm, then locks the access picker and lists every agent', async () => {
-    state.definitions[0] = { ...state.definitions[0], userId: null }
+    state.definitions[0] = { ...state.definitions[0], visibility: 'public' }
     state.selectedId = 'v1'
     state.save.mockResolvedValue(undefined)
     const { rerender } = render(<VolumesTab />)
@@ -87,8 +101,18 @@ describe('volume settings', () => {
     state.definitions[0] = { ...state.definitions[0], globalAccess: 'read' }
     rerender(<VolumesTab />)
     expect(screen.getByRole('combobox', { name: 'Access on every agent' })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: 'Drive visibility' })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: 'Drive visibility' })).toHaveAccessibleDescription('Turn off global access before changing visibility.')
     expect(screen.getByText('Every agent has this drive')).toBeInTheDocument()
     expect(screen.queryByText('Agents Without This Drive')).not.toBeInTheDocument()
+  })
+  it('explains why the designated Team Brain drive stays public', () => {
+    state.selectedId = 'v1'
+    state.definitions[0] = { ...state.definitions[0], visibility: 'public', teamBrainDrive: true }
+    render(<VolumesTab />)
+    const visibility = screen.getByRole('combobox', { name: 'Drive visibility' })
+    expect(visibility).toBeDisabled()
+    expect(visibility).toHaveAccessibleDescription('Team Brain requires a public drive.')
   })
   it('returns Back to the page that opened the drive from its home', () => {
     expect(agentBackPath('home', '/agents/a1')).toBe('/agents/a1')
@@ -107,7 +131,30 @@ describe('volume settings', () => {
     state.isAdmin = false
     state.definitions[0] = { ...state.definitions[0], canManage: true }
     render(<VolumesTab />)
-    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Drive visibility' })).not.toBeInTheDocument()
+  })
+  it('shows the total when a private drive has more owners than fit in the stack', async () => {
+    state.selectedId = 'v1'
+    const names = ['Alice', 'Bob', 'Cara', 'Dan', 'Eve', 'Finn']
+    state.definitions[0].owners = names.map(name => ({ userId: name, name, role: 'owner' }))
+    render(<QueryClientProvider client={new QueryClient()}><VolumesTab /></QueryClientProvider>)
+    const people = screen.getByRole('button', { name: 'People with access to Notes' })
+    expect(within(people).getByText('6')).toBeInTheDocument()
+    await userEvent.click(people)
+    const roster = screen.getByRole('dialog', { name: 'Drive access' })
+    for (const name of names) expect(within(roster).getByText(name)).toBeInTheDocument()
+    expect(within(roster).getByRole('textbox', { name: 'Invite by name or email' })).toBeInTheDocument()
+  })
+  it('lets a workspace member inspect the owners of a public drive', async () => {
+    state.selectedId = 'v1'
+    state.isAdmin = false
+    state.definitions[0] = { ...state.definitions[0], visibility: 'public', canManage: false }
+    render(<QueryClientProvider client={new QueryClient()}><VolumesTab /></QueryClientProvider>)
+    await userEvent.click(screen.getByRole('button', { name: 'People with access to Notes' }))
+    const roster = screen.getByRole('dialog', { name: 'Drive access' })
+    expect(within(roster).getByText('Alice')).toBeInTheDocument()
+    expect(within(roster).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(roster).queryByRole('button', { name: 'Remove Alice as owner' })).not.toBeInTheDocument()
   })
   it('returns an unavailable drive opened from an agent to that agent', async () => {
     state.selectedId = 'missing'
@@ -154,7 +201,7 @@ describe('volume settings', () => {
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/new/folder')
     expect(screen.getByLabelText('Name')).toHaveValue('folder')
     expect(screen.queryByLabelText('Who can add this drive?')).not.toBeInTheDocument()
-    expect(screen.getByText('Only me')).toBeInTheDocument()
+    expect(screen.getAllByText('Private')[0]).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'folder', source: { type: 'local', config: { path: '/new/folder' } }, visibility: 'private' })
   })
@@ -167,20 +214,27 @@ describe('volume settings', () => {
   it('shows public sources without management controls for other users', () => {
     state.host = false
     state.isAdmin = false
-    state.definitions[0] = { ...state.definitions[0], userId: null, canManage: false }
+    state.definitions[0] = { ...state.definitions[0], visibility: 'public', canManage: false }
     render(<VolumesTab />)
     expect(screen.getByText('Public')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Notes' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Remove Notes' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add drive' })).toBeInTheDocument()
   })
-  it('keeps inline edits with the server error when a volume cannot be saved', async () => {
+  it('keeps the current visibility and shows the server error when publishing fails', async () => {
     state.selectedId = 'v1'
-    state.save.mockRejectedValue(new Error('Remove this drive from all agents before changing its access'))
+    state.save.mockRejectedValue(new Error('Only admins can publish drives'))
     render(<VolumesTab />)
-    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Remove this drive')
-    expect(state.save).toHaveBeenCalledWith({ id: 'v1', visibility: 'private' })
+    const visibility = screen.getByRole('combobox', { name: 'Drive visibility' })
+    await userEvent.click(visibility)
+    const privateOption = screen.getByRole('option', { name: 'Private' })
+    const publicOption = screen.getByRole('option', { name: 'Public' })
+    expect(privateOption).toHaveAccessibleDescription('Only owners can open it.')
+    expect(publicOption).toHaveAccessibleDescription('All workspace members can open it.')
+    await userEvent.click(publicOption)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Only admins can publish drives')
+    expect(state.save).toHaveBeenCalledWith({ id: 'v1', visibility: 'public' })
+    expect(visibility).toHaveTextContent('Private')
     expect(screen.getByTestId('volume-detail-page')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })

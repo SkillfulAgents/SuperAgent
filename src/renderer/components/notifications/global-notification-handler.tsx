@@ -677,8 +677,12 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
 
+          case 'volume_access_changed':
           case 'volume_attention_changed':
-            // A drive changed: its settings, its folder, or its sync state. Its rows and status pills follow.
+            if (data.type === 'volume_access_changed' || data.accessChanged === true) {
+              queryClient.invalidateQueries({ queryKey: ['volume-owner-candidates'] })
+              queryClient.invalidateQueries({ queryKey: ['volume-files'] })
+            }
             queryClient.invalidateQueries({ queryKey: ['mounts'] })
             queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
             queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
