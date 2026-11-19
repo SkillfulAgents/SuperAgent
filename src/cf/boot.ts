@@ -22,7 +22,7 @@ import { background, runWithBackground } from '@shared/lib/background'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { initializeServices, prepareDeployment, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { captureException } from '@shared/lib/error-reporting'
-import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
+import { initializeBackgroundWork, isBackgroundWorkInitialized, taskManager } from '@shared/lib/background-work'
 import { getErrorReporter, initErrorReporting } from '@shared/lib/error-reporting'
 import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { setActorTransport, setSessionStore } from '@shared/lib/agent-actor/registry'
@@ -50,6 +50,7 @@ import { cloudflareAgentActor, ownedHere, runActorOp, servingAgentObject, type A
 import { createObjectSessionIndexStorage } from './lib/object-session-index-storage'
 import { callOnCurrentCode } from './lib/object-version'
 import { seedSettings } from './lib/seed-settings'
+import { PURGE_WORKSPACE_TASK, PurgeWorkspaceTask } from './lib/purge-workspace-task'
 import type { Env } from './index'
 
 let booted: Promise<void> | undefined
@@ -196,6 +197,7 @@ async function start(env: Env): Promise<void> {
     await initializeBackgroundWork(tasks)
   }
   registerBackgroundWork({ localContainers: false })
+  taskManager().register(new PurgeWorkspaceTask((slug) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.purgeWorkspace())))
 }
 
 /**
@@ -242,9 +244,10 @@ function wireAgents(env: Env): void {
   // A session runs in its agent's object, and the chat connections are in the task manager object.
   setSessionStartAnnouncer((slug, sessionId) => announceSessionStart(env, slug, sessionId))
   // A deleted agent's saved files are in its object and R2, not in a directory here. They are removed
-  // after the answer: the purge lists and deletes every object the agent saved.
+  // after the answer, by a task that is tried again if it fails: the purge lists and deletes every
+  // object the agent saved. A removal that cannot be scheduled fails, and the agent is kept.
   setWorkspaceRemoval(async (slug) => {
-    background(withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.purgeWorkspace()), { name: 'cloudflare.purge-workspace' })
+    await taskManager().at(Date.now(), `${PURGE_WORKSPACE_TASK}:${slug}`, { taskType: PURGE_WORKSPACE_TASK, payload: { slug } })
   })
 }
 
