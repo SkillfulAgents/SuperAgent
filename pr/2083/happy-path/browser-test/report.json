@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully allows the agent to open a browser, navigate to a URL, extract page title, and report back with accurate information mentioning \"Example Domain\"",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it in the response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing home view with agent list",
-    "Clicked on QA-20261119-030135-yxpp agent in sidebar — Agent page opened with chat interface ready",
-    "Typed message in input field — Message \"Open a browser and go to https://example.com. Tell me the page title.\" entered successfully",
-    "Sent message using Cmd+Enter — Message sent and agent began processing with status showing \"working\"",
-    "Waited for agent response — Agent completed task in 7 seconds using 3 tool calls and 161,913 tokens",
-    "Verified response contains \"Example Domain\" — Response confirmed: \"The page title is 'Example Domain'. The page loaded fine and I've closed the browser.\"",
-    "Reviewed browser use feature — Agent successfully used browser tools to open browser, navigate to URL, extract page title, and close browser"
+    "Navigated to http://localhost:47891 — Gamut application loaded successfully with agent list visible in sidebar.",
+    "Clicked on agent \"QA-20261119-180027-vbg4\" in the sidebar — Agent page opened with chat interface ready.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was sent successfully and new session \"Browser Page Title Check\" was created.",
+    "Waited for agent response — Agent completed execution in ~13 seconds with status showing \"Worked for 11s · 3 tool calls · 162,895 tokens\".",
+    "Verified response contains \"Example Domain\" — Response shows: \"The page title is Example Domain. I opened it in the browser and then closed the browser.\" The expected text \"Example Domain\" is present and properly formatted."
   ],
   "bugs": [],
-  "durationMs": 81412,
-  "sessionId": "ca1b5fb5-0027-45f7-ab32-af69287b8d2c",
+  "durationMs": 77328,
+  "sessionId": "bd26bc0e-72ef-4810-a7eb-128aa2eeb125",
   "cost": {
-    "inputTokens": 434,
-    "outputTokens": 12921,
-    "cacheCreationTokens": 70655,
-    "cacheReadTokens": 1279765,
+    "inputTokens": 374,
+    "outputTokens": 12567,
+    "cacheCreationTokens": 74611,
+    "cacheReadTokens": 1085894,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.281334
+    "totalCostUsd": 0.265062
   }
 }
