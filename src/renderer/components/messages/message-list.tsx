@@ -1291,24 +1291,22 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               )
             } else {
               inner = (
-                <div className="max-w-[80%]">
-                  <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isActive} />
-                </div>
+                <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isActive} />
               )
             }
           } else {
             inner = (
-              <div className="max-w-[80%]">
-                <StreamingToolCallItem
-                  name={tool.name}
-                  partialInput={tool.partialInput}
-                />
-              </div>
+              <StreamingToolCallItem
+                name={tool.name}
+                partialInput={tool.partialInput}
+              />
             )
           }
           return (
             <MessageErrorBoundary key={tool.id} kind="tool call" raw={tool} itemId={tool.id}>
-              {inner}
+              {/* max-w-[80%] matches the assistant column in MessageItem, so a
+                  card keeps its width when its message is persisted. */}
+              <div className="max-w-[80%]">{inner}</div>
             </MessageErrorBoundary>
           )
         })}

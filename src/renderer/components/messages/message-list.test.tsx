@@ -2581,6 +2581,27 @@ describe('MessageList', () => {
       expect(screen.getByTestId('subagent-block')).toBeInTheDocument()
     })
 
+    it('gives a live sub-agent card the same width limit as the other live tool cards', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-task', name: 'Task', partialInput: '{"subagent_type":"Explore"}', ready: true },
+        { id: 'tc-bash', name: 'Bash', partialInput: '{"command":"ls"}', ready: true },
+        { id: 'tc-read', name: 'Read', partialInput: '' },
+      ] as any
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      for (const testId of ['subagent-block', 'tool-call-Bash', 'streaming-tool-call']) {
+        expect(screen.getByTestId(testId).parentElement).toHaveClass('max-w-[80%]')
+      }
+    })
+
     it('renders mix of ready and non-ready tools correctly', () => {
       mockMessagesData.data = [
         createUserMessage({ content: { text: 'Hello' } }),
