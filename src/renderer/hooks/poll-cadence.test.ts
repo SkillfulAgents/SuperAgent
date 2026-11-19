@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 
 // Capture the options object each hook hands to useQuery so we can pin the
 // deliberately-chosen polling cadence. These intervals were lowered from their
@@ -13,6 +13,11 @@ const capturedOptions: Record<string, unknown>[] = []
 const openStreams = vi.hoisted(() => new Set<string>())
 vi.mock('./use-message-stream', () => ({
   isSessionStreamOpen: (sessionId: string) => openStreams.has(sessionId),
+}))
+
+// useSettings asks who is reading; local mode may always read.
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: false, isAdmin: false }),
 }))
 
 vi.mock('@tanstack/react-query', async (importOriginal) => {
@@ -30,7 +35,13 @@ import { createElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useMessages } from './use-messages'
 import { useAgentIntegrationSessions } from './use-agent-integrations'
-import { useUnreadNotificationCount } from './use-notifications'
+import { useAgent, useAgents } from './use-agents'
+import { useRuntimeStatus } from './use-runtime-status'
+import { useSettings } from './use-settings'
+import { useNotifications, useUnreadNotificationCount } from './use-notifications'
+import { usePlatformUnreadCount } from './use-platform-notifications'
+import { usePendingUserRequests } from '@shared/lib/tools/requests/use-pending-user-requests'
+import { noteNotificationStreamDown, noteNotificationStreamFrame } from '@renderer/lib/notification-stream-health'
 
 // useMessages reads the query cache via useQueryClient (delta anchoring), so a
 // real provider is needed even with useQuery itself mocked out.
@@ -41,7 +52,17 @@ describe('polling cadence (reviewed interval constants)', () => {
   beforeEach(() => {
     capturedOptions.length = 0
     openStreams.clear()
+    noteNotificationStreamDown()
   })
+
+  /** The interval the hook hands useQuery for the query whose key starts with `key`, as rendered last. */
+  function pollOf(...key: unknown[]) {
+    const opts = capturedOptions.findLast((options) => {
+      const queryKey = options.queryKey as unknown[] | undefined
+      return Array.isArray(queryKey) && key.every((part, i) => queryKey[i] === part)
+    })
+    return opts?.refetchInterval
+  }
 
   function messagesPollMs() {
     renderHook(() => useMessages('session-1', 'agent-1'), { wrapper })
@@ -61,13 +82,73 @@ describe('polling cadence (reviewed interval constants)', () => {
     expect(messagesPollMs()).toBe(60000)
   })
 
-  it('useUnreadNotificationCount polls every 60s behind the notifications stream', () => {
+  it('useUnreadNotificationCount polls every 60s while the notifications stream is not delivering', () => {
     renderHook(() => useUnreadNotificationCount())
     const opts = capturedOptions.find((options) => {
       const key = options.queryKey as unknown[] | undefined
       return Array.isArray(key) && key[0] === 'notifications' && key[1] === 'unread-count'
     })
     expect(opts?.refetchInterval).toBe(60000)
+  })
+
+  // Queries whose every change the notifications stream announces: their
+  // poll is a net for an event that was never sent, five minutes wide while
+  // the stream delivers, and their old rate when it does not.
+  describe('behind the notifications stream', () => {
+    const cases: Array<[string, number, () => unknown, unknown[]]> = [
+      ['useUnreadNotificationCount', 60_000, () => useUnreadNotificationCount(), ['notifications', 'unread-count']],
+      ['useNotifications', 30_000, () => useNotifications(20), ['notifications', 20]],
+      ['usePendingUserRequests', 30_000, () => usePendingUserRequests('agent-1', 's-1'), ['pending-user-requests']],
+    ]
+
+    it.each(cases)('%s polls at its own rate without the stream, every 5 min with it', (_name, ownMs, hook, key) => {
+      const { rerender } = renderHook(hook, { wrapper })
+      expect(pollOf(...key)).toBe(ownMs)
+
+      act(() => noteNotificationStreamFrame('connected'))
+      rerender()
+      expect(pollOf(...key)).toBe(300_000)
+
+      act(() => noteNotificationStreamDown())
+      rerender()
+      expect(pollOf(...key)).toBe(ownMs)
+    })
+
+    it('usePlatformUnreadCount slows only for a platform that is not connected', () => {
+      const interval = (data: unknown) => (pollOf('platform-notifications', 'unread-count') as (query: unknown) => number)({ state: { data } })
+      const { rerender } = renderHook(() => usePlatformUnreadCount(), { wrapper })
+      expect(interval({ count: 0, connected: false })).toBe(30_000)
+
+      act(() => noteNotificationStreamFrame('connected'))
+      rerender()
+      expect(interval({ count: 0, connected: false })).toBe(300_000)
+      // Connected: a new row is pushed only through the server's Realtime subscription.
+      expect(interval({ count: 3, connected: true })).toBe(30_000)
+      // An older server, an upstream failure, or nothing loaded yet.
+      expect(interval({ count: 0 })).toBe(30_000)
+      expect(interval(undefined)).toBe(30_000)
+    })
+
+    it('keeps reading the badges and requests on an event while the tab is hidden', () => {
+      renderHook(() => { useUnreadNotificationCount(); usePlatformUnreadCount(); usePendingUserRequests('agent-1', 's-1') }, { wrapper })
+      for (const key of [['notifications', 'unread-count'], ['platform-notifications', 'unread-count'], ['pending-user-requests']]) {
+        const opts = capturedOptions.findLast((options) => key.every((part, i) => (options.queryKey as unknown[])[i] === part))
+        expect(opts?.meta).toEqual({ refetchWhenHidden: true })
+      }
+    })
+  })
+
+  // Polls left as they were: the stream does not announce every change to
+  // these, so slowing them would delay what only the poll can find.
+  describe('not behind the notifications stream', () => {
+    it('useRuntimeStatus (30 s), useSettings (60 s), useAgents (60 s) and useAgent (60 s) keep their rates with the stream delivering', () => {
+      act(() => noteNotificationStreamFrame('connected'))
+      renderHook(() => { useRuntimeStatus(); useSettings(); useAgents(); useAgent('agent-1') }, { wrapper })
+      expect(pollOf('runtime-status')).toBe(30_000)
+      expect((pollOf('settings') as (query: unknown) => number)({ state: { error: null } })).toBe(60_000)
+      expect(pollOf('agents')).toBe(60_000)
+      expect(capturedOptions.find((options) => (options.queryKey as unknown[]).length === 2 && (options.queryKey as unknown[])[0] === 'agents')?.refetchInterval).toBe(60_000)
+    })
   })
 
   it('useAgentIntegrationSessions polls every 20s and not while backgrounded', () => {

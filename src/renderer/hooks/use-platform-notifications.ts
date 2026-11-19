@@ -1,5 +1,6 @@
 import { readPlatformNotifications } from '@renderer/lib/platform-notification-read-cache'
 import { apiFetch } from '@renderer/lib/api'
+import { useStreamBackedPollMs } from '@renderer/lib/notification-stream-health'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 /**
@@ -43,9 +44,23 @@ export function usePlatformNotifications(limit: number) {
   })
 }
 
+const PLATFORM_UNREAD_POLL_MS = 30_000
+
+interface PlatformUnreadCount {
+  count: number
+  /** False with no platform connection. A server from before this field, or an upstream failure, omits it. */
+  connected?: boolean
+}
+
 /** Unread platform-notification count (combined into the sidebar badge). */
 export function usePlatformUnreadCount() {
-  return useQuery<{ count: number }>({
+  // With no platform connection the count is zero until one is made, and
+  // connecting is announced on the notifications stream
+  // (`platform_notifications_changed`), so there is nothing to poll for.
+  // Connected, the poll stays: the push for a new row depends on the server's
+  // own Realtime subscription, and a read on another device is not pushed.
+  const disconnectedPollMs = useStreamBackedPollMs(PLATFORM_UNREAD_POLL_MS)
+  return useQuery<PlatformUnreadCount>({
     queryKey: ['platform-notifications', 'unread-count'],
     queryFn: async () => {
       const res = await apiFetch('/api/platform-notifications/unread-count')
@@ -53,7 +68,7 @@ export function usePlatformUnreadCount() {
       return res.json()
     },
     staleTime: 15000,
-    refetchInterval: 30000,
+    refetchInterval: (query) => (query.state.data?.connected === false ? disconnectedPollMs : PLATFORM_UNREAD_POLL_MS),
     meta: { refetchWhenHidden: true },
   })
 }

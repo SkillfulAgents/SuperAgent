@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { apiFetch } from '@renderer/lib/api'
+import { useStreamBackedPollMs } from '@renderer/lib/notification-stream-health'
 import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import {
   pendingUserInputRequestSchema,
@@ -18,7 +19,9 @@ const snapshotSchema = z.object({ requests: z.array(pendingUserInputRequestSchem
  * user_request_resolved on the session and global SSE streams invalidate this
  * query, and the refetch reads the server's registry — the same projection
  * that drives the awaiting-input status. The interval refetch is the safety
- * net for a missed event (matching the legacy proxy-review poll).
+ * net for a missed event (matching the legacy proxy-review poll): every
+ * transition goes out on the global stream, so the net is slow while that
+ * stream delivers and at its own 30 s when it does not.
  */
 export function usePendingUserRequests(agentSlug: string, sessionId?: string | null) {
   // Key on the CANONICAL agent id: the URL carries the display slug, but SSE
@@ -27,6 +30,7 @@ export function usePendingUserRequests(agentSlug: string, sessionId?: string | n
   // caller happened to hold (same reasoning as usePendingProxyReviews).
   const { data: agents } = useAgents()
   const resolvedSlug = resolveRouteAgentId(agentSlug, agents) ?? agentSlug
+  const refetchInterval = useStreamBackedPollMs(30_000)
   return useQuery<PendingUserInputRequest[]>({
     queryKey: ['pending-user-requests', resolvedSlug, sessionId ?? null],
     queryFn: async () => {
@@ -43,7 +47,7 @@ export function usePendingUserRequests(agentSlug: string, sessionId?: string | n
     },
     // Null is an unsent session; undefined deliberately queries agent-wide requests.
     enabled: sessionId !== null,
-    refetchInterval: 30000,
+    refetchInterval,
     // Voice mode pauses on a new request while the app is in the background.
     meta: { refetchWhenHidden: true },
   })
