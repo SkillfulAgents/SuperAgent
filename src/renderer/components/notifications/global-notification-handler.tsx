@@ -678,17 +678,14 @@ export function GlobalNotificationHandler() {
             break
 
           case 'volume_access_changed':
-            queryClient.invalidateQueries({ queryKey: ['volume-owner-candidates'] })
-            queryClient.invalidateQueries({ queryKey: ['volume-files'] })
-            queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
-            queryClient.invalidateQueries({ queryKey: ['mounts'] })
-            queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
-            break
-
           case 'volume_attention_changed':
-            // A drive's sync state changed: a conflict, a stopped push, or the end of one. Its status pills follow.
+            if (data.type === 'volume_access_changed' || data.accessChanged === true) {
+              queryClient.invalidateQueries({ queryKey: ['volume-owner-candidates'] })
+              queryClient.invalidateQueries({ queryKey: ['volume-files'] })
+            }
             queryClient.invalidateQueries({ queryKey: ['mounts'] })
             queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+            queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
             break
 
           case 'agent_created':

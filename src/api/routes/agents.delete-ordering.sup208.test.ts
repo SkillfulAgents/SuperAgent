@@ -161,11 +161,12 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 
 // Team Brain's drive and the agents it comes off.
-const drive = vi.hoisted(() => ({ release: vi.fn(async () => [] as string[]) }))
+const drive = vi.hoisted(() => ({ release: vi.fn(async () => {}), changeDrives: vi.fn((change: () => Promise<unknown>) => change()) }))
 vi.mock('@shared/lib/services/volume-service', async (original) => ({
   ...(await original<typeof import('@shared/lib/services/volume-service')>()),
   releaseVolume: drive.release,
 }))
+vi.mock('../lib/mount-change', () => ({ afterMountChange: vi.fn(), changeDrives: drive.changeDrives }))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   countActiveTriggersPerAccount: vi.fn().mockResolvedValue({}),
@@ -370,5 +371,6 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     workspaceSettings.current = { teamBrain: { agentSlug: 'test-agent', volumeId: 'v1' } }
     expect((await deleteAgentReq()).status).toBe(204)
     expect(drive.release).toHaveBeenCalledExactlyOnceWith('v1', 'test-agent')
+    expect(drive.changeDrives).toHaveBeenCalledOnce()
   })
 })

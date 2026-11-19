@@ -175,7 +175,7 @@ import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
-import { afterMountChange } from '../lib/mount-change'
+import { afterMountChange, changeDrives } from '../lib/mount-change'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -1594,7 +1594,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     // Turning Team Brain off: no other agent keeps reading a brain that no longer syncs. The drive and its files stay.
     const teamBrain = await getTeamBrain()
     // Running agents drop it on their next start.
-    if (teamBrain?.agentSlug === slug) for (const agent of await releaseVolume(teamBrain.volumeId, slug)) await afterMountChange(agent)
+    if (teamBrain?.agentSlug === slug) await changeDrives(() => releaseVolume(teamBrain.volumeId, slug))
 
     // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
     // This runs BEFORE the irreversible workspace removal: if any peripheral
@@ -6824,7 +6824,6 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       mount = 'volumeId' in input
         ? await attachMount(agentSlug, input.volumeId, volumeViewer(c), { readOnly: input.readOnly })
         : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
-      if (!('volumeId' in input)) globalFeed.publish({ type: 'volume_access_changed' })
     } catch (err) {
       if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
       if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid drive configuration' }, 400)

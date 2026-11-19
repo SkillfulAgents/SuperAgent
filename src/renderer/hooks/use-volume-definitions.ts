@@ -76,6 +76,7 @@ export function useDeleteVolumeDefinition() {
     mutationFn: async (id: string) => checkedResponse(await apiFetch(`/api/volume-definitions/${id}`, { method: 'DELETE' })),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ['volume-definitions'] })
+      client.invalidateQueries({ queryKey: ['mounts'] })
     },
   })
 }

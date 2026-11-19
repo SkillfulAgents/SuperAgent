@@ -148,8 +148,9 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: () => 'America/New_York',
 }))
 
+const drives = vi.hoisted(() => ({ onList: null as null | (() => void) }))
 vi.mock('@shared/lib/services/mount-service', () => ({
-  listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  listVolumes: async (_slug: string, beforeRead?: () => void) => { beforeRead?.(); drives.onList?.(); return { volumes: [], notMounted: [] } },
   remounted: async () => {},
 }))
 
@@ -344,6 +345,73 @@ describe('ContainerRuntime webhook relay env', () => {
 
     containerHost.reconcileWebhookRelay(false)
     expect(runtime.isStale()).toBe(false)
+  })
+})
+
+describe('ContainerRuntime drives during a start', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerHost.dropRuntime('test-agent')
+    mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
+    mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
+    mockGetAppPort.mockReturnValue(3000)
+    mockStart.mockResolvedValue(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+    mockGetSettings.mockReturnValue({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} })
+    containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
+  })
+
+  it('holds its drives from just before the start reads them, and a stale mark then survives the start', async () => {
+    const seen: string[][] = []
+    mockGetSettings.mockImplementationOnce(() => {
+      seen.push(containerHost.getAgentIdsHoldingDrives())
+      return { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }
+    })
+    drives.onList = () => { seen.push(containerHost.getAgentIdsHoldingDrives()) }
+    mockStart.mockImplementationOnce(async () => { containerHost.runtime('test-agent').markStale() })
+    try {
+      await containerHost.runtime('test-agent').ensureRunning()
+    } finally {
+      drives.onList = null
+    }
+    expect(seen).toEqual([[], ['test-agent']])
+    expect(containerHost.runtime('test-agent').isStale()).toBe(true)
+  })
+
+  it('drops a stale mark from a start that failed, since the next start reads everything again', async () => {
+    mockStart.mockImplementationOnce(async () => {
+      containerHost.runtime('test-agent').markStale()
+      throw new Error('start failed')
+    })
+    await expect(containerHost.runtime('test-agent').ensureRunning()).rejects.toThrow('start failed')
+    expect(containerHost.getAgentIdsHoldingDrives()).toEqual([])
+    expect(containerHost.runtime('test-agent').isStale()).toBe(false)
+    await containerHost.runtime('test-agent').ensureRunning()
+    expect(containerHost.runtime('test-agent').isStale()).toBe(false)
+  })
+
+  it('keeps holding the drives of a start that replaced a stopped one, when the stopped one resumes', async () => {
+    const runtime = containerHost.runtime('test-agent')
+    let resumeFirst!: () => void
+    mockGetOrCreateProxyToken.mockImplementationOnce(() => new Promise((resolve) => { resumeFirst = () => resolve('real-proxy-token') }))
+    const first = runtime.ensureRunning()
+    await vi.waitFor(() => expect(resumeFirst).toBeDefined())
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+    await runtime.stopContainer()
+    let finishSecond!: () => void
+    mockStart.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve }))
+    const second = runtime.ensureRunning()
+    await vi.waitFor(() => expect(finishSecond).toBeDefined())
+
+    resumeFirst()
+    await expect(first).rejects.toThrow('overtook')
+    expect(containerHost.getAgentIdsHoldingDrives()).toEqual(['test-agent'])
+    finishSecond()
+    await second
   })
 })
 
