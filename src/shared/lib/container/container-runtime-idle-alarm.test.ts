@@ -4,6 +4,9 @@ vi.mock('@shared/lib/account-providers/provider-factory', () => ({
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const mockTrack = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: (...args: unknown[]) => mockTrack(...args) }))
+
 // ============================================================================
 // Mocks — must be set up before importing container-host
 // ============================================================================
@@ -21,6 +24,7 @@ vi.mock('./client-factory', () => ({
     getStats: vi.fn(),
     fetch: vi.fn(),
     getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
+    isHealthy: vi.fn().mockResolvedValue(true),
     createSession: vi.fn(),
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
@@ -379,4 +383,187 @@ describe('ContainerRuntime idle alarm', () => {
     await vi.advanceTimersByTimeAsync(2 * TIMEOUT)
     expect(mockStop).not.toHaveBeenCalled()
   })
+})
+
+// ============================================================================
+// Pre-start: a container woken ahead of use (agent home of an agent with a
+// dashboard) sleeps after a short idle until a person uses it.
+// ============================================================================
+
+describe('ContainerRuntime pre-start tag', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(T0)
+    vi.clearAllMocks()
+    settings.app.autoSleepTimeoutMinutes = 30
+    mockStart.mockResolvedValue({ status: 'running', port: 4001 })
+    mockStop.mockResolvedValue({ forceStopUsed: false, stopped: true })
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4001 })
+    mockHasActive.mockReturnValue(false)
+    mockHasAwaiting.mockReturnValue(false)
+    containerHost.dropRuntime(SLUG)
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    containerHost.dropRuntime(SLUG)
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const settle = () => vi.advanceTimersByTimeAsync(0)
+  const events = () => mockTrack.mock.calls.map(([event, props]) => [event, props])
+
+  async function prestart() {
+    const runtime = containerHost.runtime(SLUG)
+    await runtime.ensureRunning({ prestart: true })
+    await settle()
+    return runtime
+  }
+
+  /** Whether the idle stop has run by `minutes` after T0, advancing to just before and to it. */
+  async function sleepsAt(minutes: number) {
+    await vi.advanceTimersByTimeAsync(T0 + minutes * MINUTE - Date.now())
+    expect(mockStop).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  }
+
+  it('a wake it causes sleeps after five idle minutes, and reports the wake and its expiry', async () => {
+    await prestart()
+    await sleepsAt(5)
+    expect(events()).toEqual([
+      ['prestart_triggered', { agent_key: SLUG }],
+      ['prestart_expired', { agent_key: SLUG, ms_since_start: 5 * MINUTE + 1 }],
+    ])
+  })
+
+  it('never shortens a container already running, and a plain start is untagged', async () => {
+    const runtime = containerHost.runtime(SLUG)
+    await runtime.ensureRunning()
+    await settle()
+    await runtime.ensureRunning({ prestart: true })
+    await sleepsAt(30)
+    expect(mockTrack).not.toHaveBeenCalled()
+  })
+
+  it('drops the tag when the runtime finds the container already running from earlier use', async () => {
+    mockStart.mockImplementation(async (options: { onAlreadyRunning?: () => void }) => {
+      options.onAlreadyRunning?.()
+      return { status: 'running', port: 4001 }
+    })
+    await prestart()
+    await sleepsAt(30)
+    expect(mockTrack).not.toHaveBeenCalled()
+  })
+
+  it('does nothing while auto-sleep is off', async () => {
+    settings.app.autoSleepTimeoutMinutes = 0
+    await prestart()
+    await vi.advanceTimersByTimeAsync(3 * TIMEOUT)
+    expect(mockStop).not.toHaveBeenCalled()
+    expect(mockTrack).not.toHaveBeenCalled()
+  })
+
+  it('a setting under five minutes wins', async () => {
+    settings.app.autoSleepTimeoutMinutes = 2
+    await prestart()
+    await sleepsAt(2)
+  })
+
+  it('a keep-alive clears it: the container then keeps the full timeout', async () => {
+    const runtime = await prestart()
+    await vi.advanceTimersByTimeAsync(3 * MINUTE)
+    runtime.keepAlive()
+    await sleepsAt(33)
+    expect(events().slice(0, 2)).toEqual([
+      ['prestart_triggered', { agent_key: SLUG }],
+      ['prestart_cleared', { agent_key: SLUG, cleared_by: 'keep_alive', ms_since_start: 3 * MINUTE }],
+    ])
+    expect(events()).toHaveLength(2)
+  })
+
+  it('session activity after the wake clears it, activity stamped before it does not', async () => {
+    const runtime = await prestart()
+    runtime.noteSessionActivity(T0 - MINUTE)
+    await vi.advanceTimersByTimeAsync(MINUTE)
+    expect(mockTrack).toHaveBeenCalledTimes(1)
+    runtime.noteSessionActivity()
+    expect(mockTrack).toHaveBeenLastCalledWith('prestart_cleared', { agent_key: SLUG, cleared_by: 'session_activity', ms_since_start: MINUTE })
+    await sleepsAt(31)
+  })
+
+  it('a keep-alive during the boot sticks', async () => {
+    let finish!: () => void
+    mockStart.mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ status: 'running', port: 4001 }) }))
+    const runtime = containerHost.runtime(SLUG)
+    const started = runtime.ensureRunning({ prestart: true })
+    await settle()
+    runtime.keepAlive()
+    finish()
+    await started
+    await settle()
+    expect(events().map(([event]) => event)).toEqual(['prestart_triggered', 'prestart_cleared'])
+    await sleepsAt(30)
+  })
+
+  it('another visit while unused restarts the short window and keeps the wake time', async () => {
+    const runtime = await prestart()
+    await vi.advanceTimersByTimeAsync(4 * MINUTE)
+    await runtime.ensureRunning({ prestart: true })
+    await sleepsAt(9)
+    expect(mockTrack).toHaveBeenLastCalledWith('prestart_expired', { agent_key: SLUG, ms_since_start: 9 * MINUTE + 1 })
+  })
+
+  it('reports expiry once, after an idle stop that completes', async () => {
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false })
+    await prestart()
+    await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+    expect(events().map(([event]) => event)).toEqual(['prestart_triggered'])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mockStop).toHaveBeenCalledTimes(2)
+    expect(events().map(([event]) => event)).toEqual(['prestart_triggered', 'prestart_expired'])
+  })
+
+  it('any other stop ends it as stopped', async () => {
+    const runtime = await prestart()
+    await runtime.stopContainer()
+    expect(mockTrack).toHaveBeenLastCalledWith('prestart_cleared', { agent_key: SLUG, cleared_by: 'stopped', ms_since_start: 0 })
+    expect(mockTrack).toHaveBeenCalledTimes(2)
+  })
+
+  it('a failed start, or a stop during the boot, reports the failed start only', async () => {
+    mockStart.mockRejectedValueOnce(new TypeError('boom'))
+    await expect(containerHost.runtime(SLUG).ensureRunning({ prestart: true })).rejects.toThrow('boom')
+    expect(events()).toEqual([['prestart_failed', { agent_key: SLUG }]])
+    containerHost.dropRuntime(SLUG)
+    mockTrack.mockClear()
+
+    let finish!: () => void
+    mockStart.mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ status: 'running', port: 4001 }) }))
+    const runtime = containerHost.runtime(SLUG)
+    const started = runtime.ensureRunning({ prestart: true })
+    await settle()
+    const stopped = runtime.stopContainer()
+    finish()
+    await expect(started).rejects.toThrow()
+    await stopped
+    expect(events().map(([event]) => event)).toEqual(['prestart_failed'])
+    expect(runtime.getCachedInfo().status).toBe('stopped')
+  })
+
+  it('a container recorded stopped before the wake settles reports nothing: no ending without a wake', async () => {
+    let finish!: () => void
+    mockStart.mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ status: 'running', port: 4001 }) }))
+    const runtime = containerHost.runtime(SLUG)
+    const started = runtime.ensureRunning({ prestart: true })
+    await settle()
+    runtime.markAsStopped()
+    finish()
+    await started
+    await settle()
+    expect(mockTrack).not.toHaveBeenCalled()
+  })
+
 })

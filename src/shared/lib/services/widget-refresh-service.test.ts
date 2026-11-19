@@ -213,6 +213,21 @@ describe('widgetRefreshService', () => {
     await flush()
   })
 
+  it('a visit\'s stale sweep wakes the container as a pre-start only when the visit asked for it', async () => {
+    mocks.listWidgets.mockResolvedValue([widget({ slug: 'stale-one', isStale: true })])
+    mocks.clientFetch.mockResolvedValue(okResponse(snapshot()))
+    await widgetRefreshService.refreshStale(AGENT, { wake: true, prestart: true })
+    await vi.waitFor(() => expect(mocks.ensureRunning).toHaveBeenCalledWith(AGENT, { prestart: true }))
+    await flush()
+
+    widgetRefreshService.resetForTests()
+    await agentRegistry.evict(AGENT)
+    mocks.ensureRunning.mockClear()
+    await widgetRefreshService.refreshStale(AGENT, { wake: true })
+    await vi.waitFor(() => expect(mocks.ensureRunning).toHaveBeenCalledWith(AGENT))
+    await flush()
+  })
+
   it('after a session settles, stale and opted-in widgets re-run without waking the container', async () => {
     vi.useFakeTimers()
     widgetRefreshService.start()

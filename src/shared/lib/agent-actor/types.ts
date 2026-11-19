@@ -270,8 +270,11 @@ export interface AgentCatalog {
 }
 
 export interface ContainerOps {
-  /** `containerManager.ensureRunning` — deduplicates in-flight starts. The client never leaves the actor. */
-  start(): Promise<void>
+  /**
+   * `containerManager.ensureRunning` — deduplicates in-flight starts. The client never leaves the actor.
+   * `prestart`: started ahead of use. A container this call wakes sleeps after a short idle until a person uses it.
+   */
+  start(options?: { prestart?: boolean }): Promise<void>
   /** `containerManager.stopContainer` */
   stop(options?: StopOptions): Promise<void>
   /** `containerManager.keepAlive` */

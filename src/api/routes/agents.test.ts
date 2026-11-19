@@ -1944,6 +1944,14 @@ describe('agent startup — POST /:id/start', () => {
     expect(getAgentWithStatus).toHaveBeenCalledWith('test-agent', { includeSummary: false })
   })
 
+  it('keeps the started container awake as a person\'s start, after the start settles', async () => {
+    mockEnsureRunning.mockResolvedValue({})
+    const response = await createApp().request('http://localhost/api/agents/test-agent/start', { method: 'POST' })
+    expect(response.status).toBe(200)
+    expect(mockKeepAlive).toHaveBeenCalledWith('test-agent')
+    expect(mockEnsureRunning.mock.invocationCallOrder[0]).toBeLessThan(mockKeepAlive.mock.invocationCallOrder[0])
+  })
+
   it('returns the startup error when container health never succeeds', async () => {
     mockEnsureRunning.mockRejectedValue(new Error('Container failed to become healthy'))
 
@@ -13479,4 +13487,76 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(vault.listOwnedAccountsOnSite).toHaveBeenCalledWith(null, 'acme.okta.com')
     expect(body.providerAccounts).toMatchObject([{ id: 'acc-sso', providerId: null }])
   })
+})
+
+describe('agent home visit — POST /:id/widgets/refresh-stale', () => {
+  const visit = (body?: unknown) => createApp().request('http://localhost/api/agents/test-agent/widgets/refresh-stale', body === undefined
+    ? { method: 'POST' }
+    : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  let refreshStale: ReturnType<typeof vi.spyOn>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    mockEnsureRunning.mockResolvedValue({})
+    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([{ slug: 'board' }] as never)
+    const { widgetRefreshService } = await import('@shared/lib/services/widget-refresh-service')
+    refreshStale = vi.spyOn(widgetRefreshService, 'refreshStale').mockResolvedValue({ refreshing: [] })
+  })
+
+  afterEach(() => {
+    refreshStale.mockRestore()
+    mockRuntimeSettings.mockReset()
+    mockRuntimeSettings.mockImplementation(() => ({ container: {}, skillsets: [], app: { configuredPasswordManagers: ['apple-passwords'] } }))
+  })
+
+  it('without the prestart flag (iOS, older clients) it starts nothing beyond today\'s untagged widget sweep', async () => {
+    expect((await visit()).status).toBe(200)
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(refreshStale).toHaveBeenCalledWith('test-agent', { wake: true, prestart: false })
+  })
+
+  it('with the flag it pre-starts an agent that has a dashboard, whatever "Warm start on typing" says, and tags the widget sweep', async () => {
+    // That setting is about typing: auto-sleep is the pre-start's only off switch.
+    mockRuntimeSettings.mockImplementation(() => ({ container: {}, skillsets: [], app: { configuredPasswordManagers: [], warmStartOnType: false } }) as never)
+    expect((await visit({ prestart: true })).status).toBe(200)
+    await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent', { prestart: true }))
+    expect(refreshStale).toHaveBeenCalledWith('test-agent', { wake: true, prestart: true })
+
+    mockEnsureRunning.mockClear()
+    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
+    await visit({ prestart: true })
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+  })
+
+  it('a widget\'s refresh button is a person\'s use: it keeps the container awake, even when it joins a refresh under way', async () => {
+    const { widgetRefreshService } = await import('@shared/lib/services/widget-refresh-service')
+    const widgetService = await import('@shared/lib/services/widget-service')
+    vi.spyOn(widgetService, 'readWidgetFromFilesystem').mockResolvedValue({ slug: 'macros' } as never)
+    let settle!: () => void
+    const refreshWidget = vi.spyOn(widgetRefreshService, 'refreshWidget').mockReturnValue(new Promise((resolve) => {
+      settle = () => resolve({ ok: false, error: 'joined' } as never)
+    }))
+    const response = createApp().request('http://localhost/api/agents/test-agent/artifacts/macros/widget/refresh', { method: 'POST' })
+    await vi.waitFor(() => expect(refreshWidget).toHaveBeenCalled())
+    // Kept awake at once (a long refresh must not be put to sleep), and again after the joined start settles.
+    expect(mockKeepAlive).toHaveBeenCalledTimes(1)
+    settle()
+    await response
+    expect(mockKeepAlive).toHaveBeenCalledTimes(2)
+    expect(refreshWidget).toHaveBeenCalledWith('test-agent', 'macros', { wake: true, reason: 'manual' })
+    refreshWidget.mockRestore()
+  })
+
+  it('starts nothing ahead of use while auto-sleep is off or the settings cannot be read, and keeps the visit', async () => {
+    mockRuntimeSettings.mockImplementation(() => ({ container: {}, skillsets: [], app: { configuredPasswordManagers: [], autoSleepTimeoutMinutes: 0 } }) as never)
+    await visit({ prestart: true })
+    mockRuntimeSettings.mockImplementation(() => { throw new Error('db down') })
+    expect((await visit({ prestart: true })).status).toBe(200)
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(refreshStale).toHaveBeenCalledTimes(2)
+    expect(refreshStale).toHaveBeenLastCalledWith('test-agent', { wake: true, prestart: true })
+  })
+
+
 })
