@@ -7,11 +7,7 @@ import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentHomeAction } from '@renderer/context/nav-transient-context'
-import { useDraftsStore } from '@renderer/context/drafts-context'
-import {
-  newSessionCarryoverKey,
-  type NewSessionCarryover,
-} from '@renderer/lib/new-session-carryover'
+import { agentHomeDraftKey, useDraftsStore, type ComposerDraft, type DraftsStore } from '@renderer/context/drafts-context'
 
 // --- Mock data ---
 
@@ -188,10 +184,14 @@ const mockComposer = {
 
 let capturedComposerOptions: any
 
-function CarryoverSeeder({ value, children }: { value: NewSessionCarryover; children: ReactNode }) {
+let homeDrafts: DraftsStore
+
+/** The agent's home draft as something else left it (a stale session's Start Fresh, an earlier visit) before the page mounts. */
+function HomeDraftSeeder({ value, children }: { value: ComposerDraft; children: ReactNode }) {
   const store = useDraftsStore()
   useState(() => {
-    store.set(newSessionCarryoverKey(testAgent.slug), value)
+    homeDrafts = store
+    store.set(agentHomeDraftKey(testAgent.slug), value)
     return null
   })
   return children
@@ -734,19 +734,15 @@ describe('AgentHome', () => {
     expect(capturedComposerOptions.draftKey).toBe('session:agent-home:test-agent')
   })
 
-  it('hydrates a carried composer and sends its model and effort on the new session', async () => {
-    const attachment = {
-      type: 'file' as const,
-      id: 'file-1',
-      file: new File(['hello'], 'hello.txt', { type: 'text/plain' }),
-    }
+  it('starts from the options of the session a draft was moved out of, and sends them on the new session', async () => {
     renderWithProviders(
-      <CarryoverSeeder value={{ attachments: [attachment], model: 'opus', effort: 'high', speed: 'normal' }}>
+      <HomeDraftSeeder value={{ text: 'Continue', inheritedOptions: { model: 'opus', effort: 'high', speed: 'normal' } }}>
         <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
-      </CarryoverSeeder>,
+      </HomeDraftSeeder>,
     )
 
-    expect(capturedComposerOptions.initialAttachments).toEqual([attachment])
+    // Taken by this composer: a later visit starts from the defaults again.
+    expect(homeDrafts.get(agentHomeDraftKey(testAgent.slug))).toEqual({ text: 'Continue' })
     await act(() => capturedComposerOptions.onSubmit('Continue in a new session'))
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith({
       agentSlug: 'test-agent',
@@ -756,6 +752,22 @@ describe('AgentHome', () => {
       // A carried speed is an explicit (session-seeded) value, so it rides along.
       speed: 'normal',
     })
+  })
+
+  it('sends a pick left in the home draft, and it is no longer unsent once the session has it', async () => {
+    renderWithProviders(
+      <HomeDraftSeeder value={{ options: { effort: 'low' } }}>
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      </HomeDraftSeeder>,
+    )
+
+    await act(() => capturedComposerOptions.onSubmit('Quick question'))
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith({
+      agentSlug: 'test-agent',
+      message: 'Quick question',
+      effort: 'low',
+    })
+    expect(homeDrafts.get(agentHomeDraftKey(testAgent.slug))).toBeUndefined()
   })
 
   it('passes submitDisabled based on createSession.isPending and runtime readiness', () => {

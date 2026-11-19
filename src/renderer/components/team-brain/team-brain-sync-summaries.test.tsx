@@ -2,7 +2,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
-import { useDraft } from '@renderer/context/drafts-context'
+import { useDraftText } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { parseSyncSummary } from '@renderer/lib/team-brain/team-brain-syncs'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
@@ -23,7 +23,7 @@ at: 2026-11-03T00:09:00-08:00
 `
 
 function Draft() {
-  const [draft] = useDraft<string>('session:agent-home:brain')
+  const [draft] = useDraftText('session:agent-home:brain')
   const { commentsFor } = useFilePreview()
   return <output data-testid="draft" data-stored={commentsFor(ID, 'brain').length}>{draft}</output>
 }

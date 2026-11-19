@@ -4662,23 +4662,43 @@ describe('folder upload — POST /:id/upload-folder', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.success).toBe(true)
-    expect(body.path).toBe('/workspace/uploads/my-project/')
+    // A directory of its own for this upload, under the folder's name.
+    expect(body.path).toMatch(/^\/workspace\/uploads\/my-project-\d{13}\/$/)
     expect(body.folderName).toBe('my-project')
+    const uploaded = `/mock/workspace/uploads/${(body.path as string).split('/')[3]}`
 
-    // Every regular file is copied from the host folder into uploads/<folder>/
+    // Every regular file is copied from the host folder into that directory
     // in one filesystem copy (which keeps its mode), its directories are
     // created, and the symlink is skipped rather than followed.
     // Each file is one exclusive copy: an entry already there (a link the
     // agent planted, say) is refused rather than written through.
     const exclusive = 1 // fs.constants.COPYFILE_EXCL, as mocked
     expect(mockFsCopyFile.mock.calls).toEqual([
-      ['/Users/joe/Desktop/my-project/README.md', '/mock/workspace/uploads/my-project/README.md', exclusive],
-      ['/Users/joe/Desktop/my-project/src/index.ts', '/mock/workspace/uploads/my-project/src/index.ts', exclusive],
+      ['/Users/joe/Desktop/my-project/README.md', `${uploaded}/README.md`, exclusive],
+      ['/Users/joe/Desktop/my-project/src/index.ts', `${uploaded}/src/index.ts`, exclusive],
     ])
     expect(mockCreateReadStream).not.toHaveBeenCalled()
     expect(mockCreateWriteStream).not.toHaveBeenCalled()
-    expect(mockFsMkdir).toHaveBeenCalledWith('/mock/workspace/uploads/my-project/src', { recursive: true })
+    expect(mockFsMkdir).toHaveBeenCalledWith(`${uploaded}/src`, { recursive: true })
     expect(mockFsCp).not.toHaveBeenCalled()
+  })
+
+  it('gives two folders with one name a directory each, so neither is copied over the other', async () => {
+    mockFsStat.mockResolvedValue({ isDirectory: () => true, isFile: () => false, size: 0 })
+    const now = vi.spyOn(Date, 'now')
+    try {
+      now.mockReturnValue(1_788_459_888_315)
+      const first = await (await postJson(app, '/api/agents/test-agent/upload-folder', { sourcePath: '/Users/joe/q3/reports' })).json()
+      now.mockReturnValue(1_788_459_889_000)
+      const second = await (await postJson(app, '/api/agents/test-agent/sessions/sess-1/upload-folder', { sourcePath: '/Users/joe/q4/reports' })).json()
+
+      expect(first.path).toBe('/workspace/uploads/reports-1788459888315/')
+      expect(second.path).toBe('/workspace/uploads/reports-1788459889000/')
+      expect(first.folderName).toBe('reports')
+      expect(second.folderName).toBe('reports')
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('returns 400 when no sourcePath is provided', async () => {
@@ -4712,7 +4732,7 @@ describe('folder upload — POST /:id/upload-folder', () => {
     })
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.path).toBe('/workspace/uploads/project/')
+    expect(body.path).toMatch(/^\/workspace\/uploads\/project-\d{13}\/$/)
   })
 })
 

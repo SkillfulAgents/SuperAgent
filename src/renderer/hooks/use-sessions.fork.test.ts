@@ -46,8 +46,12 @@ describe('useForkSession', () => {
       json: async () => ({ id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)' }),
     })
     const { result } = renderHook(() => ({ fork: useForkSession(), store: useDraftsStore() }), { wrapper })
+    // Everything unsent in the source: its text, a file that finished uploading, a model pick.
+    const upload = { status: 'done' as const, path: '/workspace/uploads/a.txt', agentSlug: 'agent-a' }
+    const file = { type: 'file' as const, id: 'f-1', file: new File(['x'], 'a.txt'), upload }
+    const unsent = { text: 'unsent', attachments: [file], options: { model: 'opus', llmProviderId: 'conn-1' } }
     act(() => {
-      result.current.store.set('session:src-1', 'unsent')
+      result.current.store.set('session:src-1', { ...unsent, pendingDrop: { items: { files: [], folders: [] }, droppedAt: 1 } })
     })
     await act(async () => {
       let settled = false
@@ -64,8 +68,10 @@ describe('useForkSession', () => {
       to: '/agents/$slug/sessions/$sessionId',
       params: { slug: 'agent-a', sessionId: 'fork-1' },
     })
-    expect(result.current.store.get('session:fork-1')).toBe('unsent')
-    expect(result.current.store.get('session:src-1')).toBe('unsent')
+    // A copy of the draft, the files and the pick with the text; a drop on its way to the source's composer is not part of it.
+    expect(result.current.store.get('session:fork-1')).toEqual(unsent)
+    expect(result.current.store.get('session:src-1')).toMatchObject(unsent)
+    expect(result.current.store.get('session:src-1')?.pendingDrop).toBeDefined()
     expect(queryClient.getQueryData(['session', 'fork-1', 'agent-a'])).toEqual(
       expect.objectContaining({ id: 'fork-1', agentSlug: 'agent-a' }),
     )

@@ -35,7 +35,6 @@ import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
-import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
 import { useDraftsStore } from '@renderer/context/drafts-context'
 import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
@@ -88,7 +87,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
-  const carryover = useNewSessionCarryover(agent.slug)
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const deleteAgent = useDeleteAgent()
   const identityRef = useRef<AgentIdentityEditorHandle>(null)
@@ -332,7 +330,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   agent={agent}
                   isFreshUntitled={isFreshUntitled}
                   isRuntimeReady={isRuntimeReady}
-                  carryover={carryover}
                   onSessionCreated={onSessionCreated}
                 />
 

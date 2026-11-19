@@ -46,7 +46,8 @@ import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { agentDefaultRuntimeOptions, type RuntimeOptions } from '@shared/lib/container/runtime-options'
-import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
+import { newSessionDraftKey, sessionDraftKey } from '@renderer/context/drafts-context'
+import type { DraftHandOver } from '@renderer/hooks/use-stale-session'
 import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 interface MessageInputProps {
@@ -63,8 +64,8 @@ interface MessageInputProps {
   onMessageFailed?: (localId: string) => void
   /** The runtime options last used on this session; they seed the composer's picker. Absent knobs fall back to the agent's, then the app's, defaults. */
   initialRuntimeOptions?: RuntimeOptions
-  /** Registers a getter so the stale-session prompt can move the live draft. */
-  registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
+  /** Registers this composer's part in the stale-session prompt moving its draft to the agent's home composer. */
+  registerDraftHandOver?: (handOver: DraftHandOver | null) => void
   /**
    * Hidden behind a request card the agent is waiting on. Voice mode pauses
    * (mic closed, the reply being read finishes, no hold sound) and resumes
@@ -94,7 +95,7 @@ function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): 
   return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
 }
 
-export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialRuntimeOptions, registerSnapshot, suspended = false, inputRequests, onNotifiesOnlyChange }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialRuntimeOptions, registerDraftHandOver, suspended = false, inputRequests, onNotifiesOnlyChange }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const isMobile = useIsMobile()
   const { data: voiceAgent } = useAgent(agentSlug)
@@ -107,6 +108,9 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
+  // Where what is unsent here is kept: the text, the files, the model picks.
+  // A new session's own key becomes the session's once its first message creates it.
+  const draftKey = sessionId ? sessionDraftKey(sessionId) : newSessionDraftKey(agentSlug)
   const composerOptions = useComposerOptions({
     initial: initialRuntimeOptions,
     sessionId: sessionId ?? undefined,
@@ -114,6 +118,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     agentDefault: agentDefaultRuntimeOptions(agentPrefs),
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
+    draftKey,
   })
   const textareaRef = useRef<HTMLDivElement>(null)
   // Set by the voice-mode send path so message_sent can tell a spoken turn from a typed one.
@@ -169,12 +174,16 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const createFirstTurn = useCallback(async (content: string, voiceMode = false) => {
     if (!onSessionCreated) throw new Error('Missing session creation handler')
     const shouldRename = !voiceMode && voiceAgent?.name === UNTITLED_AGENT_NAME && (sessions?.length ?? 0) === 0
+    const runtimeOptions = composerOptions.toRuntimeOptions()
     const session = await createSession.mutateAsync({
       agentSlug,
       message: content,
-      ...composerOptions.toRuntimeOptions(),
+      ...runtimeOptions,
       ...(voiceMode ? { inputMode: 'voice' as const } : {}),
     })
+    // The session has the picks now. Before the view adopts it: from then on
+    // this composer keeps its draft under the session's key, not the one they are under.
+    composerOptions.markSubmitted(runtimeOptions)
     if (voiceMode) onSessionCreated(session.id, content, session.initialMessageUuid, { voiceMode: true })
     else onSessionCreated(session.id, content, session.initialMessageUuid)
     if (shouldRename) renameUntitledAgent.mutate({ slug: agentSlug, prompt: content })
@@ -241,7 +250,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     }, [createFirstTurn, onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: isSending || isOffline || !isRuntimeReady || isViewOnly,
     keepMessageUntilComplete: !sessionId,
-    draftKey: sessionId ? `session:${sessionId}` : `new-session:${agentSlug}`,
+    draftKey,
     silentSends: !!sessionId,
   })
   const notifiesOnly = sessionId ? silentOpener(composer.message) : null
@@ -261,25 +270,23 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     enabled: warmStartEnabled && !isViewOnly && !isOffline,
   })
 
-  const snapshotRef = useRef<ComposerSnapshot>({
-    text: '',
-    attachments: [],
-    model: undefined,
-    effort: composerOptions.effort,
-    speed: composerOptions.speed,
-  })
-  snapshotRef.current = {
-    text: composer.message,
-    attachments: composer.attachments,
-    model: composerOptions.model,
-    effort: composerOptions.effort,
-    speed: composerOptions.speed,
+  // Start Fresh moves this composer's draft to the agent's home composer. The
+  // text, files and picks are in the store already; what goes with them is
+  // what the session runs on (never a default the picker adopted: the new
+  // conversation resolves those afresh). From here this composer stops keeping
+  // the draft, so nothing it does before it unmounts writes one back.
+  const { releaseDraft } = composer
+  const { toRuntimeOptions } = composerOptions
+  const handOverRef = useRef<DraftHandOver>(toRuntimeOptions)
+  handOverRef.current = () => {
+    releaseDraft()
+    return toRuntimeOptions()
   }
   useEffect(() => {
-    if (!registerSnapshot) return
-    registerSnapshot(() => snapshotRef.current)
-    return () => registerSnapshot(null)
-  }, [registerSnapshot])
+    if (!registerDraftHandOver) return
+    registerDraftHandOver(() => handOverRef.current())
+    return () => registerDraftHandOver(null)
+  }, [registerDraftHandOver])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {

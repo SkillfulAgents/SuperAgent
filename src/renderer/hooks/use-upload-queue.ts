@@ -125,6 +125,19 @@ export function useUploadQueue(options: UploadQueueOptions) {
     chainRef.current = chainRef.current.then(() => uploadOne(attachment, generation))
   }, [uploadOne])
 
+  // A chip that came back with a composer's draft carries a result this queue
+  // never produced. True when it needs nothing now: a failure, which blocks the
+  // send here as it did where it happened, or a file already in this agent's
+  // workspace. Anything else (never finished, or finished for another slug of
+  // the agent, whose path the send would leave out) is for the caller to enqueue.
+  const adopt = useCallback((attachment: Uploadable): boolean => {
+    if (attachment.error) {
+      failedRef.current.add(attachment.id)
+      return true
+    }
+    return attachment.upload?.status === 'done' && attachment.upload.agentSlug === optionsRef.current.agentSlug
+  }, [])
+
   // Retry is user-driven, so the rendered list is current.
   const retry = useCallback((id: string) => {
     const a = optionsRef.current.attachmentsRef.current.find((x) => x.id === id)
@@ -185,5 +198,5 @@ export function useUploadQueue(options: UploadQueueOptions) {
 
   useEffect(() => abortAll, [abortAll])
 
-  return { enqueue, retry, retryAndWait, waitIdle, pathFor, remove, clear, requeueAll }
+  return { enqueue, adopt, retry, retryAndWait, waitIdle, pathFor, remove, clear, requeueAll }
 }

@@ -4,7 +4,7 @@ import { useAttachments } from './use-attachments'
 import { useUploadQueue } from './use-upload-queue'
 import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
-import { useDraft } from '@renderer/context/drafts-context'
+import { useDraftText, useDraftsStore, type ComposerDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
@@ -33,10 +33,12 @@ interface UseMessageComposerOptions {
   submitDisabled?: boolean
   /** When true, keep the message in the input until onSubmit resolves (useful when there's a navigation delay). Defaults to false. */
   keepMessageUntilComplete?: boolean
-  /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
+  /**
+   * If provided, the composer keeps its draft (the text, and the chips with
+   * how far each upload got) under this key via DraftsContext, so it survives
+   * unmount and starts from whatever is already there.
+   */
   draftKey?: string
-  /** One-shot attachment seed, used when moving a draft into a new session. */
-  initialAttachments?: Attachment[]
   /** Fires on composer-mic transcript updates (before message state changes). */
   onVoiceTranscript?: () => void
   /**
@@ -52,7 +54,29 @@ interface UseMessageComposerOptions {
 export function useMessageComposer(options: UseMessageComposerOptions) {
   const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends, references = [] } = options
 
-  const [draft, setDraft] = useDraft<string>(draftKey)
+  const draftsStore = useDraftsStore()
+  const [draft] = useDraftText(draftKey)
+  // Start Fresh moves the draft to another composer while this one is still on
+  // screen. From then on nothing here writes to it: a keystroke or an upload's
+  // progress landing before the unmount would leave a copy behind.
+  const releasedRef = useRef(false)
+  const updateDraft = useCallback((patch: ComposerDraft) => {
+    if (draftKey && !releasedRef.current) draftsStore.update(draftKey, patch)
+  }, [draftKey, draftsStore])
+  // The key can change under a mounted composer: the session view adopts the
+  // session a new session's first message created. The draft goes with the
+  // composer. The effects below keep it under the new key as they keep any
+  // change; this takes it from the old one, where it would otherwise stay
+  // whenever the session was created without sending it (entering voice mode
+  // with a file attached) and come back in the next new session.
+  const keptUnderRef = useRef(draftKey)
+  useEffect(() => {
+    const previous = keptUnderRef.current
+    keptUnderRef.current = draftKey
+    if (previous && previous !== draftKey && !releasedRef.current) {
+      draftsStore.update(previous, { text: undefined, attachments: undefined })
+    }
+  }, [draftKey, draftsStore])
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
   const chips = useComposerChips(agentSlug)
@@ -71,8 +95,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       persistedOnceRef.current = true
       return
     }
-    setDraft(message || undefined)
-  }, [message, setDraft])
+    updateDraft({ text: message || undefined })
+  }, [message, updateDraft])
 
   // Sync externally-injected drafts (file comments, restored undelivered
   // messages) into the local message.
@@ -149,12 +173,24 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     dragHandlers,
   } = useAttachments({
     onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
-    initialAttachments: options.initialAttachments,
+    // Read when the composer mounts, like the text: the chips the draft holds.
+    initialAttachments: draftKey ? draftsStore.get(draftKey)?.attachments : undefined,
     onAttachmentsAdded: (added) => {
       for (const a of added) if (a.type === 'file' || a.type === 'folder') queueRef.current?.enqueue(a)
     },
   })
   attachmentsRef.current = attachments
+  // The chips are kept as they change, upload state included, so a composer
+  // that comes back shows them and sends a finished file without uploading it
+  // again. Not on the initial commit, as with the text: they came from the store.
+  const attachmentsKeptOnceRef = useRef(false)
+  useEffect(() => {
+    if (!attachmentsKeptOnceRef.current) {
+      attachmentsKeptOnceRef.current = true
+      return
+    }
+    updateDraft({ attachments })
+  }, [attachments, updateDraft])
   usePendingAttachmentDrop(draftKey, addItems)
 
   const queue = useUploadQueue({
@@ -169,16 +205,42 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   queueRef.current = queue
 
   const removeAttachment = queue.remove
-  const clearAttachments = queue.clear
+  const clearQueue = queue.clear
+  // Every chip, for a caller that resets the composer. From the store too, at
+  // once: the effect above only runs while this composer is mounted.
+  const clearAttachments = useCallback(() => {
+    updateDraft({ attachments: undefined })
+    clearQueue()
+  }, [clearQueue, updateDraft])
   const retryAttachment = queue.retry
+  // What a send takes out of the draft: the chips that went with it, and the
+  // text if it is still the text that went. The store is asked what it holds
+  // now, not assumed to hold what this composer last wrote. A home composer's
+  // send finishes when the session exists, and by then the person can have
+  // left the page, come back to another composer on the same draft, and added
+  // to it; that is theirs to send next. The kept chips go here, at once, and
+  // not with the effect above: a send that navigates away unmounts this
+  // composer before that effect could write the shorter list.
+  const clearSent = useCallback((sentText: string, sentIds: ReadonlySet<string>) => {
+    setMessage('')
+    if (draftKey && !releasedRef.current) {
+      const kept = draftsStore.get(draftKey)
+      draftsStore.update(draftKey, {
+        ...(kept?.text === sentText ? { text: undefined } : {}),
+        attachments: kept?.attachments?.filter((a) => !sentIds.has(a.id)),
+      })
+    }
+    clearQueue()
+  }, [clearQueue, draftKey, draftsStore])
 
   useEffect(() => {
-    // Unmount aborts the queue generation, so StrictMode's second setup must
-    // enqueue again. Skip done/error chips; later adds go through onAttachmentsAdded.
+    // The chips the draft came back with. An upload cut short by the unmount
+    // starts over; a failed chip and a file already in this agent's workspace
+    // stand as they are. Unmount aborts the queue generation, so StrictMode's
+    // second setup must do this again; later adds go through onAttachmentsAdded.
     for (const a of attachmentsRef.current) {
       if (a.type !== 'file' && a.type !== 'folder') continue
-      if (a.error || a.upload?.status === 'done') continue
-      queue.enqueue(a)
+      if (!queue.adopt(a)) queue.enqueue(a)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
   }, [])
@@ -312,12 +374,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       return [done.path]
     })
     content = appendAttachedFiles(content, [...references.map((r) => r.path), ...paths])
+    const sentIds = new Set(attachmentsRef.current.map((a) => a.id))
 
     if (!keepMessageUntilComplete) {
       // Clear input immediately so the message doesn't linger while the network request is in flight
-      setMessage('')
-      setDraft(undefined)
-      clearAttachments()
+      clearSent(message, sentIds)
     }
 
     const editableContent = content
@@ -338,11 +399,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     dictatedRef.current = false
-    if (keepMessageUntilComplete) {
-      setMessage('')
-      setDraft(undefined)
-      clearAttachments()
-    }
+    if (keepMessageUntilComplete) clearSent(message, sentIds)
     return true
   }
 
@@ -358,6 +415,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     chipDialog: chips.dialog,
     dismissPotentialSecret,
     securePotentialSecret,
+    /** The draft is being moved to another composer: stop keeping it here. */
+    releaseDraft: useCallback(() => { releasedRef.current = true }, []),
 
     // Attachments
     attachments,

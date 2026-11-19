@@ -11,7 +11,7 @@ import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
-import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
+import { DraftsProvider, useDraftText } from '@renderer/context/drafts-context'
 
 // --- Mocks ---
 
@@ -78,6 +78,8 @@ vi.mock('@renderer/hooks/use-attachments', () => ({
 
 const mockQueue = {
   enqueue: vi.fn(),
+  // The real one: a failed chip or one already uploaded needs nothing when the composer mounts.
+  adopt: (a: Attachment) => !!a.error || (a.type === 'file' && a.upload?.status === 'done'),
   retry: vi.fn(),
   retryAndWait: vi.fn().mockResolvedValue({ ok: true }),
   pathFor: vi.fn(),
@@ -928,7 +930,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:abc' }),
-          draft: useDraft<string>('session:abc'),
+          draft: useDraftText('session:abc'),
         }),
         { wrapper },
       )
@@ -941,7 +943,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:abc' }),
-          draft: useDraft<string>('session:abc'),
+          draft: useDraftText('session:abc'),
         }),
         { wrapper },
       )
@@ -956,7 +958,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:xyz' }),
-          draft: useDraft<string>('session:xyz'),
+          draft: useDraftText('session:xyz'),
         }),
         { wrapper },
       )
@@ -971,7 +973,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer(defaultOptions()),
-          draft: useDraft<string>('session:abc'),
+          draft: useDraftText('session:abc'),
         }),
         { wrapper },
       )
@@ -989,8 +991,8 @@ describe('useMessageComposer', () => {
         () => ({
           a: useMessageComposer({ ...defaultOptions(), draftKey: 'agent:A' }),
           b: useMessageComposer({ ...defaultOptions(), draftKey: 'agent:B' }),
-          draftA: useDraft<string>('agent:A'),
-          draftB: useDraft<string>('agent:B'),
+          draftA: useDraftText('agent:A'),
+          draftB: useDraftText('agent:B'),
         }),
         { wrapper },
       )

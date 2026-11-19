@@ -163,7 +163,7 @@ export function SessionChatColumn({
                     onMessageUuidAssigned={onMessageUuidAssigned}
                     onMessageFailed={onMessageFailed}
                     initialRuntimeOptions={runtimeOptions}
-                    registerSnapshot={staleSession.registerSnapshot}
+                    registerDraftHandOver={staleSession.registerDraftHandOver}
                     suspended={pendingRequestCount > 0 || displaced}
                     inputRequests={voiceInputRequests}
                     onNotifiesOnlyChange={setNotifiesOnly}

@@ -11,24 +11,13 @@ import type { DataTransferResult } from './file-utils'
  */
 export const PENDING_ATTACHMENT_DROP_TTL_MS = 30_000
 
-export interface PendingAttachmentDrop {
-  items: DataTransferResult
-  droppedAt: number
-}
-
-export const pendingAttachmentDropKey = (draftKey: string) =>
-  `pending-attachment-drop:${draftKey}`
-
 /** Hand a drop to the composer owning `draftKey`, to drain when it next mounts. */
 export function setPendingAttachmentDrop(
-  store: Pick<DraftsStore, 'set'>,
+  store: Pick<DraftsStore, 'update'>,
   draftKey: string,
   items: DataTransferResult,
 ): void {
-  store.set<PendingAttachmentDrop>(pendingAttachmentDropKey(draftKey), {
-    items,
-    droppedAt: Date.now(),
-  })
+  store.update(draftKey, { pendingDrop: { items, droppedAt: Date.now() } })
 }
 
 export function usePendingAttachmentDrop(
@@ -38,20 +27,19 @@ export function usePendingAttachmentDrop(
   const store = useDraftsStore()
   const addItemsRef = useRef(addItems)
   addItemsRef.current = addItems
-  const key = draftKey ? pendingAttachmentDropKey(draftKey) : undefined
 
   useEffect(() => {
-    if (!key) return
+    if (!draftKey) return
 
     const drain = () => {
-      const pending = store.get<PendingAttachmentDrop>(key)
+      const pending = store.get(draftKey)?.pendingDrop
       if (!pending) return
-      store.set(key, undefined)
+      store.update(draftKey, { pendingDrop: undefined })
       if (Date.now() - pending.droppedAt > PENDING_ATTACHMENT_DROP_TTL_MS) return
       addItemsRef.current(pending.items)
     }
 
     drain()
-    return store.subscribe(key, drain)
-  }, [key, store])
+    return store.subscribe(draftKey, drain)
+  }, [draftKey, store])
 }

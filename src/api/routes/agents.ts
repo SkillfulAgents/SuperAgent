@@ -6860,7 +6860,13 @@ async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   }
 
   const folderName = path.basename(sourcePath)
-  const destRoot = joinWorkspacePath(UPLOADS_DIR, folderName)
+  // A directory of its own per upload, as an uploaded file gets a name of its
+  // own (`withUploadTimestamp`). Two folders with one name (`reports` from two
+  // places, or the same one attached again after it changed) would otherwise
+  // land in one directory, the later copied over the earlier, and a message
+  // or a kept draft naming the earlier one would get the mix.
+  const uploadName = `${folderName}-${Date.now()}`
+  const destRoot = joinWorkspacePath(UPLOADS_DIR, uploadName)
 
   // Security: ensure dest doesn't escape uploads directory
   if (!destRoot.startsWith(`${UPLOADS_DIR}/`)) {
@@ -6886,7 +6892,7 @@ async function handleFolderUpload(agentSlug: string, sourcePath: string) {
 
   return {
     success: true,
-    path: `/workspace/uploads/${folderName}/`,
+    path: `/workspace/uploads/${uploadName}/`,
     folderName,
   }
 }
