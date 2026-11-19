@@ -1626,6 +1626,27 @@ export async function getDiscoverableSkills(
 }
 
 /**
+ * Install a skill the agent does not have yet, named by its skillset and its path in that
+ * skillset's index. The name and version come from the index, not from the caller. Returns
+ * null when the skillset lists no such skill or the agent already has that skill directory.
+ */
+export async function installDiscoverableSkill(
+  agentSlug: string,
+  skillsets: SkillsetConfig[],
+  skillsetId: string,
+  skillPath: string,
+): Promise<{ name: string; directory: string } | null> {
+  const config = skillsets.find((ss) => ss.id === skillsetId)
+  if (!config) return null
+
+  const skill = (await getDiscoverableSkills(agentSlug, [config])).find((s) => s.path === skillPath)
+  if (!skill) return null
+
+  await installSkillFromSkillset(agentSlug, toSkillsetRefFromConfig(config), skill.path, skill.name, skill.version)
+  return { name: skill.name, directory: skillPathToDirName(skill.path) }
+}
+
+/**
  * Use the summarizer model to generate PR title, body, and SemVer version suggestion
  * based on the diff between original and modified SKILL.md.
  */

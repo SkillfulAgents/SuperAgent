@@ -14,6 +14,7 @@ const { default: xAgentIntegrations } = await import('../routes/x-agent-integrat
 const { default: xAgentMeetings } = await import('../routes/x-agent-meetings')
 const { default: xAgentRules } = await import('../routes/x-agent-rules')
 const { default: xAgentSessions } = await import('../routes/x-agent-sessions')
+const { default: xAgentSkills } = await import('../routes/x-agent-skills')
 
 const subRouters = {
   chat: xAgentChat,
@@ -21,6 +22,7 @@ const subRouters = {
   meetings: xAgentMeetings,
   rules: xAgentRules,
   sessions: xAgentSessions,
+  skills: xAgentSkills,
 } as const
 type SubRouterName = keyof typeof subRouters
 const names = Object.keys(subRouters) as SubRouterName[]
