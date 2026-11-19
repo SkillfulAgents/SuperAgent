@@ -27,10 +27,12 @@ function ChannelAction({ action, title, reason, onSetup }: {
   action: string; title: string; reason?: string; onSetup: () => void
 }) {
   const [showReason, setShowReason] = useState(false)
+  const reasonId = useId()
   return <Tooltip open={!!reason && showReason} onOpenChange={setShowReason}>
     <TooltipTrigger asChild>
       <Button type="button" size="sm" variant="outline" aria-label={`${action} ${title}`}
-        aria-disabled={!!reason} className="aria-disabled:cursor-help aria-disabled:opacity-50"
+        aria-disabled={!!reason} aria-describedby={reason ? reasonId : undefined}
+        className="aria-disabled:cursor-help aria-disabled:opacity-50"
         onClick={event => {
           if (reason) {
             event.preventDefault()
@@ -42,7 +44,10 @@ function ChannelAction({ action, title, reason, onSetup }: {
         {action}
       </Button>
     </TooltipTrigger>
-    {reason && <TooltipContent align="end" className="max-w-72">{reason}</TooltipContent>}
+    {reason && <>
+      <span id={reasonId} hidden>{reason}</span>
+      <TooltipContent align="end" className="max-w-72">{reason}</TooltipContent>
+    </>}
   </Tooltip>
 }
 

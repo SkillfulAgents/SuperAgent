@@ -310,6 +310,7 @@ test('More channels opens Telegram setup and returns to the wizard after connect
   await expect(page.getByRole('button', { name: 'Set up iMessage' })).toBeDisabled()
   const github = page.getByRole('button', { name: 'Set up GitHub' })
   await expect(github).toBeDisabled()
+  await expect(github).toHaveAccessibleDescription(/webhook relay/)
   await github.scrollIntoViewIfNeeded()
   await github.focus()
   await expect(github).toHaveAccessibleDescription(/webhook relay/)
