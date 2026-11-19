@@ -8,6 +8,7 @@ import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { generateReviewDisplayText, type ReviewDetails } from './review-display'
 import { heldByRequireRule, parseRuleProposal } from './rules/proposal-schema'
+import { parseSkillPublishReview } from './skill-publish-review'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 import { getScopeDescriptors } from './scope-catalog'
 
@@ -93,6 +94,7 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
       ? { ruleOutcomes: p.ruleOutcomes as ReviewDetails['ruleOutcomes'] }
       : {}),
     ...(parseRuleProposal(p.ruleProposal) ? { ruleProposal: parseRuleProposal(p.ruleProposal) } : {}),
+    ...(parseSkillPublishReview(p.skillPublish) ? { skillPublish: parseSkillPublishReview(p.skillPublish) } : {}),
     ...(p.xAgent && typeof p.xAgent === 'object'
       ? { xAgent: p.xAgent as ReviewDetails['xAgent'] }
       : {}),

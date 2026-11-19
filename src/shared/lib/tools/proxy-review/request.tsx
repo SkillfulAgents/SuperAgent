@@ -27,6 +27,8 @@ import { RequestItemActions } from '../requests/request-item-actions'
 import { ApprovalActions } from '../requests/approval-actions'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
+import type { SkillPublishReview } from '@shared/lib/proxy/skill-publish-review'
+import { SkillPublishRequestItem } from './skill-publish-review'
 import { TitleCode, useCustomPreview } from './custom-previews'
 
 // Endpoint descriptions come from API docs and carry inline Markdown
@@ -80,6 +82,8 @@ interface ProxyReviewRequestItemProps {
   ruleOutcomes?: ReviewRuleOutcomeView[]
   /** Present when the review asks to approve an agent's proxy rule. */
   ruleProposal?: RuleProposalReview
+  /** Present when the review asks to approve publishing an agent's skill. */
+  skillPublish?: SkillPublishReview
   sessionId?: string
   agentSlug: string
   readOnly?: boolean
@@ -141,6 +145,19 @@ export function ProxyReviewRequestItem(props: ProxyReviewRequestItemProps) {
         agentSlug={props.agentSlug}
         displayText={props.displayText}
         proposal={props.ruleProposal}
+        sessionId={props.sessionId}
+        readOnly={props.readOnly}
+        onComplete={props.onComplete}
+      />
+    )
+  }
+  if (props.skillPublish) {
+    return (
+      <SkillPublishRequestItem
+        reviewId={props.reviewId}
+        agentSlug={props.agentSlug}
+        displayText={props.displayText}
+        publish={props.skillPublish}
         sessionId={props.sessionId}
         readOnly={props.readOnly}
         onComplete={props.onComplete}

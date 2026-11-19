@@ -1,5 +1,6 @@
 import { getToolDefinition } from '../registry'
 import { parseRuleOutcomes, parseRuleProposal, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
+import { parseSkillPublishReview, type SkillPublishReview } from '@shared/lib/proxy/skill-publish-review'
 import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
 import { xAgentFileTransferSchema, xAgentRuntimeSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -270,6 +271,7 @@ export interface PendingReview {
   xAgent?: XAgentReview
   ruleOutcomes?: ReviewRuleOutcomeView[]
   ruleProposal?: RuleProposalReview
+  skillPublish?: SkillPublishReview
 }
 
 export interface PendingAccountReauth {
@@ -399,6 +401,7 @@ export function reviewFromEnvelope(
     ...(xAgent ? { xAgent } : {}),
     ...(parseRuleOutcomes(payload.ruleOutcomes) ? { ruleOutcomes: parseRuleOutcomes(payload.ruleOutcomes) } : {}),
     ...(parseRuleProposal(payload.ruleProposal) ? { ruleProposal: parseRuleProposal(payload.ruleProposal) } : {}),
+    ...(parseSkillPublishReview(payload.skillPublish) ? { skillPublish: parseSkillPublishReview(payload.skillPublish) } : {}),
   }
 }
 
@@ -1015,6 +1018,7 @@ export function usePendingRequests({
           requestBody: review.requestBody,
           ruleOutcomes: review.ruleOutcomes,
           ruleProposal: review.ruleProposal,
+          skillPublish: review.skillPublish,
           onComplete: handleProxyReviewComplete,
         })
       }

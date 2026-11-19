@@ -9145,6 +9145,52 @@ describe('POST /api/agents/:id/proxy-review/:reviewId (agent rule requests)', ()
     expect(mockSubmitDecision).toHaveBeenCalledWith('my-agent', 'review-1', 'deny', { reason: 'Use the shared folder' })
   })
 
+  describe('skillPublish approval role', () => {
+    const skillPublishReview = {
+      id: 'review-1',
+      agentSlug: 'my-agent',
+      accountId: 'team-skills',
+      toolkit: 'Team skills',
+      method: 'PUBLISH',
+      targetPath: 'team-skills/invoice-parser',
+      matchedScopes: [],
+      scopeDescriptions: {},
+      skillPublish: {
+        skillName: 'Invoice Parser',
+        skillDirectory: 'invoice-parser',
+        skillsetName: 'Team Skills',
+        description: 'Read invoice PDFs',
+        agentNote: 'Useful for finance',
+        files: ['SKILL.md'],
+        updatesPublishedSkill: false,
+      },
+    }
+
+    afterEach(() => {
+      mockAuthorizedAgentRole = 'owner'
+    })
+
+    it('forbids a non-owner from approving a skill publish', async () => {
+      mockAuthorizedAgentRole = 'user'
+      mockSubmitDecision.mockClear()
+      mockGetPendingReviewsForAgent.mockReturnValue([skillPublishReview])
+
+      const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow' })
+
+      expect(res.status).toBe(403)
+      expect(mockSubmitDecision).not.toHaveBeenCalled()
+    })
+
+    it('lets a non-owner reject and lets an owner approve a skill publish', async () => {
+      mockGetPendingReviewsForAgent.mockReturnValue([skillPublishReview])
+      mockAuthorizedAgentRole = 'user'
+      expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'deny' })).status).toBe(200)
+
+      mockAuthorizedAgentRole = 'owner'
+      expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow' })).status).toBe(200)
+    })
+  })
+
   describe('a model picked on an agent-to-agent card', () => {
     const invokeCard = (runtime?: object) => ({
       id: 'review-1', agentSlug: 'my-agent', accountId: 'helper', toolkit: 'agents', method: 'invoke', targetPath: 'agents:invoke:helper', matchedScopes: ['invoke:helper'], scopeDescriptions: {},
@@ -9224,6 +9270,23 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     })
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'Creating an agent can only be allowed once' })
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('rejects saving a skill publish review as a policy', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValueOnce([{
+      id: 'review-1', agentSlug: 'my-agent', accountId: 'team-skills', toolkit: 'Team skills',
+      method: 'PUBLISH', targetPath: 'team-skills/invoice-parser', matchedScopes: [],
+      skillPublish: {
+        skillName: 'Invoice Parser', skillDirectory: 'invoice-parser', skillsetName: 'Team Skills',
+        description: 'Read invoice PDFs', agentNote: 'Useful', files: ['SKILL.md'], updatesPublishedSkill: false,
+      },
+    }])
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow', scope: '*', accountId: 'team-skills', reviewType: 'api',
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'A skill publish can only be approved or rejected, not saved as a policy' })
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 

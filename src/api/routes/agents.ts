@@ -8335,6 +8335,11 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
     }
   }
 
+  // Publishing a skill to the team needs the role the app's own Publish action needs.
+  if (pendingReview?.skillPublish && body.decision === 'allow' && getAuthorizedAgentRole(c) !== 'owner') {
+    return c.json({ error: 'Forbidden: only an owner of this agent can approve publishing its skills' }, 403)
+  }
+
   // A gone review is answered below with the 404 the card already reads as settled.
   const checked = await checkXAgentPick(body.decision, pendingReview, body.pick)
   if ('error' in checked) return c.json({ error: checked.error }, 409)
@@ -8381,6 +8386,9 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   }
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
+  }
+  if (pendingReview?.skillPublish) {
+    return c.json({ error: 'A skill publish can only be approved or rejected, not saved as a policy' }, 400)
   }
   // The card this settles, and the connection this saves, each need someone who uses both agents.
   if (body.decision === 'allow' && !(await canAllowXAgentCard(c, slug, pendingReview?.xAgent))) {
