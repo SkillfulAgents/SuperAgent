@@ -585,6 +585,24 @@ Instructions here`
   // ============================================================================
 
   describe('refreshAgentSkills', () => {
+    it('copies nothing from outside the skillset cache when an install record names a path that leaves it', async () => {
+      const otherAgentFolder = path.join(testDir, 'agents', 'other-agent', 'workspace', 'private')
+      await fs.promises.mkdir(otherAgentFolder, { recursive: true })
+      await fs.promises.writeFile(path.join(otherAgentFolder, 'notes.txt'), 'private notes', 'utf-8')
+      const rewritten = buildMetadata({
+        skillsetId: 'x',
+        skillPath: '../../agents/other-agent/workspace/private/SKILL.md',
+        openPrUrl: 'x',
+        originalContentHash: '0',
+      })
+      const skillDir = await createSkillDir('test-agent', 'x', '# x', rewritten)
+
+      await refreshAgentSkills('test-agent', [])
+
+      expect(fs.existsSync(path.join(skillDir, 'notes.txt'))).toBe(false)
+      expect(await getInstalledSkillMetadata('test-agent', 'x')).toBeNull()
+    })
+
     beforeEach(() => {
       mockExecFileAsNoOp()
     })
