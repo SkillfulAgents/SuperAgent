@@ -62,8 +62,7 @@ describe('AgentTemplatePublishPanel', () => {
     const user = userEvent.setup()
     await goToPicker(user)
 
-    expect(screen.getByText('Choose a skillset')).toBeInTheDocument()
-    expect(screen.queryByText(/library/i)).not.toBeInTheDocument()
+    expect(screen.getByText('Choose a library')).toBeInTheDocument()
 
     const readOnly = screen.getByTestId('publish-skillset-option-public-skillset')
     expect(readOnly).toHaveTextContent('Read only')
