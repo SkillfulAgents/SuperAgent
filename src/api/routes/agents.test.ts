@@ -588,8 +588,9 @@ const vault = vi.hoisted(() => ({
   findGrantedAccount: vi.fn(async (): Promise<unknown> => null),
   listOwnedAccountsOnSite: vi.fn(async (): Promise<unknown[]> => []),
   listOwnedAccountsElsewhere: vi.fn(async (): Promise<unknown[]> => []),
-  readAccountValues: vi.fn(async (): Promise<Record<string, string>> => ({})),
+  readAccountFill: vi.fn(async (): Promise<{ values: Record<string, string>; totp: unknown }> => ({ values: {}, totp: null })),
   recordAccountUse: vi.fn(async () => {}),
+  setSignInMethodRequest: vi.fn(async () => true),
   findOwnedProviderAccount: vi.fn(async (): Promise<unknown> => null),
   switchAccountToVia: vi.fn(),
   clearAccountRejected: vi.fn(async () => {}),
@@ -600,6 +601,8 @@ vi.mock('@shared/lib/browser-vault/vault-service', () => ({
   MAX_USERNAME: 320,
   VaultConflictError: class VaultConflictError extends Error {},
 }))
+const methodRequest = vi.hoisted(() => ({ requestedOnCard: vi.fn(async () => {}), askForRequestedMethod: vi.fn() }))
+vi.mock('@shared/lib/browser-vault/method-request', () => methodRequest)
 const SIGN_IN_BASELINE = { browserType: 'container', scope: { site: 'github.com', origin: 'https://github.com' }, hash: 'before' } as const
 const sessionWatch = vi.hoisted(() => ({
   watchSignIn: vi.fn(),
@@ -12311,6 +12314,7 @@ describe('sign-in request routes (request_login)', () => {
     ],
     held: [],
     providers: [],
+    ways: [],
   }
 
   function parkLogin(id: string, payload: Record<string, unknown> = { message: 'Sign in to GitHub.', fields: [] }) {
@@ -12755,6 +12759,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     fields: [field('username', 'Email')],
     held: [{ kind: 'password', label: 'Password' }],
     providers: [],
+    ways: [],
   }
   const account = (overrides: Record<string, unknown> = {}) => ({
     id: 'acc-1',
@@ -12765,6 +12770,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     origin: 'https://github.com',
     parts: ['password'],
     via: null,
+    signInMethods: {},
     createdAt: new Date(),
     updatedAt: new Date(),
     lastUsedAt: null,
@@ -12799,6 +12805,89 @@ describe('sign-in requests with the vault (request_login)', () => {
   afterEach(() => {
     userInputRequestManager.reset()
     mockContainerFetch.mockReset()
+  })
+
+  const CODE_STEP = { ...CONTEXT, fields: [{ ...field('otp', 'Code'), from: 'text_message' }], held: [], ways: [] }
+  const WAYS_STEP = {
+    ...CONTEXT,
+    fields: [],
+    held: [],
+    ways: [
+      { label: 'Get a code at •••12', method: 'text_message', clickable: true },
+      { label: 'Tap Yes on your phone', method: 'phone_prompt', clickable: true },
+    ],
+  }
+  const vaultInfo = async () => (await app.request(`${BASE}/login-request/vault?toolUseId=tool-login`)).json() as Promise<{ addMethod: unknown }>
+
+  it('offers the box on a step of two-step verification for the viewer\'s own account the vault holds no app for', async () => {
+    parkLogin({ login: CODE_STEP, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [] } })
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account()])
+    expect((await vaultInfo()).addMethod).toEqual({ accountId: 'acc-1', username: 'octocat', requested: false })
+
+    // The ways to verify are one too; an account with an app, or one an agent found none for, is not offered.
+    parkLogin({ login: WAYS_STEP, vault: { mode: 'ask', username: 'octocat', accountId: 'acc-1' } })
+    expect((await vaultInfo()).addMethod).toEqual({ accountId: 'acc-1', username: 'octocat', requested: false })
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account({ signInMethods: { authenticator: { addedAt: 1, issuer: null, accountName: null, name: null } } })])
+    expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account({ signInMethods: { unavailable: { at: 1, reason: 'No authenticator apps.' } } })])
+    expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account({ signInMethods: { passkeys: [{ credentialId: 'Y3JlZC0x', rpId: 'github.com', addedAt: 1, name: 'Gamut', userName: 'octocat' }] } })])
+    expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([])
+  })
+
+  it('offers no box on a step that asks for the password, nor for another member\'s account', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }, vault: { mode: 'ask', username: 'octocat' } })
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account()])
+    expect((await vaultInfo()).addMethod).toBeNull()
+    // Not the viewer's: none of their own accounts is the step's.
+    parkLogin({ login: CODE_STEP, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-other', covered: [] } })
+    expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([])
+  })
+
+  it('records the request when the user ticks the box on a code step, for the agent to be asked once the card is answered', async () => {
+    parkLogin({ login: CODE_STEP, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [] } })
+    vault.listOwnedAccountsOnSite.mockResolvedValueOnce([account()])
+
+    const res = await postJson(app, `${BASE}/login-request/method`, { toolUseId: 'tool-login' })
+    expect(res.status).toBe(200)
+    expect(vault.setSignInMethodRequest).toHaveBeenCalledWith(null, 'acc-1', true, 'card')
+    expect(methodRequest.requestedOnCard).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-1' }) })
+    // The request is the user's own, apart from the card: it stays open.
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-login')).not.toBeNull()
+  })
+
+  it('asks for no app on a step that is not two-step verification', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }, vault: { mode: 'ask', username: 'octocat' } })
+    vault.listOwnedAccountsOnSite.mockResolvedValueOnce([account()])
+
+    const res = await postJson(app, `${BASE}/login-request/method`, { toolUseId: 'tool-login' })
+    expect(res.status).toBe(409)
+    expect(vault.setSignInMethodRequest).not.toHaveBeenCalled()
+    expect(methodRequest.requestedOnCard).not.toHaveBeenCalled()
+  })
+
+  it('clicks the way the user picked, through the container, as the user\'s pick for the account', async () => {
+    parkLogin({ login: WAYS_STEP, vault: { mode: 'ask', username: 'octocat', accountId: 'acc-1' } })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true, clicked: true, problems: [] }), { status: 200 }))
+
+    const res = await postJson(app, `${BASE}/login-way`, { toolUseId: 'tool-login', origin: 'https://github.com', index: 1 })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, clicked: true, problems: [] })
+    expect(containerCalls()).toEqual([{
+      path: '/browser/login/choose',
+      body: { sessionId: 'sess-1', toolUseId: 'tool-login', expectedOrigin: 'https://github.com', index: 1, by: 'user', username: 'octocat' },
+    }])
+  })
+
+  it('clicks nothing for a site other than the one the card showed, or a way the page does not offer', async () => {
+    parkLogin({ login: WAYS_STEP, vault: { mode: 'ask', username: 'octocat' } })
+
+    expect((await postJson(app, `${BASE}/login-way`, { toolUseId: 'tool-login', origin: 'https://evil.example', index: 0 })).status).toBe(409)
+    expect((await postJson(app, `${BASE}/login-way`, { toolUseId: 'tool-login', origin: 'https://github.com', index: 4 })).status).toBe(400)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-login')).not.toBeNull()
   })
 
   it('saves the account the form went in with, grants it, and holds the next step\'s password', async () => {
@@ -12842,7 +12931,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
     vault.isAccountGranted.mockResolvedValueOnce(true)
     vault.getAccount.mockResolvedValueOnce(account())
-    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    vault.readAccountFill.mockResolvedValueOnce({ values: { password: 'saved-pw' }, totp: null })
     mockContainerFetch.mockResolvedValueOnce(filled())
 
     const res = await postJson(app, `${BASE}/fill-login`, {
@@ -12870,7 +12959,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     parkLogin({ login: confirm })
     vault.isAccountGranted.mockResolvedValueOnce(true)
     vault.getAccount.mockResolvedValueOnce(account())
-    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    vault.readAccountFill.mockResolvedValueOnce({ values: { password: 'saved-pw' }, totp: null })
     mockContainerFetch.mockResolvedValueOnce(filled())
 
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
@@ -12882,7 +12971,7 @@ describe('sign-in requests with the vault (request_login)', () => {
   it('grants the user\'s own saved account picked in the form', async () => {
     parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
     vault.getOwnedAccount.mockResolvedValueOnce(account())
-    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    vault.readAccountFill.mockResolvedValueOnce({ values: { password: 'saved-pw' }, totp: null })
     mockContainerFetch.mockResolvedValueOnce(filled())
 
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['', ''], accountId: 'acc-1' })
@@ -12918,7 +13007,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     // Nothing filled: the agent is told the session went in.
     expect(containerCalls()).toEqual([{ path: '/inputs/tool-login/resolve', body: { value: JSON.stringify(resolution) } }])
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
-    expect(vault.readAccountValues).not.toHaveBeenCalled()
+    expect(vault.readAccountFill).not.toHaveBeenCalled()
     // What a restore puts in is not watched.
     expect(sessionWatch.watchSignIn).not.toHaveBeenCalled()
   })
@@ -12927,7 +13016,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     parkLogin({ login: { ...CONTEXT, fields: [field('password', 'Password')], held: [] } })
     vault.isAccountGranted.mockResolvedValueOnce(true)
     vault.getAccount.mockResolvedValueOnce(account())
-    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    vault.readAccountFill.mockResolvedValueOnce({ values: { password: 'saved-pw' }, totp: null })
     mockContainerFetch.mockResolvedValueOnce(filled())
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
     expect(res.status).toBe(200)
@@ -12972,7 +13061,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     vault.isAccountGranted.mockResolvedValueOnce(true)
     vault.getAccount.mockResolvedValueOnce(account())
     // What the host found when it decided is gone (a held value that expired, a part deleted).
-    vault.readAccountValues.mockResolvedValueOnce({})
+    vault.readAccountFill.mockResolvedValueOnce({ values: {}, totp: null })
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['', '246810'], accountId: 'acc-1' })
     expect(res.status).toBe(409)
     expect(await res.json()).toMatchObject({ reason: 'fields_needed', fields: [0] })
@@ -13135,7 +13224,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
     vault.isAccountGranted.mockResolvedValueOnce(true)
     vault.getAccount.mockResolvedValueOnce(account())
-    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    vault.readAccountFill.mockResolvedValueOnce({ values: { password: 'saved-pw' }, totp: null })
     mockContainerFetch.mockResolvedValueOnce(filled())
 
     const res = await postJson(app, `${BASE}/fill-login`, {
@@ -13220,7 +13309,7 @@ describe('sign-in requests with the vault (request_login)', () => {
   it('grants a saved account the user picked after the browser closed, and names it to the agent', async () => {
     parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
     vault.getOwnedAccount.mockResolvedValueOnce(account())
-    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    vault.readAccountFill.mockResolvedValueOnce({ values: { password: 'saved-pw' }, totp: null })
     mockContainerFetch
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'The browser that showed this sign-in form was closed', reason: 'browser_closed' }), { status: 409 }))
       .mockResolvedValueOnce(new Response('{}', { status: 200 }))
@@ -13273,10 +13362,10 @@ describe('sign-in requests with the vault (request_login)', () => {
     vault.isAccountGranted.mockResolvedValueOnce(true)
     vault.getAccount.mockResolvedValueOnce(account({ parts: [] }))
     // While this request checks the form, another call's fill takes the held password.
-    vault.readAccountValues.mockImplementationOnce(async () => {
+    vault.readAccountFill.mockImplementationOnce(async () => {
       const held = await heldValues.heldLoginFor('test-agent', 'sess-1', 'github.com')
       expect(await heldValues.claimHeldParts('test-agent', 'sess-1', 'github.com', held!, ['password'])).not.toBeNull()
-      return {}
+      return { values: {}, totp: null }
     })
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
     expect(res.status).toBe(409)

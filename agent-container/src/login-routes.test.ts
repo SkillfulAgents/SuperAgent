@@ -17,7 +17,17 @@ vi.mock('./login-fill', () => ({
   lastFieldHasFocus: vi.fn(),
   PageWatch: { start: vi.fn() },
 }))
+vi.mock('./login-cdp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./login-cdp')>()),
+  mainFrameOf: vi.fn(),
+}))
+vi.mock('./authenticator-setup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./authenticator-setup')>()),
+  readAuthenticatorSetup: vi.fn(),
+}))
 const fill = await import('./login-fill')
+const cdpModule = await import('./login-cdp')
+const setup = await import('./authenticator-setup')
 const { clickSubmit, registerLoginRoutes } = await import('./login-routes')
 
 const cdp = { close: vi.fn() }
@@ -35,6 +45,8 @@ const deps = {
   pendingWaitMs: 300,
   pageSubmitWaitMs: 4,
   codeSubmitWaitMs: 7,
+  lonePromptWaitMs: 400,
+  lonePromptPollMs: 5,
 }
 
 const PREPARED: PreparedLogin = {
@@ -49,6 +61,7 @@ const PREPARED: PreparedLogin = {
   ],
   held: [],
   providers: [],
+  ways: [],
   submitRef: '@e7',
   preparedAt: 1,
 }
@@ -174,6 +187,118 @@ describe('fields of a later step, and pages without fields', () => {
   })
 })
 
+describe('a page that asks how to verify it\'s you', () => {
+  const WAYS = [
+    { ref: 'e4', label: 'Get a code at •••12', method: 'text_message' },
+    { ref: 'e5', label: 'Tap Yes on your phone', method: 'phone_prompt' },
+  ]
+  const VIEW = [
+    { label: 'Get a code at •••12', method: 'text_message', clickable: true },
+    { label: 'Tap Yes on your phone', method: 'phone_prompt', clickable: true },
+  ]
+  const PAGE = 'https://github.com/sessions/two-factor'
+  const prepareWays = (ways: unknown[], over: Record<string, unknown> = {}) =>
+    post('/browser/login/prepare', { sessionId: 's-1', toolUseId: 'tu-1', submitRef: null, fields: [], ways, ...over })
+  const choose = (over: Record<string, unknown> = {}) =>
+    post('/browser/login/choose', { sessionId: 's-1', toolUseId: 'tu-1', expectedOrigin: 'https://github.com', index: 0, by: 'user', ...over })
+
+  beforeEach(() => {
+    vi.mocked(fill.preparePage).mockResolvedValue({ ok: true, origin: 'https://github.com', url: PAGE, topOrigin: 'https://github.com', fields: [] })
+    vi.mocked(cdpModule.mainFrameOf).mockResolvedValue({ origin: 'https://github.com', url: PAGE })
+  })
+
+  it('keeps the ways, and tells the host what each is but never its ref', async () => {
+    const res = await prepareWays(WAYS)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ origin: 'https://github.com', fields: [], ways: VIEW })
+    expect(getPreparedLogin('tu-1')?.ways).toEqual([
+      { ref: '@e4', label: 'Get a code at •••12', method: 'text_message' },
+      { ref: '@e5', label: 'Tap Yes on your phone', method: 'phone_prompt' },
+    ])
+    const context = await (await app.request('/browser/login/context?toolUseId=tu-1')).json()
+    expect(context.ways).toEqual(VIEW)
+    expect(JSON.stringify(context)).not.toContain('@e4')
+  })
+
+  it('refuses ways with fields or a submit, a way without a ref among several, and one ref twice', async () => {
+    const attempts: Array<[unknown[], Record<string, unknown>]> = [
+      [WAYS, { fields: [{ ref: 'e3', kind: 'otp', label: 'Code' }] }],
+      [WAYS, { submitRef: '@e7' }],
+      [[WAYS[0], { label: 'Check your phone', method: 'phone_prompt' }], {}],
+      [[WAYS[0], { ...WAYS[1], ref: 'e4' }], {}],
+    ]
+    for (const [index, [ways, over]] of attempts.entries()) {
+      expect((await prepareWays(ways, { toolUseId: `tu-w-${index}`, ...over })).status).toBe(422)
+    }
+    expect(fill.preparePage).not.toHaveBeenCalled()
+  })
+
+  it('clicks the way picked, and answers the agent with what was seen', async () => {
+    await prepareWays(WAYS)
+    park('tu-1')
+    deps.submit.mockResolvedValue({ ok: true, submitted: { via: 'click', ref: '@e5' }, observation: { settleMs: 300 } })
+    const res = await choose({ index: 1, username: 'octocat' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, clicked: true, problems: [] })
+    expect(deps.submit.mock.calls[0][0]).toMatchObject({ submitRef: '@e5' })
+    expect(await report()).toEqual({
+      type: 'way',
+      origin: 'https://github.com',
+      picked: { label: 'Tap Yes on your phone', method: 'phone_prompt' },
+      by: 'user',
+      username: 'octocat',
+      clicked: { ref: '@e5' },
+      observation: { settleMs: 300 },
+    })
+    expect(getPreparedLogin('tu-1')).toBeNull()
+  })
+
+  it('tells the agent a click that failed, and clicks nothing for another site, another way or a request never opened', async () => {
+    await prepareWays(WAYS)
+    expect((await choose()).status).toBe(409)
+    park('tu-1')
+    expect((await choose({ expectedOrigin: 'https://evil.example' })).status).toBe(409)
+    expect((await choose({ index: 3 })).status).toBe(400)
+    expect(deps.submit).not.toHaveBeenCalled()
+
+    deps.submit.mockResolvedValue({ ok: false, error: 'clicking @e4 failed: covered' })
+    expect(await (await choose()).json()).toEqual({ success: true, clicked: false, problems: ['clicking @e4 failed: covered'] })
+    expect(await report()).toMatchObject({ by: 'user', clickError: 'clicking @e4 failed: covered' })
+  })
+
+  it('answers the page\'s only prompt once the page moves on, with where it went', async () => {
+    vi.mocked(cdpModule.mainFrameOf).mockResolvedValueOnce({ origin: 'https://github.com', url: PAGE }).mockResolvedValue({ origin: 'https://github.com', url: 'https://github.com/' })
+    expect(await (await prepareWays([{ label: 'Check your phone', method: 'phone_prompt' }])).json()).toMatchObject({ ways: [{ label: 'Check your phone', method: 'phone_prompt', clickable: false }] })
+    park('tu-1')
+    expect(await report()).toEqual({
+      type: 'way',
+      origin: 'https://github.com',
+      picked: { label: 'Check your phone', method: 'phone_prompt' },
+      by: 'page',
+      moved: true,
+      observation: { digest: { url: 'https://github.com/sessions/two-factor', navigated: true } },
+    })
+    expect(getPreparedLogin('tu-1')).toBeNull()
+  })
+
+  it('says the page did not move on once the wait ran out', async () => {
+    await prepareWays([{ label: 'Check your phone', method: 'phone_prompt' }])
+    park('tu-1')
+    expect(await report()).toMatchObject({ by: 'page', moved: false })
+  })
+
+  it('takes the user\'s word for the prompt from the card, clicking nothing, and stops watching', async () => {
+    await prepareWays([{ label: 'Check your phone', method: 'phone_prompt' }])
+    park('tu-1')
+    expect(await (await choose()).json()).toEqual({ success: true, clicked: false, problems: [] })
+    expect(await report()).toEqual({ type: 'way', origin: 'https://github.com', picked: { label: 'Check your phone', method: 'phone_prompt' }, by: 'user' })
+    expect(deps.submit).not.toHaveBeenCalled()
+    const reads = vi.mocked(cdpModule.mainFrameOf).mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(vi.mocked(cdpModule.mainFrameOf).mock.calls.length).toBe(reads)
+  })
+})
+
 describe('POST /browser/login/prepare', () => {
   const body = { sessionId: 's-1', toolUseId: 'tu-1', fields: [{ ref: 'e3', kind: 'username', label: 'Email' }], submitRef: '@e7' }
 
@@ -241,6 +366,7 @@ describe('GET /browser/login/context', () => {
       fields: PREPARED.fields.map(({ ref: _ref, ...rest }) => rest),
       held: [],
       providers: [],
+      ways: [],
     })
   })
 
@@ -546,5 +672,61 @@ describe('clickSubmit', () => {
       activity: { kind: 'navigation', url: 'https://github.com/sessions/two-factor' },
     })
     expect(steps.clickInPage).not.toHaveBeenCalled()
+  })
+})
+
+describe('add_sign_in_method: the setup on the page, and a fill the host answers', () => {
+  const SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'
+  const CODE_FIELD = { ref: '@e4', kind: 'otp' as const, label: 'Code from the authenticator app', from: 'authenticator_app' as const, inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6 }
+
+  beforeEach(() => {
+    putPreparedLogin({ ...PREPARED, fields: [CODE_FIELD], submitRef: '@e5' })
+  })
+
+  it('gives the host the setup the page shows, and redacts its key from what the agent reads after', async () => {
+    park('tu-1', 'add_sign_in_method')
+    vi.mocked(setup.readAuthenticatorSetup).mockResolvedValue({ ok: true, key: `otpauth://totp/GitHub:octocat?secret=${SECRET}&issuer=GitHub`, source: 'qr' })
+    const res = await post('/browser/login/authenticator', { toolUseId: 'tu-1', qr: 'e9' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ key: `otpauth://totp/GitHub:octocat?secret=${SECRET}&issuer=GitHub`, source: 'qr' })
+    expect(setup.readAuthenticatorSetup).toHaveBeenCalledWith(fillDeps, { qrRef: '@e9' })
+    // However the page shows it: whole, in groups of four, in either case.
+    for (const shown of [SECRET, 'JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP', 'jbsw y3dp ehpk 3pxp jbsw y3dp ehpk 3pxp']) {
+      expect(redactInjectedSecrets(`key: ${shown}`)).toBe(`key: ${REDACTED}`)
+    }
+  })
+
+  it('reads no setup for a request_login call, or one no longer open', async () => {
+    park('tu-1', 'login')
+    expect((await post('/browser/login/authenticator', { toolUseId: 'tu-1' })).status).toBe(409)
+    expect((await post('/browser/login/authenticator', { toolUseId: 'tu-2' })).status).toBe(409)
+    expect(setup.readAuthenticatorSetup).not.toHaveBeenCalled()
+  })
+
+  it('says what it saw when the page shows no setup', async () => {
+    park('tu-1', 'add_sign_in_method')
+    vi.mocked(setup.readAuthenticatorSetup).mockResolvedValue({ ok: false, problem: 'no QR code or setup key for an authenticator app was found on the page: open the step that shows the QR code first' })
+    const res = await post('/browser/login/authenticator', { toolUseId: 'tu-1' })
+    expect(res.status).toBe(422)
+    expect(await res.json()).toEqual({ error: 'no QR code or setup key for an authenticator app was found on the page: open the step that shows the QR code first' })
+  })
+
+  it('fills the confirming code into an add_sign_in_method call and hands the report to the host, which answers the call', async () => {
+    park('tu-1', 'add_sign_in_method')
+    vi.mocked(fill.fillLogin).mockResolvedValue({
+      outcomes: [{ ref: '@e4', kind: 'otp', label: CODE_FIELD.label, status: 'filled' }],
+      written: [written(0, 'otp')],
+      pageValues: [],
+    })
+    vi.mocked(fill.heldStates).mockResolvedValue([{ index: 0, state: 'held' }])
+    deps.submit.mockResolvedValue({ ok: true, submitted: { via: 'click', ref: '@e5' }, observation: { settleMs: 300 } })
+    const res = await post('/browser/login/fill', fillBody({ values: ['123456'], answer: false }))
+    expect(res.status).toBe(200)
+    const body = await res.json() as { outcomes: string[]; report: LoginFillReport }
+    expect(body.outcomes).toEqual(['filled'])
+    expect(body.report).toMatchObject({ type: 'filled', origin: 'https://github.com', submitted: { via: 'click', ref: '@e5' } })
+    // The host answers it: the call is still parked.
+    expect(inputManager.hasPending('tu-1')).toBe(true)
+    expect(redactInjectedSecrets('code 123456')).toBe(`code ${REDACTED}`)
   })
 })

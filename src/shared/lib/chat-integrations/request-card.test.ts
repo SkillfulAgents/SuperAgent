@@ -50,6 +50,32 @@ describe('requestCardFromRegistry', () => {
     expect(card).toMatchObject({ type: 'secret_request', toolUseId: 'req-1' })
   })
 
+  it('asks a page\'s ways to verify as a question chat can answer, and leaves the rest of a sign-in to the app', () => {
+    const ways = [
+      { label: 'Get a code at •••12', method: 'text_message', clickable: true },
+      { label: 'Tap Yes on your phone', method: 'phone_prompt', clickable: true },
+    ]
+    const card = requestCardFromRegistry(request('login', { message: 'Sign in.', origin: 'https://github.com', fields: [], ways }, { id: 'tu-7' }))
+    expect(card).toEqual({
+      type: 'question_request',
+      toolUseId: 'tu-7',
+      questions: [{
+        question: 'github.com asks how to verify it\'s you. Which way? It is clicked on the page for you.',
+        options: [{ label: 'Get a code at •••12' }, { label: 'Tap Yes on your phone' }],
+      }],
+      agentSlug: 'agent-a',
+    })
+    expect(isUnsupportedInChat(card!)).toBe(false)
+
+    // The page's only way, with nothing to click: answered with Done.
+    const prompt = requestCardFromRegistry(request('login', { message: 'Sign in.', origin: 'https://github.com', fields: [], ways: [{ ...ways[1], clickable: false }] }))
+    expect(prompt).toMatchObject({ type: 'question_request', questions: [{ options: [{ label: 'Done' }] }] })
+
+    const form = requestCardFromRegistry(request('login', { message: 'Sign in.', origin: 'https://github.com', fields: [{ ref: '@e3', kind: 'password', label: 'Password' }] }))
+    expect(form).toMatchObject({ type: 'login_request' })
+    expect(isUnsupportedInChat(form!)).toBe(true)
+  })
+
   it('stays quiet for an auto-approved ask', () => {
     // Nothing is waiting on the user, so "go approve this in the app" would be
     // a lie — the host is already running it.

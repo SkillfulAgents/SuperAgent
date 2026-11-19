@@ -10,7 +10,7 @@ import type { LoginFillResult } from './login-request'
  * below recalls the account identifier alone.
  */
 
-export type LoginAction = 'fill' | 'via' | 'manual' | 'decline'
+export type LoginAction = 'fill' | 'via' | 'way' | 'manual' | 'decline'
 
 /**
  * Why the server turned a fill down, when the form can do something about it:
@@ -42,6 +42,8 @@ export type LoginRequestState =
   | { status: 'browser_closed'; kept: LoginKept | null }
   /** The picked account's saved session went in instead of its values (`restored` false: tried, and it did not). */
   | { status: 'session'; restored: boolean; username: string | null }
+  /** A way to verify it's you, picked: clicked on the page (or, for a prompt on the user's device, answered). */
+  | { status: 'way'; label: string; clicked: boolean; problems: string[] }
   | { status: 'manual' }
   | { status: 'declined' }
   /** Answered elsewhere (another window, or it ended) before this one acted. */

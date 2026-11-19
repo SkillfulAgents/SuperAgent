@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode } from 'react'
 import type { ApiMessage } from '@shared/lib/types/api'
 
-export type UserMessageKind = 'integration' | 'system' | 'connection-replacement' | 'voice-mode' | 'interrupt' | 'compact' | 'slash' | 'plain'
+export type UserMessageKind = 'integration' | 'system' | 'connection-replacement' | 'sign-in-method-request' | 'voice-mode' | 'interrupt' | 'compact' | 'slash' | 'plain'
 
 export interface UserMessageRenderProps {
   /** Bubble text after the structured blocks (sender, files, folders) are peeled. */
@@ -43,4 +43,10 @@ export interface UserMessageKindSpec {
    * entire row, edge to edge, for boundaries drawn across the transcript.
    */
   chrome?: 'bubble' | 'bare' | 'row'
+  /**
+   * Sent in the user's name by the app, not typed (the sign-in form's
+   * request): it neither starts a turn nor splits the turn it joins into work
+   * phases, and folds away with that turn's work once the turn completes.
+   */
+  foldsIntoWork?: boolean
 }

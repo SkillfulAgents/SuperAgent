@@ -8,11 +8,15 @@ saved, filled by the host on the agent's request, step by step, only for the
 agents the user granted them to. Part 3 saves each account's signed-in
 session (cookies and web storage) after a sign-in and restores it into
 another agent's browser, so a sign-in the user completed once (a code, a
-phone prompt) does not need them again.
+phone prompt) does not need them again. Part 4 adds what signs in without
+the user: a passkey, or an authenticator app whose codes the vault makes, that
+an agent adds to an account when the user asks.
 
 Code: `src/shared/lib/browser-vault/` (host), `agent-container/src/login-*.ts`,
 `agent-container/src/browser-session*.ts`, `agent-container/src/session-routes.ts`,
-`agent-container/src/browser-gate.ts`
+`agent-container/src/browser-gate.ts`, `agent-container/src/authenticator-setup.ts`,
+`agent-container/src/passkey-keeper.ts`, `agent-container/src/passkey-routes.ts`,
+`agent-container/src/tools/add-sign-in-method.ts`
 and `agent-container/src/tools/request-login.ts` (container),
 `src/shared/lib/tools/request-login/` (the card), Settings → Logins
 (`src/renderer/components/settings/logins-tab.tsx`).
@@ -27,8 +31,9 @@ would make tenants of a shared host one site — `acme.okta.com` and
 `evil.okta.com`, `*.slack.com`, `*.zendesk.com`, none of them on the Public
 Suffix List — and fill one tenant's password into another's page. The
 registrable domain (`registrableDomain`) only tells which sign-in provider a
-site belongs to (`providerOf`: accounts.google.com is Google's). Usernames
-compare without case or surrounding space.
+site belongs to (`providerOf`: accounts.google.com is Google's), and which
+account a settings page on another host is for when an agent adds a sign-in
+method there (below). Usernames compare without case or surrounding space.
 
 Each sign-in step adds parts to the same account: `password`, or
 `text:<label>` for another field the site asks for (a workspace). Parts are
@@ -62,7 +67,12 @@ reached from the actor's tool-call handling through the host port), so a
 sign-in the vault can do never notifies anyone:
 
 1. Without `username`: the agent's accounts on the site are listed and nothing
-   is filled. With none, the card opens (`vault.mode = 'new'`).
+   is filled. With none, the card opens (`vault.mode = 'new'`), unless the
+   call mapped nothing for it to ask (no field, no provider): then the agent
+   is told so (an empty list), rather than the user getting an empty form.
+   So is a call that maps nothing and names an account the agent may not use
+   on the site (`missing`: live, an agent named the Google account on
+   myaccount.google.com, which is saved on accounts.google.com).
 2. With `username`: that account's parts fill the mapped fields through the
    container's fill endpoint, and the page is submitted. What the account
    lacks (a code, a new field) opens the card for just that
@@ -130,18 +140,29 @@ browser refused leaves everything held. A fill sent without any answer counts
 as having gone in, as does a fill whose process went away: its parts are
 dropped after five minutes, never offered again.
 
-A second step that offers several ways (a code by text, a prompt on the
-phone, a passkey) is the user's to choose, also when the page opens on one
-of them with "Try another way": the agent opens the list and asks which with
-`AskUserQuestion` before it clicks one (the web-browser subagent reports the ways to the main agent,
-which asks). A code then goes through request_login like any step, and is
-never saved. After a prompt to the phone the agent waits for the page to
-move on, and hands the browser over (`request_browser_input`) only if it has
-not within about two minutes. This lives in the container, not the host: the
-agent's prompts and tool descriptions, and a hint (`sign-in-verify-way`, see
-`agent-container/src/hints/builtin/`) shown when a request_login call
-returns, which is when that step comes up. Nothing enforces it: a missed
-choice costs the user a hand-over, not the sign-in.
+A step that asks how to verify it's you (a code by text, a prompt on the
+phone, an authenticator app, a passkey) is a request_login call of its own:
+the agent maps the page's ways in `ways` instead of fields (each with its
+ref, the page's words and a `method`), opening "Try another way" first, and
+names the account. The host decides it like any call (`decideWays`): a way
+the vault holds for the account (its authenticator app, within the code
+limits below; where the page lists apps by name, the one named as the
+vault's) is picked by itself; else the card asks which. Either way the
+container clicks it (`/browser/login/choose`, holding the request's claim), and
+the result tells the agent what comes next (the code's `from`, or waiting for
+the phone). In chat the ways are a question, since they hold no secret: the
+press goes to the host, which clicks it (`pickLoginWay`). A page whose only
+way is a prompt on the user's device, with nothing to click, is one way
+without a ref: the card shows it, and the container answers the call once the
+page's URL changes (the user approved it) or after three minutes; the card's
+Done answers it too. A code then goes through request_login like any step,
+and is never saved. After a phone prompt the user picked, the agent waits for
+the page to move on, and hands the browser over (`request_browser_input`)
+only if it has not within about two minutes. The agent's prompts, the tool's
+description and a hint (`sign-in-verify-way`, see
+`agent-container/src/hints/builtin/`) shown when a request_login call returns
+tell it to map the ways; an agent that clicks one itself costs the user the
+choice, not the sign-in.
 
 ### The card
 
@@ -433,6 +454,165 @@ that file's contents; the file is then ignored (logged), and can be deleted.
 A key that is lost is lost. Logins sealed under it can be deleted in Settings →
 Logins, and once none remain, a new key is made on the next save.
 
-## Part 4
+## Authenticator apps (part 4a)
 
-The sealed `secrets` schema has room for a TOTP seed and passkeys.
+The vault can hold an account's authenticator app (TOTP, RFC 6238): an agent
+adds one in the site's security settings, and from then on the vault makes its
+codes, so a sign-in that asks for one needs nobody. Where the site offers
+passkeys, the agent adds a passkey instead (part 4b, below).
+
+**Asking for one.** Only the user asks, and an agent adds one only next to the
+two-step verification the account already has: never turning it on where it is
+off (the user would need the vault to sign in themselves), never replacing or
+removing a method (their phone's app). Three ways to ask:
+
+- The sign-in card, at a step of two-step verification: "Also add a passkey
+  or authenticator app" on the card that asks how to verify it's you or for a
+  code, for an account of the user's the vault holds neither for (nor an
+  agent found none to add for). That is when the account shows it has two-step
+  verification, and when the user is doing what an app would spare them.
+  Ticking it makes the request at once (`POST …/login-request/method`), apart
+  from how the card is answered, so it cannot be taken back there. A "verify
+  it's you" page is not proof of two-step verification (sites also check a
+  sign-in they find risky), so the agent still looks at the security settings
+  first.
+- Settings → Logins: the account's "Have an agent add one" switch, for an
+  account that never shows a card (the vault signs in with it unattended).
+- The conversation: the user asks the agent, which passes their words.
+
+The first two leave a standing request on the account (`signInMethods.requested`).
+The agent is asked as the user's own message in the session
+(`method-request.ts`), once per session, as soon as it can be without breaking
+the sign-in: when the card the box was ticked on is answered (the user's code
+goes in, or a way is picked), and when an agent next signs in with an account
+whose Logins switch is on. Not while the card is open: any message accepted
+then supersedes the session's open requests, as a typed one does, and the
+code the user is typing would go nowhere (live: the agent waited on a dead
+card). A card answered with no sign-in step (declined, the page taking a
+phone prompt by itself) leaves the ask to the end of the turn. The ask is
+queued like a message the user sends mid-turn, so the agent gets it
+with its next tool result, framed by the CLI as "the user sent a new message",
+while the browser is still signed in and the user still there: a site often
+asks for its password again before it adds a passkey. Said in a tool result
+instead (request_login's own result, its description vouching for it), agents
+declined it in 4 of 9 live runs, as the page's words rather than the user's.
+Queued, it still arrives beside a tool result, and agents sometimes take it
+the same way ("a message inside a tool result, written as if it were from
+you"): at a code step it was acted on 7 of 7, at a page that asks how to
+verify it's you 1 of 4, and a repeat with the next step did not help (0 of
+4: "it appeared twice, both times inside tool results"). As a turn of its own
+it was acted on 8 of 9. So when the turn it joined ends with the request
+still open (no method added, none found to add), it goes again at once, as a
+turn of its own, the user most likely still there. Vouching for such
+messages in request_login's description made it worse (3 of 8). A note at
+the message's end, in words (`[Sent from the sign-in form for … on …]`,
+`[Sent again from …]`; `sign-in-method-request.ts`), has the transcript draw
+it as a note from the form ("Asked from the sign-in form", "Asked again …")
+rather than as a message the user typed; typed text cannot forge it. A note
+of data there read to agents as text posing as the user.
+
+**Adding one** (`add_sign_in_method`, a host tool: `method-host.ts`). The agent
+opens the site's setup, and calls the tool with the account's username and the
+field for the confirming code (`code_field`, and `submit`). The account is the
+agent's one with that username on the page's site, else the one on another
+site of its registrable domain: a site's settings may be on another host than
+its sign-in (Google's on myaccount.google.com, the account saved on
+accounts.google.com). With two such accounts the call is refused. The tool puts
+nothing saved into the page (only the code of the page's own setup), so a
+shared host's other tenant gains nothing from a wrong match. The host locates the
+field through the container (as request_login does), then has the container
+read the setup from the page (`authenticator-setup.ts`): an `otpauth://` link,
+else the QR code in view or further down the page (a CDP screenshot decoded
+with jsqr), else a lone key the page keeps to type (also behind "Can't scan
+it?", which the agent never needs to open). The key goes only to the host, and
+the container redacts it (every grouping and case) from what the agent reads
+from then on. The host makes the app's current code (`totp.ts`; the next
+period's when fewer than three seconds are left), the container fills and
+submits it, and only once that code went in is the seed sealed into the
+account's `secrets` (with what the site named it, the name the agent gave it
+there, and when). A request answered this way is cleared. When the site offers
+nothing that fits, the agent calls the tool with `method: "none"` and why: the
+request is answered with that, and Logins shows it.
+
+**Signing in with it.** A code field says where its code comes from
+(`from`: `authenticator_app`, `text_message`, `email`, `other`). The vault
+fills one only for `authenticator_app`, from an app it holds and the site has
+not rejected: three codes in half an hour and ten a day at most (each code a
+site turns down counts toward its lockout), the same plain-HTTP rule as
+passwords. A code field without `from` on an account whose app the vault holds
+answers the agent that the vault fills that app's code (`type: authenticator`)
+instead of asking the user for a code they may not have. Results and the
+account list tell the agent the vault holds the app (and its name on the site),
+and on a page that asks how to verify it's you the host picks the
+authenticator app way by itself, without asking the user. When the agent says the site rejected a code
+(`ask_user` with the code field mapped as the app's), the app is marked
+(`rejectedAt`) and the user is asked for codes until an app is added again.
+
+Settings → Logins shows the app (added when, its names) and removes it from the
+vault (the site still lists it); nothing here shows a code or the key.
+
+## Passkeys (part 4b)
+
+The vault can hold an account's passkeys: an agent adds one in the site's
+security settings when the user asks (as for an authenticator app, and before
+one: a passkey changes nothing else about the account), and a sign-in with the
+account then needs nobody.
+
+**Chrome's virtual authenticator** (CDP `WebAuthn`, `passkey-keeper.ts`)
+answers the page's passkey prompts on the agent's tab, with no dialog. The
+container holds one on the tab for a while, over a browser-level connection of
+its own: "record" while the agent adds a passkey (it keeps the one the page
+creates, private key and all, for the host to take), "present" while a sign-in
+with the account runs (the account's passkeys for that site in it). What it
+does, probed on Chrome 156: it belongs to one tab and survives the tab's
+navigations; any DevTools session that attaches to the tab and then detaches
+turns it off, whoever enabled it (our own fills and captures do; agent-browser's
+commands do not), so the keeper arms it again right after our connections
+close and on a one-second check. Without one, Chrome headless refuses a
+discoverable passkey prompt at once and lets a named one wait out the site's
+timeout, which is why agents handed passkeys to the user before.
+
+**Adding one** (`passkey-capture.ts`): the agent's tab records the passkey a
+page creates from the moment the user asks: the host arms it in record mode
+(half an hour) when the card's box is ticked, when the vault next signs in
+with an account whose Logins switch is on, or, for a request in the
+conversation, when the agent calls `add_sign_in_method` with `method:
+"passkey"` (that call only arms it). The agent then creates a passkey in the
+site's settings as a person would: clicks the site's button, goes through
+what the page asks (its password or a code: request_login), and the
+recorder answers the browser's passkey prompt, with nothing more to call. A
+watch on the host waits on the container for what the page created and seals
+the first passkey that works on the account's site (its `rpId` that host or
+a domain above it) into the account's `secrets`, with its plain record (the
+site it is for, when); one for another site (the tab went elsewhere) is not
+kept, and the watch goes on. The tab keeps recording until its time is up: a
+site may ask for the new passkey at once, to try it. Some sites hold a new
+passkey before it signs in (Google: a security delay, or approval with an
+existing key): the agent tells the user what the page says.
+
+**Signing in with it.** The first request_login call with the account's
+username on a page of a site its passkey works on (its `rpId`, or a host under
+it) holds the account's passkeys on the agent's tab for five minutes, fills
+nothing, and tells the agent to use the page's passkey option (`type:
+passkey`). Its next call (a page with no passkey option, one that asks who
+first) goes on as usual, the passkey still there for a prompt further on (a
+passkey as a second step); a call from another tab (a window the site opened
+for the prompt) holds them there instead. On a page that asks how to verify
+it's you, a passkey way is the vault's pick before its authenticator app: the
+host holds the passkeys on the tab (or finds them held) and clicks that way,
+so the page's prompt is answered with nobody (`decideWays`). The page prompts
+the moment it is clicked, so the container first has the keeper make sure the
+authenticator is on (`ensureArmed`): locating the ways opened and closed a
+connection of ours on the tab a moment before, which turns it off until the
+keeper arms it again (live, the click landed in that gap: `NotSupportedError`). It is a sign-in
+step for the account: the session it leaves is watched as the account's (Saved
+sessions), and the use is in the audit log.
+
+**The sign count.** Each use counts one up from the count the passkey went in
+with, and sites refuse a count that does not go up (a clone). The vault puts
+it in with the current time in seconds (never less than it had), so two agents,
+or two browsers, using one passkey a second apart never send a count the site
+already saw, with nothing written back.
+
+Settings → Logins lists the account's passkeys (when, the site, the name) and
+removes one from the vault (the site still lists it); never a key.

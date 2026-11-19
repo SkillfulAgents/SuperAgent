@@ -9,6 +9,7 @@ import { useFullWidthSettingsContent, useHideSettingsHeader } from '@renderer/co
 import { Button } from '@renderer/components/ui/button'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { SiteFavicon } from '@renderer/components/ui/site-favicon'
+import { Switch } from '@renderer/components/ui/switch'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,7 +28,10 @@ import {
   useDeleteBrowserAccount,
   useForgetBrowserAccountSessions,
   useGrantBrowserAccount,
+  useRemoveAuthenticator,
+  useRemovePasskey,
   useRenameBrowserAccount,
+  useRequestSignInMethod,
   useRevokeBrowserAccount,
   type BrowserAccount,
 } from '@renderer/hooks/use-browser-accounts'
@@ -44,9 +48,14 @@ function partNames(account: Pick<BrowserAccount, 'parts'>): string[] {
 
 /** What the account signs in with, in a few words. */
 function describeAccount(account: BrowserAccount): string {
-  if (account.via) return `Signs in with ${account.via.providerName} (${account.via.username})`
+  const methods = [
+    ...(account.signInMethods.passkeys.length ? ['passkey'] : []),
+    ...(account.signInMethods.authenticator ? ['authenticator app'] : []),
+  ]
+  const app = methods.length ? `, ${methods.join(', ')}` : ''
+  if (account.via) return `Signs in with ${account.via.providerName} (${account.via.username})${app}`
   const parts = partNames(account)
-  const saved = parts.length ? parts.join(', ') : 'Username only'
+  const saved = parts.length ? `${parts.join(', ')}${app}` : methods.length ? methods.join(', ').replace(/^./, (c) => c.toUpperCase()) : 'Username only'
   return account.rejectedAt ? `${saved} · rejected by the site` : saved
 }
 
@@ -356,6 +365,7 @@ function LoginDetailPage({ account, onBack, onDelete }: { account: BrowserAccoun
             Saved values are never shown. An agent signs in with them; when the site rejects one, it asks you again and what you enter replaces it.
             {account.sessions.length > 0 && ' A saved session signs an agent in without them, in the same kind of browser it was saved in.'}
           </p>
+          <AuthenticatorSection account={account} />
         </section>
       </div>
 
@@ -373,6 +383,107 @@ function LoginDetailPage({ account, onBack, onDelete }: { account: BrowserAccoun
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  )
+}
+
+/**
+ * The passkeys and the authenticator app agents added to the account (signing
+ * in then needs no one), or the switch that asks agents to add one at their
+ * next sign-in.
+ */
+function AuthenticatorSection({ account }: { account: BrowserAccount }) {
+  const request = useRequestSignInMethod()
+  const removeApp = useRemoveAuthenticator()
+  const removeKey = useRemovePasskey()
+  const { authenticator, passkeys, requestedAt, unavailable } = account.signInMethods
+  const holdsMethod = authenticator !== null || passkeys.length > 0
+  return (
+    <div className="space-y-2 pt-2" data-testid="login-authenticator">
+      <h3 className="text-xs font-normal text-muted-foreground">Passkeys and authenticator app</h3>
+      <div className="divide-y divide-border/50 overflow-hidden rounded-xl border bg-background text-xs">
+        {passkeys.map((passkey, index) => (
+          <div key={passkey.credentialId} className="flex items-center gap-3 px-4 py-2.5" data-testid={`login-passkey-${index}`}>
+            <span className="min-w-0 flex-1">
+              Passkey, added by an agent {formatCompactDistance(safeDate(passkey.addedAt))}
+              {passkey.name ? <span className="text-muted-foreground"> · named {passkey.name}</span> : null}
+              <span className="text-muted-foreground"> · {passkey.rpId}</span>
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-my-1 h-6 shrink-0 px-2 text-2xs"
+              disabled={removeKey.isPending}
+              onClick={() => {
+                removeKey.mutateAsync({ accountId: account.id, credentialId: passkey.credentialId })
+                  .then(() => toast.success('Removed the passkey', { description: `Agents no longer sign in with it. ${passkey.rpId} still lists it: remove it there too.` }))
+                  .catch((error: unknown) => toast.error('Could not remove the passkey', { description: error instanceof Error ? error.message : 'Please try again.' }))
+              }}
+              data-testid={`login-passkey-remove-${index}`}
+            >
+              Remove
+            </Button>
+          </div>
+        ))}
+        {authenticator ? (
+          <>
+            <div className="flex items-center gap-3 px-4 py-2.5" data-testid="login-authenticator-saved">
+              <span className="min-w-0 flex-1">
+                Authenticator app, added by an agent {formatCompactDistance(safeDate(authenticator.addedAt))}
+                {authenticator.name ? <span className="text-muted-foreground"> · named {authenticator.name}</span> : null}
+                {authenticator.issuer ? <span className="text-muted-foreground"> · {authenticator.issuer}</span> : null}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-my-1 h-6 shrink-0 px-2 text-2xs"
+                disabled={removeApp.isPending}
+                onClick={() => {
+                  removeApp.mutateAsync(account.id)
+                    .then(() => toast.success('Removed the authenticator app', { description: `Agents ask you for its codes again. ${account.site} still lists it: remove it there too.` }))
+                    .catch((error: unknown) => toast.error('Could not remove the authenticator app', { description: error instanceof Error ? error.message : 'Please try again.' }))
+                }}
+                data-testid="login-authenticator-remove"
+              >
+                Remove
+              </Button>
+            </div>
+            {authenticator.rejectedAt && (
+              <div className="px-4 py-2.5 text-amber-700 dark:text-amber-400" data-testid="login-authenticator-rejected">
+                An agent said the site rejected a code from it, {formatCompactDistance(safeDate(authenticator.rejectedAt))}. Agents ask you for codes until one is added again.
+              </div>
+            )}
+          </>
+        ) : null}
+        {!holdsMethod && (
+          <div className="flex items-start gap-3 px-4 py-2.5">
+            <span className="min-w-0 flex-1 space-y-0.5">
+              <span className="block">Have an agent add one</span>
+              <span className="block text-2xs text-muted-foreground">
+                The next agent that signs in with this login adds a passkey, or an authenticator app next to the two-step verification the account already has; it never turns it on or replaces a method.
+              </span>
+            </span>
+            <Switch
+              checked={requestedAt !== null}
+              disabled={request.isPending}
+              onCheckedChange={(requested) => {
+                request.mutateAsync({ accountId: account.id, requested })
+                  .catch((error: unknown) => toast.error('Could not change this', { description: error instanceof Error ? error.message : 'Please try again.' }))
+              }}
+              aria-label="Have an agent add a passkey or authenticator app"
+              data-testid="login-authenticator-request"
+            />
+          </div>
+        )}
+        {!holdsMethod && unavailable && (
+          <div className="px-4 py-2.5 text-muted-foreground" data-testid="login-authenticator-unavailable">
+            An agent found none it could add, {formatCompactDistance(safeDate(unavailable.at))}: {unavailable.reason}
+          </div>
+        )}
+      </div>
+      <p className="px-1 text-2xs text-muted-foreground">
+        With a passkey or an authenticator app here, the vault holds everything that signs in to this login: agents sign in without your phone.
+      </p>
     </div>
   )
 }

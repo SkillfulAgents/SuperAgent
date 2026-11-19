@@ -6,11 +6,51 @@ export type LoginFieldKind = (typeof LOGIN_FIELD_KINDS)[number]
 
 export const MAX_LOGIN_FIELDS = 6
 
+/**
+ * Where the page says a one-time code comes from, as the agent maps it. Only
+ * an authenticator app's code is one the vault can make (when it holds the
+ * account's app); a code sent by text or email is the user's.
+ * Mirrors agent-container/src/login-form-script.ts.
+ */
+export const CODE_SOURCES = ['authenticator_app', 'text_message', 'email', 'other'] as const
+export type CodeSource = (typeof CODE_SOURCES)[number]
+
+/**
+ * What a way to verify it's you is, as the agent classifies what the page
+ * offers: the vault picks one it holds by itself; the user picks among the rest.
+ * Mirrors agent-container/src/login-schema.ts.
+ */
+export const WAY_METHODS = ['authenticator_app', 'text_message', 'email', 'phone_prompt', 'passkey', 'other'] as const
+export type WayMethod = (typeof WAY_METHODS)[number]
+
+export const MAX_LOGIN_WAYS = 6
+
+/** A page's way as the card shows it: what it is, and whether there is something to click (never its ref). */
+export const loginWaySchema = z.object({
+  label: z.string().max(120),
+  method: z.enum(WAY_METHODS),
+  clickable: z.boolean(),
+})
+export type LoginWay = z.infer<typeof loginWaySchema>
+
+/** Model input or the request's payload → the ways worth drawing; malformed entries are dropped. */
+export function summarizeLoginWays(ways: unknown): LoginWay[] {
+  if (!Array.isArray(ways)) return []
+  return ways.flatMap((way) => {
+    if (!way || typeof way !== 'object') return []
+    const { label, method, clickable, ref } = way as { label?: unknown; method?: unknown; clickable?: unknown; ref?: unknown }
+    const parsedMethod = z.enum(WAY_METHODS).safeParse(method)
+    if (!parsedMethod.success || typeof label !== 'string' || !label.trim()) return []
+    return [{ label: label.trim().slice(0, 120), method: parsedMethod.data, clickable: typeof clickable === 'boolean' ? clickable : typeof ref === 'string' }]
+  }).slice(0, MAX_LOGIN_WAYS)
+}
+
 /** A field as the agent mapped it: model input, so every part is optional. */
 export interface LoginFieldInput {
   ref?: string
   kind?: string
   label?: string
+  from?: string
 }
 
 /** A field as the request card shows it before the browser has located it. */
@@ -49,6 +89,8 @@ export const loginContextSchema = z.object({
   fields: z.array(z.object({
     kind: loginFieldKindSchema,
     label: z.string().max(120),
+    /** A code field: where the agent says the page has it come from. */
+    from: z.enum(CODE_SOURCES).optional(),
     inputType: z.string().max(32),
     inputMode: z.string().max(32),
     autocomplete: z.string().max(200),
@@ -64,6 +106,8 @@ export const loginContextSchema = z.object({
   })).max(MAX_LOGIN_FIELDS).default([]),
   /** The page's buttons for signing in with another service ("Sign in with Google"), as the agent listed them: provider ids. */
   providers: z.array(z.string().max(32)).max(16).default([]),
+  /** A page that asks how to verify it's you: its ways, and no fields. */
+  ways: z.array(loginWaySchema).max(MAX_LOGIN_WAYS).default([]),
 })
 export type LoginContext = z.infer<typeof loginContextSchema>
 export type LoginContextField = LoginContext['fields'][number]
@@ -81,8 +125,18 @@ export const loginFillResultSchema = z.object({
   saved: z.object({ username: z.string(), site: z.string() }).optional(),
   /** The values went in, but the account could not be saved. */
   saveError: z.string().optional(),
+  /** A fill the host answers itself (add_sign_in_method): the container's report, for the agent's result. */
+  report: z.record(z.string(), z.unknown()).optional(),
 })
 export type LoginFillResult = z.infer<typeof loginFillResultSchema>
+
+/** The container's answer to a way picked: whether it was clicked, and what went wrong if not. Never a value. */
+export const loginWayResultSchema = z.object({
+  success: z.literal(true),
+  clicked: z.boolean(),
+  problems: z.array(z.string()),
+})
+export type LoginWayResult = z.infer<typeof loginWayResultSchema>
 
 /** The answer to a fill when the browser had closed: what the agent's next try signs in with, if anything. */
 export const loginBrowserClosedSchema = z.object({
@@ -125,7 +179,7 @@ export type FillLoginBody = z.infer<typeof fillLoginBodySchema>
 export const loginVaultPayloadSchema = z.object({
   mode: z.enum(['new', 'ask', 'complete']),
   username: z.string().max(320).optional(),
-  /** complete: the saved account whose parts fill the covered fields. */
+  /** complete: the saved account whose parts fill the covered fields; a step of two-step verification: the account it is for. */
   accountId: z.string().max(64).optional(),
   /** complete: indexes of the located fields the vault fills, which the form does not ask for. */
   covered: z.array(z.number().int().min(0)).max(MAX_LOGIN_FIELDS).optional(),
@@ -168,6 +222,12 @@ export const loginVaultInfoSchema = z.object({
   providerAccounts: z.array(vaultOfferSchema.extend({ site: z.string(), providerName: z.string(), providerId: z.string().nullable() })),
   /** The sign-in providers this site's form may offer: not the site's own. */
   providers: z.array(z.object({ id: z.string(), name: z.string(), site: z.string() })),
+  /**
+   * A step of two-step verification (the ways to verify, or a code) for an
+   * account of the viewer's that the vault holds no app for: the card offers
+   * to have the agent add one. `requested`: asked already.
+   */
+  addMethod: z.object({ accountId: z.string(), username: z.string(), requested: z.boolean() }).nullable().default(null),
 })
 export type LoginVaultInfo = z.infer<typeof loginVaultInfoSchema>
 
@@ -190,6 +250,18 @@ export const fillLoginCredentialBodySchema = z.object({
   save: z.boolean().optional(),
   /** The user saw that other members of this agent can sign in with what it saves. */
   sharedAgentAcknowledged: z.boolean().optional(),
+}).strict()
+
+/** The way the user picked on a page that asks how to verify it's you (for its only way with nothing to click: answered). */
+export const chooseLoginWayBodySchema = z.object({
+  toolUseId: z.string().min(1),
+  origin: z.string().min(1).max(2048),
+  index: z.number().int().min(0).max(MAX_LOGIN_WAYS - 1),
+}).strict()
+
+/** "Also add an authenticator app" on a step of two-step verification: asked of the agent now. */
+export const requestLoginMethodBodySchema = z.object({
+  toolUseId: z.string().min(1),
 }).strict()
 
 export const completeLoginBodySchema = z.object({

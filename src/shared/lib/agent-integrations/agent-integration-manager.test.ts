@@ -66,7 +66,7 @@ vi.mock('@shared/lib/agent-actor', async () => {
     // The sessions of its chats run a turn whenever the test says a session is busy.
     live: async () => ({ activeSessionIds: state.activity() === 'idle' ? [] : [...state.mappings.values()].map(mapping => mapping.sessionId), awaitingSessionIds: [] }),
     container: { start: state.start },
-    inputs: { answer: state.answer },
+    inputs: { answer: state.answer, get: async () => null },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
       markActive: state.markActive, markIdle: state.markIdle, attach: state.attach,

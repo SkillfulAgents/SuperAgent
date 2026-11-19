@@ -1046,6 +1046,7 @@ const MOCK_LOGIN_CONTEXT = {
   ],
   held: [] as Array<{ kind: string; label: string }>,
   providers: [] as string[],
+  ways: [] as Array<{ label: string; method: string; clickable: boolean }>,
 }
 
 /** How the mock page's inputs of each kind look, as the real container would describe them. */
@@ -1063,6 +1064,11 @@ const MOCK_FIELD_SHAPES: Record<string, { inputType: string; inputMode: string; 
  * form when the call is unknown.
  */
 function mockLoginContext(input: Record<string, unknown> | undefined) {
+  // A page that asks how to verify it's you: its ways, and no fields.
+  if (input && Array.isArray(input.ways) && input.ways.length > 0) {
+    const ways = input.ways as Array<{ ref?: string; label: string; method: string }>
+    return { ...MOCK_LOGIN_CONTEXT, submit: false, fields: [], ways: ways.map(({ ref, label, method }) => ({ label, method, clickable: typeof ref === 'string' })) }
+  }
   if (!input || !Array.isArray(input.fields)) return MOCK_LOGIN_CONTEXT
   const fields = input.fields as Array<{ ref?: string; kind: string; label: string }>
   return {
@@ -2321,6 +2327,31 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // A page that asks how to verify it's you: two ways, and its only way
+    // with nothing to click (a prompt on the user's phone).
+    ['vault login ways', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          ways: [
+            { ref: '@e9', label: 'Get a code by text message at (•••) •••-0108', method: 'text_message' },
+            { ref: '@e10', label: 'Tap Yes on your phone', method: 'phone_prompt' },
+          ],
+        },
+      },
+    ])],
+    ['vault login prompt', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          ways: [{ label: 'Check your phone: Example sent a notification. Tap Yes on it to sign in.', method: 'phone_prompt' }],
+        },
+      },
+    ])],
     ['vault login code', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_login',
@@ -3372,6 +3403,29 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const filled = body.values.filter(Boolean).length
       const outcomes = body.values.map((value: string) => (value ? 'filled' : 'skipped'))
       return new Response(JSON.stringify({ success: true, filled, failed: 0, outcomes, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+
+    // A way picked on a page that asks how to verify it's you: the real
+    // container clicks it and answers the parked call; the mock records it.
+    if (fetchPath === '/browser/login/choose' && init?.method === 'POST') {
+      let body: { toolUseId: string; expectedOrigin: string; index: number }
+      try {
+        body = JSON.parse(String(init.body))
+      } catch {
+        return new Response(JSON.stringify({ error: 'Invalid sign-in request' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      const pending = this.pendingInputs.get(body.toolUseId)
+      if (!pending) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is no longer open' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (body.expectedOrigin !== MOCK_LOGIN_CONTEXT.origin) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is for a different site' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      const way = mockLoginContext(pending.input).ways[body.index]
+      if (!way) return new Response(JSON.stringify({ error: 'The page offers no such way' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      this.writeMockRecord({ type: 'loginWay', agentSlug: this.config.agentId, toolUseId: body.toolUseId, index: body.index })
+      await this.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, { method: 'POST', body: '{}' })
+      return new Response(JSON.stringify({ success: true, clicked: way.clickable, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
     if (fetchPath === '/inputs/pending') {
