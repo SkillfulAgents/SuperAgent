@@ -102,7 +102,7 @@ export function SlackProvisionedSetupForm({ agentSlug, onClose, provisioning, on
       {waiting && <IntegrationSetupFeedback state="pending">Approve the install in the window that opened. This updates when it’s done.</IntegrationSetupFeedback>}
       {error && <IntegrationSetupFeedback state="error">{error}</IntegrationSetupFeedback>}
     </>}
-    actions={<Button size="sm" variant="ghost" onClick={onClose}>{created ? 'Finish later' : 'Cancel'}</Button>}
+    actions={<Button size="sm" variant="ghost" onClick={onClose}>{created ? 'Close' : 'Cancel'}</Button>}
   >
     <IntegrationSetupField id="setup-integration-name" label="App name" value={name} maxLength={35}
       onChange={(event) => setName(event.target.value)} placeholder={agent?.name || 'My Slack app'} disabled={created || create.isPending} />

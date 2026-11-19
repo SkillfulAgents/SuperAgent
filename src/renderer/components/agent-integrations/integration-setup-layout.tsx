@@ -25,7 +25,7 @@ export function IntegrationSetupLayout({ provider, label, iconClassName = '', in
       <DialogDescription className="sr-only">Follow the instructions and connect this agent to {label}.</DialogDescription>
     </DialogHeader>
     <div className="flex flex-col md:flex-row gap-6 p-1 min-h-0 overflow-y-auto" data-testid="integration-setup-layout">
-      <div className="md:w-[55%] min-w-0 flex flex-col justify-center gap-4 md:max-h-[60vh] md:overflow-y-auto">
+      <div className="md:w-[55%] min-w-0 flex flex-col justify-[safe_center] gap-4 md:max-h-[60vh] md:overflow-y-auto">
         {instructions}
       </div>
       <div className="md:w-[45%] min-w-0 rounded-card border bg-muted/40 shadow-md flex flex-col md:max-h-[60vh]">

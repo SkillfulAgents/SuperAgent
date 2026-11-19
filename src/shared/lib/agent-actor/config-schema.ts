@@ -6,6 +6,7 @@
  */
 import type { z } from 'zod'
 import { agentPreferencesSchema } from '@shared/lib/types/agent-preferences'
+import { finishedSetupSchema } from '@shared/lib/agent-integrations/finished-setup-schema'
 import { claudeSettingsWithHooksSchema } from '@shared/lib/services/agent-hooks-schema'
 import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
 import { portableSessionMetadataMapSchema, slashCommandListSchema, type PortableSessionMetadataMap } from '@shared/lib/services/session-metadata-schema'
@@ -52,6 +53,7 @@ export const CONFIG_DOCS = {
   secrets: { kind: 'text', path: '.env', shared: true, mode: 0o666 },
   /** Per-agent defaults for new sessions. The agent may edit it by hand; the host re-reads before every write. */
   preferences: { kind: 'json', path: 'agent-preferences.json', shared: false, schema: agentPreferencesSchema },
+  finishedSetup: { kind: 'json', path: 'finished-setup.json', shared: false, schema: finishedSetupSchema },
   /**
    * The portable form of the agent's session index (names, stars, how each
    * session was started): what a full export carries and what an import, or

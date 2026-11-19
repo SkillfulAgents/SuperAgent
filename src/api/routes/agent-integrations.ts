@@ -39,6 +39,8 @@ import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@sh
 import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { clearCompletedChannel, readFinishedSetup, setChannelDeferred } from '@shared/lib/agent-integrations/finished-setup'
+import { setupProviderSchema } from '@shared/lib/agent-integrations/finished-setup-schema'
 import { IntegrationPolicyError } from '@shared/lib/agent-integrations/errors'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -69,6 +71,7 @@ async function completeAuthorization(c: Context) {
     if (result.cancelled || !result.integrationId) return c.html('<h1>Authorization cancelled</h1><p>Return to Gamut to try again.</p>', 400)
     const installed = await getAgentIntegration(result.integrationId)
     if (installed?.provider !== c.req.param('provider')) throw new Error('Authorization belongs to another provider')
+    if (installed) clearCompletedChannel(toPublicAgentIntegration(installed))
     try { await agentIntegrationManager.resumeIntegration(result.integrationId) }
     catch (error) {
       captureException(error, { tags: { component: 'agent-integration', operation: 'initial-connect' } })
@@ -188,6 +191,16 @@ const RequireSetupManagement: MiddlewareHandler = async (c, next) => {
   if (!definition) return c.json({ error: 'Unknown integration provider' }, 400)
   return (definition.managementAccess ?? 'owner') === 'owner' ? AgentAdmin()(c, next) : AgentUser()(c, next)
 }
+agentIntegrationsRouter.get('/agents/:id/finished-setup', ResolveAgent(), AgentUser(), async c =>
+  c.json(await readFinishedSetup(getAgentId(c))))
+
+agentIntegrationsRouter.on(['PUT', 'DELETE'], '/agents/:id/finished-setup/:provider', ResolveAgent(), RequireSetupManagement, async c => {
+  const provider = setupProviderSchema.safeParse(c.req.param('provider'))
+  if (!provider.success) return c.json({ error: 'Unknown setup provider' }, 400)
+  await setChannelDeferred(getAgentId(c), provider.data, c.req.method === 'PUT')
+  return c.body(null, 204)
+})
+
 // Read setup links before creating an installation, using the same management ACL.
 agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgent(), RequireSetupManagement, async c => {
   c.header('Cache-Control', 'no-store')
@@ -291,7 +304,9 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     const integration = await getAgentIntegration(id)
     if (!integration) throw new Error('Agent integration disappeared after creation')
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
-    return c.json(toPublicAgentIntegration(integration), 201)
+    const result = toPublicAgentIntegration(integration)
+    clearCompletedChannel(result)
+    return c.json(result, 201)
   } catch (error) {
     const runtimeError = findAgentRuntimeError(error)
     if (runtimeError) return runtimeError.toHttpResponse()
@@ -441,7 +456,9 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     const updated = await getAgentIntegration(id)
     if (!updated) throw new Error('Agent integration disappeared after update')
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
-    return c.json(toPublicAgentIntegration(updated))
+    const result = toPublicAgentIntegration(updated)
+    if (config !== undefined || settingsChange?.reconnect) clearCompletedChannel(result)
+    return c.json(result)
   } catch (error) {
     const runtimeError = findAgentRuntimeError(error)
     if (runtimeError) return runtimeError.toHttpResponse()

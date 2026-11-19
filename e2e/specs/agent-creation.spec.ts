@@ -327,32 +327,95 @@ test('More channels opens Telegram setup and returns to the wizard after connect
   await expect(page.getByTestId('create-agent-finish')).toBeEnabled()
 })
 
-test('Finish setup completes the existing Slack webhook installation in the wizard', async ({ page }) => {
-  let agentSlug = ''
-  let connected = false
-  const installation = () => ({
-    id: 'pending-slack', agentSlug, name: 'Slack', provider: 'slack', status: connected ? 'active' : 'paused',
-    connected, hasCredentials: connected,
-    slack: {
-      botTokenSaved: connected, signingSecretSaved: connected, appTokenSaved: false,
-      webhook: { status: 'pending', url: 'https://example.invalid/hooks/test' },
-    },
-  })
-  await page.route('**/api/agent-integrations/agents/*', route => {
-    agentSlug = route.request().url().split('/').pop()!
-    return route.fulfill({ json: [installation()] })
-  })
-  await page.route('**/api/agent-integrations/pending-slack', route => {
-    if (route.request().method() === 'PATCH') connected = true
-    return route.fulfill({ json: installation() })
-  })
-  await reachAddons(page)
-  await page.getByRole('button', { name: 'Finish setup Slack' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Finish Slack setup' })
-  await dialog.getByLabel('Signing Secret').fill('fixture-secret')
-  await dialog.getByLabel('Bot Token').fill('fixture-token')
-  await dialog.getByRole('button', { name: 'Connect', exact: true }).click()
+test('deferred channels survive reload, reopen from Agent Home, and dismiss independently', async ({ page, request }) => {
+  const sessions = await reachAddons(page)
+  const slug = sessions.split('/')[3]
+  const reminders = `/api/agent-integrations/agents/${slug}/finished-setup`
+  const dialog = page.getByRole('dialog')
+  await page.getByRole('button', { name: 'Set up Slack' }).click()
+  await dialog.getByRole('button', { name: 'Set this up later' }).click()
   await expect(dialog).toBeHidden()
-  await expect(page.getByRole('button', { name: 'Configured Slack' })).toBeDisabled()
-  await expect(page.getByTestId('create-agent-finish')).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Finish setup Slack' })).toBeEnabled()
+  await page.getByRole('button', { name: 'More channels' }).click()
+  await page.getByRole('button', { name: 'Set up Telegram' }).click()
+  await dialog.getByRole('button', { name: 'Set this up later' }).click()
+  await expect(dialog).toBeHidden()
+  await page.getByTestId('new-agent-back').click()
+  await page.getByTestId('create-agent-skip').click()
+  const panel = page.getByRole('region', { name: 'Finish setting up this agent' })
+  await expect(panel).toBeVisible()
+  await page.reload()
+  await panel.getByRole('button', { name: 'Finish setup Slack' }).click()
+  await expect(dialog.getByRole('heading', { name: /Slack/ })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await panel.getByRole('button', { name: 'Dismiss Slack setup' }).click()
+  await expect(panel.getByText('Slack')).toBeHidden()
+  await panel.getByRole('button', { name: 'Finish setup Telegram' }).click()
+  await expect(dialog.getByLabel('Bot Token')).toBeVisible()
+  await page.keyboard.press('Escape')
+  expect(await (await request.get(reminders)).json()).toEqual({ steps: [{ type: 'channel', provider: 'telegram' }] })
+  await panel.getByRole('button', { name: 'Dismiss Telegram setup' }).click()
+  await expect(panel).toBeHidden()
+  await page.reload()
+  await expect(page.getByTestId('home-message-input')).toBeVisible()
+  expect(await (await request.get(reminders)).json()).toEqual({ steps: [] })
 })
+
+test('the defer action stays visible beneath long Slack instructions on a small phone', async ({ page }) => {
+  await reachAddons(page)
+  await page.setViewportSize({ width: 320, height: 568 })
+  await page.getByRole('button', { name: 'Set up Slack' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Set up integration with Slack' })
+  await expect(dialog.getByTestId('integration-setup-layout')).toBeVisible()
+  const defer = dialog.getByRole('button', { name: 'Set this up later' })
+  await expect(defer).toBeInViewport({ ratio: 1 })
+  await defer.click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Finish setup Slack' })).toBeEnabled()
+})
+
+for (const surface of ['the wizard', 'Agent Home']) {
+  test(`Finish setup completes the existing Slack webhook installation from ${surface}`, async ({ page }) => {
+    let agentSlug = ''
+    let connected = false
+    const installation = () => ({
+      id: 'pending-slack', agentSlug, name: 'Slack', provider: 'slack', status: connected ? 'active' : 'paused',
+      connected, hasCredentials: connected,
+      slack: {
+        botTokenSaved: connected, signingSecretSaved: connected, appTokenSaved: false,
+        webhook: { status: 'pending', url: 'https://example.invalid/hooks/test' },
+      },
+    })
+    await page.route('**/api/agent-integrations/agents/*', route => {
+      agentSlug = route.request().url().split('/').pop()!
+      return route.fulfill({ json: [installation()] })
+    })
+    await page.route('**/api/agent-integrations/pending-slack', route => {
+      if (route.request().method() === 'PATCH') connected = true
+      return route.fulfill({ json: installation() })
+    })
+    await reachAddons(page)
+    await page.getByRole('button', { name: 'Finish setup Slack' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Finish Slack setup' })
+    if (surface === 'Agent Home') {
+      await dialog.getByRole('button', { name: 'Set this up later' }).click()
+      await expect(dialog).toBeHidden()
+      await page.getByTestId('new-agent-back').click()
+      await page.getByTestId('create-agent-skip').click()
+      await expect(page.getByRole('region', { name: 'Finish setting up this agent' })).toBeVisible()
+      await page.reload()
+      await page.getByRole('region', { name: 'Finish setting up this agent' })
+        .getByRole('button', { name: 'Finish setup Slack' }).click()
+    }
+    await dialog.getByLabel('Signing Secret').fill('fixture-secret')
+    await dialog.getByLabel('Bot Token').fill('fixture-token')
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click()
+    await expect(dialog).toBeHidden()
+    if (surface === 'Agent Home') {
+      await expect(page.getByRole('region', { name: 'Finish setting up this agent' })).toBeHidden()
+    } else {
+      await expect(page.getByRole('button', { name: 'Configured Slack' })).toBeDisabled()
+      await expect(page.getByTestId('create-agent-finish')).toBeEnabled()
+    }
+  })
+}
