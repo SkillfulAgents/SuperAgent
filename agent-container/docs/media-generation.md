@@ -26,6 +26,7 @@ nothing outside it works, and there is no separate Gamut allowlist to consult.
 ### 1. List
 
 ```bash
+set -o pipefail
 curl -sSf "$PLATFORM_BASE_URL/v1/replicate/models?kind=image" \
   -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN" \
   | jq -c '.data[] | {id, about: .description[:100], pricing}'
@@ -41,13 +42,19 @@ the user's stated style, aspect ratio, duration, fidelity, and file format.
 Never invent a slug or substitute a model the list did not return — the table
 is the menu, and it changes without notice.
 
-### 2. Schema: `GET /models/{owner}/{name}`
+### 2. Read the schema with `GET /models/{owner}/{name}`
+
+Replace `fox-poster` with a short name for this run. Keep the printed directory
+for step 3. The helper saves the model's output schema there for the downloader.
 
 ```bash
+set -euo pipefail
+RUN=$(mktemp -d /workspace/fox-poster.XXXXXXXX)
+printf 'Run directory %s\n' "$RUN"
 curl -sSf "$PLATFORM_BASE_URL/v1/replicate/models/{owner}/{name}" \
   -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN" \
-  | jq -c '.latest_version.openapi_schema.components.schemas
-      | with_entries(select(.key | test("^(Output|Status|WebhookEvent|Prediction.*|.*ValidationError)$") | not))
+  | node /app/dist/scripts/media-output.js schema "$RUN" \
+  | jq -c 'with_entries(select(.key | test("^(Status|WebhookEvent|Prediction.*|.*ValidationError)$") | not))
       | walk(if type == "object" then del(.title, ."x-order") else . end)'
 ```
 
@@ -55,48 +62,57 @@ curl -sSf "$PLATFORM_BASE_URL/v1/replicate/models/{owner}/{name}" \
 takes the allowed values listed under that name. Read them before building a
 request. Only slugs from the list resolve here.
 
-### 3. Run: `POST /models/{owner}/{name}/predictions`, wait, save
+### 3. Run with `POST /models/{owner}/{name}/predictions`
 
-Create the prediction, wait for it, and save its output in one command. Send
-`{"input": {...}}` shaped by the schema, and do not send `Prefer: wait`; it is
-dropped.
+Use the directory from step 2, the selected model slug, and an input shaped by
+its schema. The platform drops `Prefer: wait`, so poll using the ID from the
+create response.
 
 ```bash
-N=fox-poster  # a short name for the saved files, no spaces
+set -euo pipefail
+RUN=/workspace/fox-poster.REPLACE_ME
+test -r "$RUN/.model-schema.json"
 AUTH="Authorization: Bearer $PLATFORM_AUTH_TOKEN"
 P=$(curl -sS -X POST "$PLATFORM_BASE_URL/v1/replicate/models/{owner}/{name}/predictions" \
   -H "$AUTH" -H "Content-Type: application/json" -d '{"input": {"prompt": "..."}}')
-ID=$(jq -r '.id // empty' <<<"$P")
-[ -n "$ID" ] || { echo "$P"; exit 1; }
-echo "prediction $ID"; echo "$ID" > "/workspace/$N.prediction"
-while [ "$(jq -r .status <<<"$P")" = starting ] || [ "$(jq -r .status <<<"$P")" = processing ]; do
-  sleep 3; P=$(curl -fsS "$PLATFORM_BASE_URL/v1/replicate/predictions/$ID" -H "$AUTH") \
-    || { echo "polling stopped; check later with GET /predictions/$ID"; exit 1; }
+ID=$(jq -er '.id | strings | select(test("^[a-zA-Z0-9_-]+$"))' <<<"$P") || { printf '%s\n' "$P"; exit 1; }
+printf 'Prediction directory %s/%s\n' "$RUN" "$ID"
+mkdir -- "$RUN/$ID"
+while jq -e '.status == "starting" or .status == "processing"' <<<"$P" >/dev/null; do
+  sleep 3
+  P=$(curl -fsS "$PLATFORM_BASE_URL/v1/replicate/predictions/$ID" -H "$AUTH")
 done
-[ "$(jq -r .status <<<"$P" 2>/dev/null)" = succeeded ] || { echo "$P"; exit 1; }
-jq -c '{id, model, status, output}' <<<"$P"
-jq -r '.output | .. | strings | select(startswith("https://"))' <<<"$P" | nl -nln \
-  | while read -r n url; do f=${url%%[?#]*}; curl -fsSL -o "/workspace/$N-$n-${f##*/}" "$url" || exit 1; done \
-  || exit 1
-ls -l /workspace/"$N"-* 2>/dev/null || true
+jq -c '{id, model, input: {prompt: .input.prompt}, status, error, output}' <<<"$P"
+[ "$(jq -r .status <<<"$P")" = succeeded ] || exit 1
+node /app/dist/scripts/media-output.js save "$RUN" <<<"$P"
 ```
 
-Replace `N`, `{owner}/{name}`, and the input, and keep the rest
-as is. The chat reads the `jq -c` line to show the user the model, status, and
-output, so do not reword or drop it. The command prints the prediction id
-first, then the finished prediction on one line, saves each output file to
-`/workspace`, and lists the saved files. A refused request, a job that failed or
-was canceled, or a download that failed prints the reason and stops.
+Keep the `jq -c` line intact. Chat uses it to display the prediction, including
+failed, canceled, and aborted jobs. Each saved file gets a line with its size
+and path. For a text deliverable, use the model's output schema. For example,
+use `jq -r '.output | join("")'` for transcript chunks or `jq -r '.output.text'`
+for an OCR result.
 
-Some models return text instead of files (OCR, transcripts). The finished
-prediction line already carries it; save it with `jq -r .output` when the user
-needs a file.
+For a long run, start step 3 in the background. When Bash returns a task ID,
+wait for that task and read its output file for the prediction directory.
+Run this short **foreground** command with that directory to give the chat
+row the completed prediction. If Bash was interrupted, the subdirectory under
+the run directory from step 2 also preserves the prediction ID.
 
-Video and other long jobs can run for minutes: run the command in the
-background and wait for it. If a run is cut off before it prints the finished
-prediction, do not create the job again. Read the id from
-`/workspace/<N>.prediction`, check it with `GET /predictions/{id}`, and save the
-outputs from there.
+```bash
+set -euo pipefail
+DIR=/workspace/fox-poster.REPLACE_ME/PREDICTION_ID
+ID=${DIR##*/}
+P=$(curl -fsS "$PLATFORM_BASE_URL/v1/replicate/predictions/$ID" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN")
+jq -c '{id, model, input: {prompt: .input.prompt}, status, error, output}' <<<"$P"
+case "$(jq -r .status <<<"$P")" in failed|canceled|aborted) exit 1 ;; esac
+```
+
+To resume an interrupted run, poll that same ID until it reaches a terminal
+state. To recover its files, append
+`node /app/dist/scripts/media-output.js save "${DIR%/*}" <<<"$P"` to the
+successful poll. Creating another prediction starts another billable job.
 
 A `403` means the slug is not on the current list — go back to step 1 rather
 than retrying or guessing a variant. Do not invent alternate paths when the
@@ -121,9 +137,9 @@ directly.
 
 ## Save Outputs Immediately
 
-Output URLs expire, often in about an hour. The run command above downloads
-every output file into `/workspace` as soon as the prediction succeeds, named
-after `N` with the original extension.
+Output URLs expire, often in about an hour. The run command saves files from
+the schema's URI fields under the prediction directory. Downloads use HTTPS
+on the Replicate delivery host. Other URLs remain available in the prediction.
 
 For multiple outputs, save all requested variants and identify them clearly.
 Use `mcp__user-input__deliver_file` when the user needs a downloadable asset.

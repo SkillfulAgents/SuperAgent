@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { ImageOff } from 'lucide-react'
-import { useVendorFavicon, vendorFaviconHref } from '@renderer/components/ui/site-favicon'
+import { useVendorFavicon } from '@renderer/components/ui/site-favicon'
 import { cn } from '@shared/lib/utils/cn'
 import { getPathName } from '@shared/lib/utils/workspace-path'
-import { mediaCallOf, mediaKind, type MediaKind } from './media-call'
+import { isUnsuccessfulPrediction, mediaCallOf, mediaKind, type MediaKind } from './media-call'
 import { Field } from '../ui/shared'
 import { ExpandedView as TerminalView } from './renderer'
 import type { CollapsedContentProps, ToolRendererProps } from '../renderer-types'
@@ -14,8 +14,13 @@ const MAX_PREVIEWS = 4
 const OUTPUT_HOST = /(^|\.)replicate\.delivery$/
 
 function outputHref(url: string): string | null {
-  const href = vendorFaviconHref(url)
-  return href && OUTPUT_HOST.test(new URL(href).hostname) ? href : null
+  try {
+    const href = new URL(url)
+    return href.protocol === 'https:' && !href.username && !href.password && !href.port &&
+      OUTPUT_HOST.test(href.hostname) ? href.href : null
+  } catch {
+    return null
+  }
 }
 
 /** The outputs the card can draw, in print order. */
@@ -84,23 +89,19 @@ export function MediaCallView(props: ToolRendererProps) {
   // Past the fourth preview, outputs are links so every one stays reachable.
   const previews = drawableOutputs(call.outputUrls).slice(0, MAX_PREVIEWS)
   const links = call.outputUrls.filter((url) => !previews.some((preview) => preview.url === url))
-  const failed = call.status === 'failed' || call.status === 'canceled'
+  const failed = isUnsuccessfulPrediction(call.status)
 
   return (
     <div className="space-y-2" data-testid="media-call">
-      {(call.model || call.status) && (
-        <div className="flex flex-wrap items-baseline gap-x-2 text-xs">
-          {call.model && <span className="font-mono font-medium">{call.model}</span>}
-          {call.status && (
-            <span
-              className={cn(failed ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground')}
-              data-testid="media-call-status"
-            >
-              {call.status[0].toUpperCase() + call.status.slice(1)}
-            </span>
-          )}
-        </div>
-      )}
+      <div className="flex flex-wrap items-baseline gap-x-2 text-xs">
+        {call.model && <span className="font-mono font-medium">{call.model}</span>}
+        <span
+          className={cn(failed ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground')}
+          data-testid="media-call-status"
+        >
+          {call.status[0].toUpperCase() + call.status.slice(1)}
+        </span>
+      </div>
       {call.prompt && (
         <Field label="Prompt" className="whitespace-pre-wrap break-words max-h-32 overflow-y-auto card-scrollbar">
           {call.prompt}

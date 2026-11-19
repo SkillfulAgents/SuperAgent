@@ -70,6 +70,22 @@ describe('media generation result card', () => {
     expect(screen.getByTestId('media-call-status')).toHaveTextContent('Failed')
   })
 
+  it('shows the terminal status and reason when a prediction was aborted', () => {
+    expanded(POLL, '{"status":"aborted","error":"Deadline exceeded before starting"}', true)
+    expect(screen.getByTestId('media-call-status')).toHaveTextContent('Aborted')
+    expect(screen.getByTestId('media-call-status')).toHaveClass('text-red-700')
+    expect(screen.getByText('Deadline exceeded before starting')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['transcript chunks', ['Some', ' transcript text']],
+    ['OCR with an image', { text: 'Some OCR text', visualizations: ['https://replicate.delivery/page.png'] }],
+  ])('preserves %s in the expanded result', (_case, output) => {
+    expanded(POLL, JSON.stringify({ status: 'succeeded', output }))
+    expect(screen.getByTestId('bash-terminal')).toHaveTextContent(JSON.stringify(output))
+    expect(screen.queryByTestId('media-call')).toBeNull()
+  })
+
   it.each([
     ['errored', 'curl: (6) Could not resolve host', true],
     ['proved nothing', '"p1"', false],

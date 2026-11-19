@@ -43,10 +43,11 @@ itself important.
 - `exa.md`
 - `in-app-links.md`
 
-`session-history.md` is the one guide with executable companions: the two
-readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the
-guide's flags and the scripts' argument parsers in step —
-`src/session-history-scripts.test.ts` exercises the scripts, not the prose.
+`session-history.md` uses the two readers installed under `/opt/gamut/bin/`.
+Keep the guide's flags and the scripts' argument parsers in step. Their tests
+live in `src/session-history-scripts.test.ts`.
+`media-generation.md` uses `/app/dist/scripts/media-output.js` to save the
+files declared by a model's output schema.
 
 Dashboard guidance is not here — it lives in the `dashboards` skill
 (`agent-container/plugin/skills/dashboards/`), which the agent already discovers
