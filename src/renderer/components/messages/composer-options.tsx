@@ -15,6 +15,7 @@ import { useModelAvailabilityAction } from '@renderer/context/model-availability
 import { announceModelFallback } from '@renderer/lib/model-fallback-notice'
 import type { ModelLock } from './model-family-list'
 import { clampEffortForDisplay } from '@shared/lib/container/runtime-options'
+import { useOptionalDraftsStore } from '@renderer/context/drafts-context'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -126,10 +127,17 @@ export interface UseComposerOptionsArgs {
   followDefaults?: boolean
   /** Offer only this connection: its models, and its own default when the pick cannot run. */
   onlyLlmProviderId?: string
+  /**
+   * The composer's draft key. What the person picks is kept there until it is
+   * sent (`markSubmitted`), so it survives the composer unmounting, and comes
+   * back as a pick. Only a pick is ever kept: an adopted default or a
+   * session's own value is not, and the server still resolves those.
+   */
+  draftKey?: string
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
-  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false, onlyLlmProviderId } = args
+  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false, onlyLlmProviderId, draftKey } = args
   const {
     effort: initialEffort,
     speed: initialSpeed,
@@ -147,14 +155,24 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // admin-gated full settings (which would leave them an empty catalog).
   const { data: settings } = useModelSettings()
 
+  // ---- Kept picks ----
+  // Read once, when the composer mounts: each knob the draft holds starts out
+  // as the pick it was (seeded and dirty), ahead of `initial`.
+  const draftsStore = useOptionalDraftsStore()
+  const [kept] = useState<RuntimeOptions | undefined>(() => (draftKey ? draftsStore?.get(draftKey)?.options : undefined))
+  const keepPicks = useCallback((picks: RuntimeOptions) => {
+    if (!draftKey || !draftsStore) return
+    draftsStore.update(draftKey, { options: { ...draftsStore.get(draftKey)?.options, ...picks } })
+  }, [draftKey, draftsStore])
+
   const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialLlmProviderId)
-  const [llmProviderId, setLlmProviderId] = useState<string | undefined>(initialLlmProviderId ?? undefined)
-  const connectionDirty = useRef(false)
+  const [llmProviderId, setLlmProviderId] = useState<string | undefined>(kept?.llmProviderId ?? initialLlmProviderId ?? undefined)
+  const connectionDirty = useRef(kept?.llmProviderId != null)
   const connections = useMemo(
     () => (connectionData?.connections ?? []).filter((c) => !onlyLlmProviderId || c.id === onlyLlmProviderId),
     [connectionData, onlyLlmProviderId],
   )
-  const [model, setModelState] = useState<string | undefined>(initialModel)
+  const [model, setModelState] = useState<string | undefined>(kept?.model ?? initialModel)
   const legacyLlmProviderId = connectionData?.legacyLlmProviderId
   const currentSelection = resolveSelection(initialModel && initialLlmProviderId !== null ? { model: initialModel, llmProviderId: initialLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
   const agentSelection = resolveSelection(agentDefaultModel && agentDefaultLlmProviderId !== null ? { model: agentDefaultModel, llmProviderId: agentDefaultLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
@@ -196,10 +214,10 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [initialLlmProviderId, agentKey])
 
   // ---- Effort ----
-  const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
-  const effortSeededRef = useRef(initialEffort !== undefined)
+  const [effort, setEffortState] = useState<EffortLevel>(kept?.effort ?? initialEffort ?? DEFAULT_EFFORT)
+  const effortSeededRef = useRef(initialEffort !== undefined || kept?.effort !== undefined)
   const lastInitialEffortRef = useRef(initialEffort)
-  const effortDirtyRef = useRef(false)
+  const effortDirtyRef = useRef(kept?.effort !== undefined)
   useEffect(() => {
     if (lastInitialEffortRef.current === initialEffort) return
     lastInitialEffortRef.current = initialEffort
@@ -215,13 +233,14 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     effortSeededRef.current = true
     effortDirtyRef.current = true
     setEffortState(e)
-  }, [])
+    keepPicks({ effort: e })
+  }, [keepPicks])
 
   // ---- Speed ---- (same seeding/locking shape as effort)
-  const [speed, setSpeedState] = useState<SpeedLevel>(initialSpeed ?? DEFAULT_SPEED)
-  const speedSeededRef = useRef(initialSpeed !== undefined)
+  const [speed, setSpeedState] = useState<SpeedLevel>(kept?.speed ?? initialSpeed ?? DEFAULT_SPEED)
+  const speedSeededRef = useRef(initialSpeed !== undefined || kept?.speed !== undefined)
   const lastInitialSpeedRef = useRef(initialSpeed)
-  const speedDirtyRef = useRef(false)
+  const speedDirtyRef = useRef(kept?.speed !== undefined)
   useEffect(() => {
     if (lastInitialSpeedRef.current === initialSpeed) return
     lastInitialSpeedRef.current = initialSpeed
@@ -234,7 +253,8 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     speedSeededRef.current = true
     speedDirtyRef.current = true
     setSpeedState(sp)
-  }, [])
+    keepPicks({ speed: sp })
+  }, [keepPicks])
 
   // ---- Catalog from active provider ----
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
@@ -256,14 +276,14 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   )
 
   // ---- Model ----
-  const modelSeededRef = useRef(initialModel !== undefined)
+  const modelSeededRef = useRef(initialModel !== undefined || kept?.model !== undefined)
   // `initialModel` is authoritative session state, but the first render may
   // contain a stale React Query cache entry while a background refetch is in
   // flight. Track every distinct value rather than treating the first one as
   // final. The only thing allowed to beat a newer session value is an explicit
   // user pick that has not been accepted by the server yet.
   const lastInitialModelRef = useRef(initialModel)
-  const modelDirtyRef = useRef(false)
+  const modelDirtyRef = useRef(kept?.model !== undefined)
   useEffect(() => {
     if (lastInitialModelRef.current === initialModel) return
     lastInitialModelRef.current = initialModel
@@ -280,14 +300,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setLlmProviderId(effectiveLlmProviderId)
     }
     setModelState(m)
-  }, [effectiveLlmProviderId])
+    keepPicks({ model: m, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) })
+  }, [effectiveLlmProviderId, keepPicks])
 
   useEffect(() => {
     if (modelDirtyRef.current && !llmProviderId && inheritedLlmProviderId) {
       connectionDirty.current = true
       setLlmProviderId(inheritedLlmProviderId)
+      keepPicks({ llmProviderId: inheritedLlmProviderId })
     }
-  }, [llmProviderId, inheritedLlmProviderId])
+  }, [llmProviderId, inheritedLlmProviderId, keepPicks])
 
   const setConnection = useCallback((id: string) => {
     const next = connections.find(c => c.id === id)
@@ -297,11 +319,34 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     modelSeededRef.current = true
     modelDirtyRef.current = true
     setModelState(next.defaultModel)
-  }, [connections])
+    keepPicks({ model: next.defaultModel, llmProviderId: id })
+  }, [connections, keepPicks])
+
+  // What goes on the wire as the connection. Until the connections have loaded
+  // nothing can be checked against them, so a connection the person picked (it
+  // can only be one that came back with the draft) is sent as picked, with its
+  // model, rather than left out for the server to pair that model with the
+  // session's connection. The server checks it either way.
+  const sentLlmProviderId = effectiveLlmProviderId ?? (connectionData === undefined && connectionDirty.current ? llmProviderId : undefined)
 
   const markSubmitted = useCallback(
     (options: RuntimeOptions) => {
-      if (options.llmProviderId === effectiveLlmProviderId) connectionDirty.current = false
+      // The kept picks were what this send was for. Each goes unless it is no
+      // longer the one this composer held: a send can outlast its composer
+      // (leave, come back, pick again), and it must not take the newer pick.
+      const stored = draftKey ? draftsStore?.get(draftKey)?.options : undefined
+      if (stored) {
+        const held: RuntimeOptions = { model, llmProviderId, effort, speed }
+        const sent = (key: keyof RuntimeOptions) => options[key] !== undefined && stored[key] === held[key]
+        keepPicks({
+          ...(sent('effort') ? { effort: undefined } : {}),
+          ...(sent('speed') ? { speed: undefined } : {}),
+          // A model and its connection are one pick, and a model that could not
+          // run went out as another: either way it has been sent.
+          ...(sent('model') ? { model: undefined, ...(stored.llmProviderId === held.llmProviderId ? { llmProviderId: undefined } : {}) } : {}),
+        })
+      }
+      if (options.llmProviderId === sentLlmProviderId) connectionDirty.current = false
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,
       // but the equality check keeps this helper correct for other callers.
@@ -315,7 +360,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
         modelDirtyRef.current = false
       }
     },
-    [effort, speed, model, effectiveLlmProviderId],
+    [effort, speed, model, llmProviderId, sentLlmProviderId, draftKey, draftsStore, keepPicks],
   )
 
   // ---- Default adoption ----
@@ -425,9 +470,9 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
       // An untouched new chat sends nothing: the server walks the same list.
-      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
+      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(sentLlmProviderId ? { llmProviderId: sentLlmProviderId } : {}) } : {}),
     }),
-    [effort, speed, displayedModel, effectiveLlmProviderId],
+    [effort, speed, displayedModel, sentLlmProviderId],
   )
 
   return useMemo(

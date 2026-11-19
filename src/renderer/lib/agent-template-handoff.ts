@@ -2,7 +2,7 @@ import type { DraftsStore } from '@renderer/context/drafts-context'
 import { seedAgentTemplatePrompt } from '@renderer/context/drafts-context'
 
 interface CompleteAgentTemplateHandoffOptions {
-  draftsStore: Pick<DraftsStore, 'set'>
+  draftsStore: Pick<DraftsStore, 'update'>
   agentSlug: string
   hasOnboarding?: boolean
   templatePrompt?: string

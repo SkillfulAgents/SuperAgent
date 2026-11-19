@@ -28,8 +28,7 @@ import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agen
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
-import type { NewSessionCarryover } from '@renderer/lib/new-session-carryover'
-import { agentHomeId } from '@renderer/context/drafts-context'
+import { agentHomeDraftKey, agentHomeId } from '@renderer/context/drafts-context'
 
 /** What the rest of Agent Home asks of its composer, without holding any of its state. */
 export interface AgentHomeComposerHandle {
@@ -46,7 +45,6 @@ interface AgentHomeComposerProps {
   /** An untitled agent with no sessions yet: the typewriter placeholder and the "Create Agent" button. */
   isFreshUntitled: boolean
   isRuntimeReady: boolean
-  carryover: NewSessionCarryover | undefined
   onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => void
 }
 
@@ -56,7 +54,7 @@ interface AgentHomeComposerProps {
  * and not the page around it: the side panel, the sessions, the title row, the backdrop.
  */
 export const AgentHomeComposer = forwardRef<AgentHomeComposerHandle, AgentHomeComposerProps>(function AgentHomeComposer(
-  { agent, isFreshUntitled, isRuntimeReady, carryover, onSessionCreated },
+  { agent, isFreshUntitled, isRuntimeReady, onSessionCreated },
   ref,
 ) {
   useRenderTracker('AgentHomeComposer')
@@ -73,9 +71,8 @@ export const AgentHomeComposer = forwardRef<AgentHomeComposerHandle, AgentHomeCo
 
   const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
-    draftKey: `session:${agentHomeId(agent.slug)}`,
-    initialAttachments: carryover?.attachments,
-    initialOptions: { model: carryover?.model, effort: carryover?.effort, speed: carryover?.speed },
+    // The agent's home draft: the file drawer adds comments to it, and a stale session's "start fresh" moves its own here.
+    draftKey: agentHomeDraftKey(agent.slug),
     // The default-model card sits next to this composer; untouched selections track its edits.
     followDefaults: true,
     submitDisabled: !isRuntimeReady,
@@ -129,12 +126,14 @@ export const AgentHomeComposer = forwardRef<AgentHomeComposerHandle, AgentHomeCo
     // Audio output is unlocked here, inside the click, for the reply to use.
     readAloud.unlockAudio()
     try {
+      const runtimeOptions = composerOptions.toRuntimeOptions()
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: VOICE_MODE_ENTERED_MESSAGE,
         inputMode: 'voice',
-        ...composerOptions.toRuntimeOptions(),
+        ...runtimeOptions,
       })
+      composerOptions.markSubmitted(runtimeOptions)
       onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
       track('voice_mode_entered', { origin })
     } catch (error) {

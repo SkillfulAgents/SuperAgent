@@ -16,8 +16,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import type { ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
 import { registerSessionComposerFocus } from '@renderer/components/messages/composer-focus'
-import { agentHomeId } from '@renderer/context/drafts-context'
-import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
+import { agentHomeDraftKey, agentHomeId } from '@renderer/context/drafts-context'
 
 /** The card's exit (its `duration-200` in attachment-preview.tsx), and a frame to land. A timer, as reduced motion plays none. */
 const CARD_EXIT_MS = 200 + 50
@@ -41,14 +40,11 @@ export function TeamBrainHomeComposer({ agent, reference, onDismissReference, on
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
 
-  // The agent's home composer, as on its Agent Home: the page's file drawer submits comments here, and a stale
-  // session's "start fresh" hands over its attachments and options with its text.
-  const carryover = useNewSessionCarryover(agent.slug)
+  // The agent's home composer, as on its Agent Home, and so the same draft: the page's file drawer submits comments
+  // to it, and a stale session's "start fresh" moves its text, files and options into it.
   const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
-    draftKey: `session:${agentHomeId(agent.slug)}`,
-    initialAttachments: carryover?.attachments,
-    initialOptions: { model: carryover?.model, effort: carryover?.effort, speed: carryover?.speed },
+    draftKey: agentHomeDraftKey(agent.slug),
     references: reference ? [reference] : undefined,
     submitDisabled: !isRuntimeReady,
     agentRuntimeErrorsShownInline: true,

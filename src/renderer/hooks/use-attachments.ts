@@ -12,6 +12,7 @@ function revokePreview(preview: string | undefined) {
 
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
+  /** The chips to start with, as they were kept: a composer's draft, upload state included. */
   initialAttachments?: Attachment[]
   onAttachmentsAdded?: (added: Attachment[]) => void
 }
@@ -19,16 +20,9 @@ interface UseAttachmentsOptions {
 export type UploadPatch = { upload?: UploadState; error?: string; errorRetryable?: boolean; preview?: string }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
-  // Carried-over chips (stale-session → agent home) always re-upload: their
-  // paths belong to the composer that uploaded them.
-  const [attachments, setAttachments] = useState<Attachment[]>(() =>
-    (options?.initialAttachments ?? []).map((attachment) => {
-      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined, errorRetryable: undefined }
-      return stripped.type === 'file' && stripped.file.type.startsWith('image/') && !requiresImagePreviewConversion(stripped.file.name) && !stripped.preview
-        ? { ...stripped, preview: URL.createObjectURL(stripped.file) }
-        : stripped
-    }),
-  )
+  const [attachments, setAttachments] = useState<Attachment[]>(() => options?.initialAttachments ?? [])
+  const attachmentsRef = useRef(attachments)
+  attachmentsRef.current = attachments
   const [isDragOver, setIsDragOver] = useState(false)
   const onAddedRef = useRef(options?.onAttachmentsAdded)
   onAddedRef.current = options?.onAttachmentsAdded
@@ -118,14 +112,27 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     })
   }, [])
 
-  // Cleanup object URLs on unmount
+  // A chip this starts with has no object URL (a draft does not keep one), so
+  // its picture is made here, and every one held is revoked on unmount. In an
+  // effect, not while rendering: StrictMode runs the cleanup once before the
+  // real mount, and the second setup has to make a live URL again.
   useEffect(() => {
-    return () => {
-      attachments.forEach((a) => {
-        if (a.type === 'file') revokePreview(a.preview)
-      })
+    const made = new Map<string, string>()
+    for (const a of attachmentsRef.current) {
+      if (a.type !== 'file' || !a.file.type.startsWith('image/') || requiresImagePreviewConversion(a.file.name)) continue
+      if (!a.preview || a.preview.startsWith('blob:')) made.set(a.id, URL.createObjectURL(a.file))
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (made.size > 0) {
+      setAttachments((prev) => prev.map((a) => {
+        const preview = made.get(a.id)
+        return preview && a.type === 'file' ? { ...a, preview } : a
+      }))
+    }
+    return () => {
+      const held = new Set(made.values())
+      for (const a of attachmentsRef.current) if (a.type === 'file' && a.preview) held.add(a.preview)
+      held.forEach(revokePreview)
+    }
   }, [])
 
   const addItems = useCallback(({ files, folders }: DataTransferResult) => {

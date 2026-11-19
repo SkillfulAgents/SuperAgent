@@ -7,10 +7,10 @@ import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
 import { StopSessionButton } from './stop-session-button'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE, VOICE_MODE_ENTERED_MARKER } from '@shared/lib/voice/voice-mode-messages'
 import { renderWithProviders } from '@renderer/test/test-utils'
-import { useDraft } from '@renderer/context/drafts-context'
+import { useDraftText, useDraftsStore, type DraftsStore } from '@renderer/context/drafts-context'
 import { useEffect, useState, useRef } from 'react'
 import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
-import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
+import { setPendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 
@@ -946,30 +946,46 @@ describe('MessageInput', () => {
     expect(input.textContent).toBe(key)
   })
 
-  it('registers a getter for the live composer and deregisters on unmount', async () => {
+  it('registers its part in handing the draft over, and deregisters on unmount', async () => {
     const user = userEvent.setup()
-    const registerSnapshot = vi.fn()
+    const registerDraftHandOver = vi.fn()
+    let store!: DraftsStore
+    function StoreProbe() {
+      store = useDraftsStore()
+      return null
+    }
     const { unmount } = renderWithProviders(
-      <MessageInput
-        sessionId="s-1"
-        agentSlug="agent-1"
-        initialRuntimeOptions={{ model: 'sonnet', effort: 'high' }}
-        registerSnapshot={registerSnapshot}
-      />,
+      <>
+        <StoreProbe />
+        <MessageInput
+          sessionId="s-1"
+          agentSlug="agent-1"
+          initialRuntimeOptions={{ model: 'sonnet', effort: 'high' }}
+          registerDraftHandOver={registerDraftHandOver}
+        />
+      </>,
     )
 
-    const getSnapshot = registerSnapshot.mock.calls.find(([value]) => typeof value === 'function')?.[0]
-    expect(getSnapshot).toEqual(expect.any(Function))
+    const handOver = registerDraftHandOver.mock.calls.find(([value]) => typeof value === 'function')?.[0]
+    expect(handOver).toEqual(expect.any(Function))
     await user.type(screen.getByTestId('message-input'), 'Move this draft')
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('effort-option-low'))
+    // The draft itself is in the store, where Start Fresh moves it from.
+    expect(store.get('session:s-1')).toEqual({ text: 'Move this draft', options: { effort: 'low' } })
 
-    expect(getSnapshot()).toMatchObject({
-      text: 'Move this draft',
-      attachments: [],
-      model: 'sonnet',
-      effort: 'high',
-    })
+    // What the session runs on and what the person picked; the speed was never set, so it is not carried.
+    const carried = handOver()
+    expect(carried).toMatchObject({ model: 'sonnet', effort: 'low' })
+    expect(carried).not.toHaveProperty('speed')
+
+    // From the hand-over on, this composer no longer keeps the draft it gave away.
+    act(() => store.set('session:s-1', undefined))
+    await user.type(screen.getByTestId('message-input'), ' more')
+    expect(store.get('session:s-1')).toBeUndefined()
+
     unmount()
-    expect(registerSnapshot).toHaveBeenLastCalledWith(null)
+    expect(registerDraftHandOver).toHaveBeenLastCalledWith(null)
   })
 
   it('submits message on send button click', async () => {
@@ -1640,14 +1656,14 @@ describe('MessageInput', () => {
   describe('draft persistence', () => {
     /** Writes the given value to the session draft key and self-unmounts. */
     function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
-      const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+      const [, setDraft] = useDraftText(`session:${sessionId}`)
       useEffect(() => { setDraft(value) }, [setDraft, value])
       return null
     }
 
     function AttachmentDropSeeder({ sessionId, value }: { sessionId: string; value: DataTransferResult }) {
-      const [, setPending] = useDraft<PendingAttachmentDrop>(pendingAttachmentDropKey(`session:${sessionId}`))
-      useEffect(() => { setPending({ items: value, droppedAt: Date.now() }) }, [setPending, value])
+      const store = useDraftsStore()
+      useEffect(() => { setPendingAttachmentDrop(store, `session:${sessionId}`, value) }, [store, sessionId, value])
       return null
     }
 
@@ -1715,6 +1731,159 @@ describe('MessageInput', () => {
       })
     })
 
+    // SUP-1142: switching sessions remounts the composer (the route keys the session view on the session).
+    it('brings an uploaded file back with its text after switching sessions, without uploading it again', async () => {
+      const user = userEvent.setup()
+      const file = new File(['draft attachment'], 'draft.txt', { type: 'text/plain' })
+      const { container, rerender } = renderWithProviders(
+        <MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />
+      )
+
+      await user.type(screen.getByTestId('message-input'), 'draft for A')
+      await user.upload(container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!, file)
+      await waitFor(() => {
+        expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
+      })
+
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" />)
+      expect(screen.getByTestId('message-input').textContent).toBe('')
+      expect(screen.queryByTestId('attachment-preview')).not.toBeInTheDocument()
+
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />)
+      expect(screen.getByTestId('message-input').textContent).toBe('draft for A')
+      expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-name', 'draft.txt')
+      expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
+
+      await user.click(screen.getByTestId('send-button'))
+      await waitFor(() => {
+        expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: 's-A',
+          content: expect.stringContaining('/tmp/file'),
+        }))
+      })
+      expect(mockUploadFile.mutateAsync).toHaveBeenCalledTimes(1)
+
+      // Sent, so there is nothing to bring back the next time.
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" />)
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('attachment-preview')).not.toBeInTheDocument()
+    })
+
+    it('starts over an upload that leaving the session cut short', async () => {
+      const user = userEvent.setup()
+      let finish!: (value: { path: string }) => void
+      mockUploadFile.mutateAsync.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+      const { container, rerender } = renderWithProviders(
+        <MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />
+      )
+      await user.upload(
+        container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!,
+        new File(['x'], 'slow.txt', { type: 'text/plain' }),
+      )
+      await waitFor(() => expect(mockUploadFile.mutateAsync).toHaveBeenCalledTimes(1))
+
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" />)
+      // The request the first composer made answers into nothing.
+      await act(async () => finish({ path: '/tmp/stale' }))
+
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />)
+      await waitFor(() => {
+        expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
+      })
+      expect(mockUploadFile.mutateAsync).toHaveBeenCalledTimes(2)
+    })
+
+    it('brings an unsent model pick back after switching sessions, to that session only, until it is sent', async () => {
+      const user = userEvent.setup()
+      const { rerender } = renderWithProviders(
+        <MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" initialRuntimeOptions={{ model: 'opus' }} />
+      )
+
+      await user.click(screen.getByTestId('composer-options-trigger'))
+      await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
+
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" initialRuntimeOptions={{ model: 'opus' }} />)
+      expect(screen.getByTestId('composer-options-trigger')).not.toHaveTextContent('Haiku')
+
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" initialRuntimeOptions={{ model: 'opus' }} />)
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
+
+      await user.type(screen.getByTestId('message-input'), 'Use the pick')
+      await user.keyboard('{Enter}')
+      await waitFor(() => {
+        expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-haiku-4-5' }))
+      })
+
+      // Sent: the session's own model is what the composer shows from here, and another window may have changed it.
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" initialRuntimeOptions={{ model: 'opus' }} />)
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" initialRuntimeOptions={{ model: 'sonnet' }} />)
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet')
+    })
+
+    it('does not bring a new session’s sent pick back into the next new session', async () => {
+      const user = userEvent.setup()
+      const onSessionCreated = vi.fn()
+      const { rerender } = renderWithProviders(
+        <MessageInput key="new-1" sessionId={null} agentSlug="agent-1" onSessionCreated={onSessionCreated} />
+      )
+      await user.click(screen.getByTestId('composer-options-trigger'))
+      await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
+
+      // Unsent, it is the new session's draft like its text.
+      rerender(<MessageInput key="new-2" sessionId={null} agentSlug="agent-1" onSessionCreated={onSessionCreated} />)
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
+
+      await user.type(screen.getByTestId('message-input'), 'Start with Haiku{Enter}')
+      await waitFor(() => expect(onSessionCreated).toHaveBeenCalled())
+      expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-haiku-4-5' }))
+
+      rerender(<MessageInput key="new-3" sessionId={null} agentSlug="agent-1" onSessionCreated={onSessionCreated} />)
+      expect(screen.getByTestId('composer-options-trigger')).not.toHaveTextContent('Haiku')
+    })
+
+    it('leaves no draft behind, under either key, when the view adopts the session its first send created', async () => {
+      const user = userEvent.setup()
+      let store!: DraftsStore
+      // The session view as the route keeps it: the same composer, now with the new session's id.
+      function Shell() {
+        store = useDraftsStore()
+        const [sessionId, setSessionId] = useState<string | null>(null)
+        return <MessageInput sessionId={sessionId} agentSlug="agent-1" onSessionCreated={(id) => setSessionId(id)} />
+      }
+      const { container } = renderWithProviders(<Shell />)
+
+      await user.type(screen.getByTestId('message-input'), 'First message')
+      await user.upload(
+        container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!,
+        new File(['x'], 'first.txt', { type: 'text/plain' }),
+      )
+      await waitFor(() => {
+        expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
+      })
+      await user.click(screen.getByTestId('composer-options-trigger'))
+      await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
+      await user.keyboard('{Escape}')
+      expect(store.get('new-session:agent-1')).toMatchObject({
+        text: 'First message',
+        attachments: [{ id: expect.any(String) }],
+        options: { model: 'claude-haiku-4-5' },
+      })
+
+      await user.click(screen.getByTestId('send-button'))
+      await waitFor(() => expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('/tmp/file'),
+        model: 'claude-haiku-4-5',
+      })))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input').textContent).toBe('')
+        expect(screen.queryByTestId('attachment-preview')).not.toBeInTheDocument()
+      })
+      expect(store.get('new-session:agent-1')).toBeUndefined()
+      expect(store.get('session:new-123')).toBeUndefined()
+    })
+
     it('clears the stored draft after sending', async () => {
       const user = userEvent.setup()
       const { rerender } = renderWithProviders(
@@ -1736,7 +1905,7 @@ describe('MessageInput', () => {
 
     it('reflects externally-injected drafts (file comments, restored messages) into the input', async () => {
       function DraftWriter({ sessionId, value }: { sessionId: string; value: string | null }) {
-        const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+        const [, setDraft] = useDraftText(`session:${sessionId}`)
         useEffect(() => {
           if (value !== null) setDraft(value)
         }, [setDraft, value])
@@ -1768,7 +1937,7 @@ describe('MessageInput', () => {
 
   describe('mentions', () => {
     function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
-      const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+      const [, setDraft] = useDraftText(`session:${sessionId}`)
       useEffect(() => { setDraft(value) }, [setDraft, value])
       return null
     }

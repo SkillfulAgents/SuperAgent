@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act, render as renderUi, screen } from '@testing-library/react'
-import { useComposerOptions, type ComposerOptionsState, type UseComposerOptionsArgs } from './composer-options'
+import { DraftsProvider, useDraftsStore, type DraftsStore } from '@renderer/context/drafts-context'
+import { useComposerOptions, type ComposerOptionsController, type ComposerOptionsState, type UseComposerOptionsArgs } from './composer-options'
 import { ComposerOptionsPopover } from './composer-options-popover'
 
 // No provider locks a model here (model locks have their own tests).
@@ -391,5 +392,174 @@ describe('effort the selected model cannot run', () => {
     renderUi(<Composer onState={(s) => { composer = s }} />)
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('DeepSeek Flash · Low')
     expect(composer?.toRuntimeOptions()).not.toHaveProperty('effort')
+  })
+})
+
+/** The hook under one long-lived provider, so a test can unmount just the composer and mount it again. */
+function renderDrafted(initialProps: UseComposerOptionsArgs) {
+  const latest: { options?: ComposerOptionsController; store?: DraftsStore } = {}
+  function Probe({ props }: { props: UseComposerOptionsArgs }) {
+    latest.options = useComposerOptions(props)
+    latest.store = useDraftsStore()
+    return null
+  }
+  let mount = 0
+  const tree = (props: UseComposerOptionsArgs) => <DraftsProvider><Probe key={mount} props={props} /></DraftsProvider>
+  const view = renderUi(tree(initialProps))
+  return {
+    latest: latest as Required<typeof latest>,
+    rerender: (props: UseComposerOptionsArgs) => view.rerender(tree(props)),
+    remount: (props: UseComposerOptionsArgs = initialProps) => {
+      mount += 1
+      view.rerender(tree(props))
+    },
+  }
+}
+
+describe('picks kept with the composer draft', () => {
+  const KEY = 'session:s-1'
+  const sessionArgs: UseComposerOptionsArgs = { initial: { model: 'opus', effort: 'medium' }, agentKey: 'a', agentDefaultsReady: true, draftKey: KEY }
+  const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+  const global = { id: 'global', defaultModel: 'same', catalog: [model('same'), model('global-default')] }
+  const personal = { id: 'personal', defaultModel: 'same', catalog: [model('same')] }
+  const bothConnections = { connections: [global, personal], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+  const accountArgs: UseComposerOptionsArgs = { initial: { llmProviderId: 'global', model: 'same' }, draftKey: KEY }
+  beforeEach(() => { state.settings = LOADED_SETTINGS })
+
+  it('brings unsent picks back when the composer mounts again, and still sends them', () => {
+    const { latest, remount } = renderDrafted(sessionArgs)
+    act(() => {
+      latest.options.setModel('haiku')
+      latest.options.setEffort('high')
+      latest.options.setSpeed('fast')
+    })
+    expect(latest.store.get(KEY)).toEqual({ options: { model: 'haiku', effort: 'high', speed: 'fast' } })
+
+    remount()
+
+    expect(latest.options.model).toBe('haiku')
+    expect(latest.options.effort).toBe('high')
+    expect(latest.options.speed).toBe('fast')
+    expect(latest.options.toRuntimeOptions()).toEqual({ model: 'haiku', effort: 'high', speed: 'fast' })
+  })
+
+  it('keeps a pick that came back ahead of a later session refetch, like one made in place', () => {
+    const { latest, remount, rerender } = renderDrafted(sessionArgs)
+    act(() => latest.options.setModel('haiku'))
+    remount()
+    rerender({ ...sessionArgs, initial: { model: 'sonnet', effort: 'medium' } })
+    expect(latest.options.model).toBe('haiku')
+  })
+
+  it('never keeps what the session runs on or a default it adopted, only a pick', () => {
+    const { latest, rerender } = renderDrafted({ ...sessionArgs, agentDefault: { model: 'sonnet', speed: 'fast' } })
+    rerender({ ...sessionArgs, initial: { model: 'haiku', effort: 'high' }, agentDefault: { model: 'sonnet', speed: 'fast' } })
+    expect(latest.store.get(KEY)).toBeUndefined()
+
+    // A new chat with nothing picked sends nothing, so the server resolves the defaults; the draft holds nothing either.
+    const fresh = renderDrafted({ agentKey: 'a', agentDefault: { model: 'haiku', effort: 'high' }, agentDefaultsReady: true, draftKey: 'new-session:a' })
+    expect(fresh.latest.options.model).toBe('haiku')
+    expect(fresh.latest.options.toRuntimeOptions()).toEqual({})
+    expect(fresh.latest.store.get('new-session:a')).toBeUndefined()
+  })
+
+  it('keeps nothing without a draft key, and needs no drafts provider then', () => {
+    const { result } = render({ initial: { model: 'opus' } })
+    act(() => result.current.setModel('haiku'))
+    act(() => result.current.markSubmitted({ model: 'haiku' }))
+    expect(result.current.model).toBe('haiku')
+  })
+
+  it('lets go of a pick once the server has accepted it, knob by knob', () => {
+    const { latest, remount } = renderDrafted(sessionArgs)
+    act(() => {
+      latest.options.setModel('haiku')
+      latest.options.setSpeed('fast')
+    })
+    // A queued message carries no options, so nothing was accepted.
+    act(() => latest.options.markSubmitted({}))
+    expect(latest.store.get(KEY)).toEqual({ options: { model: 'haiku', speed: 'fast' } })
+
+    act(() => latest.options.markSubmitted({ model: 'haiku' }))
+    expect(latest.store.get(KEY)).toEqual({ options: { speed: 'fast' } })
+    act(() => latest.options.markSubmitted(latest.options.toRuntimeOptions()))
+    expect(latest.store.get(KEY)).toBeUndefined()
+
+    // From here the session's own model is the authority again.
+    remount({ ...sessionArgs, initial: { model: 'sonnet', effort: 'medium' } })
+    expect(latest.options.model).toBe('sonnet')
+  })
+
+  it('brings a connection pick back with its model, and falls back when that connection has gone meanwhile', () => {
+    state.connections = bothConnections
+    const { latest, remount } = renderDrafted(accountArgs)
+    act(() => latest.options.setConnection?.('personal'))
+    expect(latest.store.get(KEY)).toEqual({ options: { llmProviderId: 'personal', model: 'same' } })
+
+    remount()
+    expect(latest.options.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+
+    state.connections = { connections: [global], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    remount()
+    const sent = latest.options.toRuntimeOptions()
+    // The pair is checked as one: the gone connection's model is not charged to another that happens to have it.
+    expect(sent).toMatchObject({ llmProviderId: 'global', model: 'same' })
+
+    // What the pick resolved to was sent, so the pick that could not run is not left behind.
+    act(() => latest.options.markSubmitted(sent))
+    expect(latest.store.get(KEY)).toBeUndefined()
+  })
+
+  it('sends a connection that came back with its model while the connections are still loading', () => {
+    state.connections = bothConnections
+    const { latest, remount } = renderDrafted(accountArgs)
+    act(() => latest.options.setConnection?.('personal'))
+
+    // Back in the session before the connections query has answered.
+    state.connections = undefined
+    remount()
+
+    // Not the model alone, which the server would run on the session's connection.
+    const sent = latest.options.toRuntimeOptions()
+    expect(sent).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+    act(() => latest.options.markSubmitted(sent))
+    expect(latest.store.get(KEY)).toBeUndefined()
+  })
+
+  it('does not let an earlier send, finishing late, take a pick made since', () => {
+    const { latest, remount } = renderDrafted(sessionArgs)
+    act(() => {
+      latest.options.setModel('haiku')
+      latest.options.setEffort('high')
+      latest.options.setSpeed('fast')
+    })
+    const sentFrom = latest.options
+    const sent = sentFrom.toRuntimeOptions()
+
+    // Leave and come back while that send is in flight, then pick again.
+    remount()
+    act(() => {
+      latest.options.setModel('sonnet')
+      latest.options.setEffort('low')
+      latest.options.setSpeed('normal')
+    })
+    act(() => sentFrom.markSubmitted(sent))
+
+    expect(latest.store.get(KEY)?.options).toEqual({ model: 'sonnet', effort: 'low', speed: 'normal' })
+  })
+
+  it('does not let an earlier send take a connection picked since', () => {
+    state.connections = bothConnections
+    const { latest, remount } = renderDrafted(accountArgs)
+    act(() => latest.options.setConnection?.('personal'))
+    const sentFrom = latest.options
+    const sent = sentFrom.toRuntimeOptions()
+
+    remount()
+    act(() => latest.options.setModel('global-default'))
+    act(() => latest.options.setConnection?.('global'))
+    act(() => sentFrom.markSubmitted(sent))
+
+    expect(latest.store.get(KEY)?.options).toMatchObject({ llmProviderId: 'global' })
   })
 })

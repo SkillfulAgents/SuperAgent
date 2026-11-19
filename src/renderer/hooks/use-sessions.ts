@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { RECENT_SESSIONS_LIMIT, recentSessionsKey, seedCreatedSessionInRecent, sessionTotalKey, writeFullListToRecent } from '@renderer/lib/agent-cache'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
+import { copyComposerDraft, sessionDraftKey, useDraftsStore } from '@renderer/context/drafts-context'
 import { useSendMessage } from '@renderer/hooks/use-messages'
 import { useResolvedAgentId, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches, removeSessionFromCaches } from '@renderer/lib/agent-cache'
@@ -424,7 +424,8 @@ export function useForkSession() {
       }
       return res.json() as Promise<ApiSession>
     },
-    onMutate: ({ sessionId }) => ({ draft: snapshotSessionDraft(draftsStore, sessionId) }),
+    // The source's draft as it is at the click: the fork's id does not exist until the request returns.
+    onMutate: ({ sessionId }) => ({ draft: draftsStore.get(sessionDraftKey(sessionId)) }),
     onError: (error) => {
       console.error('Failed to fork session:', error)
       track('session_fork_failed', { reason: error instanceof Error ? error.message : 'unknown' })
@@ -432,7 +433,7 @@ export function useForkSession() {
     onSuccess: (fork, variables, context) => {
       track('session_forked')
       queryClient.setQueryData(['session', fork.id, fork.agentSlug], fork)
-      seedSessionDraft(draftsStore, fork.id, context.draft)
+      copyComposerDraft(draftsStore, sessionDraftKey(fork.id), context.draft)
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
