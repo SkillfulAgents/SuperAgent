@@ -6,9 +6,12 @@ describe('requestConnectedAccountTool', () => {
 
   beforeEach(() => {
     originalAccounts = process.env.CONNECTED_ACCOUNTS
+    // What a host outside platform mode offers: no platform-only toolkits.
+    vi.stubEnv('CONNECTED_ACCOUNT_TOOLKITS', 'gmail,slack,github')
   })
 
   afterEach(() => {
+    vi.unstubAllEnvs()
     if (originalAccounts === undefined) {
       delete process.env.CONNECTED_ACCOUNTS
     } else {
@@ -76,9 +79,19 @@ describe('requestConnectedAccountTool', () => {
     expect(inputManager.hasPending(toolUseId)).toBe(false)
   })
 
-  it('rejects a platform toolkit outside platform mode', async () => {
+  it('rejects a toolkit the host does not offer this agent', async () => {
     const toolUseId = `ca-test-${Date.now()}-6`
     const result = await invokeTool(toolUseId, 'shopify')
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('search_connection_options')
+    expect(inputManager.hasPending(toolUseId)).toBe(false)
+  })
+
+  it('offers no toolkit when the host lists none', async () => {
+    vi.stubEnv('CONNECTED_ACCOUNT_TOOLKITS', '')
+    const toolUseId = `ca-test-${Date.now()}-7`
+    const result = await invokeTool(toolUseId, 'gmail')
 
     expect(result.isError).toBe(true)
     expect(inputManager.hasPending(toolUseId)).toBe(false)

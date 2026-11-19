@@ -38,7 +38,7 @@ export function createRequestRemoteMcpTool(getProcess: () => RemoteMcpInjectionT
 
 Use this when you need to interact with an MCP server that hasn't been configured for this agent yet. You should know the URL of the MCP server you want to connect to.
 
-Some servers cannot be connected by approving this request alone: the user must first register an OAuth app in the provider's own console and allowlist our callback URL. search_remote_mcp_services flags those servers. When one is flagged, say so before calling this tool, so the user knows the approval prompt will ask them for setup they have to do outside this session. The prompt itself shows them the exact steps and callback URL.
+Some servers cannot be connected by approving this request alone: the user must first register an OAuth app in the provider's own console and allowlist our callback URL. search_connection_options marks those servers [setup required]. When one is flagged, say so before calling this tool, so the user knows the approval prompt will ask them for setup they have to do outside this session. The prompt itself shows them the exact steps and callback URL.
 
 Never ask the user to paste a client secret into the chat. If they want you to look up a client_id in their provider console, do that with the browser tools and pass it as clientId — they can still edit it before connecting.`,
   {
