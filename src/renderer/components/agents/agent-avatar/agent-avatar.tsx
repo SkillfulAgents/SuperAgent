@@ -1,5 +1,5 @@
 import type { ApiAgent } from '@shared/lib/types/api'
-import { avatarSource, type AvatarSource } from './avatar-source'
+import { avatarSource, TEAM_BRAIN_AVATAR, type AvatarSource } from './avatar-source'
 import { OrbAvatar, type AvatarMotionState } from './orb-avatar'
 
 export type { AvatarMotionState } from './orb-avatar'
@@ -41,11 +41,13 @@ interface AvatarViewProps {
 }
 
 /**
- * An agent's persisted colour and shape. `state` drives motion (typing dots while
- * working, knocking while awaiting input, and so on). Decorative — status text
- * elsewhere carries the accessible status, since motion alone isn't one.
+ * An agent's persisted colour and shape, or Team Brain's own for its agent.
+ * `state` drives motion (typing dots while working, knocking while awaiting
+ * input, and so on). Decorative — status text elsewhere carries the
+ * accessible status, since motion alone isn't one.
  */
-export function AgentAvatar({ agent, ...rest }: { agent: Pick<ApiAgent, 'slug' | 'avatar'> } & AvatarViewProps) {
+export function AgentAvatar({ agent, ...rest }: { agent: Pick<ApiAgent, 'slug' | 'avatar' | 'teamBrain'> } & AvatarViewProps) {
+  if (agent.teamBrain) return <AvatarView source={TEAM_BRAIN_AVATAR} {...rest} />
   if (!agent.avatar) return null
   return <AvatarView source={avatarSource(agent.avatar)} restingPhi={orbRestingPhi(agent.slug)} {...rest} />
 }

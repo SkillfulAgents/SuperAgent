@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import { Bot } from 'lucide-react'
 import { useInviteCandidates } from '@renderer/hooks/use-invite-candidates'
 import type { AgentAvatar as AgentAvatarData } from '@shared/lib/types/agent-avatar'
+import type { ApiAgent } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
 import { apiFetch } from '@renderer/lib/api'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
@@ -18,7 +19,7 @@ export type MentionCandidate =
   | { kind: 'user'; id: string; name: string; email: string; image: string | null; hasAccess: boolean; notOnGamut?: boolean }
   /** Someone in a team directory with no account: picking them makes an invited one. */
   | { kind: 'directory'; directoryRef: { directoryId: string; remoteId: string }; name: string; email: string; image: string | null }
-  | { kind: 'agent'; slug: string; displaySlug: string; name: string; avatar?: AgentAvatarData | null }
+  | { kind: 'agent'; slug: string; displaySlug: string; name: string; avatar?: AgentAvatarData | null; teamBrain?: ApiAgent['teamBrain'] }
 
 const KIND_ORDER: Record<MentionCandidate['kind'], number> = { user: 0, directory: 1, agent: 2 }
 
@@ -75,7 +76,7 @@ function useMentionCandidates({ agentSlug = '', members, agents }: ChipContext, 
     for (const agent of agents?.values() ?? []) {
       if (agent.slug === agentSlug || agent.displaySlug === agentSlug) continue
       const score = rank(lowerQuery, agent.name, agent.displaySlug)
-      if (score !== null) ranked.push({ candidate: { kind: 'agent', slug: agent.slug, displaySlug: agent.displaySlug, name: agent.name, avatar: agent.avatar }, rank: score })
+      if (score !== null) ranked.push({ candidate: { kind: 'agent', slug: agent.slug, displaySlug: agent.displaySlug, name: agent.name, avatar: agent.avatar, teamBrain: agent.teamBrain }, rank: score })
     }
     // Best match first; within a rank, accounts, then directory people, then agents.
     return ranked
@@ -193,7 +194,7 @@ export const MentionMenu = forwardRef<ChipPickerHandle, ChipPickerProps>(functio
               }}
             >
               {candidate.kind === 'agent'
-                ? candidate.avatar
+                ? candidate.avatar || candidate.teamBrain
                   ? <AgentAvatar agent={candidate} size={20} />
                   : <Bot className="size-5 shrink-0 text-muted-foreground" aria-hidden />
                 : (

@@ -109,6 +109,16 @@ export const PAIRED_DUOS: readonly AvatarOrb[] = [
  */
 export const GHOST_ORB = colourway('ghost', 'Ghost', '#E4E4E7', '#A1A1AA', 34)
 
+/**
+ * Team Brain's orb: the blue duo (Cobalt / Teal) under its own name. Its
+ * shape, not its colour, keeps it apart from an agent that picks that duo.
+ */
+export const TEAM_BRAIN_ORB: OrbAppearance = {
+  ...PAIRED_DUOS.find(orb => orb.name === 'duo-cobalt-teal')!,
+  name: 'team-brain',
+  label: 'Team Brain',
+}
+
 /** Every colour on offer, as the picker shows them: the palette, then the duos as the last two rows. */
 export const OFFERED_ORBS: readonly AvatarOrb[] = [...DEFAULT_ORBS, ...PAIRED_DUOS]
 

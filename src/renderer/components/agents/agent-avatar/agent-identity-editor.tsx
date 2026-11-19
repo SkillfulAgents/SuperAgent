@@ -4,10 +4,10 @@ import { toast } from 'sonner'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
-import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
+import type { AgentAvatar as AgentAvatarData } from '@shared/lib/types/agent-avatar'
 import { useUpdateAgent, useUpdateAgentAvatar } from '@renderer/hooks/use-agents'
 
-import { AvatarView, orbRestingPhi, type AvatarMotionState } from './agent-avatar'
+import { AgentAvatar, AvatarView, orbRestingPhi, type AvatarMotionState } from './agent-avatar'
 import { avatarSource } from './avatar-source'
 import { AvatarChoices } from './avatar-choices'
 
@@ -15,7 +15,7 @@ import { AvatarChoices } from './avatar-choices'
 const PREVIEW_SIZE = 76
 
 interface AgentIdentityEditorProps {
-  agent: Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
+  agent: Pick<ApiAgent, 'slug' | 'name' | 'avatar' | 'teamBrain'>
   state?: AvatarMotionState
   /** The header avatar's diameter, px. */
   size?: number
@@ -40,7 +40,8 @@ export interface AgentIdentityEditorHandle {
  * working motion.
  *
  * Avatar metadata also signals that the server supports avatar editing:
- * without it the editor offers the name alone.
+ * without it the editor offers the name alone. So does Team Brain's, whose
+ * look is its own.
  */
 export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentIdentityEditorProps>(function AgentIdentityEditor({
   agent,
@@ -51,10 +52,10 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
 }, ref) {
   const updateName = useUpdateAgent()
   const updateAvatar = useUpdateAgentAvatar()
-  const saved = agent.avatar ?? null
+  const saved = agent.teamBrain ? null : agent.avatar ?? null
   const [open, setOpen] = useState(false)
   const [draftName, setDraftName] = useState(agent.name)
-  const [avatarDraft, setDraftAvatar] = useState<AgentAvatar | null>(saved)
+  const [avatarDraft, setDraftAvatar] = useState<AgentAvatarData | null>(saved)
   // Metadata that disappears (a refetch from an older server) withdraws the avatar half.
   const draftAvatar = saved && avatarDraft
   // What the editor opened with: a remote update while open must not turn an
@@ -106,9 +107,9 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
           disabled={updateName.isPending || updateAvatar.isPending}
           className="group flex min-w-0 max-w-full items-center gap-2 rounded-item text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {shownAvatar && (
+          {(shownAvatar || agent.teamBrain) && (
             <span className="shrink-0 transition-transform group-hover:scale-105">
-              <AvatarView source={avatarSource(shownAvatar)} restingPhi={orbRestingPhi(agent.slug)} size={size} state={state} />
+              <AgentAvatar agent={{ slug: agent.slug, avatar: shownAvatar, teamBrain: agent.teamBrain }} size={size} state={state} />
             </span>
           )}
           <span className="min-w-0">
