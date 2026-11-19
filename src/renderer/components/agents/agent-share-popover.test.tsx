@@ -24,6 +24,7 @@ vi.mock('@renderer/hooks/use-agent-templates', () => ({
 }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/member-agents')) return Response.json({ direct: [], global: [] })
     if (init?.method === 'POST') {
       state.posts.push({ url, body: JSON.parse(String(init.body)) })
       if (state.failNextInvite) {

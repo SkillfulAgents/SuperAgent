@@ -707,7 +707,7 @@ describe('AppSidebar — agent rows', () => {
     expect(members.className).not.toContain('focus-within')
     expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
     expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
-    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', true)
   })
 
   it.each([
@@ -718,7 +718,9 @@ describe('AppSidebar — agent rows', () => {
     mockUserContext.agentMemberCount.mockReturnValue(count)
     renderWithProviders(<AppSidebar />)
     expect(screen.queryByTestId('sidebar-members-test-agent')).toBeNull()
-    expect(mockUseAgentMembers).not.toHaveBeenCalled()
+    // Every row mounts the stack (a member agent can make it appear), but a
+    // private agent's roster is never fetched.
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith(expect.anything(), true)
   })
 
   it('renders agent rows', () => {

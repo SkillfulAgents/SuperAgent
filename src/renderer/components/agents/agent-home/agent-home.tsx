@@ -268,15 +268,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 </div>
               </AgentContextMenu>
               {/* The sidebar row's member stack and roster, a size up. */}
-              {isAuthMode && (
-                <SidebarMemberIndicator
-                  variant="page"
-                  agentSlug={agent.slug}
-                  agentName={agent.name}
-                  memberCount={agentMemberCount(agent.slug)}
-                  maxFaces={5}
-                />
-              )}
+              <SidebarMemberIndicator
+                variant="page"
+                agentSlug={agent.slug}
+                agentName={agent.name}
+                memberCount={isAuthMode ? agentMemberCount(agent.slug) : 0}
+                maxFaces={5}
+              />
               {(isOwner || (isAuthMode && isAdmin)) && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
               {/* The same agent menu a right-click on the title (or the sidebar row) opens, so the two never drift apart.
                   A click replays as a contextmenu event on the title's trigger, anchored under this button; Rename

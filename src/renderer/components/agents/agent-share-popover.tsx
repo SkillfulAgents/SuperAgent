@@ -1,6 +1,6 @@
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
-import { UserAvatar } from '@renderer/components/ui/user-avatar'
+import { AgentShareRows } from './agent-share-rows'
 import { forwardRef, useImperativeHandle, useState, useRef, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
@@ -32,7 +32,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
-import { cn } from '@shared/lib/utils'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
 import {
   useAgentTemplateStatus,
@@ -98,88 +97,12 @@ export function RoleSelectItems() {
   )
 }
 
-/** Placeholder people rows behind the local-mode Invite explainer. */
-const GHOST_MEMBERS = [
-  { name: 'A', nameWidth: 'w-24', emailWidth: 'w-36' },
-  { name: 'M', nameWidth: 'w-20', emailWidth: 'w-32' },
-  { name: 'J', nameWidth: 'w-28', emailWidth: 'w-40' },
-]
-
-/**
- * Invite pane outside auth mode: there is no per-user ACL on a local agent,
- * so instead of hiding the tab we show the invite UI in a disabled state and
- * point at Cloud, where it works.
- */
-function InviteEducationPane() {
-  return (
-    <div data-testid="agent-invite-education-pane">
-      {/* Why it is off. Same hero typography as the Publish pane's title
-          + subtitle. */}
-      <div className="space-y-1 px-3 pt-5 text-center">
-        <p className="text-sm font-medium">Switch to Gamut Cloud to invite team members.</p>
-        <p className="text-xs text-muted-foreground">
-          Local agents run on this computer, so only you can use them.
-        </p>
-      </div>
-
-      {/* Disabled replica of the real Invite pane. Real controls (not
-          pictures) so it reads as the feature itself, just switched off.
-          It fades into the background at the bottom rather than ending at
-          a hard edge. */}
-      <div className="relative pointer-events-none select-none" aria-hidden="true">
-        <div className="opacity-50">
-          <div className="space-y-2 px-3 pb-4 pt-6">
-            <div className="flex items-start gap-2">
-              <div className="flex min-h-8 min-w-0 flex-1 items-start gap-1 rounded-item border bg-transparent px-1.5 py-0.5">
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-                  <input
-                    disabled
-                    tabIndex={-1}
-                    placeholder="Invite by name or email..."
-                    className="h-6 min-w-20 flex-1 bg-transparent px-1 text-[11px] outline-none placeholder:text-muted-foreground"
-                  />
-                </div>
-                <span className="flex h-6 shrink-0 items-center px-1 text-[11px] text-muted-foreground">
-                  {ROLE_LABELS.user}
-                </span>
-              </div>
-              <Button size="sm" className="h-8 shrink-0 text-[11px]" disabled tabIndex={-1}>
-                Invite
-              </Button>
-            </div>
-          </div>
-
-          <div className="px-1 pb-2">
-            <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
-              Members with access
-            </p>
-            {GHOST_MEMBERS.map((m) => (
-              <div key={m.name} className="flex items-center gap-2 rounded-item px-2 py-1.5">
-                <UserAvatar user={{ id: m.name, name: m.name }} />
-                <div className="min-w-0 flex-1 space-y-1.5 py-0.5">
-                  <div className={cn('h-2 rounded-full bg-muted-foreground/30', m.nameWidth)} />
-                  <div className={cn('h-2 rounded-full bg-muted-foreground/20', m.emailWidth)} />
-                </div>
-                <span className="px-1.5 text-[11px] text-muted-foreground">{ROLE_LABELS.user}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        {/* After the content in the DOM: the half-opacity block is its own
-            stacking context, so an earlier sibling would paint beneath it. */}
-        <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background to-transparent" />
-      </div>
-    </div>
-  )
-}
-
 /**
  * Share button + popover for the agent header, with Notion-style panes:
  * Invite (per-user ACL, auth mode only — the /access endpoints are
  * AgentAdmin()-guarded), Publish (template export + skillset publishing,
  * moved here from the settings General tab) and Export. Rendered for agent
- * owners; in non-auth deployments everyone is an owner and the Invite tab
- * becomes a disabled preview pointing at Cloud instead of disappearing.
+ * owners. Local agents can manage agent access in the same pane.
  */
 export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentSharePopoverProps>(
   function AgentSharePopover({ agentSlug, agentName, trigger }, ref) {
@@ -617,14 +540,17 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
         )}
 
         {tab === 'share' && !isAuthMode && (
-          /* ── Invite pane, local mode: the real UI switched off, pointing at Cloud ── */
-          <InviteEducationPane />
+          <div className="max-h-80 overflow-y-auto px-2 pb-2 pt-4" data-testid="agent-invite-education-pane">
+            <p className="px-2 pb-3 text-xs text-muted-foreground">Switch to Gamut Cloud to invite team members.</p>
+            <AgentShareRows agentSlug={agentSlug} />
+          </div>
         )}
 
         {isAuthMode && (
           <div hidden={tab !== 'share'}>
             <AccessInvitePicker key={agentSlug}
               target={{ kind: 'agent', id: agentSlug }} members={accessList ?? []} renderMemberAction={renderMemberAction}
+              additionalMembers={tab === 'share' && <AgentShareRows agentSlug={agentSlug} />}
               role={inviteRole} inputRef={searchInputRef} onGranted={invalidateAccess} onComplete={resetInvite} error={error}
               membersStatus={isLoading ? (
                 <div className="flex items-center justify-center py-6"><Loader2 aria-label="Loading members" className="size-4 animate-spin text-muted-foreground" /></div>

@@ -29,12 +29,13 @@ interface AccessInvitePickerProps<T extends AccessMember> {
   onGranted: () => void
   onComplete?: () => void
   inputRef?: RefObject<HTMLInputElement>
+  additionalMembers?: ReactNode
   membersStatus?: ReactNode
   error?: string | null
 }
 
 export function AccessInvitePicker<T extends AccessMember>({
-  target, members, renderMemberAction, role, roleControl, onGranted, onComplete, inputRef, membersStatus, error,
+  target, members, renderMemberAction, role, roleControl, onGranted, onComplete, inputRef, membersStatus, additionalMembers, error,
 }: AccessInvitePickerProps<T>) {
   const { user } = useUser()
   const localInput = useRef<HTMLInputElement>(null)
@@ -126,7 +127,7 @@ export function AccessInvitePicker<T extends AccessMember>({
       </div>
     </div>}
     {(inviteError || error) && <p role="alert" className="whitespace-pre-line px-3 pb-2 text-[11px] text-destructive">{inviteError || error}</p>}
-    <div className="max-h-72 overflow-y-auto px-1 pb-2">
+    <div className={cn('overflow-y-auto px-1 pb-2', additionalMembers ? 'max-h-[min(60dvh,28rem)]' : 'max-h-72')}>
       {membersStatus ?? <>
         {visibleMembers.length > 0 && <>
           <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">{filter ? 'Already shared with' : 'Members with access'}</p>
@@ -177,6 +178,7 @@ export function AccessInvitePicker<T extends AccessMember>({
             {filter ? (candidates.isFetching ? 'Searching…' : 'No users found') : `No users have access to this ${target.kind}.`}
           </p>}
       </>}
+      {!filter && additionalMembers}
     </div>
   </>
 }

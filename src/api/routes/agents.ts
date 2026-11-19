@@ -7,7 +7,7 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview, xAgentPickSchema, xAgentReviewNamesTarget, type XAgentPick, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
-import agentMembers, { agentMembersBatch } from './agent-members'
+import agentMembers, { agentMembersBatch, agentShareStacks, agentShares } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
@@ -199,7 +199,7 @@ import {
   listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
+import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq, and, inArray, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
@@ -256,7 +256,7 @@ import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePolicy,
   deletePoliciesForAgent,
-  deleteTargetPolicy,
+  deleteTargetGrant,
   evaluate as evaluateXAgentPolicy,
   listPoliciesForCaller,
   replacePoliciesForCaller,
@@ -998,6 +998,7 @@ agents.use('*', Authenticated())
 
 // Collection roster reads must be mounted before /:id/* resolution.
 agents.route('/members/batch', agentMembersBatch)
+agents.route('/member-agents', agentShareStacks)
 
 // ============================================================
 // Routes that must be registered BEFORE /:id middleware
@@ -1234,7 +1235,8 @@ agents.get('/my-roles', async (c) => {
     const counts = await db
       .select({ agentSlug: agentAcl.agentSlug, memberCount: count() })
       .from(agentAcl)
-      .where(inArray(agentAcl.agentSlug, slugs))
+      .innerJoin(user, eq(user.id, agentAcl.userId))
+      .where(and(inArray(agentAcl.agentSlug, slugs), eq(user.status, 'active')))
       .groupBy(agentAcl.agentSlug)
 
     const countMap = new Map(counts.map((c) => [c.agentSlug, c.memberCount]))
@@ -1701,6 +1703,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 // ============================================================
 
 agents.route('/:id/members', agentMembers)
+agents.route('/:id/member-agents', agentShares)
 
 // GET /api/agents/:id/access - List users with roles on this agent
 agents.get('/:id/access', AgentAdmin(), async (c) => {
@@ -8301,6 +8304,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       if (policyDecision === 'allow' && saved.previousDecision === 'block') {
         return blockedResponse()
       }
+      if (saved.previousDecision !== policyDecision) await notifyAgentMembersChanged(body.xAgent.targetSlug ?? slug)
     } else if (reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
       // accountId is actually the mcpId for MCP reviews.
@@ -8522,9 +8526,11 @@ agents.patch('/:id/x-agent-policies', AgentUser(), async (c) => {
 
   if (decision === 'default') {
     const removed = await deletePolicy(slug, operation, targetSlug)
+    if (removed) await notifyAgentMembersChanged(targetSlug ?? slug)
     return c.json({ ok: true, removed })
   }
   const result = await setPolicy(slug, operation, targetSlug, decision)
+  if (result.previousDecision !== decision) await notifyAgentMembersChanged(targetSlug ?? slug)
   return c.json({ ok: true, ...result })
 })
 
@@ -8557,6 +8563,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
     }
   }
   await replacePoliciesForCaller(slug, parsed.data.policies)
+  await Promise.all([slug, ...targets].map(target => notifyAgentMembersChanged(target)))
   return c.json({ ok: true })
 })
 
@@ -8594,13 +8601,12 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) =>
     return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
   }
   const result = await setPolicy(slug, operation.data, targetSlug, parsed.data.decision)
+  if (result.previousDecision !== parsed.data.decision) await notifyAgentMembersChanged(targetSlug)
   return c.json({ ok: true, ...result })
 })
 
 // DELETE /api/agents/:id/x-agent-policies/{invoke|read}/:target - Remove the
-// grant for one target atomically. Preserves 'block' rows: deleting a drawn
-// graph edge revokes a grant, and lifting an explicit block here would
-// silently escalate (effective decision falls back to a global allow).
+// grant for one target atomically. Its global defaults and explicit restrictions survive.
 agents.delete('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
@@ -8611,7 +8617,8 @@ agents.delete('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c)
   if (!(await canUseAgent(c, targetSlug))) {
     return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
-  const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
+  const removed = await deleteTargetGrant(slug, operation.data, targetSlug)
+  if (removed) await notifyAgentMembersChanged(targetSlug)
   return c.json({ ok: true, removed })
 })
 

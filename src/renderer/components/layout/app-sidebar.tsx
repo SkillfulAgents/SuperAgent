@@ -548,7 +548,7 @@ const AgentMenuItemInner = React.forwardRef<
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { isAuthMode, agentMemberCount, canUseAgent } = useUser()
+  const { agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
@@ -584,7 +584,6 @@ const AgentMenuItemInner = React.forwardRef<
   }
   const [showSkeleton, setShowSkeleton] = useState(false)
   const memberCount = agentMemberCount(agent.slug)
-  const isShared = isAuthMode && memberCount > 1
 
   // Lazy-load detail data only when expanded. The row shows five sessions, so
   // it reads the bounded recent slice and its count; every session is read
@@ -707,17 +706,17 @@ const AgentMenuItemInner = React.forwardRef<
                   only (:focus-visible), like the pen: a click on the avatar's
                   chevron leaves focus in the row without showing the pen.
                   Viewers also need room for the options button. */}
-              {isShared && (
-                <SidebarMemberIndicator
-                  agentSlug={agent.slug}
-                  agentName={agent.name}
-                  memberCount={memberCount}
-                  className={cn(
-                    'transition-transform duration-200 ease-out group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
-                    hint === null && 'translate-x-[22px]',
-                  )}
-                />
-              )}
+              {/* Rendered for every row: the stack hides itself unless the agent
+                  has a second person or a member agent. */}
+              <SidebarMemberIndicator
+                agentSlug={agent.slug}
+                agentName={agent.name}
+                memberCount={memberCount}
+                className={cn(
+                  'transition-transform duration-200 ease-out group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
+                  hint === null && 'translate-x-[22px]',
+                )}
+              />
               {/* The 3-dot button and the status slot travel together, so the
                   slot holds the right edge whether or not the button shows
                   (touch never shows it). */}

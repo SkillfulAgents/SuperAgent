@@ -14,7 +14,7 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
@@ -181,34 +181,14 @@ export async function deletePolicy(
   return changesOf(result)
 }
 
-/**
- * Delete the specific-target policy rows for (caller, operation, target).
- * With `preserveBlock`, 'block' rows survive: revoking a granted edge must
- * not silently lift an explicit block (that would ESCALATE access — the
- * effective decision would fall back to a global allow, if one exists).
- * Returns the number of rows removed.
- */
-export async function deleteTargetPolicy(
-  callerSlug: string,
-  operation: XAgentOperation,
-  targetSlug: string,
-  options?: { preserveBlock?: boolean },
-): Promise<number> {
-  if (!options?.preserveBlock) {
-    return deletePolicy(callerSlug, operation, targetSlug)
-  }
-  const conditions = [
+/** Remove a granted graph edge. Revoking an edge must preserve any review or block override. */
+export async function deleteTargetGrant(callerSlug: string, operation: XAgentOperation, targetSlug: string): Promise<number> {
+  const result = await db.delete(xAgentPolicies).where(and(
     eq(xAgentPolicies.callerAgentSlug, callerSlug),
     eq(xAgentPolicies.operation, operation),
     eq(xAgentPolicies.targetAgentSlug, targetSlug),
-  ]
-  if (options?.preserveBlock) {
-    conditions.push(ne(xAgentPolicies.decision, 'block'))
-  }
-  const result = await db
-    .delete(xAgentPolicies)
-    .where(and(...conditions))
-    .run()
+    eq(xAgentPolicies.decision, 'allow'),
+  )).run()
   return changesOf(result)
 }
 

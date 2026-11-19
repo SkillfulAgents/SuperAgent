@@ -53,12 +53,13 @@ beforeAll(async () => {
   events = await import('@shared/lib/services/collaboration-events')
   feed = await import('@shared/lib/notifications/global-feed')
   const { Authenticated, ResolveAgent, AgentAdmin } = await import('../middleware/auth')
-  const { default: members, agentMembersBatch } = await import('./agent-members')
+  const { default: members, agentMembersBatch, agentShares } = await import('./agent-members')
   app = new Hono()
   app.use('/api/agents/*', Authenticated())
   app.route('/api/agents/members/batch', agentMembersBatch)
   app.use('/api/agents/:id/*', ResolveAgent())
   app.route('/api/agents/:id/members', members)
+  app.route('/api/agents/:id/member-agents', agentShares)
   app.get('/api/agents/:id/access', AgentAdmin(), (c) => c.json({ management: true }))
   for (const name of ['admin', 'owner', 'user', 'viewer', 'outsider']) {
     const result = await (await authModule.getAuth()).api.signUpEmail({ body: { name, email: `${name}@example.test`, password: 'MemberTesting123!' } })
@@ -118,6 +119,18 @@ describe('authorized agent roster', () => {
     expect((await get('viewer', 'members', 'does-not-exist')).status).toBe(404)
     for (const name of ['user', 'viewer', 'outsider']) expect((await get(name, 'access')).status).toBe(403)
     for (const name of ['owner', 'admin']) expect((await get(name, 'access')).status).toBe(200)
+  })
+
+  it('requires User access on both agents to edit or remove a direct grant', async () => {
+    const { getPolicy, setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(secondAgent, 'read', agentSlug, 'allow')
+    const edit = (role: string) => app.request(`/api/agents/${agentSlug}/member-agents/${secondAgent}`, {
+      method: 'PUT', body: JSON.stringify({ role }),
+      headers: { authorization: `Bearer ${people.owner.token}`, 'content-type': 'application/json' },
+    })
+    expect((await edit('user')).status).toBe(403)
+    expect((await edit('remove')).status).toBe(403)
+    expect((await getPolicy(secondAgent, 'read', agentSlug))?.decision).toBe('allow')
   })
 
   it('batches authorized rosters and isolates forbidden or missing agents', async () => {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import type { UserSummary } from '@shared/lib/user-profile-schema'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
+import type { MemberAgent } from '@shared/lib/types/agent-sharing'
 import { UserAvatarStack } from '@renderer/components/ui/user-avatar-stack'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
@@ -18,10 +19,11 @@ const VARIANTS = {
 
 /** Hover or focus to preview the roster; clicking pins it for sharing. */
 export function MemberRosterPopover({
-  users, count = users.length, maxFaces = 5, variant = 'page', label, title, rosterLabel,
+  users, agents, count = users.length + (agents?.length ?? 0), maxFaces = 5, variant = 'page', label, title, rosterLabel,
   className, contentClassName, trigger, testIds, children,
 }: {
   users: readonly UserSummary[]
+  agents?: readonly MemberAgent[]
   count?: number
   maxFaces?: number
   variant?: keyof typeof VARIANTS
@@ -98,7 +100,7 @@ export function MemberRosterPopover({
           }}
         >
           {trigger ?? <UserAvatarStack
-            users={users}
+            users={users} agents={agents}
             count={count}
             maxFaces={maxFaces}
             size={variant === 'page' ? 'md' : 'sm'}

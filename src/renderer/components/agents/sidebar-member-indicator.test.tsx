@@ -6,6 +6,8 @@ import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import { AgentSharePopover } from './agent-share-popover'
 import { SidebarMemberIndicator } from './sidebar-member-indicator'
 
+vi.mock('@renderer/hooks/use-agent-member-agents', () => ({ useAgentMemberAgents: () => [], useAgentShareRoster: () => ({ data: undefined }) }))
+vi.mock('./agent-share-rows', () => ({ AgentShareRows: () => null }))
 vi.mock('@renderer/hooks/use-agent-members', () => ({ useAgentMembers: vi.fn() }))
 vi.mock('@renderer/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@renderer/lib/env', () => ({ getApiBaseUrl: () => '' }))

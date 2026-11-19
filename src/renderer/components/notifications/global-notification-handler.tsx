@@ -67,6 +67,7 @@ import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
 import { takePreopenedNotificationStream } from './notification-stream'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
 // refetched wholesale each time the stream says `connected`.
@@ -332,7 +333,10 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['agent-members', change.agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', change.agentSlug] })
             }
+            // The member stacks hold every agent's members in one entry, which the revocation sweep above can't reach.
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
             // An agent this tab does not list yet (it was just shared) refreshes everything.
             invalidateNotificationCaches(queryClient, change.agentSlug)
@@ -675,6 +679,8 @@ export function GlobalNotificationHandler() {
 
           case 'agent_updated':
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            // Member stacks draw other agents' names and faces from their own entry.
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             break
 
           case 'volume_access_changed':
@@ -693,6 +699,7 @@ export function GlobalNotificationHandler() {
             // so refresh both caches the direct-create path invalidates together.
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             break
 
           case 'scheduled_task_created':
