@@ -1,6 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { textResult } from '../agents/host-client'
+import { callHostOp, proposeToHost, signalOf } from '../host-proposals'
 
 /**
  * Proxy rules: JavaScript predicates that either let specific API / MCP
@@ -10,75 +11,11 @@ import { textResult } from '../agents/host-client'
  * the user to approve it before saving.
  */
 
-type HostResult = { ok: boolean; status: number; data: unknown; json: boolean }
+const callRulesHost = (op: string, body: Record<string, unknown>, signal?: AbortSignal) => callHostOp('rules', op, body, signal)
 
-async function callRulesHost(op: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<HostResult> {
-  const baseUrl = process.env.SUPERAGENT_HOST_API_URL
-  const token = process.env.PROXY_TOKEN
-  if (!baseUrl || !token) return { ok: false, status: 500, data: { error: 'Host API is not configured in this container.' }, json: true }
-  try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/x-agent/rules/${op}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-      signal,
-    })
-    try {
-      return { ok: response.ok, status: response.status, data: await response.json(), json: true }
-    } catch {
-      return { ok: false, status: response.status, data: { error: `HTTP ${response.status}` }, json: false }
-    }
-  } catch (error) {
-    return { ok: false, status: 0, data: { error: `Network error: ${error instanceof Error ? error.message : String(error)}` }, json: false }
-  }
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-/** Longest the tool waits for a decision: preparing the card, then the user's 5 minutes. */
-const PROPOSAL_DEADLINE_MS = 9 * 60_000
-
-/**
- * Creating or deleting a rule waits for the user. The host answers at once
- * with a proposal id (202) and each /wait call holds at most ~20 s, so no
- * request outlives the proxies between a cloud agent and the host. Failures
- * that are not the host's answer (network errors, a proxy's error page) are
- * retried: the proposal stays put while the tool keeps polling. If the call is
- * cancelled the proposal is withdrawn, and the host withdraws one nobody polls.
- */
-export async function proposeAndWait(op: 'create' | 'delete', body: Record<string, unknown>, signal?: AbortSignal): Promise<HostResult> {
-  const submitted = await callRulesHost(op, body, signal)
-  const proposalId = (submitted.data as { proposalId?: unknown } | null)?.proposalId
-  if (submitted.status !== 202 || typeof proposalId !== 'string') return submitted
-  const deadline = Date.now() + PROPOSAL_DEADLINE_MS
-  for (let failures = 0; Date.now() < deadline && !signal?.aborted;) {
-    const next = await callRulesHost('wait', { proposalId }, signal)
-    if (signal?.aborted) break
-    if (next.status === 202) {
-      failures = 0
-      continue
-    }
-    if (!next.json || next.status >= 502) {
-      if (++failures > 5) {
-        void callRulesHost('cancel', { proposalId })
-        return next
-      }
-      await sleep(Math.min(1000 * 2 ** (failures - 1), 8000))
-      continue
-    }
-    return next
-  }
-  void callRulesHost('cancel', { proposalId })
-  return signal?.aborted
-    ? { ok: false, status: 0, data: { error: 'cancelled', message: 'The request was cancelled and withdrawn.' }, json: true }
-    : { ok: false, status: 408, data: { error: 'review_timeout', message: 'No decision arrived in time. The request was withdrawn.' }, json: true }
-}
-
-/** The MCP request context the SDK passes to a tool handler (its signal fires on cancellation). */
-function signalOf(extra: unknown): AbortSignal | undefined {
-  const signal = (extra as { signal?: unknown } | undefined)?.signal
-  return signal instanceof AbortSignal ? signal : undefined
-}
+/** Creating or deleting a rule waits for the user: see `proposeToHost`. */
+export const proposeAndWait = (op: 'create' | 'delete', body: Record<string, unknown>, signal?: AbortSignal) =>
+  proposeToHost('rules', op, body, signal)
 
 function jsonResult(result: { ok: boolean; data: unknown }) {
   return textResult(JSON.stringify(result.data, null, 2), !result.ok)

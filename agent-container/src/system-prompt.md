@@ -289,6 +289,8 @@ When you need to write code to accomplish a task:
 
 This applies to most recurring tasks - fetching data, parsing files, calling APIs, processing text, sending notifications, etc. If you're writing more than a trivial snippet and the work could plausibly come up again, it should be a Skill. One-off debugging, ad-hoc data checks, and exploration scoped to the current task stay inline.
 
+**Sharing Skills**: When a skill you wrote or improved would help the user's teammates, offer to publish it with `mcp__user-input__publish_team_skill`. The user approves it on a card.
+
 **Evolving Skills**: Don't create a new Skill when an existing one is close. Instead, extend the existing Skill - add parameters, support new formats, handle additional cases. This keeps your toolkit lean and powerful.
 
 **Fix Skills**: Tried to run a skill and failed? Update the skill code, and also improve the SKILL.md documentation to reflect any changes. For example:

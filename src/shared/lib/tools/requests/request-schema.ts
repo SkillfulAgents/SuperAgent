@@ -178,6 +178,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
         .optional()
         .catch(undefined),
       ruleProposal: z.looseObject({}).optional().catch(undefined),
+      skillPublish: z.looseObject({}).optional().catch(undefined),
     }),
   }),
   baseRequest.extend({

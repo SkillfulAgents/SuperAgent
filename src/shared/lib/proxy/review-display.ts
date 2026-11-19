@@ -5,6 +5,7 @@
 import type { XAgentReview } from './x-agent-review'
 import type { ReviewRuleOutcome } from './rules/gate'
 import type { RuleProposalReview } from './rules/proposal-schema'
+import type { SkillPublishReview } from './skill-publish-review'
 import type { ScopeDescriptor } from './scope-catalog'
 
 /**
@@ -40,6 +41,8 @@ export interface ReviewDetails {
   ruleOutcomes?: ReviewRuleOutcome[]
   /** Set when the review asks a person to confirm an agent's proxy rule. */
   ruleProposal?: RuleProposalReview
+  /** Set when the review asks a person to approve publishing an agent's skill to a team skillset. */
+  skillPublish?: SkillPublishReview
   // Optional: x-agent review fields.
   // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
   // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.

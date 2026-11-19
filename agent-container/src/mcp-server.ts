@@ -14,7 +14,7 @@ import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
 import { createRequestRemoteMcpTool, type RemoteMcpInjectionTarget } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
-import { installTeamSkillTool, searchTeamSkillsTool } from './tools/skills/skill-tools'
+import { installTeamSkillTool, publishTeamSkillTool, searchTeamSkillsTool } from './tools/skills/skill-tools'
 import {
   scheduleTaskTool,
   listScheduledTasksTool,
@@ -96,7 +96,7 @@ export function createUserInputMcpServer(
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
       createRequestRemoteMcpTool(getProcess), searchRemoteMcpServicesTool,
-      searchTeamSkillsTool, installTeamSkillTool,
+      searchTeamSkillsTool, installTeamSkillTool, publishTeamSkillTool,
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,

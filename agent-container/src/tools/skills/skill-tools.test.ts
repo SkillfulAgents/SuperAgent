@@ -4,7 +4,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   tool: (name: string, description: string, _schema: unknown, execute: (args: unknown) => Promise<unknown>) => ({ name, description, execute }),
 }))
 
-import { installTeamSkillTool, searchTeamSkillsTool } from './skill-tools'
+import { installTeamSkillTool, publishTeamSkillTool, searchTeamSkillsTool } from './skill-tools'
 
 type ToolResult = { content: Array<{ text: string }>; isError?: boolean }
 const run = (toolDef: unknown, args: Record<string, unknown>) =>
@@ -83,5 +83,44 @@ it('reports why the host refused an install', async () => {
   expect(await run(installTeamSkillTool, { skillset_id: 'gone', skill_path: 'skills/gone/SKILL.md' })).toMatchObject({
     isError: true,
     content: [{ text: 'Failed to install team skill: No such skill to install' }],
+  })
+})
+
+it('asks the host to publish, polls until a person decides, and reports the result', async () => {
+  const answers = [
+    () => Response.json({ proposalId: 'p1', status: 'pending' }, { status: 202 }),
+    () => Response.json({ proposalId: 'p1', status: 'pending' }, { status: 202 }),
+    () => Response.json({ ok: true, message: 'Changes submitted successfully.' }),
+  ]
+  const fetch = stubHost(() => answers.shift()!())
+
+  const result = await run(publishTeamSkillTool, { skill: 'invoice-parser', title: 'Add invoice-parser', note: 'Reads invoice PDFs' })
+
+  expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+    'https://host/api/x-agent/skills/publish',
+    'https://host/api/x-agent/skills/wait',
+    'https://host/api/x-agent/skills/wait',
+  ])
+  expect(sentBody(fetch)).toEqual({ skillDirectory: 'invoice-parser', title: 'Add invoice-parser', note: 'Reads invoice PDFs' })
+  expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ proposalId: 'p1' })
+  expect(result.isError).toBeUndefined()
+  expect(result.content[0].text).toBe('Changes submitted successfully.')
+})
+
+it('says nothing was published when the person rejects or the host refuses the skill', async () => {
+  const answers = [
+    () => Response.json({ proposalId: 'p1', status: 'pending' }, { status: 202 }),
+    () => Response.json({ error: 'denied_by_user', message: 'The user rejected publishing this skill. Nothing was published.' }, { status: 403 }),
+  ]
+  stubHost(() => answers.shift()!())
+  expect(await run(publishTeamSkillTool, { skill: 'invoice-parser', title: 'Add', note: 'Why' })).toMatchObject({
+    isError: true,
+    content: [{ text: 'Not published: The user rejected publishing this skill. Nothing was published.' }],
+  })
+
+  stubHost(() => Response.json({ error: 'cannot_publish', message: 'This skill has no changes to publish.' }, { status: 422 }))
+  expect(await run(publishTeamSkillTool, { skill: 'invoice-parser', title: 'Add', note: 'Why', skillset_id: 'team-skills' })).toMatchObject({
+    isError: true,
+    content: [{ text: 'Not published: This skill has no changes to publish.' }],
   })
 })

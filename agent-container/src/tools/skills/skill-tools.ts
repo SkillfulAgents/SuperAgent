@@ -1,11 +1,13 @@
 /**
- * Team skill tools: search the team's skillsets for skills this agent does not have, and
- * install one. The host owns the skillsets; both tools call it.
+ * Team skill tools: search the team's skillsets for skills this agent does not have, install
+ * one, and ask to publish one of this agent's own. The host owns the skillsets; every tool
+ * calls it.
  */
 
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callHost, textResult, XAgentError } from '../agents/host-client'
+import { proposeToHost, signalOf } from '../host-proposals'
 
 const searchResponseSchema = z.object({
   skills: z.array(z.object({
@@ -66,5 +68,28 @@ export const installTeamSkillTool = tool(
     } catch (error) {
       return textResult(`Failed to install team skill: ${errorText(error)}`, true)
     }
+  },
+)
+
+export const publishTeamSkillTool = tool(
+  'publish_team_skill',
+  `Ask to publish a skill from this agent's /workspace/.claude/skills to the team's skillset, so teammates' agents can install it. Use it for a skill you wrote, or for changes you made to a skill installed from the team. The user sees an approval card with the skill's description and files, and this call waits until they decide (up to 5 minutes). Nothing is published without their approval. Call it once per skill.`,
+  {
+    skill: z.string().describe('The skill directory name under /workspace/.claude/skills'),
+    title: z.string().describe('A short title for this publish'),
+    note: z.string().describe('What the skill does or what changed, and why teammates would want it'),
+    skillset_id: z.string().optional().describe('Only when the team has several skillsets; the error lists them'),
+  },
+  async ({ skill, title, note, skillset_id }, extra) => {
+    const result = await proposeToHost(
+      'skills',
+      'publish',
+      { skillDirectory: skill, title, note, ...(skillset_id ? { skillsetId: skillset_id } : {}) },
+      signalOf(extra),
+    )
+    const data = result.data as { message?: string; error?: string; url?: string } | null
+    const text = data?.message ?? data?.error ?? `HTTP ${result.status}`
+    if (!result.ok) return textResult(`Not published: ${text}`, true)
+    return textResult(data?.url ? `${text} ${data.url}` : text)
   },
 )
