@@ -32,15 +32,18 @@ export function AgentShareRows({ agentSlug }: { agentSlug: string }) {
   const { direct, global } = roster.data
   return <>
     {direct.map(agent => {
+      const messagesOnly = agent.role === 'user' && agent.readDecision !== 'allow'
       const canEditRole = canUseAgent(agentSlug) && canUseAgent(agent.slug)
       return <div key={agent.slug} className="flex items-center gap-2 rounded-item px-2 py-1.5 hover:bg-accent/50">
         <AgentAvatar agent={agent} size={28} still />
-        <div className="min-w-0 flex-1 text-[11px]"><p className="truncate">{agent.name}</p><p className="text-muted-foreground">Agent</p></div>
+        <div className="min-w-0 flex-1 text-[11px]"><p className="truncate">{agent.name}</p><p className="text-muted-foreground">
+          {messagesOnly ? (agent.readDecision === 'review' ? 'Reading requires approval' : 'Reading is off') : 'Agent'}
+        </p></div>
         {canEditRole ? (
-          <Select value={agent.role} disabled={edit.isPending} onValueChange={(role: MemberAgentRole | 'remove') => edit.mutate({ caller: agent.slug, role })}>
+          <Select value={messagesOnly ? 'messages-only' : agent.role} disabled={edit.isPending} onValueChange={(role: MemberAgentRole | 'remove') => edit.mutate({ caller: agent.slug, role })}>
             <SelectTrigger aria-label={`Role for ${agent.name}`} data-testid={`access-agent-role-${agent.slug}`}
               className="h-7 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none">
-              <SelectValue />
+              <SelectValue>{agent.role === 'user' ? 'User' : 'Viewer'}</SelectValue>
             </SelectTrigger>
             <SelectContent align="end">
               <SelectItem value="user" disabled={!agent.canMessage}>User</SelectItem>

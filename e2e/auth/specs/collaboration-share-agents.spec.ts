@@ -18,14 +18,22 @@ test('direct agents count in the stack, while inherited access links to global s
     expect((await page.request.patch(`/api/agents/${caller}/x-agent-policies`, { data: { targetSlug, operation, decision: 'allow' } })).ok()).toBeTruthy()
   }
 
+  expect((await page.request.patch(`/api/agents/${direct}/x-agent-policies`, { data: {
+    targetSlug: target, operation: 'read', decision: 'block',
+  } })).ok()).toBeTruthy()
+
   await page.goto(`/agents/${target}`)
   const stack = page.getByTestId(`agent-members-${target}`)
   await expect(stack).toHaveAccessibleName('2 members of Research')
   await stack.click()
   const roster = page.getByTestId(`agent-members-list-${target}`)
   await expect(roster.getByRole('combobox', { name: 'Role for Editor' })).toHaveText('User')
+  await expect(roster.getByText('Reading is off')).toBeVisible()
   await expect(roster.getByText('+ 1 agent with global access')).toBeVisible()
   await expect(roster.getByRole('link', { name: 'Librarian' })).toBeHidden()
+  await roster.getByRole('combobox', { name: 'Role for Editor' }).click()
+  await page.getByRole('option', { name: 'User', exact: true }).click()
+  await expect(roster.getByText('Reading is off')).toHaveCount(0)
   await roster.getByRole('combobox', { name: 'Role for Editor' }).click()
   await page.getByRole('option', { name: 'Viewer', exact: true }).click()
   await expect(roster.getByRole('combobox', { name: 'Role for Editor' })).toHaveText('Viewer')

@@ -9,6 +9,7 @@ const memberAgentSchema = z.object({
   avatar: agentAvatarSchema,
   role: memberAgentRoleSchema,
   canMessage: z.boolean(),
+  readDecision: z.enum(['allow', 'review', 'block']),
 })
 export type MemberAgent = z.infer<typeof memberAgentSchema>
 export const agentShareRosterSchema = z.object({ direct: z.array(memberAgentSchema), global: z.array(memberAgentSchema) })

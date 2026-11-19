@@ -50,7 +50,9 @@ export async function listAgentShares(targets: string[], viewerId: string | null
       const isDirect = (canInvoke && invoke.target === target) || (canRead && read.target === target)
       if (!isDirect && !includeGlobal) continue
       const roster = rosters[target] ??= { direct: [], global: [] }
-      roster[isDirect ? 'direct' : 'global'].push({ slug, name, avatar, canMessage, role: canInvoke ? 'user' : 'viewer' })
+      roster[isDirect ? 'direct' : 'global'].push({
+        slug, name, avatar, canMessage, role: canInvoke ? 'user' : 'viewer', readDecision: read?.decision ?? 'review',
+      })
     }
   }
   return rosters
