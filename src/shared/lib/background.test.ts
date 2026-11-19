@@ -115,6 +115,20 @@ describe('background', () => {
     expect(backgroundInFlight()).not.toContain('test.inside')
   })
 
+  it('never throws, also when the request lifetime refuses more work', async () => {
+    const waitUntil = vi.fn(() => {
+      throw new Error('This ExecutionContext is no longer valid')
+    })
+    const work = deferred()
+    await runWithBackground({ waitUntil }, async () => {
+      expect(() => background(work.promise, { name: 'test.after-the-request' })).not.toThrow()
+    })
+    expect(backgroundInFlight()).toContain('test.after-the-request')
+    work.resolve()
+    await backgroundSettled()
+    expect(backgroundInFlight()).not.toContain('test.after-the-request')
+  })
+
   it('stops waiting for work that can never settle once it is collected', async () => {
     setFlagsFromString('--expose-gc')
     const gc = runInNewContext('gc') as () => void

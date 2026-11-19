@@ -60,7 +60,11 @@ export function background(work: PromiseLike<unknown> | (() => PromiseLike<unkno
   const entry: Entry = { name, work: new WeakRef(tracked) }
   inFlight.add(entry)
   collected.register(tracked, entry, entry)
-  requestLifetime.getStore()?.waitUntil(tracked)
+  try {
+    requestLifetime.getStore()?.waitUntil(tracked)
+  } catch {
+    // The request ended (its context refuses more work): the work runs on without it, as outside one.
+  }
 }
 
 /**
