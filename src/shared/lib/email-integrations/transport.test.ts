@@ -14,7 +14,7 @@ import { backgroundSettled } from '../background'
 let handle: TestDatabase, testDb: AppDatabase
 // The gateway client; one operation's client (a poll, a history read) is the same mock.
 const transport = vi.hoisted(() => {
-  const client = { json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn(), forOperation: () => client }
+  const client = { json: vi.fn(), message: vi.fn(), unwatch: vi.fn(), watch: vi.fn(), forOperation: () => client }
   return client
 })
 vi.mock('../db', () => ({ get db() { return testDb } }))
@@ -82,16 +82,36 @@ it('leaves the cursor on a message its replaced connection could not hand over, 
 })
 it('routes reconciled gateway threads through existing shared sessions, including after reconnect', async () => {
   await createAgentIntegrationSession({ integrationId: id, externalChatId: 'original', sessionId: 'session-1' })
-  transport.canonicalThreadId.mockResolvedValue('canonical')
+  // The gateway merged the thread this session is on into the message's thread.
+  const merged = { ...message, threadAliases: ['original'] }
+  transport.message.mockResolvedValue(merged)
   transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 2, type: 'message.received', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
   const inputs = vi.fn(); connector.onEvent(inputs)
   await connector.connect(); await vi.advanceTimersByTimeAsync(0)
-  expect(inputs).toHaveBeenCalledWith(expect.objectContaining({ id: message.id, externalId: 'original', payload: message }))
+  expect(inputs).toHaveBeenCalledWith(expect.objectContaining({ id: message.id, externalId: 'original', payload: merged }))
   await connector.disconnect()
   connector = await streamConnector()
   connector.onEvent(inputs)
   await connector.connect(); await vi.advanceTimersByTimeAsync(0)
   expect(inputs).toHaveBeenLastCalledWith(expect.objectContaining({ externalId: 'original' }))
+})
+it('keeps a message on its own thread when that thread has a session too', async () => {
+  await createAgentIntegrationSession({ integrationId: id, externalChatId: 'original', sessionId: 'session-1' })
+  await createAgentIntegrationSession({ integrationId: id, externalChatId: 'canonical', sessionId: 'session-2' })
+  transport.message.mockResolvedValue({ ...message, threadAliases: ['original'] })
+  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 2, type: 'message.received', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
+  const inputs = vi.fn(); connector.onEvent(inputs)
+  await connector.connect(); await vi.advanceTimersByTimeAsync(0)
+  expect(inputs).toHaveBeenCalledWith(expect.objectContaining({ externalId: 'canonical' }))
+})
+it('starts a new thread without asking the gateway about the sessions the inbox already has', async () => {
+  for (const thread of ['first', 'second', 'third']) await createAgentIntegrationSession({ integrationId: id, externalChatId: thread, sessionId: `session-${thread}` })
+  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 2, type: 'message.received', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
+  const inputs = vi.fn(); connector.onEvent(inputs)
+  await connector.connect(); await vi.advanceTimersByTimeAsync(0)
+  expect(inputs).toHaveBeenCalledWith(expect.objectContaining({ externalId: 'canonical' }))
+  // One request per session was the cost of every new thread, and at the gateway's rate limit it stopped the inbox.
+  expect(transport.json.mock.calls.map(([path]) => String(path)).filter(path => path.includes('/threads/'))).toEqual([])
 })
 it('does not create a second input when the gateway announces a thread merge', async () => {
   transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 2, type: 'thread.reconciled', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })

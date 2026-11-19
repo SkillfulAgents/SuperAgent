@@ -1,10 +1,14 @@
 /**
- * One agent's computer-use permissions and the app it has grabbed.
+ * One agent's computer-use permissions and the app its last command acted in.
  *
  * Three grant types:
  * - "once": in-memory only, consumed after single use
  * - "timed": in-memory with 15-min expiry
  * - "always": persisted to settings only
+ *
+ * A `use_any_application` grant (timed or always) covers every call but a
+ * host shell script: any app, the read-only level, and a call whose app could
+ * not be told.
  *
  * Besides those, a session the user started with computer use on (the
  * dispatch launcher's toggle) may list and use any app without asking. That
@@ -15,15 +19,21 @@
  * here: they are read from settings whenever a check needs them (another
  * process may change them, and nothing would tell this one) and written back
  * per agent, so one agent's revoke never rewrites another's entry. The
- * in-memory grants and the grab die with the actor.
+ * in-memory grants and the active app die with the actor.
  */
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import type { ComputerUsePermissionLevel, ComputerUseSettings, PermissionGrant, PermissionGrantType } from './types'
-import { TIMED_GRANT_DURATION_MS } from './types'
+import { ANY_APPLICATION_LEVEL, TIMED_GRANT_DURATION_MS } from './types'
+import { sameApp } from './app-identity'
 
 /** An "always" grant as settings store it. */
 type PersistedGrant = NonNullable<ComputerUseSettings['agentPermissions']>[string]['grants'][number]
+
+/** Drop app grants saved without their app (an earlier bug): they cover nothing (grantMatches). */
+function coversSomething(grants: readonly PersistedGrant[]): PersistedGrant[] {
+  return grants.filter((g) => !(g.level === 'use_application' && !g.appName))
+}
 
 export class AgentComputerUse {
   /** The in-memory grants: "once" and "timed" ("always" ones live in settings). */
@@ -32,8 +42,8 @@ export class AgentComputerUse {
   /** Sessions that may list and use any app without asking. */
   private appAccessSessions = new Set<string>()
 
-  /** The app this agent has grabbed, if any. */
-  private grabbedApp: string | undefined
+  /** The app each session's last computer-use command acted in. */
+  private activeApps = new Map<string, string>()
 
   constructor(readonly slug: AgentSlug) {}
 
@@ -48,19 +58,21 @@ export class AgentComputerUse {
     if (sessionId && level !== 'use_host_shell' && this.appAccessSessions.has(sessionId)) return 'granted'
     const now = Date.now()
     for (const grant of this.grants) {
-      if (!this.grantMatches(grant, level, appName)) continue
+      if (!this.grantCovers(grant, level, appName)) continue
       // Check expiry for timed grants
       if (grant.grantType === 'timed' && grant.expiresAt && grant.expiresAt < now) continue
       return 'granted'
     }
     for (const grant of await this.readPersisted()) {
-      if (this.grantMatches(grant, level, appName)) return 'granted'
+      if (this.grantCovers(grant, level, appName)) return 'granted'
     }
     return 'prompt_needed'
   }
 
   /** Record a permission grant. "always" grants go to settings, the others to memory. */
   async grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): Promise<void> {
+    // An app grant for no app would cover nothing later (grantMatches): it is for this call only.
+    if (level === 'use_application' && !appName) grantType = 'once'
     const now = Date.now()
 
     // For 'timed' and 'always': remove existing matching grants before adding new one
@@ -112,12 +124,12 @@ export class AgentComputerUse {
     }
   }
 
-  /** Revoke every permission, persisted and session ones included, and drop the grab. */
+  /** Revoke every permission, persisted and session ones included, and forget the active app. */
   async revokeAll(): Promise<void> {
     console.log(`[ComputerUsePermissions] Revoking all grants for ${this.slug}`)
     this.grants = []
     this.appAccessSessions.clear()
-    this.grabbedApp = undefined
+    this.activeApps.clear()
     await this.writePersisted(() => [])
   }
 
@@ -125,6 +137,8 @@ export class AgentComputerUse {
   async revoke(level: ComputerUsePermissionLevel, appName?: string): Promise<void> {
     console.log(`[ComputerUsePermissions] Revoking ${level}${appName ? ` for ${appName}` : ''} from ${this.slug}`)
     this.removeMatchingGrants(level, appName)
+    // Settings are written only when they hold such a grant: taking an app back is far more common than having one saved.
+    if (!(await this.readPersisted()).some((g) => this.grantMatches(g, level, appName))) return
     await this.writePersisted((grants) => grants.filter((g) => !this.grantMatches(g, level, appName)))
   }
 
@@ -143,23 +157,34 @@ export class AgentComputerUse {
     ]
   }
 
-  /** The app the agent's session has grabbed, if any. */
-  grabbed(): string | undefined {
-    return this.grabbedApp
+  /**
+   * The app a session's last computer-use command acted in, if any: what its
+   * activity indicator shows while the agent works, and what taking the app
+   * back revokes. It holds nothing on the machine; each command names its own
+   * target.
+   */
+  activeApp(sessionId: string): string | undefined {
+    return this.activeApps.get(sessionId)
   }
 
-  setGrabbed(appName: string): void {
-    this.grabbedApp = appName
+  /** Record the app a session acted in; true when it differs from its last one. */
+  setActiveApp(sessionId: string, appName: string): boolean {
+    const previous = this.activeApps.get(sessionId)
+    const changed = previous === undefined || !sameApp(previous, appName)
+    this.activeApps.set(sessionId, appName)
+    return changed
   }
 
-  clearGrabbed(): void {
-    this.grabbedApp = undefined
+  /** Forget a session's active app, or every session's. */
+  clearActiveApp(sessionId?: string): void {
+    if (sessionId === undefined) this.activeApps.clear()
+    else this.activeApps.delete(sessionId)
   }
 
   /** This agent's persisted "always" grants, read fresh from settings. */
   private async readPersisted(): Promise<readonly PersistedGrant[]> {
     try {
-      return (await getSettings()).computerUse?.agentPermissions?.[this.slug]?.grants ?? []
+      return coversSomething((await getSettings()).computerUse?.agentPermissions?.[this.slug]?.grants ?? [])
     } catch (error) {
       console.error(`[ComputerUsePermissions] Failed to load grants for ${this.slug} from settings:`, error)
       return []
@@ -178,7 +203,7 @@ export class AgentComputerUse {
       // instead of overwriting from a stale snapshot.
       await mutateSettings((settings) => {
         const agentPermissions = { ...settings.computerUse?.agentPermissions }
-        const grants = update(agentPermissions[this.slug]?.grants ?? [])
+        const grants = update(coversSomething(agentPermissions[this.slug]?.grants ?? []))
         if (grants.length > 0) {
           agentPermissions[this.slug] = { grants }
         } else {
@@ -199,11 +224,22 @@ export class AgentComputerUse {
     appName?: string,
   ): boolean {
     if (grant.level !== level) return false
-    // For 'use_application', appName must match
+    // For 'use_application', the named app must match: a request that names
+    // no app is asked about every time, and no grant covers it.
     if (level === 'use_application') {
-      return grant.appName === appName
+      return appName !== undefined && grant.appName !== undefined && sameApp(grant.appName, appName)
     }
     return true
+  }
+
+  /** Whether a grant lets a request through: its own level (and app), or the any-app grant for anything but a host shell script. */
+  private grantCovers(
+    grant: Pick<PermissionGrant, 'level' | 'appName'>,
+    level: ComputerUsePermissionLevel,
+    appName?: string,
+  ): boolean {
+    if (grant.level === ANY_APPLICATION_LEVEL && level !== 'use_host_shell') return true
+    return this.grantMatches(grant, level, appName)
   }
 
   private removeMatchingGrants(level: ComputerUsePermissionLevel, appName?: string): void {

@@ -14,8 +14,10 @@ export interface LoginWindow {
  * A finished sign-in arrives the way it does from the browser, on the
  * platform-auth callback, and so does a failure. Only the person closing the
  * sheet has no other signal, so that is what `onCancelled` reports.
+ * With `withApple` the native Sign in with Apple prompt runs before the sheet
+ * (`signsInWithApple()`); closing either ends the attempt the same way.
  */
-export function prepareAuthSession(onCancelled: () => void): LoginWindow {
+export function prepareAuthSession(onCancelled: () => void, withApple = false): LoginWindow {
   let closed = false
   return {
     async navigate(url: string) {
@@ -28,7 +30,7 @@ export function prepareAuthSession(onCancelled: () => void): LoginWindow {
       // caller is waiting only for the sheet to be on its way.
       // A session that could not even be asked for ends the attempt the same
       // way: nothing else would, and the button would stay pending.
-      void session(url)
+      void session(url, withApple)
         .catch(() => 'cancelled' as const)
         .then((outcome) => {
           if (outcome === 'cancelled' && !closed) onCancelled()

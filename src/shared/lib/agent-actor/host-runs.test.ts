@@ -20,10 +20,11 @@ function fakeActor(options: { containerOk?: boolean } = {}) {
   const grants = {
     grant: vi.fn(async () => {}),
     consumeOnce: vi.fn(async () => {}),
-    setGrabbedApp: vi.fn(async () => {}),
-    clearGrabbedApp: vi.fn(async () => {}),
+    setActiveApp: vi.fn(async () => true),
+    clearActiveApp: vi.fn(async () => {}),
   }
   const actor: HostRunActor = {
+    slug: 'agent-1',
     inputs: {
       claim: async (id) => requests.claimRequest(id),
       releaseClaim: async (id, token) => requests.releaseClaim(id, token),
@@ -68,7 +69,7 @@ function fakeHost(answers: CallAnswers = {}) {
   const sent: Array<[keyof HostEvents, unknown]> = []
   const defaults: CallAnswers = {
     computerUsePermissions: async () => null,
-    computerUse: async ({ method }) => `${method} ok`,
+    computerUse: async ({ method }) => ({ output: `${method} ok` }),
     computerUseAppIcon: async () => 'ICON',
     hostScript: async () => ({ exitCode: 0, stdout: 'hello', stderr: '' }),
   }
@@ -89,7 +90,7 @@ function fakeHost(answers: CallAnswers = {}) {
 const computerUseRun = (overrides: Partial<Parameters<typeof runComputerUse>[2]> = {}) => ({
   sessionId: SESSION,
   toolUseId: 'cu-1',
-  method: 'apps',
+  method: 'list-apps',
   params: {},
   permissionLevel: 'list_apps_windows' as const,
   ...overrides,
@@ -109,24 +110,64 @@ describe('runComputerUse', () => {
 
     expect(outcome).toEqual({ status: 'resolved' })
     expect(host.calls).toEqual([
-      ['computerUsePermissions', {}],
-      ['computerUse', { method: 'apps', params: {} }],
+      ['computerUsePermissions', { screenRecording: false }],
+      ['computerUse', { method: 'list-apps', params: {}, caller: { sessionId: SESSION, agentSlug: 'agent-1' } }],
     ])
-    expect(containerCalls).toEqual([{ path: '/inputs/cu-1/resolve', body: { value: 'apps ok' } }])
+    expect(containerCalls).toEqual([{ path: '/inputs/cu-1/resolve', body: { value: 'list-apps ok' } }])
     expect(settled).toEqual([{ id: 'cu-1', how: 'clearPending', outcome: 'answered' }])
     expect(host.sent).toEqual([
-      ['analytics', { event: 'computer_use_executed', properties: { method: 'apps', permissionLevel: 'list_apps_windows', grantType: undefined } }],
+      ['analytics', { event: 'computer_use_executed', properties: { method: 'list-apps', permissionLevel: 'list_apps_windows', grantType: undefined } }],
     ])
   })
 
-  it('records the grant the user chose, and spends a once-grant on this run', async () => {
+  it('records the grant the user chose', async () => {
     const { actor, park, grants } = fakeActor()
     park('cu-1', 'computer_use')
 
-    await runComputerUse(actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', appName: 'Calculator', grantType: 'once' }))
+    await runComputerUse(actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', appName: 'Calculator', grantType: 'timed' }))
 
-    expect(grants.grant).toHaveBeenCalledWith('use_application', 'once', 'Calculator')
-    expect(grants.consumeOnce).toHaveBeenCalledWith('use_application', 'Calculator')
+    expect(grants.grant).toHaveBeenCalledWith('use_application', 'timed', 'Calculator')
+  })
+
+  it('records an any-app grant instead when the user chose one, for a call in a named app or in none', async () => {
+    const named = fakeActor()
+    named.park('cu-1', 'computer_use')
+    await runComputerUse(named.actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', appName: 'Calculator', grantType: 'always', grantAnyApp: true }))
+    expect(named.grants.grant.mock.calls).toEqual([['use_any_application', 'always']])
+
+    const unplaced = fakeActor()
+    unplaced.park('cu-1', 'computer_use')
+    await runComputerUse(unplaced.actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', grantType: 'timed', grantAnyApp: true }))
+    expect(unplaced.grants.grant.mock.calls).toEqual([['use_any_application', 'timed']])
+  })
+
+  // The any-app grant never covers a shell script, whatever the request asks for.
+  it('records the shell grant, not an any-app one, for a shell-level call', async () => {
+    const { actor, park, grants } = fakeActor()
+    park('cu-1', 'computer_use')
+    await runComputerUse(actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_host_shell', grantType: 'always', grantAnyApp: true }))
+    expect(grants.grant.mock.calls).toEqual([['use_host_shell', 'always', undefined]])
+  })
+
+  it('records no any-app grant for a call approved once', async () => {
+    const { actor, park, grants } = fakeActor()
+    park('cu-1', 'computer_use')
+    await runComputerUse(actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', grantType: 'once', grantAnyApp: true }))
+    expect(grants.grant).not.toHaveBeenCalled()
+  })
+
+  // A once-grant held while the command waited in the session's queue would
+  // have approved the agent's other calls in that app.
+  it('runs a call approved once without recording a grant that could cover another call', async () => {
+    const { actor, park, grants } = fakeActor()
+    const host = fakeHost()
+    park('cu-1', 'computer_use')
+
+    expect(await runComputerUse(actor, host.port, computerUseRun({ permissionLevel: 'use_application', appName: 'Calculator', grantType: 'once' })))
+      .toEqual({ status: 'resolved' })
+
+    expect(host.calls.map(([name]) => name)).toContain('computerUse')
+    expect(grants.grant).not.toHaveBeenCalled()
   })
 
   it('does nothing for a request another decision holds', async () => {
@@ -169,6 +210,32 @@ describe('runComputerUse', () => {
     expect(requests.claimRequest('cu-1')).not.toBeNull()
   })
 
+  it('checks Screen Recording too for a call that takes a screenshot', async () => {
+    const { actor, park } = fakeActor()
+    const host = fakeHost()
+    park('cu-1', 'computer_use')
+
+    await runComputerUse(actor, host.port, computerUseRun({ method: 'screenshot', params: { argv: ['--app=Notes'] }, permissionLevel: 'use_application' }))
+
+    expect(host.calls[0]).toEqual(['computerUsePermissions', { screenRecording: true }])
+  })
+
+  it('asks the user, not the agent, when agent-desktop refuses a call for a permission taken away since the check', async () => {
+    const { actor, park, requests, containerCalls, settled } = fakeActor()
+    const permissions = { accessibility: false, screen_recording: true }
+    let checks = 0
+    const host = fakeHost({
+      computerUsePermissions: async () => (checks++ === 0 ? null : permissions),
+      computerUse: async () => ({ output: '{"ok":false,"error":{"code":"PERM_DENIED"}}', permissionDenied: true }),
+    })
+    park('cu-1', 'computer_use')
+
+    expect(await runComputerUse(actor, host.port, computerUseRun())).toEqual({ status: 'missing_permissions', permissions })
+    expect(containerCalls).toEqual([])
+    expect(settled).toEqual([])
+    expect(requests.claimRequest('cu-1')).not.toBeNull()
+  })
+
   it('fails the agent\'s call when the command fails, settling the request as invalidated', async () => {
     const { actor, park, settled, containerCalls } = fakeActor()
     const host = fakeHost({ computerUse: async () => { throw new Error('window not found') } })
@@ -182,42 +249,68 @@ describe('runComputerUse', () => {
     expect(settled).toEqual([{ id: 'cu-1', how: 'clearPending', outcome: 'invalidated' }])
   })
 
-  it('records a grab and tells the session, with the icon once the host finds it', async () => {
+  it('records the app a command acted in and tells the session, with the icon once the host finds it', async () => {
     const { actor, park, frames, grants } = fakeActor()
     park('cu-1', 'computer_use')
 
-    await runComputerUse(actor, fakeHost().port, computerUseRun({ method: 'grab', permissionLevel: 'use_application', appName: 'Calculator' }))
+    await runComputerUse(actor, fakeHost({ computerUse: async () => ({ output: 'ok', app: 'Calculator' }) }).port, computerUseRun({
+      method: 'click',
+      params: { ref: '@s1:e1' },
+      permissionLevel: 'use_application',
+      appName: 'Calculator',
+    }))
     await vi.waitFor(() => expect(frames).toHaveLength(2))
 
-    expect(grants.setGrabbedApp).toHaveBeenCalledWith('Calculator')
+    expect(grants.setActiveApp).toHaveBeenCalledWith(SESSION, 'Calculator')
     expect(frames).toEqual([
-      { type: 'computer_use_grab_changed', app: 'Calculator' },
-      { type: 'computer_use_grab_changed', app: 'Calculator', appIcon: 'ICON' },
+      { type: 'computer_use_app_changed', app: 'Calculator' },
+      { type: 'computer_use_app_changed', app: 'Calculator', appIcon: 'ICON' },
     ])
   })
 
-  it('treats a launch as a grab of the launched app', async () => {
+  it('takes the app the machine reports over the one the request named', async () => {
     const { actor, park, grants, frames } = fakeActor()
     park('cu-1', 'computer_use')
 
-    await runComputerUse(actor, fakeHost({ computerUseAppIcon: async () => null }).port, computerUseRun({
+    await runComputerUse(actor, fakeHost({ computerUse: async () => ({ output: 'ok', app: 'Notes' }), computerUseAppIcon: async () => null }).port, computerUseRun({
       method: 'launch',
-      params: { name: 'Notes' },
+      params: { app: 'com.apple.Notes' },
       permissionLevel: 'use_application',
+      appName: 'com.apple.Notes',
     }))
 
-    expect(grants.setGrabbedApp).toHaveBeenCalledWith('Notes')
-    expect(frames).toEqual([{ type: 'computer_use_grab_changed', app: 'Notes' }])
+    expect(grants.setActiveApp).toHaveBeenCalledWith(SESSION, 'Notes')
+    expect(frames).toEqual([{ type: 'computer_use_app_changed', app: 'Notes' }])
   })
 
-  it.each(['ungrab', 'quit'])('clears the grab on %s', async (method) => {
+  it('tells the session nothing when the agent stays in the same app', async () => {
+    const { actor, park, grants, frames } = fakeActor()
+    grants.setActiveApp.mockResolvedValue(false)
+    park('cu-1', 'computer_use')
+
+    await runComputerUse(actor, fakeHost({ computerUse: async () => ({ output: 'ok', app: 'Notes' }) }).port, computerUseRun({ method: 'click', permissionLevel: 'use_application' }))
+
+    expect(frames).toEqual([])
+  })
+
+  it('shows no app for a command on the clipboard or the whole screen', async () => {
     const { actor, park, grants, frames } = fakeActor()
     park('cu-1', 'computer_use')
 
-    await runComputerUse(actor, fakeHost().port, computerUseRun({ method, permissionLevel: 'use_application' }))
+    await runComputerUse(actor, fakeHost().port, computerUseRun({ method: 'clipboard-get', params: { argv: [] }, permissionLevel: 'use_application', appName: 'Clipboard' }))
 
-    expect(grants.clearGrabbedApp).toHaveBeenCalled()
-    expect(frames).toEqual([{ type: 'computer_use_grab_changed', app: null }])
+    expect(grants.setActiveApp).not.toHaveBeenCalled()
+    expect(frames).toEqual([])
+  })
+
+  it('clears the app on close-app', async () => {
+    const { actor, park, grants, frames } = fakeActor()
+    park('cu-1', 'computer_use')
+
+    await runComputerUse(actor, fakeHost().port, computerUseRun({ method: 'close-app', params: { app: 'Notes' }, permissionLevel: 'use_application', appName: 'Notes' }))
+
+    expect(grants.clearActiveApp).toHaveBeenCalledWith(SESSION)
+    expect(frames).toEqual([{ type: 'computer_use_app_changed', app: null }])
   })
 
   it('leaves the request open when the container will not take the result', async () => {
@@ -291,13 +384,17 @@ describe('runScript', () => {
     expect(settled).toEqual([{ id: 'sr-1', how: 'resolve', outcome: 'answered' }])
   })
 
-  it('records the user\'s grant and spends a once-grant on this run', async () => {
-    const { actor, park, grants } = fakeActor()
-    park('sr-1', 'script_run')
+  it('records the user\'s timed grant, and none for a script approved once', async () => {
+    const timed = fakeActor()
+    timed.park('sr-1', 'script_run')
+    await runScript(timed.actor, fakeHost().port, scriptRun({ grantType: 'timed' }))
+    expect(timed.grants.grant).toHaveBeenCalledWith('use_host_shell', 'timed')
 
-    await runScript(actor, fakeHost().port, scriptRun({ grantType: 'once' }))
-    expect(grants.grant).toHaveBeenCalledWith('use_host_shell', 'once')
-    expect(grants.consumeOnce).toHaveBeenCalledWith('use_host_shell')
+    // Held while the script ran, a once-grant approved the agent's next script too.
+    const once = fakeActor()
+    once.park('sr-1', 'script_run')
+    expect(await runScript(once.actor, fakeHost().port, scriptRun({ grantType: 'once' }))).toEqual({ status: 'resolved' })
+    expect(once.grants.grant).not.toHaveBeenCalled()
   })
 
   it('does nothing for a request another decision holds', async () => {
@@ -360,14 +457,14 @@ describe('runAutoApproved', () => {
 
   it('runs a second delivery of the same call not at all', async () => {
     const { actor, park } = fakeActor()
-    let finish!: (output: string) => void
+    let finish!: (result: { output: string }) => void
     const host = fakeHost({ computerUse: () => new Promise((resolve) => { finish = resolve }) })
     park('cu-1', 'computer_use', true)
 
     const first = runAutoApproved(actor, host.port, { kind: 'computerUse', ...computerUseRun() })
     await vi.waitFor(() => expect(host.calls.map(([name]) => name)).toContain('computerUse'))
     await runAutoApproved(actor, host.port, { kind: 'computerUse', ...computerUseRun() })
-    finish('done')
+    finish({ output: 'done' })
     await first
 
     expect(host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1)
@@ -382,7 +479,7 @@ describe('runAutoApproved', () => {
 
     expect(containerCalls).toEqual([{
       path: '/inputs/cu-1/reject',
-      body: { reason: 'Auto-execute failed: computer use is missing macOS permissions on this machine: Accessibility, Screen Recording' },
+      body: { reason: 'Auto-execute failed: this computer is missing macOS permissions computer use needs (Accessibility, Screen Recording). Nothing was done; the app asks the user for them when you next use the computer.' },
     }])
     expect(settled).toEqual([{ id: 'cu-1', how: 'clearPending', outcome: 'invalidated' }])
   })
@@ -398,21 +495,37 @@ describe('runAutoApproved', () => {
     expect(settled).toEqual([{ id: 'sr-1', how: 'resolve', outcome: 'invalidated' }])
   })
 
-  it('fails the call when the command never finishes, and ignores a late result', async () => {
+  it('gives a command 50 seconds to start, and lets a started one run to its own end', async () => {
+    vi.useFakeTimers()
+    const { actor, park } = fakeActor()
+    const host = fakeHost()
+    park('cu-1', 'computer_use', true)
+
+    await runAutoApproved(actor, host.port, { kind: 'computerUse', ...computerUseRun() })
+
+    const request = host.calls.find(([name]) => name === 'computerUse')?.[1] as { startBy?: number }
+    expect(request.startBy).toBe(Date.now() + 50_000)
+  })
+
+  it('fails the call when the host never answers, and ignores a late result', async () => {
     vi.useFakeTimers()
     const { actor, park, containerCalls, settled } = fakeActor()
-    let finish!: (output: string) => void
+    let finish!: (result: { output: string }) => void
     const host = fakeHost({ computerUse: () => new Promise((resolve) => { finish = resolve }) })
     park('cu-1', 'computer_use', true)
 
     const run = runAutoApproved(actor, host.port, { kind: 'computerUse', ...computerUseRun() })
-    await vi.advanceTimersByTimeAsync(30_000)
+    // Well past the 50s a command has to start: a started command is the
+    // executor's to stop, within its own budget.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(containerCalls).toEqual([])
+    await vi.advanceTimersByTimeAsync(410_000 - 60_000)
     await run
 
-    expect(containerCalls).toEqual([{ path: '/inputs/cu-1/reject', body: { reason: 'Auto-execute failed: no result after 30 seconds' } }])
+    expect(containerCalls).toEqual([{ path: '/inputs/cu-1/reject', body: { reason: 'Auto-execute failed: no result after 410 seconds' } }])
     expect(settled).toEqual([{ id: 'cu-1', how: 'clearPending', outcome: 'invalidated' }])
 
-    finish('too late')
+    finish({ output: 'too late' })
     await vi.runAllTimersAsync()
     // The late result finds the call already failed: the container refuses it
     // and nothing is settled a second time.

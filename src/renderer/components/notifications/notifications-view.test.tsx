@@ -268,6 +268,16 @@ describe('NotificationsView', () => {
     expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'bot-1', sessionId: 'sess-42' }))
   })
 
+  it('links a mention to the message it tags', () => {
+    mockNotificationsData = {
+      items: [makeNotification({ id: '1', type: 'session_mention', agentSlug: 'bot-1', sessionId: 'sess-42', messageUuid: 'msg-7' })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    const link = screen.getByText('Notification 1').closest('a')
+    expect(link).toHaveAttribute('data-search', JSON.stringify({ message: 'msg-7' }))
+  })
+
   it('marks unread notification as read on click', async () => {
     const user = userEvent.setup()
     mockNotificationsData = {

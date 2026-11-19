@@ -3,6 +3,7 @@ import { getSettings } from '../config/settings'
 import { changesOf } from '../db/batch'
 import { db } from '../db'
 import { llmConnections } from '../db/schema'
+import { announceConnectionChange } from './announce-connection-change'
 import { connectionConfigSchema, connectionModelOverridesSchema, parseConnectionJson } from './connection-schema'
 import { connectionModelOverrides, getConnection, mutateConnections } from './connections'
 import { mergeInstalledModels } from './ollama-catalog'
@@ -46,6 +47,8 @@ async function applyInstalledModels(id: string, installed: readonly InstalledMod
       .run()
     // Lost to a concurrent save: the next pass works from what that save wrote.
     if (!changesOf(written)) console.warn('[ollama] Catalog changed while syncing; retrying on the next pass')
+    // A background pass, so no request will refresh the pickers that list these models.
+    else announceConnectionChange(row)
   })
 }
 

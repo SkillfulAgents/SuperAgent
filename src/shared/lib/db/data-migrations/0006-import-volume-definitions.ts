@@ -43,7 +43,7 @@ export const importVolumeDefinitions: DataMigration = {
         // Each insert is independently idempotent: a crash between them is
         // repaired on retry, without replacing a user's renamed definition.
         await db.insert(volumeDefinitions).values({
-          id: volumeId, userId: owner?.userId ?? null, name: row.name, type: row.type,
+          id: volumeId, createdBy: owner?.userId ?? null, visibility: owner ? 'private' : 'public', name: row.name, type: row.type,
           config: JSON.stringify(z.json().parse(row.config)), createdAt: now, updatedAt: now,
         }).onConflictDoNothing().run()
         await db.insert(agentVolumes).values({

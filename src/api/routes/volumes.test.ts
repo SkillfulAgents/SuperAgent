@@ -68,7 +68,7 @@ describe('/api/volumes', () => {
   })
 
   it('403s a row of the agent of a type this version does not know', async () => {
-    await handle.db.insert(volumeDefinitions).values({ id: 'drive', name: 'drive', type: 'not-a-type', config: '{}', createdAt: new Date(), updatedAt: new Date() }).run()
+    await handle.db.insert(volumeDefinitions).values({ id: 'drive', name: 'drive', visibility: 'public', type: 'not-a-type', config: '{}', createdAt: new Date(), updatedAt: new Date() }).run()
     await handle.db.insert(agentVolumes).values({ id: 'drive', name: 'drive', volumeId: 'drive', agentSlug: 'agent-a', createdAt: new Date() }).run()
     expect((await request('drive/', { method: 'PROPFIND', headers: { Depth: '0' } })).status).toBe(403)
   })
@@ -176,7 +176,7 @@ describe('/api/volumes', () => {
   })
 
   it('serves only reads on a read-only mount, and changes nothing', async () => {
-    await setMountReadOnly('agent-a', volumeId, true)
+    await setMountReadOnly('agent-a', volumeId, true, { userId: null, admin: true })
     expect((await request(volumeId, { method: 'PROPFIND', headers: { Depth: '1' } })).status).toBe(207)
     expect(await (await request(`${volumeId}/a.txt`)).text()).toBe('hello world')
     expect((await request(`${volumeId}/a.txt`, { method: 'HEAD' })).status).toBe(200)

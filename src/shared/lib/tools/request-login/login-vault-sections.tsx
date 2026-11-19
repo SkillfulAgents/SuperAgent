@@ -99,6 +99,65 @@ export function AccountChooser({
   )
 }
 
+/**
+ * On a step of two-step verification (the ways to verify, or a code) for an
+ * account of the user's: have the agent add a passkey, or an authenticator
+ * app next to the verification the account already has, once signed in, so later sign-ins
+ * need nothing from them. Requested at once (the agent hears it as the
+ * user's own message once its turn ends), apart from how the card is
+ * answered, so it is not taken back here.
+ */
+export function AddSignInMethodBox({
+  addMethod,
+  onRequest,
+  disabled,
+}: {
+  addMethod: NonNullable<LoginVaultInfo['addMethod']>
+  onRequest: () => Promise<void>
+  disabled: boolean
+}) {
+  const [requested, setRequested] = useState(addMethod.requested)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const request = async () => {
+    setSending(true)
+    setError(null)
+    try {
+      await onRequest()
+      setRequested(true)
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'The agent could not be asked')
+    } finally {
+      setSending(false)
+    }
+  }
+  return (
+    <div className="space-y-1 rounded-md border border-border bg-muted/30 p-2.5" data-testid="login-add-method-section">
+      <label className="flex items-start gap-2 text-xs text-foreground">
+        <Checkbox
+          checked={requested}
+          onCheckedChange={(value) => {
+            if (value === true) void request()
+          }}
+          disabled={disabled || requested || sending}
+          className="mt-0.5"
+          data-testid="login-add-method"
+          aria-describedby="login-add-method-hint"
+        />
+        <span className="min-w-0">
+          <span className="block font-medium">Also add a passkey or authenticator app</span>
+          <span id="login-add-method-hint" className="block text-2xs text-muted-foreground">
+            {requested
+              ? <>Asked: once signed in, the agent adds a passkey to <span className="break-all">{addMethod.username}</span>, or an authenticator app next to the two-step verification it already has.</>
+              : <>Once signed in, the agent adds a passkey to <span className="break-all">{addMethod.username}</span>, or an authenticator app next to the two-step verification it already has, so later sign-ins need nothing from you.</>}
+          </span>
+        </span>
+      </label>
+      {error && <p className="text-2xs text-destructive" role="alert" data-testid="login-add-method-error">{error}</p>}
+    </div>
+  )
+}
+
 /** "Save for later": the account goes to the user's vault, and this agent may use it. */
 export function SaveForLater({
   checked,

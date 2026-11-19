@@ -477,6 +477,55 @@
       "when": 1794261056427,
       "tag": "0067_agent_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "6",
+      "when": 1794451767741,
+      "tag": "0068_chat_sessions_by_session",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "6",
+      "when": 1794868843117,
+      "tag": "0069_query_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "6",
+      "when": 1795027962529,
+      "tag": "0070_todos_connection_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "6",
+      "when": 1795041346189,
+      "tag": "0071_drive_acl",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "6",
+      "when": 1795048855087,
+      "tag": "0072_team_brain_drive_visibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1795053244107,
+      "tag": "0073_message_agent_senders",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1795056099108,
+      "tag": "0074_browser_vault_sign_in_methods",
+      "breakpoints": true
     }
   ]
 }

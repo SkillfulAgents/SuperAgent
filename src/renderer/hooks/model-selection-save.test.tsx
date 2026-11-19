@@ -4,18 +4,15 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { useUpdateAgentPreferences } from './use-agent-preferences'
 import { useUpdateAgentIntegration } from './use-agent-integrations'
 import { useUpdateScheduledTaskRuntimeOptions } from './use-scheduled-tasks'
 import { useUpdateWebhookTriggerRuntimeOptions } from './use-webhook-triggers'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
+// The agent default has no refresh to wait for: its PUT's response is written to
+// the cache (use-agent-preferences.test.tsx).
 const cases = [
-  ['agent default', () => {
-    const mutation = useUpdateAgentPreferences('agent')
-    return { pending: mutation.isPending, save: () => mutation.mutate({ defaultLlmProviderId: 'next', defaultModel: 'haiku' }) }
-  }],
   ['integration', () => {
     const mutation = useUpdateAgentIntegration()
     return { pending: mutation.isPending, save: () => mutation.mutate({ id: 'item', llmProviderId: 'next', model: 'haiku' }) }

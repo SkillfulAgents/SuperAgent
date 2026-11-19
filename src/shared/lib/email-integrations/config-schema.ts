@@ -17,6 +17,8 @@ export const emailSetupSchema = z.object({
   accessLevel: emailAccessSchema.default('agent-users-and-replies'),
   allowedDomains: z.array(domain).max(50).default([]),
 }).strict().refine(v => v.accessLevel !== 'allowed-domains' || v.allowedDomains.length > 0, 'Add at least one allowed domain')
+/** What an agent may choose for an inbox it creates; `emailSetupSchema` then validates the values. */
+export const emailAgentSetupSchema = z.strictObject({ localPart: z.unknown(), displayName: z.unknown() }, 'An agent sets only localPart and displayName; the owner chooses who may email the inbox')
 export const emailIntegrationConfigSchema = emailSetupSchema.safeExtend({
   mailboxId: z.string().uuid(),
   address: z.string().email(),
@@ -48,6 +50,8 @@ export const emailMessageSchema = z.object({
   subject: z.string().nullable(), text: z.string().nullable(), html: z.string().nullable(),
   status: z.string(), createdAt: z.number(), authentication,
   attachments: z.array(z.object({ id: z.string(), filename: z.string(), contentType: z.string(), size: z.number() })).default([]),
+  /** The threads the gateway merged into this one, nearest first. Only a read of one message lists them. */
+  threadAliases: z.array(z.string()).optional(),
 })
 export type EmailMessage = z.infer<typeof emailMessageSchema>
 export const emailSendSchema = z.object({

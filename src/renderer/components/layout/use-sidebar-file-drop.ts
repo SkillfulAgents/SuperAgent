@@ -1,7 +1,7 @@
 import { useCallback, type DragEventHandler } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { useDraftsStore } from '@renderer/context/drafts-context'
+import { agentHomeId, useDraftsStore } from '@renderer/context/drafts-context'
 import { getItemsFromDataTransfer } from '@renderer/lib/file-utils'
 import { setPendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 
@@ -82,7 +82,7 @@ export function useSidebarFileDrop(target: SidebarFileDropTarget): {
       if (items.files.length === 0 && items.folders.length === 0) return
 
       if (kind === 'agent') {
-        setPendingAttachmentDrop(store, `agent:${agentSlug}`, items)
+        setPendingAttachmentDrop(store, `session:${agentHomeId(agentSlug)}`, items)
         void navigate({ to: '/agents/$slug', params: { slug: displaySlug! } })
         return
       }

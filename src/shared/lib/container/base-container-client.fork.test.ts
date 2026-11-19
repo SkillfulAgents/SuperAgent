@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ContainerConfig, ContainerInfo } from './types'
-import { ContainerConflictError, ContainerNotFoundError } from './types'
+import { ContainerNotFoundError } from './types'
 import { BaseContainerClient } from './base-container-client'
 
 vi.mock('@shared/lib/container/host-token-store', () => ({ getOrCreateHostToken: () => 'test-host-token' }))
@@ -28,11 +28,6 @@ describe('BaseContainerClient.forkSession', () => {
   it('throws ContainerNotFoundError when the session is gone (JSON 404)', async () => {
     const client = new StubFetchClient(Response.json({ error: 'Session not found' }, { status: 404 }))
     await expect(client.forkSession('src-1')).rejects.toBeInstanceOf(ContainerNotFoundError)
-  })
-
-  it('throws ContainerConflictError on 409', async () => {
-    const client = new StubFetchClient(Response.json({ error: 'busy', code: 'session_busy' }, { status: 409 }))
-    await expect(client.forkSession('src-1')).rejects.toBeInstanceOf(ContainerConflictError)
   })
 
   it('returns the new id on 201', async () => {

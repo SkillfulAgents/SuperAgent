@@ -129,8 +129,8 @@ async function fetchPlatformAccountInfo(token: string) {
 
 // Every account read carries the account's plan policy (SUP-1124): keep it for
 // model selection, keyed by the account it describes.
-function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T): T {
-  platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId), accountPlanPolicy(account))
+async function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T): Promise<T> {
+  await platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId), accountPlanPolicy(account))
   return account
 }
 
@@ -477,14 +477,14 @@ function normalizeOrgIconUrl(value: string | null): string | null {
 const ENRICHED_ACCOUNT_TTL_MS = 5 * 60 * 1000
 const enrichedAccountCache = new Map<
   string,
-  { account: EnrichedEnvAccount | null; expiresAt: number }
+  { account: Promise<EnrichedEnvAccount | null>; expiresAt: number }
 >()
 
 async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvAccount | null> {
   const token = await getPlatformAccessToken()
   if (!token) return null
   try {
-    const account = rememberAccountPolicy(await runWithRequestUser(userId, () =>
+    const account = await rememberAccountPolicy(await runWithRequestUser(userId, () =>
       fetchPlatformJson({
         path: '/v1/account',
         token,
@@ -528,14 +528,19 @@ export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<Pl
 
   let entry = enrichedAccountCache.get(userId)
   if (!entry || entry.expiresAt <= Date.now()) {
-    entry = {
-      account: await introspectEnvManagedAccount(userId),
+    // The promise is cached, so callers that miss together share one request.
+    const created = {
+      account: introspectEnvManagedAccount(userId),
       expiresAt: Date.now() + ENRICHED_ACCOUNT_TTL_MS,
     }
-    enrichedAccountCache.set(userId, entry)
+    enrichedAccountCache.set(userId, created)
+    created.account.catch(() => {
+      if (enrichedAccountCache.get(userId) === created) enrichedAccountCache.delete(userId)
+    })
+    entry = created
   }
 
-  const { account } = entry
+  const account = await entry.account
   if (!account) return base
 
   return {

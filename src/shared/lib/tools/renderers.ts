@@ -12,6 +12,7 @@ import { todoWriteRenderer } from './todo-write/renderer'
 import { askUserQuestionRenderer } from './ask-user-question/renderer'
 import { requestSecretRenderer } from './request-secret/renderer'
 import { requestConnectedAccountRenderer } from './request-connected-account/renderer'
+import { requestIntegrationSetupRenderer } from './request-integration-setup/renderer'
 import { scheduleTaskRenderer } from './schedule-task/renderer'
 import { scheduleResumeRenderer } from './schedule-resume/renderer'
 import { deliverFileRenderer } from './deliver-file/renderer'
@@ -61,6 +62,7 @@ import {
   listChatProvidersRenderer,
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
   sendChatMessageRenderer,
 } from './chat-tools/renderer'
 import {
@@ -92,6 +94,7 @@ const toolRenderers = new Map([
   askUserQuestionRenderer,
   requestSecretRenderer,
   requestConnectedAccountRenderer,
+  requestIntegrationSetupRenderer,
   scheduleTaskRenderer,
   scheduleResumeRenderer,
   deliverFileRenderer,
@@ -133,6 +136,7 @@ const toolRenderers = new Map([
   listChatProvidersRenderer,
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
   sendChatMessageRenderer,
 ].map(renderer => [renderer.definition, renderer]))
 

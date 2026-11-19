@@ -31,4 +31,13 @@ describe('AgentMarkdown', () => {
     expect(parsed.filter(text => text === 'Settled block.')).toHaveLength(1)
     expect(parsed.filter(text => text !== 'Settled block.')).toEqual(['Grow', 'Growing', 'Growing tail'])
   })
+
+  it("reads an agent's tags unless the caller already read them, and holds back one still being written", () => {
+    parsed.length = 0
+    render(<AgentMarkdown text="[@Ann](user:u1), please look" mode="settled" />)
+    render(<AgentMarkdown text="[@Ann](user:u1), as typed" mode="settled" mentions={[]} />)
+    render(<AgentMarkdown text="Ask [@Ann](us" mode="streaming" />)
+
+    expect(parsed).toEqual(['@Ann, please look', '[@Ann](user:u1), as typed', 'Ask '])
+  })
 })

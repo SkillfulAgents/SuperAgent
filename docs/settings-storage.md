@@ -13,7 +13,7 @@ process is what every other process of the deployment reads next.
 | `auth-secret` | Better Auth's secret when `BETTER_AUTH_SECRET` is unset; also the root of the S3 volume credential key | `getOrCreateAuthSecret()` on first use |
 | `host-container-token:<agent>` | the per-agent token the host presents to the agent's container | `getOrCreateHostToken(agent)` on first use |
 | `platform-client-instance-id` | this deployment's client id for platform device login | `getOrCreatePlatformClientInstanceId()` on first use |
-| `browser-context:<provider>:<key>` | persistent Browserbase context ids of the host-browser providers | `getOrCreateMapping()` on first open |
+| `browser-context:<provider>:<key>` | persistent remote context ids of the cloud host-browser providers (Browserbase context ids; Steel profile ids) | `getOrCreateMapping()` on first open; `replaceContextMapping()` when Steel no longer has the profile |
 | `account-deletion-request:<userId>` | an account's deletion request: its id, when it was confirmed, and whether Amplitude acknowledged it ([account-deletion.md](account-deletion.md)) | `requestAccountDeletion()` on the first confirmed request |
 
 Values are validated with Zod on every read and write
@@ -21,8 +21,9 @@ Values are validated with Zod on every read and write
 
 ## Reading
 
-`await getSettings()` reads the database every time. There is no process
-cache, and nothing to invalidate. Read once at the start of an operation (a
+`await getSettings()` reads the database every time, except that the calls
+inside one API request share a read (below). There is no process cache, and
+nothing to invalidate. Read once at the start of an operation (a
 request, a job, a session start, a message) and pass the value or the fields
 you need to the helpers that operation calls, rather than having every helper
 read again. Never keep settings, or anything built from them, in module state
@@ -47,6 +48,21 @@ the count does not grow with the batch. Within one request, the
 platform attribution is resolved once and shared
 (`platform-attribution/request-context.ts`); work the request leaves running
 after it ends resolves afresh, and a platform-auth write in the request drops it.
+
+An API request is one operation whose settings readers are spread over the
+auth middleware, the handler and the services it calls, so inside one request
+`getSettings()` calls share a single read (`config/settings-request-memo.ts`;
+the API's first middleware opens the scope). Each caller gets its own deep
+copy. The shared read belongs to that request and goes away with it: it is
+dropped when the handler settles, so a stream the handler returned and work it
+left running read afresh; any settings write this process makes (in that
+request or another) makes it stale; and a write always reads the row itself,
+never the shared read. `getSettings(db)` with an explicit handle, and every
+call outside a request (a task, startup, a chat message), reads every time. A
+request does not see a write another process commits while it runs, exactly as
+if it had read once and passed the value down. This is not a reason to add
+readers: passing the value down still saves the copy, and is the only thing
+that helps outside a request.
 
 Invalid stored settings read as the defaults (reported, never written back).
 A database error is not invalid data: it propagates.

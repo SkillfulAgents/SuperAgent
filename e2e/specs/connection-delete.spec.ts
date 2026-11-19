@@ -183,7 +183,7 @@ test.describe('Connection deletion cascade', () => {
       // The agent-home card no longer lists it.
       await gotoAgentHome(page, agent)
       await openHomeSection(page, 'Connections')
-      await expect(page.getByText('No connections yet')).toBeVisible()
+      await expect(page.getByText('Connect APIs or MCP servers')).toBeVisible()
       await expect(page.getByText(account.displayName)).toHaveCount(0)
     } finally {
       await request.delete(`/api/connected-accounts/${account.id}`).catch(() => {})

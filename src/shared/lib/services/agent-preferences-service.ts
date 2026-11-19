@@ -30,7 +30,20 @@ export async function readAgentPreferences(
   /** The operation's settings, when the caller already read them. */
   settings?: AppSettings,
 ): Promise<AgentPreferences> {
-  const prefs = await readStoredAgentPreferences(agentSlug)
+  return resolveAgentPreferences(await readStoredAgentPreferences(agentSlug), settings)
+}
+
+/**
+ * Stored preferences in the form clients are given: the default model resolved
+ * against the connections, and dropped when it no longer resolves. The GET and
+ * the PUT both answer with this, so a client can keep the PUT's response in
+ * place of reading again.
+ */
+export async function resolveAgentPreferences(
+  prefs: AgentPreferences,
+  /** The operation's settings, when the caller already read them. */
+  settings?: AppSettings,
+): Promise<AgentPreferences> {
   if (!prefs.defaultModel) return prefs
   const current = settings ?? await getSettings()
   if (current.llmDefault) {

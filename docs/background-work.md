@@ -124,10 +124,11 @@ A service needs no `stop()` just to clear a timer, since the manager owns those.
 | `platform` | Account and billing refresh (10 s after start), cloud-workspace upkeep (30 min) | background |
 | `computer-use`, `active-runner`, `agent-registry`, `containers`, `host-browser` | None: they only release resources | stop only |
 
-Electron main adds two of its own, with their existing gates. They are not in web or Cloudflare runtimes:
+Electron main adds three of its own, with their existing gates. They are not in web or Cloudflare runtimes:
 
 - **Automatic update checks** (`src/main/auto-updater.ts`): a service with no phase, which Electron's entry point registers after `registerBackgroundWork()`. It starts once the updater is ready and the service is registered, checks 30 s after that, and every 4 hours from then.
 - **Spotlight** (`src/main/spotlight/spotlight-sync.ts`): a service with no phase, started once the window and API are up, since it does not depend on the other services starting. It passes 20 s after that, then every 5 minutes; a request for a sync sets a 5 s wakeup that the next request replaces.
+- **Agent status** (`src/main/agent-status-source.ts`): the one agent list the tray and the Agents menu are drawn from. A service with no phase, started with the menus. While a main window is open its renderer pushes the list and the pass does nothing. Otherwise it fetches every 120 s, and for this computer's Superagent a notification-stream event sets a 1 s wakeup that the next event replaces.
 
 The stale-upload sweep (`src/shared/lib/utils/chunked-upload.ts`) is a task with no service around it: `afterBindInitialize` schedules it ahead of the services, because a server whose services failed to start still takes uploads. It sweeps at once, then every 30 minutes, and each pass only sets a sweep going, so a slow sweep does not hold up the next.
 

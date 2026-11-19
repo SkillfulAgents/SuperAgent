@@ -157,6 +157,7 @@ describe('connecting a directory with one token', () => {
       expect(sealed).not.toMatch(/acme-token|admin-key|DIR1/)
     }
     expect(await findProvisioner('slack')).toEqual({ directoryId: row.id, workspace: 'ACME' })
+    await backgroundSettled()
     expect(await handle.db.select({ action: auditLog.action, userId: auditLog.userId }).from(auditLog).all()).toEqual([{ action: 'connected', userId: 'admin' }])
 
     await backgroundSettled()

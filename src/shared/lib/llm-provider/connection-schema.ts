@@ -31,6 +31,7 @@ export const connectionConfigSchema = z.object({
     .object({
       anthropicApiKey: z.string().optional(),
       claudeSubscriptionToken: z.string().trim().optional(),
+      planApiKey: z.string().trim().optional(),
       openrouterApiKey: z.string().optional(),
       genericApiKey: z.string().optional(),
       genericBaseUrl: z.string().optional(),

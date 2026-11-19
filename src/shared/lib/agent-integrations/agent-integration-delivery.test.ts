@@ -25,12 +25,15 @@ let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
 const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn(),
+  // The sessions running a turn, as the actor reports them.
+  running: [] as string[],
   // Sends to the session's last event stream.
   emit: (_event: unknown) => {} }))
 // Through the serializing transport in the transport suite, as callers reach a real actor.
 vi.mock('../agent-actor', async () => {
   const { viaTestTransport } = await import('../agent-actor/testing/via-test-transport')
   return { agentRegistry: { get: () => viaTestTransport({
+  live: async () => ({ activeSessionIds: runtime.running, awaitingSessionIds: [] }),
   container: { start: runtime.start }, inputs: { cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
     attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
@@ -121,6 +124,7 @@ async function rows() { return database.select().from(integrationDeliveries).all
 // not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
 beforeAll(async () => { await import('../services/session-defaults') })
 beforeEach(async () => {
+  runtime.running = []
   handle = await createTestDatabase(); database = handle.db; vi.clearAllMocks()
   runtime.create.mockImplementation(async (options: CreateSessionOptions) => {
     // POST /sessions and SessionManager both reject a missing/empty first input.
@@ -396,6 +400,8 @@ describe('shared manager durability with real integration storage', () => {
     const disconnect = vi.spyOn(old, 'disconnect').mockImplementation(async () => { await disconnectGate })
     adapter = Object.assign(new Chat(), { provider: 'slack' })
     runtime.subscribed.mockReturnValue(false)
+    // The session the creation starts runs its turn through the reconnect.
+    runtime.running = ['session-1']
     const reconnect = manager.reconnectAll()
     await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce())
     try {

@@ -101,7 +101,7 @@ function TextMarker({ slice, anchor, site, numbers }: MarkerProps<TextAnchor, Te
   }, [slice, anchor.lines, site.host])
   return (
     <span data-comment-marker className="select-none">
-      <CommentPin x={site.x} y={site.y} number={numbers[0]} />
+      {numbers.length > 0 && <CommentPin x={site.x} y={site.y} number={numbers[0]} />}
     </span>
   )
 }

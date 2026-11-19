@@ -13,12 +13,18 @@ import { randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { blobStore } from '@shared/lib/blob-store/blob-store'
-import { skillsetCacheBlobSchema, type PackedSkillsetFile } from './skillset-cache-blob-schema'
+import { skillsetCacheBlobSchema, storedSkillsetIndexSchema, type PackedSkillsetFile } from './skillset-cache-blob-schema'
 
 /** Not `skillset-cache/`: in the data dir that is the cache folder itself. */
 const keyFor = (repoDir: string) => `skillset-cache-packs/${path.basename(repoDir)}`
 /** Written after the folder's blob, so a reader that sees a version can read that blob. */
 const versionKeyFor = (key: string) => `${key}.version`
+/**
+ * The folder's index.json alone, with the version it belongs to. A caller that only lists what the
+ * skillset holds reads this small blob instead of the whole folder.
+ */
+const indexKeyFor = (key: string) => `${key}.index`
+const INDEX_FILE = 'index.json'
 
 interface DecodedFile {
   path: string
@@ -27,6 +33,8 @@ interface DecodedFile {
 }
 
 const decoded = new Map<string, { version: string; files: DecodedFile[] }>()
+/** The index text of the version this process last read, kept for the same reason as `decoded`. */
+const indexTexts = new Map<string, { version: string; text: string }>()
 
 const decode = (files: PackedSkillsetFile[]): DecodedFile[] => files.map((file) => ({ path: file.path, bytes: Buffer.from(file.data, 'base64'), mode: file.mode }))
 
@@ -77,9 +85,47 @@ export async function saveSkillsetCache(repoDir: string): Promise<void> {
   const version = randomUUID()
   const packed = skillsetCacheBlobSchema.parse({ v: 1, version, files })
   await store.put(key, new TextEncoder().encode(JSON.stringify(packed)))
+  const index = files.find((file) => file.path === INDEX_FILE)
+  if (index) {
+    const text = Buffer.from(index.data, 'base64').toString('utf8')
+    await store.put(indexKeyFor(key), new TextEncoder().encode(JSON.stringify({ version, text })))
+  }
   await store.put(versionKeyFor(key), new TextEncoder().encode(version))
   // Not kept in memory here: only a process that restores needs the decoded files.
   decoded.delete(key)
+  indexTexts.delete(key)
+}
+
+/**
+ * The stored copy's index.json, without restoring the folder. Null when the folder exists (it is
+ * then the one to read), when nothing is stored, or when the stored index is not of the stored
+ * version (a copy saved before the index was stored apart): the caller then restores the folder.
+ */
+export async function storedSkillsetIndexText(repoDir: string): Promise<string | null> {
+  try {
+    await fs.promises.lstat(repoDir)
+    return null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const key = keyFor(repoDir)
+  const store = blobStore()
+  const marker = await store.get(versionKeyFor(key))
+  if (!marker) return null
+  const version = new TextDecoder().decode(marker)
+  const kept = indexTexts.get(key)
+  if (kept?.version === version) return kept.text
+  const stored = await store.get(indexKeyFor(key))
+  if (!stored) return null
+  let index
+  try {
+    index = storedSkillsetIndexSchema.parse(JSON.parse(new TextDecoder().decode(stored)))
+  } catch {
+    return null
+  }
+  if (index.version !== version) return null
+  indexTexts.set(key, index)
+  return index.text
 }
 
 /** Restores an absent folder; false if it exists or no valid stored copy is available. */
@@ -108,8 +154,10 @@ export async function restoreSkillsetCache(repoDir: string): Promise<boolean> {
 export async function deleteSkillsetCache(repoDir: string): Promise<void> {
   const key = keyFor(repoDir)
   decoded.delete(key)
+  indexTexts.delete(key)
   const store = blobStore()
   // The marker first: once it is gone, no process restores the folder.
   await store.delete(versionKeyFor(key))
   await store.delete(key)
+  await store.delete(indexKeyFor(key))
 }

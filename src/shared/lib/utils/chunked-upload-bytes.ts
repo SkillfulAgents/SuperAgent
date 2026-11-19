@@ -20,6 +20,19 @@ export interface UploadByteStore {
   delete(key: string): Promise<void>
   /** Every key that starts with `prefix`, with its size in bytes. */
   list(prefix: string): Promise<{ key: string; size: number }[]>
+  /**
+   * The bytes under each key one after another, each opened only after the one
+   * before it was read through, and each proved to be its `size`. A missing key
+   * or another size errors the stream. A store whose runtime pipes streams
+   * natively joins them here, so no JavaScript handles every small piece.
+   */
+  streamInOrder(parts: readonly UploadBytesPart[]): ReadableStream<Uint8Array>
+}
+
+/** One stored object of an upload and the size its manifest says. */
+export interface UploadBytesPart {
+  key: string
+  size: number
 }
 
 /** Every key an upload uses starts with this. */
@@ -43,6 +56,67 @@ function onDisk(key: string): string {
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === 'ENOENT'
+}
+
+/**
+ * `streamInOrder` from a store's `stream`, read piece by piece
+ * (`highWaterMark: 0`), so the next object stays closed until the one before it
+ * has been read through and proved its size.
+ */
+export function readPartsInOrder(
+  open: (key: string) => Promise<ReadableStream<Uint8Array> | null>,
+  parts: readonly UploadBytesPart[],
+): ReadableStream<Uint8Array> {
+  let index = 0
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  let readOfPart = 0
+  let cancelled = false
+  const closeOpen = async (reason: unknown): Promise<void> => {
+    const current = reader
+    reader = null
+    await current?.cancel(reason).catch(() => undefined)
+  }
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        for (;;) {
+          const part = parts[index]
+          if (!part) {
+            controller.close()
+            return
+          }
+          if (!reader) {
+            const source = await open(part.key)
+            if (cancelled) {
+              await source?.cancel().catch(() => undefined)
+              return
+            }
+            if (!source) throw new Error(`Upload chunk ${index} is missing`)
+            reader = source.getReader()
+            readOfPart = 0
+          }
+          const { done, value } = await reader.read()
+          if (done) {
+            if (readOfPart !== part.size) throw new Error(`Upload chunk ${index} is ${readOfPart} bytes, its manifest says ${part.size}`)
+            reader = null
+            index++
+            continue
+          }
+          readOfPart += value.byteLength
+          if (readOfPart > part.size) throw new Error(`Upload chunk ${index} is over the ${part.size} bytes its manifest says`)
+          controller.enqueue(value)
+          return
+        }
+      } catch (error) {
+        await closeOpen(error)
+        throw error
+      }
+    },
+    cancel(reason) {
+      cancelled = true
+      return closeOpen(reason)
+    },
+  }, { highWaterMark: 0 })
 }
 
 /** The store that keeps bytes under this machine's temp uploads dir. */
@@ -109,6 +183,10 @@ export const localDiskUploadByteStore: UploadByteStore = {
       }
     }
     return found
+  },
+
+  streamInOrder(parts) {
+    return readPartsInOrder((key) => this.stream(key), parts)
   },
 }
 

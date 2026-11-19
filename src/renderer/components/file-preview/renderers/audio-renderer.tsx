@@ -7,6 +7,7 @@ import { useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
 import { VolumeControl } from './volume-control'
 import { getPathName } from '@shared/lib/utils/workspace-path'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 interface AudioRendererProps {
   url: string
@@ -94,16 +95,15 @@ export function AudioRenderer({ url, filePath, agentSlug }: AudioRendererProps) 
   useEffect(() => {
     if (!playing) return
 
-    let animationFrame = 0
     const updatePlayhead = () => {
       const audio = audioRef.current
       if (!audio || audio.paused || audio.ended) return
       setCurrentTime(audio.currentTime)
-      animationFrame = requestAnimationFrame(updatePlayhead)
     }
 
-    animationFrame = requestAnimationFrame(updatePlayhead)
-    return () => cancelAnimationFrame(animationFrame)
+    // Live: the audio plays on in a window that is not in use, and so does its playhead.
+    // 60 a second at most (ambient-frames.ts).
+    return subscribeToAmbientFrames(updatePlayhead, { kind: 'live' })
   }, [playing])
 
   const clearHoverCloseTimer = useCallback(() => {

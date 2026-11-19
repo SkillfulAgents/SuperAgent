@@ -5,6 +5,7 @@ import { ExternalLink, Loader2, QrCode, RefreshCw, Smartphone, Trash2 } from 'lu
 import { apiFetch } from '@renderer/lib/api'
 import { getRemoteDeploymentUrl, targetIsRemote } from '@renderer/lib/api-target'
 import { openExternalUrl } from '@renderer/lib/open-external'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils'
 import { Label } from '@renderer/components/ui/label'
@@ -44,10 +45,14 @@ async function mintPairingToken(): Promise<PairingToken> {
 }
 
 function AppStoreButton() {
+  const { track } = useAnalyticsTracking()
   return (
     <Button
       variant="outline"
-      onClick={() => void openExternalUrl(APP_STORE_URL)}
+      onClick={() => {
+        track('app_store_link_clicked', { surface: 'settings_mobile' })
+        void openExternalUrl(APP_STORE_URL)
+      }}
       data-testid="mobile-app-store-link"
     >
       <ExternalLink className="h-4 w-4 mr-2" />

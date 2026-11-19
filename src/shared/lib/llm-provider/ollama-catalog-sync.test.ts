@@ -7,6 +7,7 @@ import { deleteConnection, getConnection, resolveExecutionSelection, saveConnect
 import { syncAllOllamaCatalogs, syncCatalogsFromStatus } from './ollama-catalog-sync'
 import { ollamaModelDefinition } from './ollama-catalog'
 import type { InstalledModel } from './server-status-schema'
+import { globalFeed } from '../notifications/global-feed'
 
 const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null }))
 vi.mock('../db', () => ({ get db() { return state.db } }))
@@ -57,6 +58,19 @@ describe('Ollama catalog sync', () => {
     expect(await idsOf(id)).toEqual(['a:latest', 'b:latest'])
     await setGlobalSelection('default', { llmProviderId: id, model: 'b:latest' })
     expect(await resolveExecutionSelection(null)).toMatchObject({ wireModel: 'b:latest', llmProviderId: id })
+  })
+
+  it('announces a catalog it changed, and not a pass that changed nothing', async () => {
+    await save()
+    const publish = vi.spyOn(globalFeed, 'publish')
+    const announced = () => publish.mock.calls.filter(([event]) => event.type === 'llm_connections_changed').map(([event]) => event)
+    await syncCatalogsFromStatus(BASE, [model('a:latest')])
+    expect(announced()).toEqual([{ type: 'llm_connections_changed' }])
+    await syncCatalogsFromStatus(BASE, [model('a:latest')])
+    expect(announced()).toHaveLength(1)
+    await syncCatalogsFromStatus(BASE, [model('a:latest'), model('b:latest')])
+    expect(announced()).toHaveLength(2)
+    publish.mockRestore()
   })
 
   it('only touches connections on the server that reported', async () => {

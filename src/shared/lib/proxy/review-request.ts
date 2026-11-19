@@ -6,7 +6,8 @@
  * request withdraws its card.
  */
 import { randomUUID } from 'crypto'
-import type { ReviewDecision, ReviewOutcome, ReviewRequestOptions } from './agent-reviews'
+import type { ReviewDecision, ReviewDecisionDetail, ReviewOutcome, ReviewRequestOptions } from './agent-reviews'
+import type { XAgentPick } from './x-agent-review'
 import { background } from '../background'
 
 /**
@@ -21,11 +22,11 @@ export interface ReviewParking {
   withdraw(id: string): unknown
   resume(id: string): Promise<ReviewOutcome>
   settle(id: string, decision: ReviewDecision): Promise<ReviewOutcome>
-  takeDenyReason(id: string): Promise<string | undefined>
+  takeDecisionDetail(id: string): Promise<ReviewDecisionDetail>
 }
 
-/** How a review was decided; a deny carries what the person typed, if anything. */
-export type ReviewResult = { decision: 'allow' } | { decision: 'deny'; reason?: string }
+/** How a review was decided; a deny carries what the person typed, an allow the model they picked, if anything. */
+export type ReviewResult = { decision: 'allow'; pick?: XAgentPick } | { decision: 'deny'; reason?: string }
 
 /**
  * Raise a review with `raise` and wait for its decision. Throws when nobody
@@ -55,10 +56,12 @@ export async function awaitReview(
       })
       outcome = again === 'review' ? await reviews.resume(id) : await reviews.settle(id, again)
     }
+    // Taken on every outcome, so a decision that lost a race leaves nothing behind.
+    const detail = await reviews.takeDecisionDetail(id)
     if (outcome === 'timeout') throw new Error('Review timeout')
     if (outcome === 'withdrawn') throw new Error('Request aborted')
-    if (outcome === 'allow') return { decision: 'allow' }
-    return { decision: 'deny', reason: await reviews.takeDenyReason(id) }
+    if (outcome === 'allow') return { decision: 'allow', pick: detail.pick }
+    return { decision: 'deny', reason: detail.reason }
   } finally {
     signal?.removeEventListener('abort', withdraw)
   }

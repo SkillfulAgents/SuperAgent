@@ -45,6 +45,11 @@ vi.mock('drizzle-orm', () => ({
 const mockValidateProxyToken = vi.fn<(token: string) => Promise<boolean>>()
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (token: string) => mockValidateProxyToken(token),
+  // Auth mode reads the token and the owner together: the same answer, with no owner.
+  validateProxyTokenWithOwner: async (token: string) => {
+    const agentSlug = await mockValidateProxyToken(token)
+    return agentSlug ? { agentSlug, ownerUserId: null } : null
+  },
 }))
 
 vi.mock('@shared/lib/platform-attribution', () => ({

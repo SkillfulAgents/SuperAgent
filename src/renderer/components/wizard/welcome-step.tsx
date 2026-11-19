@@ -6,6 +6,10 @@ import { LoginButton, useFocusAfterCancel } from '@renderer/components/connectio
 import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
 import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
+import { signsInWithApple } from '@renderer/lib/capabilities'
+// Apple's Sign in with Apple logo files, unmodified (Apple Design Resources).
+import appleLogoOnBlack from '@renderer/assets/sign-in-with-apple/logo-white.svg'
+import appleLogoOnWhite from '@renderer/assets/sign-in-with-apple/logo-black.svg'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import {
   useDismissDownloadNonce,
@@ -24,6 +28,7 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
   const updateSettings = useUpdateSettings()
   const {
     handleConnect,
+    handleConnectWithApple,
     cancelConnect,
     canCancel,
     isLaunching,
@@ -61,6 +66,8 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
   const redeemNonce = useRedeemDownloadNonce()
   const dismissNonce = useDismissDownloadNonce()
   const nonceEmail = nonceOffer?.available ? nonceOffer.email : undefined
+  // Which button started the sign-in that is pending, so only that one shows it.
+  const [launchedWithApple, setLaunchedWithApple] = useState(false)
   // Broken/blocked avatar URLs degrade to the text-only button.
   const [avatarFailed, setAvatarFailed] = useState(false)
   const nonceAvatarUrl = !avatarFailed && nonceOffer?.available ? nonceOffer.avatarUrl : undefined
@@ -107,7 +114,7 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
                   size="lg"
                   onClick={() => void handleContinueAsOffer()}
                   data-testid="wizard-platform-login"
-                  disabled={redeemNonce.isPending}
+                  disabled={redeemNonce.isPending || isLaunching}
                   className="w-full max-w-[380px]"
                 >
                   {redeemNonce.isPending ? (
@@ -132,18 +139,49 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
                   type="button"
                   variant="default"
                   size="lg"
-                  onClick={() => void handleConnect()}
+                  onClick={() => {
+                    setLaunchedWithApple(false)
+                    void handleConnect()
+                  }}
                   data-testid="wizard-platform-login"
                   className="w-full max-w-[380px]"
                   label="Get Started"
                   pendingLabel="Logging in…"
-                  pending={isLaunching}
+                  pending={isLaunching && !launchedWithApple}
+                  disabled={isLaunching && launchedWithApple}
                   canCancel={canCancel}
                   onCancel={cancelConnect}
                   cancelSide="none"
                 />
               )}
             </div>
+            {signsInWithApple() && (
+              <LoginButton
+                type="button"
+                size="lg"
+                icon={
+                  <>
+                    <img src={appleLogoOnBlack} alt="" className="h-10 w-auto dark:hidden" />
+                    <img src={appleLogoOnWhite} alt="" className="hidden h-10 w-auto dark:block" />
+                  </>
+                }
+                onClick={() => {
+                  setLaunchedWithApple(true)
+                  void handleConnectWithApple()
+                }}
+                data-testid="wizard-apple-login"
+                // Apple's button rules: black or white only, the logo file as tall as the button.
+                // The logo file has its own solid square, so hover fades the whole button, not its fill.
+                className="w-full max-w-[380px] bg-black text-white transition-opacity hover:bg-black hover:opacity-90 dark:bg-white dark:text-black dark:hover:bg-white"
+                label="Sign in with Apple"
+                pendingLabel="Logging in…"
+                pending={isLaunching && launchedWithApple}
+                disabled={(isLaunching && !launchedWithApple) || redeemNonce.isPending}
+                canCancel={canCancel}
+                onCancel={cancelConnect}
+                cancelSide="none"
+              />
+            )}
             {nonceEmail && !redeemNonce.isPending && (
               <p className="text-sm text-muted-foreground">
                 Not you?{' '}

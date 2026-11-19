@@ -226,7 +226,7 @@ export function useTeamBrainSetup() {
         showView(current)
         await removeDrive(old)
       }
-      const mount = await addMount.mutateAsync({ agentSlug: slug, ...source, name: details.name, visibility: details.visibility })
+      const mount = await addMount.mutateAsync({ agentSlug: slug, ...source, name: details.name, visibility: details.visibility, onlyNew: true })
       try {
         // Saving the drive is step 1 done: Resume opens past it.
         current = await send<TeamBrainSetupView>('PATCH', '', { setupId, drive: { volumeId: mount.volumeId, location: source.type, replaces: null }, step: 'agents' })

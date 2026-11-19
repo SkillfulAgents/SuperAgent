@@ -1,4 +1,4 @@
-import { xAgentFileTransferSchema } from '@shared/lib/proxy/x-agent-review'
+import { xAgentFileTransferSchema, xAgentRuntimeSchema } from '@shared/lib/proxy/x-agent-review'
 import { z } from 'zod'
 
 /**
@@ -24,6 +24,7 @@ export const USER_INPUT_REQUEST_KINDS = [
   'x_agent_review',
   'account_reauth_required',
   'mcp_reauth_required',
+  'integration_setup',
 ] as const
 
 export const userInputRequestKindSchema = z.enum(USER_INPUT_REQUEST_KINDS)
@@ -195,6 +196,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
           operation: lenientString,
           preview: lenientString,
           fileTransfer: xAgentFileTransferSchema.optional().catch(undefined),
+          runtime: xAgentRuntimeSchema.optional().catch(undefined),
           attachments: z.array(z.string()).optional().catch(undefined),
         })
         .optional()
@@ -208,6 +210,15 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       toolkit: lenientString,
       accountStatus: z.enum(['expired', 'revoked']).optional().catch(undefined),
       proxyRequestId: lenientString,
+    }),
+  }),
+  baseRequest.extend({
+    kind: z.literal('integration_setup'),
+    payload: z.looseObject({
+      provider: lenientString,
+      reason: lenientString,
+      // Starting values for the setup form; never credentials.
+      prefill: z.record(z.string(), z.string()).optional().catch(undefined),
     }),
   }),
   baseRequest.extend({

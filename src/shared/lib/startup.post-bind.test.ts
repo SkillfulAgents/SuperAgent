@@ -27,6 +27,7 @@ const platformNotificationsStart = vi.fn().mockResolvedValue(undefined)
 const chatIntegrationStart = vi.fn().mockResolvedValue(undefined)
 const getSettings = vi.fn().mockReturnValue({})
 const getPlatformAccessToken = vi.fn().mockReturnValue(null)
+const initEnvManagedPlatformStatus = vi.fn(async () => {})
 const isAuthMode = vi.fn().mockReturnValue(true)
 const clearPendingApprovalBans = vi.fn()
 const ensureManagedPlatformConnection = vi.fn(async () => {})
@@ -81,6 +82,7 @@ vi.mock('./config/settings', () => ({
 }))
 vi.mock('./services/platform-auth-service', () => ({
   getPlatformAccessToken: () => getPlatformAccessToken(),
+  initEnvManagedPlatformStatus: () => initEnvManagedPlatformStatus(),
 }))
 vi.mock('./platform-attribution', () => ({
   decodeOrgIdFromToken: () => null,
@@ -150,7 +152,7 @@ vi.mock('./container/client-factory', () => ({
   shutdownActiveRunner: async () => { released.push('active-runner') },
 }))
 vi.mock('./computer-use/executor', () => ({
-  shutdownAC: async () => { released.push('computer-use') },
+  shutdownComputerUse: async () => { released.push('computer-use') },
 }))
 
 describe('initializeServices post-bind critical path', () => {
@@ -199,7 +201,7 @@ describe('initializeServices post-bind critical path', () => {
     const { initializeServices } = await import('./startup')
     await initializeServices()
 
-    expect(order).toEqual(['reconcile', 'validateAuth', 'listAgents'])
+    expect(order).toEqual(['reconcile', 'listAgents', 'validateAuth'])
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(validateAuth).toHaveBeenCalledTimes(1)
     expect(markBoot).toHaveBeenCalledWith('dbReady')
@@ -313,6 +315,24 @@ describe('initializeServices post-bind critical path', () => {
     await initializeServices()
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(validateAuth).not.toHaveBeenCalled()
+    expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs each half of the process setup on its own, with the PLATFORM_TOKEN status in the process half', async () => {
+    const { registerAllAccountProviders } = await import('./account-providers/register')
+    const { prepareDeployment, prepareProcess } = await import('./startup')
+
+    await prepareDeployment()
+    expect(validateAuth).toHaveBeenCalledTimes(1)
+    expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
+    expect(registerAllAccountProviders).not.toHaveBeenCalled()
+    expect(initEnvManagedPlatformStatus).not.toHaveBeenCalled()
+
+    await prepareProcess()
+    expect(registerAllAccountProviders).toHaveBeenCalledTimes(1)
+    expect(initEnvManagedPlatformStatus).toHaveBeenCalledTimes(1)
+    expect(getPlatformAccessToken).toHaveBeenCalledTimes(1)
+    expect(validateAuth).toHaveBeenCalledTimes(1)
     expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
   })
 

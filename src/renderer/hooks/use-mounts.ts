@@ -6,7 +6,7 @@ import { useAgent } from './use-agents'
 import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
 import { useUser } from '@renderer/context/user-context'
 import { volumeConfigSchema, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
-import type { VolumeSummary, MountSummaryWithHealth } from '@shared/lib/types/mount'
+import type { VolumeSummary, AgentMountSummary } from '@shared/lib/types/mount'
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -18,7 +18,7 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 }
 
 export function useAgentMounts(agentSlug: string) {
-  return useQuery<MountSummaryWithHealth[]>({
+  return useQuery<AgentMountSummary[]>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
@@ -34,7 +34,7 @@ export function useAddMount() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; restart?: boolean; name?: string; visibility?: 'public' | 'private' } & (
+    mutationFn: async (data: { agentSlug: string; restart?: boolean; name?: string; visibility?: 'public' | 'private'; onlyNew?: boolean } & (
       { hostPath: string; volumeId?: never; type?: never; config?: never }
       | { volumeId: string; readOnly?: boolean; hostPath?: never; type?: never; config?: never }
       | (VolumeSource & { volumeId?: never; hostPath?: never })
@@ -47,11 +47,11 @@ export function useAddMount() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data.volumeId
           ? { volumeId: data.volumeId, readOnly: data.readOnly, restart: data.restart }
-          : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, restart: data.restart }),
+          : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, onlyNew: data.onlyNew, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add drive'))
-      // The route adds the attached definition's id and name to the mount's summary.
-      return res.json() as Promise<VolumeSummary & { volumeId: string; volumeName: string }>
+      // The route adds the attached definition's id and name to the mount's summary, and `unchanged` when the agent already had the source's drive.
+      return res.json() as Promise<VolumeSummary & { volumeId: string; volumeName: string; unchanged?: true }>
     },
     onSuccess: () => {
       // Bare prefix (not keyed on agentSlug): the agent-home Volumes card keys on the
@@ -105,11 +105,17 @@ export function useSetMountReadOnly() {
 }
 
 export function useVolumesManager(agentSlug: string) {
-  const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
-  const mounts = Array.isArray(mountsData) ? mountsData : []
+  const { data: mountsData, isLoading, error: mountError, refetch } = useAgentMounts(agentSlug)
   const registry = useVolumeDefinitions()
   const definitions = registry.data ?? []
-  const { canUseAgent } = useUser()
+  // The registry and mount list refresh independently, and older servers send
+  // full mount details for every attachment. Both lists must allow direct access.
+  const accessible = new Set(definitions.map(drive => drive.id))
+  const loadError = mountError || registry.error
+  const mounts = registry.data && !loadError && Array.isArray(mountsData) ? mountsData.map(mount =>
+    mount.restricted || accessible.has(mount.volumeId) ? mount : { restricted: true as const, id: mount.id, volumeName: mount.volumeName },
+  ) : []
+  const { canUseAgent, canAdminAgent } = useUser()
   const canModifyMounts = canUseAgent(agentSlug)
   const canCreateMount = canModifyMounts
   const { data: agent } = useAgent(agentSlug)
@@ -121,7 +127,7 @@ export function useVolumesManager(agentSlug: string) {
   const [operationError, setOperationError] = useState<string | null>(null)
 
   // The host marks a running agent stale on a drive change, and a stop clears it.
-  const pendingRestart = isAgentRunning && agent?.stale === true
+  const pendingRestart = canModifyMounts && isAgentRunning && agent?.stale === true
 
   const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
     if (!canModifyMounts) throw new Error('You do not have permission to add drives to this agent')
@@ -186,7 +192,10 @@ export function useVolumesManager(agentSlug: string) {
     mounts,
     definitions,
     isLoading: isLoading || registry.isLoading,
-    operationError: operationError ?? (registry.error ? 'Could not load saved drives' : null),
+    loadError: !!loadError,
+    retryLoad: () => Promise.all([refetch(), registry.refetch()]),
+    operationError,
+    canDetachRestricted: canAdminAgent(agentSlug),
     canModifyMounts,
     canCreateMount,
     pendingRestart,

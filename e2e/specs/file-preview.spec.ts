@@ -112,6 +112,31 @@ test.describe('File Preview', () => {
     expect(Math.abs(homeBox!.x + homeBox!.width - (drawerBox!.x + drawerBox!.width))).toBeLessThanOrEqual(1)
   })
 
+  test('a comment on a file opened from agent home goes into the home composer', async ({ page }) => {
+    await agentPage.createAgent(`HomeFileComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report\n\nShipped the export.\n')
+    const bookmarksResponse = await page.request.put(`/api/agents/${agentSlug}/bookmarks`, {
+      data: [{ name: 'Daily report', file: '/workspace/reports/daily.md' }],
+    })
+    expect(bookmarksResponse.ok()).toBeTruthy()
+
+    await page.reload()
+    await page.getByRole('button', { name: 'Daily report' }).click()
+    const line = markdown(page).getByText('Shipped the export.')
+    await expect(line).toBeVisible({ timeout: 10000 })
+    await line.hover()
+    await page.keyboard.press('c')
+    await page.getByPlaceholder('Add your comment...').fill('Say which export')
+    await page.locator('[data-comment-overlay]').getByRole('button', { name: 'Add' }).click()
+    await page.getByTestId('file-preview-tray').getByRole('button', { name: 'Submit' }).click()
+
+    const composer = page.getByTestId('home-message-input')
+    await expect(composer).toContainText('File feedback on daily.md:')
+    await expect(composer).toContainText('Say which export')
+    await expect(composer).toBeFocused()
+  })
+
   test('folder bookmark traverses lazily and opens files while preserving tree state', async ({ page }) => {
     await agentPage.createAgent(`FolderPreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
@@ -238,6 +263,22 @@ test.describe('File Preview', () => {
     await expect(trayHeader).not.toBeVisible({ timeout: 5000 })
   })
 
+  test('an open file reloads when it changes on disk', async ({ page }) => {
+    await agentPage.createAgent(`FileReload ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+
+    // Written with no message sent and nothing clicked, like a job the agent left running.
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nNew line, longer.\n')
+    await expect(markdown(page).getByText('New line, longer.')).toBeVisible({ timeout: 10000 })
+    await expect(markdown(page).getByText('Old line.')).toHaveCount(0)
+  })
+
   test('re-delivering same file refreshes content', async ({ page }) => {
     await agentPage.createAgent(`FileRedeliver ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
@@ -262,6 +303,34 @@ test.describe('File Preview', () => {
     await secondPill.click()
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 2' })).toBeVisible({ timeout: 10000 })
+  })
+
+  test('highlights what changed in an open file since the last turn, behind a Show changes toggle', async ({ page }) => {
+    await agentPage.createAgent(`FileEdits ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+    const showEdits = page.getByTestId('file-preview-show-edits')
+    await expect(showEdits).toHaveCount(0)
+
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nNew line.\n')
+    const changed = markdown(page).locator('[data-edit="changed"]')
+    await expect(changed).toHaveText('New line.', { timeout: 10000 })
+    await expect(showEdits).toHaveAttribute('aria-pressed', 'true')
+
+    // A new turn starts a new highlight at the next change: the earlier one is no longer tinted.
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nNew line.\n\nAdded line.\n')
+    await expect(changed).toHaveText('Added line.', { timeout: 10000 })
+
+    await showEdits.click()
+    await expect(changed).toHaveCount(0)
+    await expect(markdown(page).getByText('Added line.')).toBeVisible()
   })
 
   test('renders CSV as a table and supports the raw toggle', async ({ page }) => {
@@ -748,7 +817,7 @@ test.describe('File Preview', () => {
             summaryPieceLines: leaves(summary).map(lines),
             footerTextLines: leaves(footer).map(lines),
             footerOverflow: footer.scrollWidth - footer.clientWidth,
-            wakeMessageLines: lines(deadline.parentElement!),
+            wakeMessageLines: lines(banner.querySelector('[data-testid="pending-wake-summary"]')!),
             // The key hint, wrapped under Context Usage, starts at the same left edge.
             hint: (() => {
               const [context, hint] = [...footer.children].filter((c) => c.textContent!.trim()).map((c) => box(c))

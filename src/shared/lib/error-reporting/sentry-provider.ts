@@ -10,7 +10,9 @@
 import * as Sentry from '@sentry/node'
 import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 import { ERROR_REPORTING_INGEST_URL } from './config'
-import { collectEnvironmentData } from './environment'
+import { isTelegramTemporary } from '../chat-integrations/telegram-error'
+import { collectEnvironmentData, probeEnvironmentData } from './environment'
+import { background } from '../background'
 import { APP_VERSION } from '../config/version'
 
 function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
@@ -19,17 +21,44 @@ function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
 
 /**
  * Routes whose request bodies carry credentials: a sign-in form's values,
- * a secret, a password manager's verification code. The HTTP integration
- * buffers incoming bodies and attaches them to any event captured while the
- * request is handled; these never go along.
+ * a secret, a password manager's verification code, an integration's tokens.
+ * The HTTP integration buffers incoming bodies and attaches them to any event
+ * captured while the request is handled; these never go along.
  */
-export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)/
+export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)|\/api\/(agent|chat)-integrations(?:[/?#]|$)|\/api\/x-agent\/chat\/add(?:[?#]|$)/
 
 /** Drop a captured request body from an event raised while handling a credential route. */
 export function scrubCredentialRequestBody<T extends { request?: { url?: string; data?: unknown } }>(event: T): T {
   const url = event.request?.url
   if (url && CREDENTIAL_BODY_ROUTE.test(url) && event.request) delete event.request.data
   return event
+}
+
+/** A Telegram bot token, `<bot id>:<secret>`, bare or inside an API URL's `bot<token>` segment. */
+const TELEGRAM_BOT_TOKEN = /(\d{6,}):[\w-]{30,}/g
+
+/** The text with every Telegram bot token's secret replaced; the bot id stays. */
+export function redactBotTokens(text: string): string {
+  return text.replace(TELEGRAM_BOT_TOKEN, '$1:[redacted]')
+}
+
+/** Redact bot tokens in every string of an event the SDK is about to send. */
+function redactBotTokensInEvent<T extends object>(event: T): T {
+  for (const [key, value] of Object.entries(event)) {
+    if (typeof value === 'string') Reflect.set(event, key, redactBotTokens(value))
+    else if (value && typeof value === 'object') redactBotTokensInEvent(value)
+  }
+  return event
+}
+
+/** Redact bot tokens in a breadcrumb; a console breadcrumb's raw arguments go, its message holds their text. */
+function scrubBreadcrumb(breadcrumb: Sentry.Breadcrumb): Sentry.Breadcrumb {
+  const data = breadcrumb.data && { ...breadcrumb.data }
+  if (data) {
+    if (breadcrumb.category === 'console') delete data.arguments
+    if (typeof data.url === 'string') data.url = redactBotTokens(data.url)
+  }
+  return { ...breadcrumb, message: breadcrumb.message && redactBotTokens(breadcrumb.message), data }
 }
 
 /**
@@ -64,7 +93,7 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
       }),
     ],
     // Consent is read fresh for every event, never from an earlier read.
-    async beforeSend(event) {
+    async beforeSend(event, hint) {
       try {
         // Loaded here, not at the top: error reporting is part of the
         // database's boot graph, and settings reads go through the database.
@@ -77,14 +106,36 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
         // Settings unreadable, or not available yet (a boot failure before the
         // database opened): allow the event (fail-open for crash reports).
       }
-      return scrubCredentialRequestBody(event)
+      // A throw here makes the SDK send its own report, unscrubbed; dropping the event is safe.
+      try {
+        // Telegram being busy or unreachable is reported as a warning.
+        if (isTelegramTemporary(hint.originalException)) event.level = 'warning'
+        return redactBotTokensInEvent(scrubCredentialRequestBody(event))
+      } catch {
+        return null
+      }
+    },
+    // The SDK's own failure reports skip beforeSend but carry the breadcrumbs. A throw
+    // here would reach whatever recorded the breadcrumb.
+    beforeBreadcrumb(breadcrumb) {
+      try {
+        return scrubBreadcrumb(breadcrumb)
+      } catch {
+        return null
+      }
     },
   })
 
-  // Collect and attach environment fingerprint data
+  // Attach the environment fingerprint: what the process knows itself now, so
+  // a report from an early failure has it, and what another program has to
+  // answer once it does. Nothing here spawns synchronously.
   try {
     const envData = collectEnvironmentData()
     Sentry.setContext('environment_info', envData)
+    background(async () => {
+      const probed = await probeEnvironmentData()
+      if (Object.keys(probed).length > 0) Sentry.setContext('environment_info', { ...envData, ...probed })
+    }, { name: 'error-reporting.environment-probe' })
   } catch {
     // Non-critical
   }

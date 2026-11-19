@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isSlackBlocksRejection, isUnrecoverableSlackError } from './slack-error'
+import { isSlackBlocksRejection, isSlackFileNotReady, isUnrecoverableSlackError } from './slack-error'
 
 // The five codes @slack/socket-mode classifies as UnrecoverableSocketModeStartError:
 // a workspace/app in this state will never reconnect no matter how often we retry,
@@ -60,5 +60,13 @@ describe('isSlackBlocksRejection', () => {
     expect(isSlackBlocksRejection(platformError('msg_blocks_too_long'))).toBe(true)
     expect(isSlackBlocksRejection(platformError('msg_too_long'))).toBe(false)
     expect(isSlackBlocksRejection(new Error('invalid_blocks'))).toBe(false)
+  })
+})
+
+describe('isSlackFileNotReady', () => {
+  it('matches the invalid_blocks Slack returns for an image still processing, and no other block rejection', () => {
+    const rejection = (messages: string[]) => ({ code: 'slack_webapi_platform_error', data: { error: 'invalid_blocks', response_metadata: { messages } } })
+    expect(isSlackFileNotReady(rejection(['[ERROR] invalid slack file [json-pointer:/blocks/0/slack_file.id/slack_file]']))).toBe(true)
+    expect(isSlackFileNotReady(rejection(['[ERROR] must be less than 3001 characters [json-pointer:/blocks/0/text]']))).toBe(false)
   })
 })

@@ -34,6 +34,7 @@ import {
   agentRegistry,
   identityFromInstructions,
   type AgentIdentityChanges,
+  type AgentListing,
   type AgentLiveSummary,
   type AgentRecord,
 } from '@shared/lib/agent-actor'
@@ -218,9 +219,8 @@ export async function getAgentWithStatus(
   const live = await actor.live()
   const base = toApiAgent(record, live.container, await teamBrainOf(), document?.body ?? '')
 
-  // Routes that either discard the body (/start) or immediately run the richer
-  // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
-  // O(session-count) stat scan; standalone callers keep the enriched default.
+  // A route that discards the body (/start) skips this O(session-count) stat
+  // scan; standalone callers keep the enriched default.
   if (options.includeSummary === false) return base
 
   // The same session flags as the list endpoint: pending proxy reviews need
@@ -246,11 +246,56 @@ export async function listAgents(): Promise<AgentRecord[]> {
  * Uses cached container status to avoid spawning docker processes.
  */
 export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
-  const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
+  const [records, teamBrain] = await listedRecords(options)
 
   // The cached container statuses: no docker process is spawned.
-  const teamBrain = await teamBrainOf()
   return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container, teamBrain)))
+}
+
+/** The records a list shows, newest first, and the Team Brain record their flags read. Two independent reads, so neither waits for the other. */
+function listedRecords(options: { slugs?: string[] }): Promise<[AgentRecord[], TeamBrainStored | null]> {
+  return Promise.all([
+    options.slugs ? agentCatalog.getMany(options.slugs) : agentCatalog.records(),
+    teamBrainOf(),
+  ])
+}
+
+/** An agent as the agent list shows it, with what its actor reported in one `listing()` call. */
+export interface ListedAgent {
+  agent: ApiAgent
+  listing: AgentListing
+}
+
+/** An agent the list is about to show: `listed()` asks its actor for its `listing()`. */
+export interface AgentToList {
+  slug: string
+  listed(): Promise<ListedAgent>
+}
+
+/**
+ * The agents the list shows, newest first. Each is asked for its listing on
+ * its own, so the caller goes on with one agent while another's listing is
+ * still out. `slugs` restricts the list to those agents, for the ACL-scoped list.
+ */
+export async function listAgentsToList(options: { slugs?: string[] } = {}): Promise<AgentToList[]> {
+  const [records, teamBrain] = await listedRecords(options)
+  return records.map((record) => ({
+    slug: record.slug,
+    listed: async () => {
+      const listing = await agentRegistry.get(record.slug).listing()
+      return { agent: toApiAgent(record, listing.live.container, teamBrain), listing }
+    },
+  }))
+}
+
+/** One agent as the agent list shows it, with its instructions (the agent's own page). */
+export async function getAgentWithListing(record: AgentRecord): Promise<ListedAgent> {
+  const [document, listing, teamBrain] = await Promise.all([
+    readInstructionsDocument(record.slug),
+    agentRegistry.get(record.slug).listing(),
+    teamBrainOf(),
+  ])
+  return { agent: toApiAgent(record, listing.live.container, teamBrain, document?.body ?? ''), listing }
 }
 
 // ============================================================================
@@ -456,7 +501,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // removal below never runs, so the workspace is preserved and the delete is
   // retryable.
   try {
-    await agentRegistry.get(slug).container.stop()
+    await agentRegistry.get(slug).container.stop({ forDeletion: true })
   } catch (error) {
     throw new AgentContainerStopError(slug, error)
   }

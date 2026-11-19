@@ -25,16 +25,21 @@ import {
   updateSettings,
   mutateSettings,
   browserbaseApiKeyStatusFrom,
+  steelApiKeyStatusFrom,
+  tabtenderApiKeyStatusFrom,
+  effectiveTabtenderUrlFrom,
   composioApiKeyStatusFrom,
   nangoApiKeyStatusFrom,
   composioUserIdFrom,
   accountProviderUserIdFrom,
   effectiveModelsFrom,
   getGlobalInstructions,
+  type AppPreferencesResponse,
   type AppSettings,
   type GlobalSettingsResponse,
   type ModelPickerSettingsResponse,
 } from '@shared/lib/config/settings'
+import { settingsWritten } from '@shared/lib/config/settings-request-memo'
 import { DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import {
   applySettingsPatch,
@@ -57,6 +62,8 @@ import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, re
 import { offersRuntime } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { detectAllProviders } from '../../main/host-browser'
+import { SteelApi, SteelApiError } from '../../main/host-browser/steel-api'
+import { TabtenderApi, TabtenderApiError, isLoopbackUrl, normalizeTabtenderUrl } from '../../main/host-browser/tabtender-api'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { resetApplicationTables } from '@shared/lib/db/reset'
 import fs from 'fs'
@@ -308,6 +315,14 @@ async function genericBaseUrlFrom(appSettings: AppSettings): Promise<string | un
   return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl(appSettings) : undefined
 }
 
+// Settings are polled on every page, and a custom icon is up to 256 KB of data URL.
+function appPreferencesResponse(app: AppSettings['app']): AppPreferencesResponse {
+  const preferences = { ...(app ?? { showMenuBarIcon: true }) }
+  const hasCustomFavicon = Boolean(preferences.faviconDataUrl)
+  delete preferences.faviconDataUrl
+  return { ...preferences, hasCustomFavicon }
+}
+
 /**
  * Build the GlobalSettingsResponse shared by GET and PUT handlers, entirely
  * from `appSettings`: it reads no settings itself.
@@ -321,11 +336,10 @@ async function buildSettingsResponse(
     dataDir: getDataDir(),
     hostTotalMemoryBytes: os.totalmem(),
     container: appSettings.container,
-    app: appSettings.app || { showMenuBarIcon: true },
+    app: appPreferencesResponse(appSettings.app),
     hasRunningAgents,
     runnerAvailability,
     llmProvider: appSettings.llmProvider ?? 'anthropic',
-    llmProviderStatus: allProviderInfoFrom(appSettings),
     modelCatalog: appSettings.modelCatalog ?? {},
     modelPricing: appSettings.modelPricing ?? {},
     webProvider: resolveEffectiveWebVendorFrom(appSettings),
@@ -337,6 +351,8 @@ async function buildSettingsResponse(
       platform: getLlmProvider('platform').apiKeyStatusFrom(appSettings),
       generic: getLlmProvider('generic').apiKeyStatusFrom(appSettings),
       browserbase: browserbaseApiKeyStatusFrom(appSettings),
+      steel: steelApiKeyStatusFrom(appSettings),
+      tabtender: tabtenderApiKeyStatusFrom(appSettings),
       composio: composioApiKeyStatusFrom(appSettings),
       nango: nangoApiKeyStatusFrom(appSettings),
       deepgram: getVoiceProvider('deepgram').apiKeyStatusFrom(appSettings),
@@ -348,6 +364,7 @@ async function buildSettingsResponse(
     customEnvVars: appSettings.customEnvVars ?? {},
     composioUserId: composioUserIdFrom(appSettings),
     genericBaseUrl: await genericBaseUrlFrom(appSettings),
+    tabtenderUrl: effectiveTabtenderUrlFrom(appSettings),
     accountProviderUserId: accountProviderUserIdFrom(appSettings),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: await detectAllProviders() },
@@ -783,6 +800,63 @@ settings.post('/validate-browserbase', async (c) => {
   }
 })
 
+// POST /api/settings/validate-steel - Validate a Steel API key with one read
+// (listing sessions), which creates nothing billable
+settings.post('/validate-steel', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    await new SteelApi(apiKey).checkKey()
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    if (error instanceof SteelApiError && (error.status === 401 || error.status === 403)) {
+      return c.json({ valid: false, error: 'Invalid API key' })
+    }
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+const validateTabtenderSchema = z.object({ url: z.string().trim().min(1), apiKey: z.string().trim().min(1) })
+
+// POST /api/settings/validate-tabtender - Check a Tab Tender server URL and API
+// key with one authenticated read (health), which launches no browser. Answers
+// the URL as it should be saved.
+settings.post('/validate-tabtender', async (c) => {
+  const parsed = validateTabtenderSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ valid: false, error: 'Server URL and API key are required' }, 400)
+  }
+  const url = normalizeTabtenderUrl(parsed.data.url)
+  if (!url) {
+    return c.json({ valid: false, error: 'Enter the server URL as http:// or https://, e.g. https://browsers.example.com' })
+  }
+  if (isLoopbackUrl(url)) {
+    return c.json({
+      valid: false,
+      error: 'Agents run in containers that cannot reach this computer\'s localhost. Use the server\'s tunnel URL (Tab Tender → Settings → Tunnel) or an address on your network.',
+    })
+  }
+  try {
+    const health = await new TabtenderApi(url, parsed.data.apiKey.trim()).health()
+    if (health.browser && !health.browser.available) {
+      return c.json({ valid: false, error: `The server is up but cannot start a browser${health.browser.error ? `: ${health.browser.error}` : ''}` })
+    }
+    return c.json({ valid: true, url })
+  } catch (error: unknown) {
+    if (error instanceof TabtenderApiError && error.status === 401) {
+      return c.json({ valid: false, error: 'Invalid API key' })
+    }
+    if (error instanceof TabtenderApiError) {
+      return c.json({ valid: false, error: `The server answered ${error.status}. Is this a Tab Tender server?` })
+    }
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : error instanceof Error ? error.message : ''
+    return c.json({ valid: false, error: `Could not reach ${url}${cause ? ` (${cause})` : ''}` })
+  }
+})
+
 // POST /api/settings/validate-composio-key - Validate a Composio API key
 settings.post('/validate-composio-key', async (c) => {
   try {
@@ -915,6 +989,7 @@ settings.post('/factory-reset', async (c) => {
     // identity so a fresh one is issued on next login. The tenant id and the
     // auth secret stay: user accounts survive a reset.
     await deleteRecord(SETTINGS_RECORD_KEY)
+    settingsWritten()
     await deleteRecord(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY)
     // The files they were once imported from (settings.json holds API keys).
     await fs.promises.rm(path.join(getDataDir(), 'settings.json'), { force: true })

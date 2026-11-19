@@ -15,6 +15,21 @@ import { exchangeLinearToken, LinearAuthorizationError, LinearClient, revokeLine
 
 export { publicLinearIntegration } from './presentation'
 export const linearSetup: IntegrationProviderSetup = {
+  agentGuide: `The agent's own Linear app: people mention it or delegate issues to it, and it gets Linear tools under its own identity.
+By default hand this setup to the user with request_integration_setup (prefill {name}, the app name): in their own browser, where they are already logged in to Linear, it is one link, a few values to copy and an approval.
+Do it yourself instead when the user asks you to, or your browser is already logged in to Linear. If a login page appears, ask the user to log in with request_browser_input.
+1. add_agent_integration with \`name\` (the app name) and config {webhooks: true} when this host has a webhook relay, config {} otherwise. It returns a prefilled Linear app creation link.
+2. Open the link, keep the app private and create it. Copy its Client ID, Client secret and (with webhooks) webhook Signing secret.
+3. authorize_agent_integration with those as config {clientId, clientSecret, webhookSecret}, open the link it returns and approve: pick the workspace and the teams the agent works in.`,
+  agentNextStep(record) {
+    const config = parseTaskJson(linearConfigSchema, record.config)
+    const webhook = !!config.relay
+    return [
+      `Create this agent's Linear app: open ${linearAppCreationUrl(record.name ?? record.agentSlug, config)} in your browser. If Linear asks to log in, ask the user to with request_browser_input.`,
+      `The form is prefilled${webhook ? ', including the callback and webhook URLs' : ' with the callback URL'}. Keep the app private, add an avatar if you have one, and create it.`,
+      `Copy the app's Client ID and Client secret${webhook ? ' and its webhook Signing secret' : ''}, then call authorize_agent_integration with integration_id "${record.id}" and config {clientId, clientSecret${webhook ? ', webhookSecret' : ''}}.`,
+    ].join('\n')
+  },
   describe(context, name) {
     return { redirectUri: context.callbackUrl, creationUrl: linearAppCreationUrl(name ?? context.agentSlug, { redirectUri: context.callbackUrl }) }
   },

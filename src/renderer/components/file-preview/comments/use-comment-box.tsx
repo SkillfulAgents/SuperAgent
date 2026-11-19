@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
+import { useFilePreview, type FileComment, type FileCommentContent } from '@renderer/context/file-preview-context'
 import { mediaKeyAction } from '../renderers/use-media-keys'
 import { locateAnchor, markerOf, placeMarkers, prepareAnchor, refineAnchor, resolveAnchor, type Placed } from './anchor'
 import { CommentOverlay } from './comment-overlay'
@@ -47,13 +47,14 @@ function selectionIn(container: HTMLElement | null): SelectionAt | null {
 /**
  * Comments on a viewer, from what the viewer offers (`surface`). Owns the C / M keys,
  * clicks on the file, the open comment, its box, and every marker. A `null` surface
- * turns comments off for this viewer.
+ * turns comments off for this viewer. `onAdd` takes each added comment in place of the file's list, so no pin numbers it.
  */
 export function useCommentBox(
   containerRef: RefObject<HTMLElement | null>,
   surface: CommentSurface | null,
   filePath: string,
   agentSlug: string,
+  onAdd?: (comment: FileCommentContent) => void,
 ): { box: ReactNode; open: (at?: Situation) => void; enabled: boolean; isOpen: boolean } {
   const { commentsEnabled, commentsFor } = useFilePreview()
   const enabled = !!commentsEnabled && surface != null
@@ -93,17 +94,18 @@ export function useCommentBox(
     )
   }, [containerRef])
 
-  /** Opens a comment on the first situation that resolves. */
+  /** Opens a comment on the first situation that resolves, and says whether one did. */
   const begin = useCallback((tries: Situation[], listen: boolean, chip = false) => {
     const { surface } = latest.current
-    if (!surface) return
+    if (!surface) return false
     for (const at of tries) {
       const anchor = resolveAnchor(surface, at)
       if (!anchor) continue
       prepareAnchor(surface, anchor)
       setPending({ anchor, rect: boxRect(surface, anchor, at), listen, chip })
-      return
+      return true
     }
+    return false
   }, [boxRect])
 
   /** Moves the open comment. A click moves its box with it; a drag leaves the box in place. */
@@ -153,18 +155,23 @@ export function useCommentBox(
         else close()
         return
       }
+      onCommentKey(e, () => [{ on: 'elsewhere' }])
+    }
+    // Text selected here or the mouse over it takes the key first, in the capture phase, so of several viewers on a
+    // page the one targeted wins over another's fallback, whichever mounted first.
+    const onKeyDownTargeted = (e: KeyboardEvent) => {
+      onCommentKey(e, () => {
+        const selected = selectionIn(containerRef.current)
+        return [...(selected ? [selected] : []), ...(pointer.current ? [pointer.current] : [])]
+      })
+    }
+    // Holding the key opens once. A viewer with nothing to comment on leaves the key to the next.
+    const onCommentKey = (e: KeyboardEvent, tries: () => Situation[]) => {
+      const { pending } = latest.current
       const action = mediaKeyAction(e)
       if (action?.type !== 'comment' || (pending && !pending.chip)) return
+      if (!e.repeat && !begin(tries(), action.listen)) return
       e.preventDefault()
-      // Holding the key opens once.
-      if (e.repeat) return
-      const selected = selectionIn(containerRef.current)
-      const tries: Situation[] = [
-        ...(selected ? [selected] : []),
-        ...(pointer.current ? [pointer.current] : []),
-        { on: 'elsewhere' },
-      ]
-      begin(tries, action.listen)
     }
     // The chip closes on any outside press, as a selection does. An open box never does.
     const onMouseDown = (e: MouseEvent) => {
@@ -182,6 +189,7 @@ export function useCommentBox(
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerout', onPointerOut)
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onKeyDownTargeted, true)
     window.addEventListener('mousedown', onMouseDown)
     window.addEventListener('mouseup', onMouseUp)
     return () => {
@@ -191,13 +199,14 @@ export function useCommentBox(
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerout', onPointerOut)
       window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keydown', onKeyDownTargeted, true)
     }
   }, [enabled, containerRef, begin, refine, close])
 
   const comments = commentsFor(filePath, agentSlug)
   const box = enabled && surface && (
     <>
-      <CommentMarkers surface={surface} comments={comments} pending={pending?.chip ? null : pending} refine={refine} />
+      <CommentMarkers surface={surface} comments={comments} pending={pending?.chip ? null : pending} numbered={!onAdd} refine={refine} />
       {pending && (
         <CommentOverlay
           key={pending.chip ? 'chip' : 'box'}
@@ -208,6 +217,7 @@ export function useCommentBox(
           autoEdit={!pending.chip}
           autoListen={pending.listen}
           onEdit={() => setPending({ ...pending, chip: false })}
+          onAdd={onAdd}
           onClose={close}
         />
       )}
@@ -225,10 +235,12 @@ function samePlaces(a: Placed[], b: Placed[]): boolean {
 }
 
 /** Asks each comment's kind where its markers go, after the viewer has drawn, and draws them there. */
-function CommentMarkers({ surface, comments, pending, refine }: {
+function CommentMarkers({ surface, comments, pending, numbered, refine }: {
   surface: CommentSurface
   comments: FileComment[]
   pending: Pending | null
+  /** A number is a comment's place in the file's list: with no list, markers carry none. */
+  numbered: boolean
   refine: (at: PointerAt) => void
 }) {
   const [placed, setPlaced] = useState<Placed[]>([])
@@ -244,13 +256,13 @@ function CommentMarkers({ surface, comments, pending, refine }: {
     setPlaced(prev => (samePlaces(prev, next) ? prev : next))
   })
 
-  return placed.map(p => createPortal(markerFor(p.anchor.kind, p.anchor, surface, p, refine), p.site.host, p.key))
+  return placed.map(p => createPortal(markerFor(p.anchor.kind, p.anchor, surface, numbered ? p : { ...p, numbers: [] }, refine), p.site.host, p.key))
 }
 
-/** The kind's own marker, or the shared numbered pin. */
+/** The kind's own marker, or the shared numbered pin when the comment has a number. */
 function markerFor<K extends AnchorKind>(kind: K, anchor: AnchorOf<K>, surface: CommentSurface, p: Placed, refine: (at: PointerAt) => void): ReactNode {
   const own = markerOf(kind, surface)
-  if (!own) return <CommentPin x={p.site.x} y={p.site.y} number={p.numbers[0]} />
+  if (!own) return p.numbers.length > 0 && <CommentPin x={p.site.x} y={p.site.y} number={p.numbers[0]} />
   const { Marker, slice } = own
   return <Marker slice={slice} anchor={anchor} site={p.site} numbers={p.numbers} isOpen={p.isOpen} refine={refine} />
 }

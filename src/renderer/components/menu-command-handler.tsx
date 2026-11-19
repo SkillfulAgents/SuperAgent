@@ -12,7 +12,7 @@ import { useTargetSwitch } from '../hooks/use-target-switch'
  * Spotlight result that belongs to the other Superagent.
  */
 type MenuCommand =
-  | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
+  | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null; messageUuid?: string }
   | { channel: 'open-settings' }
   | { channel: 'open-create-agent' }
   | { channel: 'switch-target'; target: ApiTarget }
@@ -54,6 +54,7 @@ function useMenuCommandDispatch(): (command: MenuCommand) => void {
             void navigate({
               to: '/agents/$slug/sessions/$sessionId',
               params: { slug: command.agentSlug, sessionId: command.sessionId },
+              search: { message: command.messageUuid },
             })
           } else {
             void navigate({ to: '/agents/$slug', params: { slug: command.agentSlug } })
@@ -92,8 +93,8 @@ export function MenuCommandHandler() {
     const api = window.electronAPI
     if (!api) return
     const unsubscribers = [
-      api.onNavigateToAgent?.((agentSlug, sessionId) =>
-        dispatch({ channel: 'navigate-to-agent', agentSlug, sessionId }),
+      api.onNavigateToAgent?.((agentSlug, sessionId, messageUuid) =>
+        dispatch({ channel: 'navigate-to-agent', agentSlug, sessionId, messageUuid }),
       ),
       api.onOpenSettings?.(() => dispatch({ channel: 'open-settings' })),
       api.onOpenCreateAgent?.(() => dispatch({ channel: 'open-create-agent' })),

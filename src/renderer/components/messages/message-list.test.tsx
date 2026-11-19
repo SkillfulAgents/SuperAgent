@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
+import { buildSignInMethodRequestMessage } from '@shared/lib/utils/sign-in-method-request'
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { MessageList } from './message-list'
@@ -606,6 +607,54 @@ describe('MessageList', () => {
     )
   })
 
+  it('folds the sign-in form\'s request into the work, queued or a turn of its own, rather than splitting it', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Open my mail and let me sign in' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Signing in.' },
+        createdAt: new Date('2025-01-01T00:00:05Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createUserMessage({
+        content: { text: buildSignInMethodRequestMessage({ username: 'octocat', site: 'github.com', from: 'card' }) },
+        queued: true,
+        createdAt: new Date('2025-01-01T00:00:06Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Signed in; that request came in a tool result.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+      }),
+      createUserMessage({
+        content: { text: buildSignInMethodRequestMessage({ username: 'octocat', site: 'github.com', from: 'card', again: true }) },
+        createdAt: new Date('2025-01-01T00:00:11Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Adding the passkey.' },
+        createdAt: new Date('2025-01-01T00:00:15Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'Added a passkey.' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    // One turn, one summary: the requests fold away with the work.
+    expect(screen.getAllByTestId('turn-summary')).toHaveLength(1)
+    expect(screen.getByTestId('turn-summary')).toHaveTextContent('Worked for 20s')
+    expect(screen.getByText('Added a passkey.')).toBeInTheDocument()
+    expect(screen.queryByTestId('sign-in-method-request-notice')).not.toBeInTheDocument()
+    expect(screen.queryByText('Signed in; that request came in a tool result.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('turn-summary'))
+    expect(screen.getAllByTestId('sign-in-method-request-notice')).toHaveLength(2)
+  })
+
   it('splits completed work around queued steering messages', () => {
     mockMessagesData.data = [
       createUserMessage({
@@ -964,6 +1013,30 @@ describe('MessageList', () => {
     )
 
     expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+  })
+
+  // The owner drops the ghost only after the effect above reports it, a commit later:
+  // until then the persisted copy alone is drawn, not the message twice.
+  it.each([false, true])('draws a ghost whose uuid is already in the transcript only once (queued: %s)', (queued) => {
+    mockMessagesData.data = [
+      createUserMessage({
+        id: 'uuid-1',
+        content: { text: 'My message' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'local-1', uuid: 'uuid-1', text: 'My message', sentAt: new Date('2025-01-01T00:00:00Z').getTime(), queued }]}
+        onPendingMessageAppeared={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByText('My message')).toHaveLength(1)
+    expect(screen.queryByTestId(queued ? 'queued-user-message' : 'pending-user-message')).not.toBeInTheDocument()
   })
 
   // The second transcript is a shared agent's, where the agent received the sender prefix.
@@ -2648,6 +2721,112 @@ describe('MessageList', () => {
     })
   })
 
+  describe('landing on a message', () => {
+    const rows = (n: number, prefix = 'm'): ApiMessageOrBoundary[] =>
+      Array.from({ length: n }, (_, i) => createUserMessage({ id: `${prefix}${i}`, content: { text: `${prefix}${i}` } }))
+    const target = (id: string) => ({ id, onSettled: vi.fn() })
+    const row = (id: string) => document.querySelector(`[data-message-id="${id}"]`)
+
+    beforeEach(() => {
+      mockFetchOlder.mockResolvedValue(true)
+    })
+
+    it('lands on a loaded message, rings it, and lets go of the live edge', () => {
+      mockMessagesData.data = rows(50)
+      const t = target('m10')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+      expect(row('m10')?.querySelector('.ring-2')).toBeInTheDocument()
+      // Released follow: a reply arriving next does not carry the reader away.
+      expect(screen.getByRole('button', { name: /scroll to bottom/i })).toBeInTheDocument()
+    })
+
+    it('grows the rendered window to a loaded message above it', () => {
+      mockMessagesData.data = rows(305)
+      const t = target('m0')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(screen.getByText('m0')).toBeInTheDocument()
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+    })
+
+    it('pages back for a message not loaded yet, then lands on it', () => {
+      mockMessagesData.data = rows(50)
+      mockMessagesData.hasOlder = true
+      const t = target('old7')
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(mockFetchOlder).toHaveBeenCalled()
+      expect(t.onSettled).not.toHaveBeenCalled()
+      mockMessagesData.data = [...rows(10, 'old'), ...rows(50)]
+      mockMessagesData.hasOlder = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+    })
+
+    it('stops where the reader is when the message is not in the history', () => {
+      mockMessagesData.data = rows(50)
+      const t = target('gone')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('stopped')
+    })
+
+    it('stops when an older page it asked for adds nothing', async () => {
+      mockMessagesData.data = rows(50)
+      mockMessagesData.hasOlder = true
+      mockFetchOlder.mockResolvedValue(false)
+      const t = target('old7')
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      await waitFor(() => expect(t.onSettled).toHaveBeenCalledWith('stopped'))
+    })
+
+    it('writes the scroll position that centers the message', () => {
+      mockMessagesData.data = rows(50)
+      const top = new WeakMap<Element, number>()
+      const proto = HTMLElement.prototype
+      const saved = { rect: proto.getBoundingClientRect, ch: Object.getOwnPropertyDescriptor(proto, 'clientHeight'), sh: Object.getOwnPropertyDescriptor(proto, 'scrollHeight'), st: Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop') }
+      const isList = (el: HTMLElement) => el.dataset?.testid === 'message-list'
+      proto.getBoundingClientRect = function (this: HTMLElement) {
+        const box = this.dataset?.messageId === 'm10' ? { top: -3000, height: 100 } : { top: 0, height: isList(this) ? 500 : 0 }
+        return { ...box, bottom: box.top + box.height, left: 0, right: 0, width: 0, x: 0, y: box.top, toJSON: () => box } as DOMRect
+      }
+      Object.defineProperty(proto, 'clientHeight', { configurable: true, get(this: HTMLElement) { return isList(this) ? 500 : 0 } })
+      Object.defineProperty(proto, 'scrollHeight', { configurable: true, get(this: HTMLElement) { return isList(this) ? 5000 : 0 } })
+      Object.defineProperty(Element.prototype, 'scrollTop', { configurable: true, get(this: Element) { return top.get(this) ?? 0 }, set(this: Element, v: number) { top.set(this, v) } })
+      try {
+        const t = target('m10')
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+        expect(t.onSettled).toHaveBeenCalledWith('landed')
+        // Pinned to the live edge first (4499), then the row 3000 above the view top is centered in 500.
+        expect(screen.getByTestId('message-list').scrollTop).toBe(4499 - 3000 - 200)
+      } finally {
+        proto.getBoundingClientRect = saved.rect
+        for (const [o, k, d] of [[proto, 'clientHeight', saved.ch], [proto, 'scrollHeight', saved.sh], [Element.prototype, 'scrollTop', saved.st]] as const) {
+          if (d) Object.defineProperty(o, k, d); else delete (o as unknown as Record<string, unknown>)[k]
+        }
+      }
+    })
+
+    it("opens a completed turn's folded work to land on a message in it, and keeps it open", () => {
+      mockMessagesData.data = [
+        createUserMessage({ id: 'ask', content: { text: 'Who decides?' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+        createAssistantMessage({ id: 'mid', content: { text: '@Mike please decide' }, createdAt: new Date('2025-01-01T00:00:10Z'), toolCalls: [createToolCall({ name: 'Bash' })] }),
+        createAssistantMessage({ id: 'answer', content: { text: 'Done.' }, createdAt: new Date('2025-01-01T00:00:30Z') }),
+      ]
+      const t = target('mid')
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      expect(t.onSettled).toHaveBeenCalledWith('landed')
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+      // The request leaves the URL; the turn stays open.
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+      // Folded again by the reader, the same mention opens it again.
+      fireEvent.click(screen.getByTestId('turn-summary'))
+      expect(screen.queryByText('@Mike please decide')).not.toBeInTheDocument()
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={target('mid')} />)
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('@Mike please decide')).toBeInTheDocument()
+    })
+  })
+
   describe('windowing (long threads)', () => {
     // BASE_WINDOW=300, LOAD_STEP=200 in use-message-list-scroll.ts. Each message renders a
     // bubble whose exact text is `m{i}`, so getByText/queryByText tells us precisely
@@ -2790,6 +2969,37 @@ describe('MessageList', () => {
       // the user was reading stays put: 50 + (5000 - 3000) = 2050.
       expect(screen.getByText('old0')).toBeInTheDocument()
       expect(el.scrollTop).toBe(2050)
+    })
+
+    it('compensates a prepend for a reader who let go of following near the bottom', () => {
+      const base = Array.from({ length: 300 }, (_, i) => createUserMessage({ id: `row${i}`, content: { text: `row${i}` } }))
+      mockMessagesData.data = base
+      mockMessagesData.hasOlder = true
+      let onBeforePrepend: (() => void) | undefined
+      mockFetchOlder.mockImplementation((cb?: () => void) => { onBeforePrepend = cb; return new Promise(() => {}) })
+      const t = { id: 'old5', onSettled: vi.fn() }
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" messageTarget={t} />)
+      const el = screen.getByTestId('message-list')
+      let top = 2415 // 85px from the bottom: past the 70px re-attach, inside the 100px the distance rule skips
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => (el.textContent?.match(/(?:row|old)\d+/g)?.length ?? 0) * 10 })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v } })
+      expect(onBeforePrepend).toBeDefined()
+      fireEvent.scroll(el)
+
+      // The reader nudges up: following lets go.
+      fireEvent.wheel(el, { deltaY: -40 })
+      fireEvent.scroll(el)
+
+      const older = Array.from({ length: 200 }, (_, i) => createUserMessage({ id: `old${i}`, content: { text: `old${i}` } }))
+      act(() => {
+        onBeforePrepend!()
+        mockMessagesData.data = [...older, ...base]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      })
+      // 200 rows (2000px) mounted above; the reader's content stays put, and the landing ends where they are.
+      expect(el.scrollTop).toBe(2415 + 2000)
+      expect(t.onSettled).toHaveBeenCalledWith('stopped')
     })
 
     it('keeps the top of the window stable when a message arrives while scrolled up', async () => {

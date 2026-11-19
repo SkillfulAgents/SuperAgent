@@ -6,8 +6,17 @@ import { JSDOM } from 'jsdom'
 
 const launchMock = vi.hoisted(() => vi.fn())
 
-vi.mock('playwright-core', () => ({ chromium: { launch: (...args: unknown[]) => launchMock(...args) } }))
-vi.mock('./dashboard-screenshot', () => ({ resolveChromiumExecutable: () => '/fake/chromium' }))
+// launchMock resolves to the fake browser; the server around it closes it, and connecting hands it back.
+vi.mock('playwright-core', () => ({
+  chromium: {
+    launchServer: async (...args: unknown[]) => {
+      const browser = await launchMock(...args)
+      return { wsEndpoint: () => browser, close: () => browser.close(), kill: () => browser.kill?.() }
+    },
+    connect: async (browser: unknown) => browser,
+  },
+}))
+vi.mock('./chromium-executable', () => ({ resolveChromiumExecutable: () => '/fake/chromium' }))
 
 const { rasterizeWidget } = await import('./widget-rasterizer')
 

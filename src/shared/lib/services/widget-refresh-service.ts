@@ -47,6 +47,12 @@ export type RefreshReason = 'stale' | 'after-run' | 'manual'
 
 export type RefreshOutcome = WidgetRefreshOutcome
 
+/** A filesystem listing of widgets, each flagged when it is one of `refreshing`. */
+export function withRefreshingFlags(widgets: ApiAgentWidget[], refreshing: string[]): ApiAgentWidget[] {
+  const inFlight = new Set(refreshing)
+  return widgets.map((w) => ({ ...w, refreshing: inFlight.has(w.slug) }))
+}
+
 class WidgetRefreshService {
   private armed = false
   /** Bumped by `stop`: a post-run sweep scheduled before it does not run. */
@@ -82,8 +88,7 @@ class WidgetRefreshService {
 
   /** Attach live `refreshing` flags to a filesystem listing. */
   async decorate(agentSlug: string, widgets: ApiAgentWidget[]): Promise<ApiAgentWidget[]> {
-    const refreshing = new Set(await this.refreshingSlugs(agentSlug))
-    return widgets.map((w) => ({ ...w, refreshing: refreshing.has(w.slug) }))
+    return withRefreshingFlags(widgets, await this.refreshingSlugs(agentSlug))
   }
 
   /**

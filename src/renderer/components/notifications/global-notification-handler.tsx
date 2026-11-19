@@ -2,6 +2,8 @@ import { readPlatformNotifications } from '@renderer/lib/platform-notification-r
 import { notificationChangeSchema } from '@shared/lib/notifications/notification-change-schema'
 import { readNotifications, noteNotificationChange, invalidateNotificationCaches, notificationClientId } from '@renderer/lib/notification-read-cache'
 import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
+import { LLM_CONNECTIONS_CHANGED_EVENT } from '@shared/lib/llm-provider/connection-events'
+import { invalidateModelCatalog } from '@renderer/lib/model-catalog-query'
 import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import type { ApiAgent } from '@shared/lib/types/api'
 /**
@@ -64,6 +66,8 @@ import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+import { takePreopenedNotificationStream } from './notification-stream'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
 // refetched wholesale each time the stream says `connected`.
@@ -76,6 +80,17 @@ const EXPENSIVE_QUERY_KEYS = new Set<unknown>([
 
 export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }): boolean {
   return !EXPENSIVE_QUERY_KEYS.has(query.queryKey[0])
+}
+
+// A query whose first and only load landed after the stream was requested is
+// as fresh as a first load still in flight at `connected`, which TanStack
+// already merges into that refetch. Reading it again repeats the same read.
+export function needsRefetchOnConnect(
+  query: { queryKey: readonly unknown[]; state: { dataUpdateCount: number; dataUpdatedAt: number } },
+  streamRequestedAt: number,
+): boolean {
+  if (!isRefetchableAfterOutage(query)) return false
+  return !(query.state.dataUpdateCount === 1 && query.state.dataUpdatedAt > streamRequestedAt)
 }
 
 // Optimistic status echo per session lifecycle event. Deliberately exhaustive
@@ -255,9 +270,9 @@ export function GlobalNotificationHandler() {
   }, [])
 
   useEffect(() => {
-    const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}/api/notifications/stream`
-    const es = new EventSource(url)
+    const preopened = takePreopenedNotificationStream()
+    const es = preopened?.es ?? new EventSource(`${getApiBaseUrl()}/api/notifications/stream`)
+    let streamRequestedAt = preopened?.requestedAt ?? Date.now()
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
     // One agent's session changed: its detail under every route key and the
@@ -279,7 +294,7 @@ export function GlobalNotificationHandler() {
       if (queryClient.isFetching({ queryKey, exact: true }) > 0) void queryClient.invalidateQueries({ queryKey, exact: true })
     }
 
-    es.onmessage = (event) => {
+    const handleFrame = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
 
@@ -292,7 +307,7 @@ export function GlobalNotificationHandler() {
             // first connect, a gap after a drop, a stream the server ended
             // because it fell behind. Read everything this feed keeps current
             // again. Every server version sends it as its first frame.
-            queryClient.invalidateQueries({ predicate: isRefetchableAfterOutage })
+            queryClient.invalidateQueries({ predicate: (query) => needsRefetchOnConnect(query, streamRequestedAt) })
             break
 
           case 'agent_members_changed':
@@ -318,9 +333,13 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['agent-members', change.agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', change.agentSlug] })
             }
+            // The member stacks hold every agent's members in one entry, which the revocation sweep above can't reach.
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-            invalidateNotificationCaches(queryClient)
+            // An agent this tab does not list yet (it was just shared) refreshes everything.
+            invalidateNotificationCaches(queryClient, change.agentSlug)
             break
           }
 
@@ -452,6 +471,7 @@ export function GlobalNotificationHandler() {
                 agentSlug: agentSlug ?? baseContext.agentSlug,
                 sessionId: notificationSessionId ?? baseContext.sessionId,
                 notificationId: data.notificationId ?? baseContext.notificationId,
+                messageUuid: data.messageUuid,
               }
               // Web Notifications have no context round-trip — wire the click
               // straight to the platform detail route (Electron routes the
@@ -512,7 +532,8 @@ export function GlobalNotificationHandler() {
             const lists = (raise || data.type === 'session_input_provided') && eventAgentSlug && eventSessionId
               ? sessionListMembership(queryClient, eventAgentSlug, eventSessionId)
               : []
-            const listed = lists.some((list) => list.full && list.holds)
+            // The full list, or the sidebar's recent slice where that is what the tab holds.
+            const listed = lists.some((list) => list.rows && list.holds)
             const sessionsKey = eventAgentSlug ? ['sessions', eventAgentSlug] : ['sessions']
             if (listed) {
               // Only the server can add the session to a list that lacks it,
@@ -658,12 +679,19 @@ export function GlobalNotificationHandler() {
 
           case 'agent_updated':
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            // Member stacks draw other agents' names and faces from their own entry.
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             break
 
+          case 'volume_access_changed':
           case 'volume_attention_changed':
-            // A drive's sync state changed: a conflict, a stopped push, or the end of one. Its status pills follow.
+            if (data.type === 'volume_access_changed' || data.accessChanged === true) {
+              queryClient.invalidateQueries({ queryKey: ['volume-owner-candidates'] })
+              queryClient.invalidateQueries({ queryKey: ['volume-files'] })
+            }
             queryClient.invalidateQueries({ queryKey: ['mounts'] })
             queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+            queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
             break
 
           case 'agent_created':
@@ -671,6 +699,7 @@ export function GlobalNotificationHandler() {
             // so refresh both caches the direct-create path invalidates together.
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+            queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
             break
 
           case 'scheduled_task_created':
@@ -749,11 +778,22 @@ export function GlobalNotificationHandler() {
           case 'webhook_relay_changed':
             queryClient.setQueryData(WEBHOOK_RELAY_QUERY_KEY, data.status)
             break
+
+          case LLM_CONNECTIONS_CHANGED_EVENT:
+            // The server changed a saved connection by itself (it needs a
+            // reconnect, or a local server's models changed): every list of
+            // connections, and the model catalog, which carries them too.
+            queryClient.invalidateQueries({ queryKey: ['settings', 'llm-connections'] })
+            queryClient.invalidateQueries({ queryKey: ['settings', 'models'] })
+            void invalidateModelCatalog(queryClient)
+            break
         }
       } catch {
         // Ignore parse errors for ping/connected messages
       }
     }
+    es.onmessage = handleFrame
+    preopened?.frames.forEach(handleFrame)
 
     // Opening is not the time to refetch: the server may still be setting up
     // what the stream follows. `connected` is (see above).
@@ -763,6 +803,8 @@ export function GlobalNotificationHandler() {
 
     es.onerror = () => {
       // Network errors reconnect in the browser. Fatal close is the watcher.
+      // The browser asks again after this, so the next connect counts from here.
+      streamRequestedAt = Date.now()
     }
 
     const disposeLiveness = watchStreamLiveness(es, () => {

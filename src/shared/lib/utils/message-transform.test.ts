@@ -2092,6 +2092,130 @@ describe('replayed duplicate entries (resume history replay)', () => {
     expect(result.filter((r) => r.type === 'compact_boundary')).toHaveLength(1)
     expect(result).toHaveLength(2)
   })
+
+  describe('system rows written before a replayed row', () => {
+    const system = (uuid: string, subtype: 'informational' | 'memory_recall' | 'compact_boundary'): JsonlSystemEntry => ({
+      uuid,
+      type: 'system',
+      subtype,
+      content: subtype === 'informational' ? `note ${uuid}` : '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      ...(subtype === 'memory_recall' && { memory_paths: ['memory/a.md'] }),
+      ...(subtype === 'compact_boundary' && { compactMetadata: { trigger: 'auto', preTokens: 1000 } }),
+    })
+    const answer = (uuid: string) => createAssistantMessage(uuid, `msg-${uuid}`, [{ type: 'text', text: uuid }])
+    const ids = (entries: (JsonlMessageEntry | JsonlSystemEntry)[]) => transformMessages(entries).map((item) => item.id)
+
+    it('shows them before the next new message, not before the replayed row\'s original', () => {
+      // A banner written after turn 2, then a replay of turn 1's rows, then
+      // turn 3. Keyed on the replayed `q1`, it would show above turn 1.
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          createUserMessage('q2', 'two'), answer('a2'),
+          system('note', 'informational'),
+          createUserMessage('q1', 'one'), answer('a1'),
+          createUserMessage('q3', 'three'), answer('a3'),
+        ])
+      ).toEqual(['q1', 'a1', 'q2', 'a2', 'note', 'q3', 'a3'])
+    })
+
+    it('shows them after the last message when only replayed rows follow', () => {
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          createUserMessage('q2', 'two'), answer('a2'),
+          system('recall', 'memory_recall'),
+          system('note', 'informational'),
+          createUserMessage('q1', 'one'), answer('a1'),
+        ])
+      ).toEqual(['q1', 'a1', 'q2', 'a2', 'recall', 'note'])
+    })
+
+    it('keeps them when the replayed row is a later row of a merged response', () => {
+      // The response's item goes by its first row's uuid (`a1-text`), so a
+      // row keyed on the replayed `a1-tool` matched no item and was dropped.
+      const text = () => createAssistantMessage('a1-text', 'msg-1', [{ type: 'text', text: 'Working' }])
+      const tool = () => createAssistantMessage('a1-tool', 'msg-1', [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} }])
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(), tool(),
+          system('note', 'informational'),
+          tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(['q1', 'a1-text', 'note', 'q2'])
+    })
+
+    it('shows them before a response when the next new row is a later row of it', () => {
+      // `a1-tool` merges into the item that goes by `a1-text`, so a run keyed
+      // on `a1-tool` matched no item and was dropped.
+      const text = () => createAssistantMessage('a1-text', 'msg-1', [{ type: 'text', text: 'Working' }])
+      const tool = () => createAssistantMessage('a1-tool', 'msg-1', [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} }])
+      const shown = ['q1', 'note', 'a1-text', 'q2']
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(),
+          system('note', 'informational'),
+          text(), tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(shown)
+      // The same with no replayed row between the banner and `a1-tool`.
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), text(),
+          system('note', 'informational'),
+          tool(),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(shown)
+    })
+
+    it('keeps the runs on either side of a replayed row apart, in file order', () => {
+      // One run would show its recalls first: `late` above `early`. A page
+      // window that holds the replayed row without its original shows it as a
+      // message between the two, so the whole transcript reads the same way.
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          system('early', 'informational'),
+          createUserMessage('q1', 'one'),
+          system('late', 'memory_recall'),
+          createUserMessage('q2', 'two'),
+        ])
+      ).toEqual(['q1', 'a1', 'early', 'late', 'q2'])
+    })
+
+    it('shows a boundary on each side of a replayed row', () => {
+      expect(
+        ids([
+          createUserMessage('q1', 'one'), answer('a1'),
+          system('first', 'compact_boundary'),
+          createUserMessage('q2', 'two'),
+          system('second', 'compact_boundary'),
+          createUserMessage('q2', 'two'),
+          createUserMessage('q3', 'three'),
+        ])
+      ).toEqual(['q1', 'a1', 'first', 'q2', 'second', 'q3'])
+    })
+
+    it('leaves a run with no replayed row after it as it was', () => {
+      expect(
+        ids([
+          createUserMessage('q1', 'one'),
+          system('note', 'informational'),
+          system('older', 'compact_boundary'),
+          system('newer', 'compact_boundary'),
+          system('recall', 'memory_recall'),
+          answer('a1'),
+          system('end-1', 'compact_boundary'),
+          system('end-2', 'compact_boundary'),
+        ])
+      ).toEqual(['q1', 'recall', 'newer', 'note', 'a1', 'end-1', 'end-2'])
+    })
+  })
 })
 
 describe('fork stamp', () => {

@@ -10,22 +10,17 @@
  * the app runs is not picked up. A row placed elsewhere is the only record of
  * its workspace handle.
  */
-import { desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agents, type AgentRow } from '@shared/lib/db/schema'
+import { agentAcl, agents, type AgentRow } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { randomAgentAvatar } from './agent-avatar'
-import {
-  AGENT_ID_LENGTH,
-  directoryExists,
-  getAgentDir,
-  getAgentsDir,
-  removeDirectory,
-} from '@shared/lib/utils/file-storage'
-import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
+import { AGENT_ID_LENGTH, directoryExists, getAgentDir } from '@shared/lib/utils/file-storage'
 import { LOCAL_RUNTIME } from './agent-directories'
+import { removeAgentWorkspace } from './workspace-removal'
 import { dropDbSessionIndex } from './db-session-index-storage'
 import type { AgentCatalog, AgentIdentityChanges, AgentRecord, AgentSlug } from './types'
+import type { AgentRole } from '@shared/lib/types/agent'
 
 // Built on first use rather than at import: suites that stub file-storage
 // with a few names load this module through the auth middleware.
@@ -63,19 +58,53 @@ function toRecord(row: AgentRow): AgentRecord {
   }
 }
 
+// An exact match is a bare minted slug or a legacy compound folder name. Otherwise the slug is the
+// final hyphen-delimited segment (minted slugs have no hyphen); the prefix is decorative. A display
+// slug looks up both forms in one query, and the exact match wins: the slugs come back in that order.
+function slugsNamedBy(input: string): string[] {
+  if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return []
+  const candidate = input.slice(input.lastIndexOf('-') + 1)
+  return candidate === input || !isMintedSlug(candidate) ? [input] : [input, candidate]
+}
+
+function firstNamed<T>(slugs: readonly string[], rows: readonly T[], slugOf: (row: T) => string): T | undefined {
+  for (const slug of slugs) {
+    const row = rows.find((candidate) => slugOf(candidate) === slug)
+    if (row !== undefined) return row
+  }
+  return undefined
+}
+
+/**
+ * `agentCatalog.resolveRecord()` and one user's role on the agent it finds, in
+ * one statement: the request path reads both on every agent route, and the role
+ * is keyed on the slug the resolution produces. `role` is null when the user has
+ * no `agent_acl` row for the agent; the result is null when no agent is named.
+ */
+export async function resolveAgentRecordWithRole(input: string, userId: string): Promise<{ agent: AgentRecord; role: AgentRole | null } | null> {
+  const slugs = slugsNamedBy(input)
+  if (slugs.length === 0) return null
+  // At most one role row per agent: agent_acl is unique on (user_id, agent_slug).
+  const rows = await db
+    .select({ agent: agents, role: agentAcl.role })
+    .from(agents)
+    .leftJoin(agentAcl, and(eq(agentAcl.agentSlug, agents.slug), eq(agentAcl.userId, userId)))
+    .where(slugs.length === 1 ? eq(agents.slug, slugs[0]) : inArray(agents.slug, slugs))
+    .all()
+  const row = firstNamed(slugs, rows, (candidate) => candidate.agent.slug)
+  return row === undefined ? null : { agent: toRecord(row.agent), role: row.role }
+}
+
 export function createAgentCatalog(): AgentCatalog {
   const rowFor = async (slug: AgentSlug): Promise<AgentRow | undefined> =>
     db.select().from(agents).where(eq(agents.slug, slug)).get()
 
-  // An exact match is a bare minted slug or a legacy compound folder name. Otherwise the slug is the
-  // final hyphen-delimited segment (minted slugs have no hyphen); the prefix is decorative. A display
-  // slug looks up both forms in one query, and the exact match wins.
   const resolveRow = async (input: string): Promise<AgentRow | undefined> => {
-    if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return undefined
-    const candidate = input.slice(input.lastIndexOf('-') + 1)
-    if (candidate === input || !isMintedSlug(candidate)) return rowFor(input)
-    const rows = await db.select().from(agents).where(inArray(agents.slug, [input, candidate])).all()
-    return rows.find((row) => row.slug === input) ?? rows.find((row) => row.slug === candidate)
+    const slugs = slugsNamedBy(input)
+    if (slugs.length === 0) return undefined
+    if (slugs.length === 1) return rowFor(slugs[0])
+    const rows = await db.select().from(agents).where(inArray(agents.slug, slugs)).all()
+    return firstNamed(slugs, rows, (row) => row.slug)
   }
 
   const records = async (): Promise<AgentRecord[]> =>
@@ -155,11 +184,7 @@ export function createAgentCatalog(): AgentCatalog {
       // The workspace goes first: a removal that fails (a busy mount, a
       // permission) leaves the row, so the agent still exists and the delete
       // can be retried, instead of a workspace on disk that nothing lists.
-      if (row.runtime === LOCAL_RUNTIME) {
-        const dir = getAgentDir(slug)
-        assertPathWithinDir(getAgentsDir(), dir)
-        await removeDirectory(dir)
-      }
+      if (row.runtime === LOCAL_RUNTIME) await removeAgentWorkspace(slug)
       // Its session index goes with it: a later agent that is given the
       // slug must not inherit the sessions.
       await dropDbSessionIndex(slug)

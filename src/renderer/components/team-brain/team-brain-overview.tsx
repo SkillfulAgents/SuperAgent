@@ -1,3 +1,4 @@
+import type { MountSummaryWithHealth } from '@shared/lib/types/mount'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Plus, Settings2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
@@ -16,6 +17,7 @@ import {
 import { SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { useDeleteAgent, useListedAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
+import { agentHomeId } from '@renderer/context/drafts-context'
 import './team-brain.css'
 import { useAgentMounts } from '@renderer/hooks/use-mounts'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
@@ -28,7 +30,6 @@ import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
 import { AgentSettingsColumn } from '@renderer/components/agents/agent-home/agent-settings-column'
 import { HomeCardLookContext, type HomeCardLook } from '@renderer/components/agents/agent-home/home-collapsible'
-import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
@@ -57,9 +58,7 @@ import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
 import { useTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
 import { teamBrainLocation } from './team-brain-locations'
-
-/** The drawer's tabs are keyed by agent; Team Brain's pages are no agent's, so they get their own key. */
-const PREVIEW_SLUG = 'team-brain'
+import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 
 /**
  * Team Brain once it is set up: its home page, for its agent. The app's file
@@ -70,6 +69,9 @@ const PREVIEW_SLUG = 'team-brain'
  * agents its drive is on.
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
+  const { canUseAgent } = useUser()
+  // The agent's home composer and drawer, as on its Agent Home: comments submitted in the drawer go to this composer.
+  const homePreviewId = agentHomeId(agent.slug)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Once the person clicks or types in the composer, or after one click off the page, an open page's drawer draws at its
   // narrowest so both fit. Using the drawer, opening another page or putting the drawer away brings back its width.
@@ -90,8 +92,8 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
     setLeaving(next.length === 0 && views.size > 0 ? views : null)
   }
   return (
-    <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
-      <WorkflowProvider sessionId="team-brain">
+    <FilePreviewProvider sessionId={homePreviewId} commentsEnabled={canUseAgent(agent.slug)}>
+      <WorkflowProvider sessionId={homePreviewId}>
         <div
           className="file-preview-container relative flex min-h-0 min-w-0 flex-1"
           data-testid="file-preview-container"
@@ -115,7 +117,7 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
             drawerNarrow={drawerNarrow}
             onDrawerNarrowChange={setDrawerNarrow}
           />
-          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" narrowDrawer={drawerNarrow} onDrawerResize={() => setDrawerNarrow(false)} />
+          <TrayManager agentSlug={agent.slug} sessionId={homePreviewId} browserActive={false} filePreviewWideLayout="overlay" narrowDrawer={drawerNarrow} onDrawerResize={() => setDrawerNarrow(false)} />
         </div>
       </WorkflowProvider>
     </FilePreviewProvider>
@@ -125,7 +127,7 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
 /** The Team Brain agent's attachment of the drive its record names. */
 function useBrainMount(agent: ApiAgent) {
   const { data: mounts } = useAgentMounts(agent.slug)
-  return mounts?.find((mount) => mount.volumeId === agent.teamBrain?.volumeId)
+  return mounts?.find((mount): mount is MountSummaryWithHealth => !mount.restricted && mount.volumeId === agent.teamBrain?.volumeId)
 }
 
 /** Where the Team Brain agent's drive lives, from the drive itself; none while it has no drive. */
@@ -185,9 +187,9 @@ function OverviewBody({
   const { data: mounts, isError: mountsUnreadable } = useAgentMounts(agentSlug)
   // A drive still making its first copy has nothing to list yet: it is read once the copy is in, and the tree waits.
   // Until the drive list says which, nothing is read; a list that can't be read now leaves the drive to answer for itself.
-  const mount = mounts?.find((each) => each.volumeId === volumeId)
+  const mount = mounts?.find((each): each is MountSummaryWithHealth => !each.restricted && each.volumeId === volumeId)
   const copying = mount?.health === 'preparing'
-  const readable = mountsUnreadable || (mounts && !copying) ? volumeId : undefined
+  const readable = mountsUnreadable || (mount && !copying) ? volumeId : undefined
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   const { drive, ready, error, recordGroups } = useTeamBrainDrive(agentSlug, readable, expanded, record, recordLeaving)
   // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.
@@ -206,9 +208,7 @@ function OverviewBody({
   const [allSessions, setAllSessions] = useState(false)
   const everySession = useMemo(() => teamBrainSessions(sessions ?? []).map(toSessionItem), [sessions])
   const navigate = useNavigate()
-  // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
-  // even an opened folder shows opens as a list of the pages it stands for.
-  const { openFile, close: closeFiles, isOpen: filesOpen } = useFilePreview()
+  const { openFile, openFolder, close: closeFiles, isOpen: filesOpen } = useFilePreview()
   useEffect(() => {
     if (!filesOpen) onDrawerNarrowChange(false)
   }, [filesOpen, onDrawerNarrowChange])
@@ -219,17 +219,16 @@ function OverviewBody({
     if (folder) closeFiles()
     inFocus.folderChosen(folder && { id: folder.id, name: folder.name })
   }
-  const openPage = (file: TeamBrainNode, { path, folder }: { path: string; folder?: TeamBrainNode }) => {
-    if (!volumeId) return
+  // A page opens as the Team Brain agent's own file, at the path it reads it at, as a session's drawer opens a drive file.
+  // A "+N more" stands for the rest of a folder, so it opens that folder.
+  const openPage = (file: TeamBrainNode, { folder }: { path: string; folder?: TeamBrainNode }) => {
+    if (!mount) return
     onSettingsOpenChange(false)
     onDrawerNarrowChange(false)
-    if (file.more) {
-      const list = `data:text/markdown;charset=utf-8,${encodeURIComponent(`# ${folder?.name ?? 'More pages'}\n\n${file.more.map((name) => `- ${name.replace(/\.md$/, '')}`).join('\n')}`)}`
-      return openFile(`/Team Brain${path}.md`, PREVIEW_SLUG, undefined, { inlineUrl: list, downloadUrl: list })
-    }
-    const url = `${getApiBaseUrl()}/api/volume-definitions/${encodeURIComponent(volumeId)}/file?${new URLSearchParams({ path: file.id })}`
-    openFile(`/Team Brain${path}`, PREVIEW_SLUG, undefined, { inlineUrl: `${url}&inline=true`, downloadUrl: url })
-    inFocus.pageOpened(`/Team Brain${path}`, file)
+    const root = mountPathOf(mount.name)
+    if (file.more) return openFolder(folder ? `${root}/${folder.id}` : root, agentSlug)
+    openFile(`${root}/${file.id}`, agentSlug)
+    inFocus.pageOpened(`${root}/${file.id}`, file)
   }
   const toggleSettings = () => {
     if (!settingsOpen) closeFiles()
@@ -356,7 +355,8 @@ function OverviewBody({
             {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
                 composer is, so the tree shows through it as it passes over. */}
             <div data-keeps-drawer onInput={() => filesOpen && onDrawerNarrowChange(true)}>
-              <TeamBrainHomeComposer agent={agent} reference={inFocus.reference} onDismissReference={inFocus.dismiss} />
+              {/* Comments submitted from the drawer go with the composer's next message, so the drawer steps aside from its Send. */}
+              <TeamBrainHomeComposer agent={agent} reference={inFocus.reference} onDismissReference={inFocus.dismiss} onFocusRequested={() => filesOpen && onDrawerNarrowChange(true)} />
             </div>
           </div>
 
@@ -406,6 +406,7 @@ function OverviewBody({
             <TeamBrainSyncSummaries
               syncs={syncs}
               unreadable={syncsUnreadable}
+              agentSlug={agentSlug}
               onOpenFile={openPage}
               onOpenSession={(sessionId) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })}
             />

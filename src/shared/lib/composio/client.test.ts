@@ -285,6 +285,16 @@ describe('getConnectionToken', () => {
     expect(result.expiresAt).toBeUndefined()
   })
 
+  it.each(['EXPIRED', 'INACTIVE', 'FAILED', 'INITIATED'])('gives no token for a connection that is %s, even when the response carries one', async (status) => {
+    mockFetchOk(makeComposioResponse(
+      { authScheme: 'OAUTH2', val: { status, access_token: 'last-token-before-it-expired' } },
+      { status },
+    ))
+
+    await expect(getConnectionToken('conn-1')).rejects.toThrow(`No access token: the connected account is ${status}`)
+    await expect(getConnectionToken('conn-1')).rejects.toBeInstanceOf(ComposioApiError)
+  })
+
   it('throws ComposioApiError on non-ok API response', async () => {
     mockFetchError(500, { error: 'Internal server error', message: 'Something broke' })
 

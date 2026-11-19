@@ -20,10 +20,13 @@ const mocks = vi.hoisted(() => ({
   commentsEnabled: [] as Array<boolean | undefined>,
   integrationId: null as string | null,
   integration: undefined as Record<string, unknown> | undefined,
+  search: {} as Record<string, unknown>,
+  chatColumnProps: undefined as undefined | { messageTarget?: { id: string; onSettled: (outcome: string) => void } },
 }))
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mocks.navigate,
+  useSearch: () => mocks.search,
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -62,7 +65,12 @@ vi.mock('@renderer/hooks/use-session-search', () => ({ useSessionSearch: () => (
 vi.mock('@renderer/components/messages/session-search-bar', () => ({
   SessionSearchBar: () => null,
 }))
-vi.mock('./session-chat-column', () => ({ SessionChatColumn: () => null }))
+vi.mock('./session-chat-column', () => ({
+  SessionChatColumn: (props: NonNullable<typeof mocks.chatColumnProps>) => {
+    mocks.chatColumnProps = props
+    return null
+  },
+}))
 vi.mock('@renderer/context/file-preview-context', () => ({
   FilePreviewProvider: ({ children, commentsEnabled }: { children: ReactNode; commentsEnabled?: boolean }) => {
     mocks.commentsEnabled.push(commentsEnabled)
@@ -230,5 +238,30 @@ describe('SessionView file comments', () => {
     render(<SessionView agentSlug="target-agent" sessionId="s1" />)
 
     expect(mocks.commentsEnabled.at(-1)).toBe(true)
+  })
+})
+
+describe('SessionView mention landing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = xAgentSession
+    mocks.search = { message: 'msg-7' }
+  })
+
+  it('hands the message to the transcript, then drops it from the URL', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+    expect(mocks.chatColumnProps?.messageTarget?.id).toBe('msg-7')
+
+    mocks.chatColumnProps!.messageTarget!.onSettled('landed')
+    expect(mocks.navigate).toHaveBeenCalledWith(expect.objectContaining({ to: '.', replace: true }))
+    // Only the message leaves the URL.
+    const { search } = mocks.navigate.mock.calls.at(-1)![0] as { search: (prev: Record<string, unknown>) => Record<string, unknown> }
+    expect(search({ message: 'msg-7', other: 1 })).toEqual({ message: undefined, other: 1 })
+  })
+
+  it('asks the transcript for nothing without a message in the URL', () => {
+    mocks.search = {}
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+    expect(mocks.chatColumnProps?.messageTarget).toBeUndefined()
   })
 })

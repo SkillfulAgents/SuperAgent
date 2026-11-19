@@ -10,6 +10,7 @@ import type {
   UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
 import { todoPrompt, type TodoAttachment } from '@shared/lib/todos/todo-schema'
+import { fromStoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useCreateAgentForPrompt } from './use-create-agent-for-prompt'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
@@ -248,13 +249,13 @@ export function useStartTodo() {
       )
       const slug = claimed.agentSlug ?? agentSlug
       const list = claimed.attachments ?? []
-      const bound: { mountId: string; containerPath: string; hostPath: string }[] = []
+      const bound: { mountId: string; containerPath: string; hostPath: string; unchanged?: true }[] = []
       let sessionId: string
       try {
         for (const att of list) {
           if (att.kind !== 'mount') continue
           const result = await addMount.mutateAsync({ agentSlug: slug, hostPath: att.hostPath, restart: true })
-          bound.push({ mountId: result.id, containerPath: mountPathOf(result.name), hostPath: att.hostPath })
+          bound.push({ mountId: result.id, containerPath: mountPathOf(result.name), hostPath: att.hostPath, unchanged: result.unchanged })
         }
         try {
           sessionId = (await createSession.mutateAsync({
@@ -262,16 +263,15 @@ export function useStartTodo() {
             origin: 'todo',
             name: claimed.title.trim() || undefined,
             message: appendAttachedFiles(appendMountedFolders(todoPrompt(claimed), bound), pointedPaths(list)),
-            ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
-            ...(claimed.effort ? { effort: claimed.effort } : {}),
-            ...(claimed.speed ? { speed: claimed.speed } : {}),
+            ...fromStoredRuntimeOptions(claimed),
           })).id
         } catch (error) {
           if (error instanceof Error) reportedBySessionCreation.add(error)
           throw error
         }
       } catch (error) {
-        await Promise.all(bound.map((mount) => removeMount.mutateAsync({ agentSlug: slug, mountId: mount.mountId, restart: true }).catch(() => {})))
+        // A drive the agent already had stays.
+        await Promise.all(bound.filter((mount) => !mount.unchanged).map((mount) => removeMount.mutateAsync({ agentSlug: slug, mountId: mount.mountId, restart: true }).catch(() => {})))
         void apiFetch(`/api/todos/${todo.id}/release`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

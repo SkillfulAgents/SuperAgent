@@ -1,6 +1,6 @@
 import type { ApiAgent } from '@shared/lib/types/api'
 import { orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
-import { hexMix } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { hexMix } from '@shared/lib/types/agent-avatar-orbs'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { orbSvg, svgToPng } from '@renderer/components/agents/agent-avatar/orb-image'
 

@@ -3,12 +3,14 @@ import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
 import { getUserImage, type UserImageFields } from '@shared/lib/user-profile-schema'
 
-const profileFields = {
-  id: user.id, name: user.name, email: user.email,
-  image: user.image, avatarOverride: user.avatarOverride, status: user.status,
+export function userProfileFields() {
+  return {
+    id: user.id, name: user.name, email: user.email,
+    image: user.image, avatarOverride: user.avatarOverride, status: user.status,
+  }
 }
 
-type ProfileRow = Pick<typeof user.$inferSelect, keyof typeof profileFields>
+type ProfileRow = Pick<typeof user.$inferSelect, keyof ReturnType<typeof userProfileFields>>
 export type UserSenderSource = { id: string; name: string } & UserImageFields
 
 /** The existing live-message/typing summary intentionally excludes email. */
@@ -17,7 +19,7 @@ export function toUserSender(profile: UserSenderSource) {
 }
 
 /** `invited`: someone shared with or mentioned before joining (team directories); only present when true. */
-function toUserProfile(profile: ProfileRow) {
+export function toUserProfile(profile: ProfileRow) {
   return { ...toUserSender(profile), email: profile.email, ...(profile.status === 'invited' ? { invited: true as const } : {}) }
 }
 
@@ -25,7 +27,7 @@ function toUserProfile(profile: ProfileRow) {
 export async function getUserSummaries(userIds: readonly string[]) {
   const ids = [...new Set(userIds)]
   const profiles = ids.length
-    ? await db.select(profileFields).from(user).where(inArray(user.id, ids)).all()
+    ? await db.select(userProfileFields()).from(user).where(inArray(user.id, ids)).all()
     : []
   return new Map(profiles.map(profile => [profile.id, toUserProfile(profile)]))
 }
@@ -40,7 +42,7 @@ export async function searchUserSummaries(query: string | undefined, excludeIds:
   const escaped = query?.trim().replace(/[\\%_]/g, '\\$&') ?? ''
   const matchesQuery = (column: AnyColumn) =>
     sql`${column} LIKE ${`%${escaped}%`} ESCAPE '\\'`
-  const profiles = await db.select(profileFields).from(user).where(and(
+  const profiles = await db.select(userProfileFields()).from(user).where(and(
     // Exclude before limiting, so existing members don't consume result slots.
     excludeIds.length ? notInArray(user.id, [...excludeIds]) : undefined,
     escaped ? or(matchesQuery(user.name), matchesQuery(user.email)) : undefined,

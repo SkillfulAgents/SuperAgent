@@ -11,7 +11,8 @@ let testDb: AppDatabase
 let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
-import { createAgentCatalog } from './agent-catalog'
+import { createAgentCatalog, resolveAgentRecordWithRole } from './agent-catalog'
+import { setWorkspaceRemoval } from './workspace-removal'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import * as avatarAssignment from './agent-avatar'
 import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentInstructionsPath } from '@shared/lib/utils/file-storage'
@@ -198,6 +199,40 @@ describe('removing an agent', () => {
     expect(fs.existsSync(getAgentDir('remote'))).toBe(true)
   })
 
+  it("removes the workspace the deployment's own way when it set one, and touches no directory", async () => {
+    await writeAgentDirectory('hosted', '---\nname: Hosted\n---\nBody')
+    await catalog.insert({ slug: 'hosted', name: 'Hosted', createdAt: new Date() })
+    const removed: string[] = []
+    setWorkspaceRemoval(async (slug) => {
+      removed.push(slug)
+    })
+
+    try {
+      await catalog.remove('hosted')
+    } finally {
+      setWorkspaceRemoval(null)
+    }
+
+    expect(removed).toEqual(['hosted'])
+    expect(await rowFor('hosted')).toBeUndefined()
+    expect(fs.existsSync(getAgentDir('hosted'))).toBe(true)
+  })
+
+  it("keeps the agent when the deployment's removal fails, so the delete can be retried", async () => {
+    await catalog.insert({ slug: 'hosted', name: 'Hosted', createdAt: new Date() })
+    setWorkspaceRemoval(async () => {
+      throw new Error('The workspace store is unavailable')
+    })
+
+    try {
+      await expect(catalog.remove('hosted')).rejects.toThrow('The workspace store is unavailable')
+    } finally {
+      setWorkspaceRemoval(null)
+    }
+
+    expect(await catalog.exists('hosted')).toBe(true)
+  })
+
   it('does nothing for a slug that is not an agent', async () => {
     await writeAgentDirectory('stray', '---\nname: Stray\n---\nBody')
     await catalog.remove('stray')
@@ -271,6 +306,62 @@ describe('reading rows', () => {
 
     expect(await catalog.resolve('legacy-a1b2c3d4e5')).toBe('legacy-a1b2c3d4e5')
     expect(await catalog.resolve('sales-a1b2c3d4e5')).toBe('a1b2c3d4e5')
+  })
+
+  describe('with one user\'s role', () => {
+    async function insertUser(id: string) {
+      await testDb.insert(schema.user).values({ id, name: id, email: `${id}@example.test` }).run()
+    }
+    async function grant(userId: string, agentSlug: string, role: 'owner' | 'user' | 'viewer') {
+      await testDb.insert(schema.agentAcl).values({ id: `${userId}:${agentSlug}`, userId, agentSlug, role, createdAt: new Date(0) }).run()
+    }
+
+    it('reads the agent and the role in one statement, for a display slug and for a bare one', async () => {
+      await insertRow('a1b2c3d4e5', 'Sales')
+      await insertUser('member')
+      await insertUser('someone-else')
+      await grant('member', 'a1b2c3d4e5', 'user')
+      await grant('someone-else', 'a1b2c3d4e5', 'owner')
+      const select = vi.spyOn(testDb, 'select')
+
+      const byDisplaySlug = await resolveAgentRecordWithRole('sales-a1b2c3d4e5', 'member')
+      expect(byDisplaySlug).toEqual({ agent: await catalog.get('a1b2c3d4e5'), role: 'user' })
+      expect(await resolveAgentRecordWithRole('a1b2c3d4e5', 'member')).toEqual(byDisplaySlug)
+      // Two resolutions with a role, and the catalog.get() of the expectation.
+      expect(select).toHaveBeenCalledTimes(3)
+    })
+
+    it('finds the agent with no role for a user who has none on it', async () => {
+      await insertRow('a1b2c3d4e5', 'Sales')
+      await insertRow('f6g7h8i9j0', 'Research')
+      await insertUser('member')
+      await grant('member', 'f6g7h8i9j0', 'owner')
+
+      expect(await resolveAgentRecordWithRole('sales-a1b2c3d4e5', 'member')).toMatchObject({ agent: { slug: 'a1b2c3d4e5' }, role: null })
+      expect(await resolveAgentRecordWithRole('a1b2c3d4e5', 'nobody')).toMatchObject({ agent: { slug: 'a1b2c3d4e5' }, role: null })
+    })
+
+    it('names no agent where resolveRecord names none', async () => {
+      await insertRow('a1b2c3d4e5', 'Sales')
+      await insertUser('member')
+      await grant('member', 'a1b2c3d4e5', 'owner')
+
+      for (const input of ['', 'missing', 'sales-zzzzzzzzzz', '../a1b2c3d4e5', 'Sales-a1b2c3d4e5']) {
+        expect(await resolveAgentRecordWithRole(input, 'member')).toBeNull()
+        expect(await catalog.resolveRecord(input)).toBeNull()
+      }
+    })
+
+    it('gives a legacy compound slug its own role, not the role on the agent its last segment names', async () => {
+      await insertRow('a1b2c3d4e5', 'Sales')
+      await insertRow('legacy-a1b2c3d4e5', 'Legacy sales')
+      await insertUser('member')
+      await grant('member', 'a1b2c3d4e5', 'owner')
+      await grant('member', 'legacy-a1b2c3d4e5', 'viewer')
+
+      expect(await resolveAgentRecordWithRole('legacy-a1b2c3d4e5', 'member')).toMatchObject({ agent: { slug: 'legacy-a1b2c3d4e5' }, role: 'viewer' })
+      expect(await resolveAgentRecordWithRole('sales-a1b2c3d4e5', 'member')).toMatchObject({ agent: { slug: 'a1b2c3d4e5' }, role: 'owner' })
+    })
   })
 
   it('reads a rename made through another catalog while an older read is still answering', async () => {

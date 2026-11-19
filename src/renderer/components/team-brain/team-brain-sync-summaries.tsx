@@ -1,7 +1,11 @@
-import { Fragment } from 'react'
+import { Fragment, useMemo, useRef, type ReactNode } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AgentMarkdown } from '@renderer/components/messages/agent-markdown'
+import { useCommentBox } from '@renderer/components/file-preview/comments/use-comment-box'
+import { sendComments } from '@renderer/components/file-preview/comments/comment-bar'
+import { agentHomeId, useDraftsStore } from '@renderer/context/drafts-context'
+import { rehypeCommentLines } from '@renderer/lib/rehype-comment-lines'
 import { summaryLink, type TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
 import { formatSyncDay, formatSyncTime, syncCountLabel } from '@renderer/lib/team-brain/team-brain-format'
 import type { OpenFile } from './team-brain-radial-parts'
@@ -14,27 +18,32 @@ import type { OpenFile } from './team-brain-radial-parts'
  * the rest a line each, drawn as agent text is everywhere else. A page named
  * in one opens from the drive in the drawer. The latest also lists what needs
  * a person, since only the latest run says what is still open. Its title opens
- * the run's session.
+ * the run's session. Text in a summary takes a comment, as a file in the
+ * drawer does, which goes straight to the composer.
  */
 export function TeamBrainSyncSummaries({
   syncs,
   unreadable = false,
+  agentSlug,
   onOpenFile,
   onOpenSession,
 }: {
   syncs: readonly TeamBrainSync[]
   /** The summaries' folder couldn't be read, so none showing doesn't mean none ran. */
   unreadable?: boolean
+  /** The Team Brain agent's. */
+  agentSlug: string
   onOpenFile: OpenFile
   onOpenSession: (sessionId: string) => void
 }) {
 
   // A page opens from the drive in the drawer. Any other link keeps the shared link policy.
   const prose = (markdown: string, summary: string) => (
-    <div className="prose prose-sm max-w-none text-sm/6 text-muted-foreground marker:text-muted-foreground/50 dark:prose-invert prose-p:my-0 prose-ul:my-0 prose-ol:my-0 prose-li:my-1 [&_p+p]:mt-2">
+    <div className="prose prose-sm max-w-none text-sm/6 text-muted-foreground marker:text-muted-foreground/50 dark:prose-invert prose-p:my-0 prose-ul:my-0 prose-ol:my-0 prose-li:my-1 [&_[data-comment-lines]]:relative [&_p+p]:mt-2">
       <AgentMarkdown
         text={markdown}
         mode="settled"
+        rehypePlugins={REHYPE_PLUGINS}
         link={(href, children) => {
           const to = summaryLink(href, summary.slice(0, summary.lastIndexOf('/')))
           if (to === 'web') return null
@@ -82,7 +91,7 @@ export function TeamBrainSyncSummaries({
           const from = sync.sources.join(', ')
           const last = index === syncs.length - 1
           return (
-            <li key={sync.id} className="md:grid md:grid-cols-[8rem_1fr] md:gap-x-8" data-testid={`team-brain-sync-${sync.id}`}>
+            <SummaryComments key={sync.id} sync={sync} agentSlug={agentSlug} className="md:grid md:grid-cols-[8rem_1fr] md:gap-x-8">
               <div className="md:sticky md:top-6 md:self-start">
                 <time dateTime={at.toISOString()} className="hidden text-sm tabular-nums text-muted-foreground md:block">
                   {day}
@@ -130,7 +139,10 @@ export function TeamBrainSyncSummaries({
                 <div className="mt-3 max-w-2xl [overflow-wrap:anywhere]">
                   {sync.highlights.map((highlight, i) => (
                     <Fragment key={i}>
-                      <h4 className="mb-1 mt-5 text-[15px] font-normal tracking-[-0.0075em] first:mt-0">{highlight.title}</h4>
+                      <h4 className="relative mb-1 mt-5 text-[15px] font-normal tracking-[-0.0075em] first:mt-0" data-comment-lines={`${highlight.line}-${highlight.line}`}>
+                        {/* Its own node, so a new title doesn't overwrite a comment pin drawn in the heading. */}
+                        <span>{highlight.title}</span>
+                      </h4>
                       {prose(highlight.body, sync.id)}
                     </Fragment>
                   ))}
@@ -161,10 +173,33 @@ export function TeamBrainSyncSummaries({
                   )}
                 </div>
               </div>
-            </li>
+            </SummaryComments>
           )
         })}
       </ol>
     </section>
+  )
+}
+
+const REHYPE_PLUGINS = [rehypeCommentLines]
+
+/**
+ * A summary's entry as its file's viewer: its parts are on their lines in the file, so a comment takes text selected in
+ * the entry, or the line under the mouse, as in the drawer, and goes straight to the composer. Never the whole file: the
+ * page shows several.
+ */
+function SummaryComments({ sync, agentSlug, className, children }: { sync: TeamBrainSync; agentSlug: string; className: string; children: ReactNode }) {
+  const containerRef = useRef<HTMLLIElement>(null)
+  const draftsStore = useDraftsStore()
+  // A new read replaces the blocks, so markers and highlights re-read them.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const surface = useMemo(() => ({ text: { blocks: containerRef }, file: null }), [sync])
+  const { box } = useCommentBox(containerRef, surface, sync.id, agentSlug, (comment) => sendComments(draftsStore, agentHomeId(agentSlug), sync.id, [comment]))
+  return (
+    // Selectable whole, date and headings too: the app turns selection off element by element, as for `.prose *`.
+    <li ref={containerRef} className={cn('relative select-text [&_*]:select-text', className)} data-testid={`team-brain-sync-${sync.id}`}>
+      {children}
+      {box}
+    </li>
   )
 }

@@ -40,7 +40,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
-  reviewManager: { submitDecision: vi.fn() },
+  reviewManager: { submitDecision: vi.fn(), getPendingReviewsForAgent: vi.fn(() => []) },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -59,6 +59,7 @@ const INT = 'int-restore-test'
 interface ManagerTestSurface {
   connectIntegration(integration: unknown): Promise<boolean>
   subscribeChatSession(integrationId: string, chatId: string, sessionId: string): void
+  sessionStarted(agentSlug: string, sessionId: string): Promise<void>
   createConnector(integration: unknown): Promise<ChatAgentIntegration>
   connections: Map<string, unknown>
   isRunning: boolean
@@ -124,7 +125,7 @@ function seedAccess(chatId: string, status: 'pending' | 'allowed' | 'denied'): v
     .run(id, INT, chatId, status, now, now, now)
 }
 
-describe('AgentIntegrationManager — reconnect restoration filter', () => {
+describe('AgentIntegrationManager — which chats are followed', () => {
   beforeEach(() => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
@@ -143,7 +144,7 @@ describe('AgentIntegrationManager — reconnect restoration filter', () => {
     testSqlite?.close()
   })
 
-  it('subscribes only the active+allowed session on reconnect; skips archived and denied', async () => {
+  it('subscribes only the active+allowed session when its turn starts; skips archived and denied, and loads none on connect', async () => {
     // active + allowed → must subscribe
     seedSession('chat-allowed', 'session-allowed')
     // active + no access row → isChatAllowed returns false → skip
@@ -159,6 +160,9 @@ describe('AgentIntegrationManager — reconnect restoration filter', () => {
     const subscribeSpy = vi.spyOn(mgr, 'subscribeChatSession').mockImplementation(() => {})
 
     await mgr.connectIntegration(fakeIntegration())
+    expect(subscribeSpy).not.toHaveBeenCalled()
+
+    for (const sessionId of ['session-allowed', 'session-denied', 'session-archived']) await mgr.sessionStarted('test-agent', sessionId)
 
     expect(subscribeSpy).toHaveBeenCalledTimes(1)
     expect(subscribeSpy).toHaveBeenCalledWith(INT, 'chat-allowed', 'session-allowed')

@@ -2,9 +2,9 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { DEFAULT_ORBS } from './avatar-orbs'
+import { DEFAULT_ORBS } from '@shared/lib/types/agent-avatar-orbs'
 import { OrbAvatar, type AvatarMotionState } from './orb-avatar'
-import { orbShape, shapePath, type OrbShapeName } from './orb-shapes'
+import { orbShape, shapePath, type OrbShapeName } from '@shared/lib/types/agent-avatar-shapes'
 
 const layer = (name: string) => document.querySelector(`[data-orb-layer="${name}"]`) as HTMLElement
 const body = () => layer('glow').parentElement as HTMLElement
@@ -273,5 +273,63 @@ describe('OrbAvatar visibility', () => {
     })
     advance(1000)
     expect(raf).toHaveBeenCalled()
+  })
+
+  it('ticks on the slow clock in a window that is not in use', () => {
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    render(orb('needs-input'))
+    advance(1000)
+    act(() => {
+      hasFocus.mockReturnValue(false)
+      window.dispatchEvent(new Event('blur'))
+    })
+    advance(100)
+    const paints = vi.spyOn(body().style, 'transform', 'set')
+    advance(4000)
+    // A knock repaints every frame; here it is drawn about once a second.
+    expect(paints.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(paints.mock.calls.length).toBeLessThanOrEqual(6)
+  })
+
+  it('plays a change of state out at once in a window that is not in use', () => {
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const { rerender } = render(orb('idle'))
+    advance(1000)
+    act(() => {
+      hasFocus.mockReturnValue(false)
+      window.dispatchEvent(new Event('blur'))
+    })
+    advance(100)
+    expect(dotsShown()).toBe(0)
+
+    // The agent starts working while the window sits on another display.
+    rerender(orb('working'))
+    const paints = vi.spyOn(layer('face').style, 'transform', 'set')
+    advance(1000)
+    expect(paints.mock.calls.length).toBeGreaterThan(10)
+    advance(1500)
+    expect(dotsShown()).toBe(3)
+  })
+
+  it('paints at most 60 times a second on a faster display', () => {
+    render(orb('needs-input'))
+    advance(500)
+    const paints = vi.spyOn(body().style, 'transform', 'set')
+    // A 120 Hz display: frames 8ms apart, driven by hand.
+    const start = performance.now() + 1000
+    const callbacks: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => callbacks.push(callback))
+    act(() => vi.advanceTimersByTime(50))
+    let frames = 0
+    for (let i = 1; i <= 24; i++) {
+      const callback = callbacks.shift()
+      if (!callback) break
+      frames++
+      act(() => callback(start + i * 8))
+    }
+    expect(frames).toBe(24)
+    // 24 display frames over 192ms: every other one paints.
+    expect(paints.mock.calls.length).toBeGreaterThan(6)
+    expect(paints.mock.calls.length).toBeLessThanOrEqual(13)
   })
 })

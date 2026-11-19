@@ -75,3 +75,34 @@ describe('resolveDisplayName for highlevel', () => {
     await expect(resolveDisplayName(empty, 'ca_1', 'highlevel', 'HighLevel')).resolves.toBe('HighLevel')
   })
 })
+
+describe('resolveDisplayName for youtube', () => {
+  it('names the connection after its channel', async () => {
+    const makeApiCall = vi.fn(async (_call: Call) => jsonResponse({ items: [{ id: 'UC1', snippet: { title: 'Artificial Iddo' } }] }))
+    await expect(resolveDisplayName(makeApiCall, 'ca_1', 'youtube', 'YouTube')).resolves.toBe('Artificial Iddo')
+
+    expect(makeApiCall).toHaveBeenCalledTimes(1)
+    const call = makeApiCall.mock.calls[0][0]
+    expect(call.method).toBe('GET')
+    expect(call.toolkitSlug).toBe('youtube')
+    expect(call.targetUrl).toBe('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true')
+  })
+
+  it('falls back to the Google email when the channel lookup yields nothing', async () => {
+    const makeApiCall = vi.fn(async (call: Call) =>
+      call.targetUrl.includes('/youtube/v3/channels')
+        ? jsonResponse({ items: [] })
+        : jsonResponse({ email: 'creator@example.com' }),
+    )
+    await expect(resolveDisplayName(makeApiCall, 'ca_1', 'youtube', 'YouTube')).resolves.toBe('creator@example.com')
+    expect(makeApiCall.mock.calls[1][0].targetUrl).toBe('https://www.googleapis.com/oauth2/v2/userinfo')
+  })
+
+  it('keeps the fallback name when both lookups fail', async () => {
+    const refused = vi.fn(async () => jsonResponse({ error: { code: 403 } }, 403))
+    await expect(resolveDisplayName(refused, 'ca_1', 'youtube', 'YouTube')).resolves.toBe('YouTube')
+
+    const thrown = vi.fn(async () => { throw new Error('hop down') })
+    await expect(resolveDisplayName(thrown, 'ca_1', 'youtube', 'YouTube')).resolves.toBe('YouTube')
+  })
+})

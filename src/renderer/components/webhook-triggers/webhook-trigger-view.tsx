@@ -399,10 +399,12 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
           <RuntimeOptionsCard
             agentSlug={agentSlug}
-            model={trigger.model ?? null}
-            llmProviderId={trigger.llmProviderId ?? null}
-            effort={trigger.effort ?? null}
-            speed={trigger.speed ?? null}
+            stored={{
+              llmProviderId: trigger.llmProviderId ?? null,
+              model: trigger.model ?? null,
+              effort: trigger.effort ?? null,
+              speed: trigger.speed ?? null,
+            }}
             disabled={!canCancel || !isActive}
             onUpdate={(options) => {
               updateRuntimeOptions.mutate({ triggerId, agentSlug, ...options })

@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type BrowserContext } from '@playwright/test'
+import { test, expect, type APIRequestContext, type BrowserContext, type Response } from '@playwright/test'
 import { AppPage } from '../../pages/app.page'
 
 interface Person { id: string; name: string; email: string; context: BrowserContext }
@@ -39,6 +39,8 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     const session = await page.request.post(`${endpoint}/sessions`, { data: { message: 'Draft the launch plan' } })
     expect(session.ok()).toBeTruthy()
     const { id: sessionId } = await session.json() as { id: string }
+    const isMessagePost = (response: Response) =>
+      response.request().method() === 'POST' && response.url().endsWith(`${endpoint}/sessions/${sessionId}/messages`)
 
     // A cold dev server compiles the app on the first load.
     const app = new AppPage(page)
@@ -65,12 +67,17 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     await expect(share).toContainText(`Share this agent with ${sara.name}?`)
     await share.getByTestId('mention-share-role').click()
     await page.getByRole('option', { name: 'Viewer Can view sessions only' }).click()
+    const silentSent = page.waitForResponse(isMessagePost)
     await share.getByRole('button', { name: 'Share and send' }).click()
     await expect(share).not.toBeVisible()
 
+    // Assert on the stored message, not the optimistic copy drawn before the POST.
+    expect((await silentSent).ok()).toBeTruthy()
+    await expect(page.getByTestId('pending-user-message')).toHaveCount(0)
     const silent = page.getByTestId('message-user').filter({ hasText: 'look at this plan' })
     await expect(silent.getByTestId('user-mention')).toContainText(`@${sara.name}`)
     await expect(silent.locator('[data-notify-only]')).toBeVisible()
+    await expect(silent.getByTestId('mention-notified')).toHaveText('Message ignored by agent')
     await expect(silent).not.toContainText('Mentioned')
     const members = await (await page.request.get(`${endpoint}/members`)).json() as Array<{ id: string; role: string }>
     expect(members.find((member) => member.id === sara.id)?.role).toBe('viewer')
@@ -92,7 +99,7 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     await expect(saraAgentRow.getByLabel('mentioned you')).toBeVisible()
     await saraPage.getByText(`${owner.name} mentioned you`).click()
     await expect(saraPage).toHaveURL(new RegExp(`/sessions/${sessionId}`))
-    await expect(saraPage.getByTestId('message-user').filter({ hasText: 'look at this plan' }).locator('[data-notify-only]')).toBeVisible()
+    await expect(saraPage.getByTestId('message-user').filter({ hasText: 'look at this plan' }).getByTestId('mention-notified')).toBeVisible()
     await expect.poll(async () => (await (await sara.context.request.get('/api/notifications/unread-count')).json())).toMatchObject({ count: 0, mentions: 0 })
     await expect(bellMention).toHaveCount(0, { timeout: 15_000 })
 
@@ -104,11 +111,15 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     await page.keyboard.press('Enter')
     await input.pressSequentially('when the plan is ready')
     await expect(page.getByTestId('mention-notify-only-hint')).toHaveCount(0)
+    const loudSent = page.waitForResponse(isMessagePost)
     await page.keyboard.press('Enter')
     await expect(page.getByTestId('mention-access-dialog')).toHaveCount(0)
+    expect((await loudSent).ok()).toBeTruthy()
+    await expect(page.getByTestId('pending-user-message')).toHaveCount(0)
     const loud = page.getByTestId('message-user').filter({ hasText: 'when the plan is ready' })
     await expect(loud.getByTestId('user-mention')).toContainText(`@${mike.name}`)
     await expect(loud.locator('[data-notify-only]')).toHaveCount(0)
+    await expect(loud.getByTestId('mention-notified')).toHaveCount(0)
     // One reply in all since the note: the note itself ran no turn.
     await expect(page.getByTestId('message-assistant')).toHaveCount(assistantReplies + 1, { timeout: 30_000 })
     await expect.poll(async () => (await mentionsFor(mike.context.request)).length).toBe(1)

@@ -71,6 +71,7 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
   // the actor) and the auto-approved ones the sessions start. Settling a run
   // goes through the sessions, so it reaches the session's wire.
   const hostRuns: HostRunActor = {
+    slug,
     inputs: {
       claim: async (id, options) => inputRequests.claimRequest(id, options?.leaseMs),
       releaseClaim: async (id, token) => inputRequests.releaseClaim(id, token),
@@ -79,8 +80,8 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
       computerUse: {
         grant: async (...args) => computerUse.grant(...args),
         consumeOnce: async (...args) => computerUse.consumeOnce(...args),
-        setGrabbedApp: async (appName) => computerUse.setGrabbed(appName),
-        clearGrabbedApp: async () => computerUse.clearGrabbed(),
+        setActiveApp: async (sessionId, appName) => computerUse.setActiveApp(sessionId, appName),
+        clearActiveApp: async (sessionId) => computerUse.clearActiveApp(sessionId),
         clearPending: async (sessionId, id, outcome = 'answered') => sessions?.clearComputerUseRequest(sessionId, id, outcome),
       },
     },
@@ -150,7 +151,7 @@ export function releaseAgentState(state: AgentState): void {
   state.accountReauth.rejectAll(gone('Account re-authentication'))
   state.mcpReauth.rejectAll(gone('MCP re-authentication'))
   state.inputRequests.dispose()
-  state.computerUse.clearGrabbed()
+  state.computerUse.clearActiveApp()
   state.sessions.dispose()
   state.locks.dispose()
   state.widgetRefreshes.dispose()

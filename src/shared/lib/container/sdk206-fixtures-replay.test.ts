@@ -45,21 +45,18 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: {
     checkPermission: vi.fn(() => 'prompt_needed'),
-    getGrabbedApp: vi.fn(() => undefined),
-    setGrabbedApp: vi.fn(),
-    clearGrabbedApp: vi.fn(),
+    getActiveApp: vi.fn(() => undefined),
+    setActiveApp: vi.fn(),
+    clearActiveApp: vi.fn(),
     consumeOnceGrant: vi.fn(),
   },
 }))
-vi.mock('@shared/lib/computer-use/types', () => ({
+vi.mock('@shared/lib/computer-use/types', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/computer-use/types')>()),
   getRequiredPermissionLevel: vi.fn(() => 'use_application'),
-  resolveTargetApp: vi.fn(() => undefined),
-  READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
-  TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
-vi.mock('@shared/lib/computer-use/executor', () => ({
-  resolveAppFromWindowRef: vi.fn(() => undefined),
-}))
+// Replays drive no machine.
+vi.mock('@shared/lib/computer-use/executor', () => ({}))
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: vi.fn(() => Promise.resolve('trigger_new_id')),
   listActiveWebhookTriggers: vi.fn(() => Promise.resolve([])),
@@ -535,7 +532,7 @@ const SDK296_SCENARIOS = [
   'sendmessage-resumed-subagent',
 ]
 
-describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s capture replays', (sdk) => {
+describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321', 'sdk325'])('%s capture replays', (sdk) => {
   const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
 
   afterEach(() => {
@@ -702,7 +699,7 @@ describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s 
 // a background subagent like any other (async_launched ack, task_started with
 // is_backgrounded, terminal task frames); only its transcript differs (see
 // subagentOwnEntries).
-describe.each(['sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s fork captures replay', (sdk) => {
+describe.each(['sdk303', 'sdk311', 'sdk318', 'sdk321', 'sdk325'])('%s fork captures replay', (sdk) => {
   afterEach(() => {
     vi.clearAllMocks()
   })

@@ -51,18 +51,18 @@ describe('getSubagentModelCatalog', () => {
         .map((model) => model.id)
         .filter((id) => id.startsWith('gpt-'))
 
-    const latestPerTier = ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra']
+    const latestPerTier = ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.2-sol', 'gpt-6.2-astra']
     expect((await gptIds('platform')).sort()).toEqual([...latestPerTier].sort())
     expect((await gptIds('codex-subscription')).sort()).toEqual([...latestPerTier].sort())
-    expect(await resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')
-    expect(await resolveModelForProvider('gpt-astra', 'platform', 'agent')).toBe('gpt-6-astra')
+    expect(await resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.2-sol')
+    expect(await resolveModelForProvider('gpt-astra', 'platform', 'agent')).toBe('gpt-6.2-astra')
   })
 
   it('keeps a stored bare gpt selection on the Sol family', async () => {
     settingsMock.mockReturnValue({ llmProvider: 'platform' })
 
-    expect(await resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.1-sol')
-    expect(await resolveModelForProvider('gpt', 'codex-subscription', 'agent')).toBe('gpt-6.1-sol')
+    expect(await resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.2-sol')
+    expect(await resolveModelForProvider('gpt', 'codex-subscription', 'agent')).toBe('gpt-6.2-sol')
   })
 
   it('does not pass disabled catalog entries to the container', async () => {

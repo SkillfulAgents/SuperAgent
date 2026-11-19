@@ -27,13 +27,12 @@ import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings, type AppSettings } from '@shared/lib/config/settings'
-import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
 import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { NO_LIVE_SESSIONS, type AgentSessionsAccess, type RuntimeSessions } from './agent-sessions-access'
 import type { RuntimeFatalKind } from './runtime-death'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
+import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -74,9 +73,9 @@ interface CachedContainerStatus {
 /** What a runtime needs from the host it belongs to. */
 export interface RuntimeHost {
   /**
-   * The agents' workspaces, for what a start needs from them: the browser
-   * profile seeding and the display name. Null only before the agent
-   * registry attached it, which in the app is never.
+   * The agents' workspaces, for what a start needs from them: the display
+   * name. Null only before the agent registry attached it, which in the app
+   * is never.
    */
   readonly agentWorkspaces: AgentWorkspaceAccess | null
   /** The agents' live sessions. Null only before the agent registry attached it. */
@@ -170,9 +169,11 @@ export class ContainerRuntime {
   private disposed = false
   /**
    * Running on a container env that a setting change replaced. The host marks
-   * every running runtime when a platform token changes; a stop clears it.
+   * every running runtime when a platform token changes; a stop or the next start clears it.
    */
   private stale = false
+  /** The start that has read this agent's drives. A drive change after it needs a restart. */
+  private drivesReadIn: number | null = null
   /**
    * Whether webhooks could be received when this process built the
    * container's env (WEBHOOK_RELAY_AVAILABLE); null until it has.
@@ -387,6 +388,10 @@ export class ContainerRuntime {
     this.starting = startPromise
     try {
       await startPromise
+    } catch (error) {
+      // Nothing runs on the drives a failed start read, so a mark made during it means nothing.
+      if (this.starting === startPromise) this.stale = false
+      throw error
     } finally {
       // A later start that replaced this one clears and arms for itself when it settles.
       if (this.starting === startPromise) this.starting = null
@@ -433,6 +438,11 @@ export class ContainerRuntime {
 
   isStale(): boolean {
     return this.stale
+  }
+
+  /** Running, or starting past its drive read: either way a drive change reaches it only through a restart. */
+  holdsDrives(): boolean {
+    return this.cached?.status === 'running' || (this.starting !== null && this.drivesReadIn === this.lifecycle)
   }
 
   /**
@@ -506,11 +516,9 @@ export class ContainerRuntime {
         // Mark all sessions for this agent as inactive
         this.sessions().markAllInactive({ settleRecovering: true })
 
-        // If this agent had grabbed a window, ungrab it so the halo disappears
-        if (computerUsePermissionManager.getGrabbedApp(slug)) {
-          computerUsePermissionManager.clearGrabbedApp(slug)
-          background(ungrabAC().catch(() => {}), { name: 'container-runtime.ungrab-computer-use' })  // Best-effort, non-blocking
-        }
+        // The agent's computer-use sessions end with it, and their cursors with them.
+        computerUsePermissionManager.clearActiveApp(slug)
+        background(endComputerUseSessions({ agentSlug: slug }).catch(() => {}), { name: 'container-runtime.end-computer-use' })  // Best-effort, non-blocking
 
         // Broadcast status change so UI updates
         globalFeed.publish({
@@ -688,6 +696,8 @@ export class ContainerRuntime {
   private async doStartContainer(client: ContainerClient): Promise<ContainerClient> {
     const slug = this.slug
     const lifecycle = ++this.lifecycle
+    // A mark from an earlier start that failed does not carry into this one, which reads everything again.
+    this.stale = false
     // Read once for this start, and handed to the client's start with the env:
     // the image, the resource limits, the provider env and the platform token
     // all come from it. The next start reads again.
@@ -744,15 +754,11 @@ export class ContainerRuntime {
     }
 
     // What the start needs from the agent's workspace goes through the
-    // agent's file operations, never a host path: the workspace is wherever
-    // the agent's actor says it is.
+    // agent's actor, never a host path: the workspace is wherever the actor
+    // says it is.
     let agentName: string | undefined
     const workspaces = this.host.agentWorkspaces
     if (workspaces) {
-      // Seed the built-in container browser from the selected Chrome profile.
-      // A profile this app may not read is skipped; any other failure fails
-      // the start, as a failed copy always did.
-      await seedBrowserProfileFromChrome(slug, workspaces.files(slug))
       // The display name is attribution only; a start without it is still a start.
       try {
         agentName = displayNameFromInstructions(await workspaces.instructions(slug))
@@ -807,7 +813,11 @@ export class ContainerRuntime {
 
     envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
-    const listed = await listVolumes(slug)
+    const listed = await listVolumes(slug, () => {
+      // An overtaken start must not claim the drive read of the start that replaced it.
+      this.assertCurrent(lifecycle)
+      this.drivesReadIn = lifecycle
+    })
     const canMount = listed.volumes.length > 0 && client.volumeRunFlags() !== null
     const notMounted = [...listed.notMounted, ...(canMount ? [] : notMountedAll(listed.volumes, 'not supported here'))]
     const volumes = canMount ? listed.volumes : []

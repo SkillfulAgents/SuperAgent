@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
+import { invalidateModelCatalog } from '@renderer/lib/model-catalog-query'
 import type { ConnectionInfo, ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 
 export interface ConnectionsResponse {
@@ -71,6 +72,7 @@ export function useConnectionMutation(options?: { onSaved?: () => void }) {
     },
     onSuccess: (_result, { path }) => Promise.all([
       queryClient.invalidateQueries({ queryKey: ['settings'] }),
+      invalidateModelCatalog(queryClient),
       ...(path && /^\/[^/]+$/.test(path) ? [queryClient.invalidateQueries({ queryKey: ['llm-provider-usage', path.slice(1)] })] : []),
       queryClient.invalidateQueries({ queryKey: ['runtime-status'] }),
     ]),

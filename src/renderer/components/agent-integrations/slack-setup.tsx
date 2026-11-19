@@ -78,12 +78,12 @@ function appSteps({ created, agent }: { created: boolean; agent?: SlackAppAgent 
  * The installation comes first, so the app can be created with its webhook
  * URL; it waits, disconnected, for the app's signing secret and bot token.
  */
-function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated }: IntegrationSetupProps & { choice: (disabled?: boolean) => ReactNode; onCreated: () => void }) {
+function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated, initial }: IntegrationSetupProps & { choice: (disabled?: boolean) => ReactNode; onCreated: () => void }) {
   const create = useCreateAgentIntegration()
   const finish = useUpdateAgentIntegration()
   const testCredentials = useTestAgentIntegrationCredentials()
   const queryClient = useQueryClient()
-  const [name, setName] = useState('')
+  const [name, setName] = useState(initial?.name ?? '')
   const [behavior, setBehavior] = useState(DEFAULT_CHAT_SETUP_BEHAVIOR)
   const [created, setCreated] = useState<{ id: string; webhookUrl: string } | null>(null)
   const [signingSecret, setSigningSecret] = useState('')

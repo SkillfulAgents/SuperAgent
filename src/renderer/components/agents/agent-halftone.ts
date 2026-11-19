@@ -1,6 +1,6 @@
 import type { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import type { AgentAvatarColor } from '@shared/lib/types/agent-avatar'
-import type { AvatarOrb } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import type { AvatarOrb } from '@shared/lib/types/agent-avatar-orbs'
 
 type ActivityStatus = ReturnType<typeof getAgentActivityStatus>
 

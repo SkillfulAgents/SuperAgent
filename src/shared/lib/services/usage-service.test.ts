@@ -954,6 +954,8 @@ describe('usage-service', () => {
       ['openai/gpt-6-sol', 2, 10],
       ['openai/gpt-6.1-sol', 2, 10],
       ['openai/gpt-6.1-terra', 1, 5],
+      ['gpt-6.2-sol', 2, 10],
+      ['gpt-6.2-astra', 8, 40],
       ['openai/gpt-5.5-20260423', 5, 30],
       ['gpt-5.5-2026-04-23', 5, 30],
       ['openai/gpt-5.5-2026-04-23', 5, 30],

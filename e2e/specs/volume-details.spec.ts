@@ -93,7 +93,7 @@ test('renders provider-owned logos on the homepage and in saved volumes', async 
     for (const type of ['dropbox', 'googledrive'] as const) {
       const volume = { id: type, name: type === 'dropbox' ? 'Team Dropbox' : 'Team Drive', type, hostPath: null,
         sourceLabel: type === 'dropbox' ? 'Dropbox · /Team' : 'Google Drive · Team', health: 'ok' as const,
-        userId: null, canManage: true, attachmentCount: 1, globalAccess: null }
+        visibility: 'public' as const, owners: [{ userId: null, name: 'Workspace admins', role: 'owner' as const }], canManage: true, attachmentCount: 1, globalAccess: null }
       state.definitions.push(volume)
       state.mounts.push({ ...volume, id: `mount-${type}`, volumeId: volume.id, volumeName: volume.name, readOnly: false })
     }

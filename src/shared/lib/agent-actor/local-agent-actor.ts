@@ -1,8 +1,10 @@
+import pLimit from 'p-limit'
 import type { containerHost } from '@shared/lib/container/container-host'
 import type { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
 import type { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import type { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { ANY_APPLICATION_LEVEL } from '@shared/lib/computer-use/types'
 import type { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import type * as sessionService from '@shared/lib/services/session-service'
 import type { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
@@ -11,6 +13,7 @@ import type * as transcriptOps from './local-transcript-ops'
 import type { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import type { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
+import { scanArtifactsIn } from '@shared/lib/services/artifact-scan'
 import type { HostPort } from './host-port'
 import { runComputerUse, runScript } from './host-runs'
 import type { SessionsRuntime } from './live/live-sessions'
@@ -31,6 +34,7 @@ import type { UserInputRequestOutcome } from '@shared/lib/tools/requests/request
 import type {
   AccountReauthOps,
   AgentActor,
+  AgentListing,
   AgentLiveSummary,
   AgentSlug,
   ComputerUseOps,
@@ -87,6 +91,14 @@ export interface LocalActorDeps {
 const subagentCapture = SubagentCapture.fromEnv()
 
 /**
+ * How many of this process's agents read their listing from disk at a time.
+ * The agent list asks every agent at once; the actors of one process share
+ * its disk and its thread pool, so the bound is theirs to keep. An actor
+ * alone in its process is never held back by it.
+ */
+const listingLimit = pLimit(5)
+
+/**
  * An agent whose container and files are managed by this process.
  *
  * Runtime methods delegate with the agent's store or slug, or with the
@@ -97,6 +109,7 @@ const subagentCapture = SubagentCapture.fromEnv()
  */
 export class LocalAgentActor implements AgentActor {
   readonly live: () => Promise<AgentLiveSummary>
+  readonly listing: () => Promise<AgentListing>
   readonly container: ContainerOps
   readonly sessions: SessionOps
   readonly messages: MessageOps
@@ -155,6 +168,17 @@ export class LocalAgentActor implements AgentActor {
     this.widgets = createWidgetOps(this.state)
     this.mcpSessions = createMcpSessionOps(this.state)
     this.volumeUploads = createVolumeUploadOps(this.state)
+    this.listing = () => listingLimit(async () => {
+      const [sessions, artifacts] = await Promise.all([
+        this.sessions.summary(),
+        scanArtifactsIn(this.files, { includeWidgets: true, agentSlug: slug }),
+      ])
+      // What is in memory is read after the disk, so it is never older than
+      // the files beside it: a refresh that ended during the scan left its new
+      // snapshot in `artifacts`, and must not still read as in flight.
+      const [live, refreshingWidgets] = await Promise.all([this.live(), this.widgets.refreshing()])
+      return { live, sessions, artifacts, refreshingWidgets }
+    })
   }
 
   /** The registry is dropping this handle: release everything it owns. */
@@ -192,8 +216,9 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     keepAlive: async () => runtime().keepAlive(),
     status: async () => runtime().getCachedInfo(),
     invalidate: async (options) => {
-      if (runtime().getCachedInfo().status !== 'running') return 'not-running'
-      if (!options?.restart) {
+      if (!runtime().holdsDrives()) return 'not-running'
+      // A start in flight is not torn down: it comes up stale instead.
+      if (!options?.restart || runtime().isStarting()) {
         runtime().markStale()
         return 'marked-stale'
       }
@@ -473,7 +498,7 @@ async function answerRequest(
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
-    submit: async (id, decision, reason) => deps.reviewManager.submitDecision(slug, id, decision, reason),
+    submit: async (id, decision, detail) => deps.reviewManager.submitDecision(slug, id, decision, detail),
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
@@ -484,27 +509,29 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
     withdraw: async (id) => deps.reviewManager.withdraw(slug, id),
     resume: (id) => deps.reviewManager.resume(slug, id),
     settle: (id, decision) => deps.reviewManager.settle(slug, id, decision),
-    takeDenyReason: (id) => deps.reviewManager.takeDenyReason(slug, id),
+    takeDecisionDetail: (id) => deps.reviewManager.takeDecisionDetail(slug, id),
   }
 }
 
 function createComputerUseOps(state: AgentState, deps: LocalActorDeps): ComputerUseOps {
   const computerUse = state.computerUse
   return {
-    releaseGrab: async (sessionId) => {
-      const appName = computerUse.grabbed()
-      computerUse.clearGrabbed()
+    releaseApp: async (sessionId) => {
+      const appName = computerUse.activeApp(sessionId)
+      computerUse.clearActiveApp(sessionId)
       if (appName) await computerUse.revoke('use_application', appName)
-      // Taking the app back ends the session's any-app grant too: its next
-      // app asks again.
+      // Taking the app back ends the any-app grants too, the agent's and the
+      // session's: its next app asks again.
+      await computerUse.revoke(ANY_APPLICATION_LEVEL)
       computerUse.revokeSession(sessionId)
-      state.sessions.emit(sessionId, { type: 'computer_use_grab_changed', app: null })
+      state.sessions.emit(sessionId, { type: 'computer_use_app_changed', app: null })
       return { appName }
     },
-    setGrabbedApp: async (appName) => computerUse.setGrabbed(appName),
-    clearGrabbedApp: async () => computerUse.clearGrabbed(),
+    setActiveApp: async (sessionId, appName) => computerUse.setActiveApp(sessionId, appName),
+    clearActiveApp: async (sessionId) => computerUse.clearActiveApp(sessionId),
     grant: async (...args) => computerUse.grant(...args),
     consumeOnce: async (...args) => computerUse.consumeOnce(...args),
+    revokeAll: async () => computerUse.revokeAll(),
     clearPending: async (...args) => state.sessions.clearComputerUseRequest(...args),
     run: (run) => runComputerUse(state.hostRuns, deps.host, run),
     runScript: (run) => runScript(state.hostRuns, deps.host, run),

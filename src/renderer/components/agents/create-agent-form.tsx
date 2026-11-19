@@ -143,7 +143,10 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
     setTimeout(() => textareaRef.current?.focus(), 0)
   }, [])
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
-  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
+  // The catalog only resolves a handoff's template slug: read it while one is armed.
+  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents({
+    enabled: handoffTemplateSlug !== null,
+  })
 
   const activeProvider = modelSettings?.llmProvider
   const catalog = useMemo(
@@ -161,7 +164,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
   )
   // No agent exists yet to supply a per-agent override. The hook falls back
   // to the app-wide selection, then the active provider's catalog default.
-  const composerOptions = useComposerOptions({ initialModel: handoffSeedModel })
+  const composerOptions = useComposerOptions({ initial: { model: handoffSeedModel } })
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)

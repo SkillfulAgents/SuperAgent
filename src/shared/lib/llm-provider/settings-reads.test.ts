@@ -34,7 +34,6 @@ import {
 import { sessionConnectionRuntime } from './session-connection-runtime'
 import { getConfiguredLlmClientAndModel } from './helpers'
 import { ensureManagedPlatformConnection, syncProviderSettings } from './connection-settings'
-import { platformPlanCache } from './platform-plan-cache'
 
 const admin = { userId: null, admin: true }
 const PLATFORM_TOKEN = 'plat_sa_settings_reads'
@@ -60,7 +59,6 @@ beforeEach(async () => {
   handle = await createTestDatabase()
   state.db = handle.db
   reads = vi.spyOn(records, 'readStoredRecord')
-  platformPlanCache.clear()
   await mutateSettings((s) => {
     s.llmProvider = 'platform'
     s.platformAuth = platformAuth

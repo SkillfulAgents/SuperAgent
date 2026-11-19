@@ -23,6 +23,22 @@ export function HomePanel({ children, className }: { children: ReactNode; classN
 }
 
 /**
+ * What a section shows when it has nothing in it: one sentence on what will be
+ * listed here, in a row description's type on the rows' 16px inset. No box of its own,
+ * since the panel is already one, and no "No X yet" title: the section's name
+ * is right above it and its count says 0. `children` go below, like setup tiles.
+ */
+export function HomeEmptyState({ description, children }: { description: ReactNode; children?: ReactNode }) {
+  return (
+    <div className="px-4 pb-1" data-testid="home-empty-state">
+      {/* One step below a row description: a note in an empty section, not content. */}
+      <p className="text-xs text-muted-foreground/70 text-pretty">{description}</p>
+      {children}
+    </div>
+  )
+}
+
+/**
  * A section header row: muted 12px title on the left, chevron on the right.
  * Shared with the "Show more" toggle below the panel so it reads as
  * one more section label. The focus ring is inset because the panel clips its

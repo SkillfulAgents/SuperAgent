@@ -1,5 +1,8 @@
 import { useState } from 'react'
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
+import { StaleAgentsNotice } from './stale-agents-notice'
+import { toast } from 'sonner'
+import { z } from 'zod'
 import { VolumeDetailPage } from '@renderer/components/volumes/volume-detail-page'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { IntegrationList, IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
@@ -15,6 +18,9 @@ import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 export function agentBackPath(source: 'home' | 'list' | undefined, from: string | undefined): string | null {
   return source === 'home' && from ? from : null
 }
+
+/** A new drive's id, or the id of the drive its source already had. */
+const savedSchema = z.object({ id: z.string(), reused: z.boolean().optional() })
 
 export function VolumesTab() {
   const registry = useVolumeDefinitions()
@@ -51,6 +57,7 @@ export function VolumesTab() {
 
   return (
     <div className="space-y-6" data-testid="volumes-settings">
+      <StaleAgentsNotice />
       {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
         : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>{homeAgent ? `Back to ${homeAgent.name}` : back.label ?? 'Back to drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
         : <>
@@ -75,7 +82,9 @@ export function VolumesTab() {
               subtitle={<>
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="min-w-0 truncate font-mono" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</span>}
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
-                <span className="inline-flex shrink-0 items-center gap-1">{volume.userId === null ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.userId === null ? 'Public' : 'Private'}</span>
+                <span className="inline-flex shrink-0 items-center gap-1">{volume.visibility === 'public' ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.visibility === 'public' ? 'Public' : 'Private'}</span>
+                <span className="shrink-0">·</span>
+                <span className="truncate">{volume.visibility === 'public' ? 'Everyone in this workspace' : volume.owners.map(owner => owner.name).join(', ')}</span>
                 <span className="shrink-0">·</span>
                 <span className="shrink-0">{volume.globalAccess ? 'Every agent' : volume.attachmentCount === 0 ? 'Not added' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
               </>}
@@ -93,7 +102,12 @@ export function VolumesTab() {
       )}
       </>}
       {creating && <VolumeSettingsDialog
-        onSave={input => save.mutateAsync(input)}
+        onSave={async input => {
+          const { id, reused } = savedSchema.parse(await save.mutateAsync(input))
+          if (!reused) return
+          const name = definitions.find(volume => volume.id === id)?.name
+          if (name) toast.info(`This folder is already the drive ${name}.`)
+        }}
         onClose={() => setCreating(false)}
       />}
       <AlertDialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null) }}>

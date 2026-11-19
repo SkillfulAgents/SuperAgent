@@ -142,7 +142,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
         if (event.type === 'message.received' && event.messageId) {
           const message = await client.message(this.config.mailboxId, event.messageId)
           if (this.stopped) return
-          const handoff = await this.emitEvent({ type: 'input', id: message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
+          const handoff = await this.emitEvent({ type: 'input', id: message.id, externalId: await emailThreadRoute(this.record, message), timestamp: new Date(message.createdAt), payload: message })
           // Not taken: this connection was replaced or stopped while it polled.
           // Leave the cursor here so the connection that replaces it reads this
           // message again, instead of skipping it for good.
@@ -158,7 +158,6 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
       if (!result.hasMore) return
     }
   }
-  private threadRoute(id: string) { return emailThreadRoute(this.record, id) }
   async disconnect() {
     this.generation++
     this.stopped = true; this.connected = false; this.mode = null

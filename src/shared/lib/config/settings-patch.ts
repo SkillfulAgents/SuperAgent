@@ -1,6 +1,7 @@
 import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
 import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
 import { VOICE_PROVIDERS } from '../voice/provider-types'
+import { COMPUTER_USE_INPUT_MODES } from '../computer-use/types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -84,8 +85,7 @@ export const appSettingsPatchSchema = z.object({
   apiLogAutoDeleteDays: z.number().int().nonnegative(),
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
-  hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
-  chromeProfileId: z.string(),
+  hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform', 'steel', 'tabtender']).nullable(),
   chromeHeadless: z.boolean(),
   allowPrereleaseUpdates: z.boolean(),
   theme: z.enum(['system', 'light', 'dark']),
@@ -105,6 +105,11 @@ export const appSettingsPatchSchema = z.object({
   browserbaseProxyCountry: z.string(),
   browserbaseProxyState: z.string(),
   browserbaseProxyCity: z.string(),
+  steelSolveCaptcha: z.boolean(),
+  steelProxies: z.boolean(),
+  steelProxyCountry: z.string(),
+  steelProxyState: z.string(),
+  steelProxyCity: z.string(),
 }).partial().strict()
 
 export const apiKeySettingsPatchSchema = z.object({
@@ -120,6 +125,9 @@ export const apiKeySettingsPatchSchema = z.object({
   composioUserId: z.string(),
   browserbaseApiKey: z.string(),
   browserbaseProjectId: z.string(),
+  steelApiKey: z.string(),
+  tabtenderUrl: z.string(),
+  tabtenderApiKey: z.string(),
   deepgramApiKey: z.string(),
   openaiApiKey: z.string(),
   nangoSecretKey: z.string(),
@@ -181,7 +189,7 @@ const voiceSettingsPatchSchema = z.object({
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({
-  level: z.enum(['list_apps_windows', 'use_application', 'use_host_shell']),
+  level: z.enum(['list_apps_windows', 'use_application', 'use_any_application', 'use_host_shell']),
   appName: z.string().optional(),
   grantType: z.literal('always'),
 }).strict()
@@ -191,6 +199,8 @@ const computerUseSettingsPatchSchema = z.object({
     z.string(),
     z.object({ grants: z.array(computerUseGrantSchema) }).strict(),
   ),
+  showCursor: z.boolean(),
+  inputMode: z.enum(COMPUTER_USE_INPUT_MODES),
 }).partial().strict()
 
 const analyticsTargetSchema = z.object({

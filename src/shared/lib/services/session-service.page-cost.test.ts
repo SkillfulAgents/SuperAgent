@@ -11,11 +11,12 @@
  * Only an assertion on bytes-read can fail on that.
  *
  * The contract in one line: a trailing page costs O(window), not O(transcript).
- * Cursor pages are the documented exception — the backward scan cannot stop at
- * the first occurrence of the cursor id, because a replayed duplicate row
- * shares its uuid and the deepest occurrence is the real anchor, so the scan
- * always walks to the start of the file. The bound that matters there is that
- * it walks it ONCE (see the offset-carrying-cursor note on MAX_TAIL_LINES).
+ * Bare-id cursor pages are the documented exception — the backward scan cannot
+ * stop at the first occurrence of the cursor id, because a replayed duplicate
+ * row shares its uuid and the deepest occurrence is the real anchor, so the
+ * scan always walks to the start of the file. The bound that matters there is
+ * that it walks it ONCE. A `uuid:offset` cursor, the shape the server hands
+ * out, seeks to its row and costs O(grace + page).
  *
  * Accounting patches fs.promises.open to wrap handle.read, which both readers
  * bottom out in — the backward index scan calls it directly, and the forward
@@ -29,6 +30,7 @@ import * as os from 'os'
 
 import { getSessionMessagesPage } from './session-service'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { cursorId } from './testing/page-cursor'
 
 const KB = 1024
 const MB = 1024 * KB
@@ -59,14 +61,17 @@ interface ReadAccount {
   bytes: number
   /** Read round-trips — on a network filesystem each one is priced separately. */
   reads: number
+  /** Opens: also a round trip each on a network filesystem. */
+  opens: number
 }
 
 function trackReads(): ReadAccount {
-  const account: ReadAccount = { bytes: 0, reads: 0 }
+  const account: ReadAccount = { bytes: 0, reads: 0, opens: 0 }
   const realOpen = fs.promises.open.bind(fs.promises)
 
   vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
     const handle = await realOpen(...(args as Parameters<typeof realOpen>))
+    account.opens++
     const realRead = handle.read.bind(handle)
     handle.read = (async (...readArgs: unknown[]) => {
       const result = await realRead(...(readArgs as Parameters<typeof realRead>))
@@ -192,7 +197,7 @@ describe('messages page read cost — bounded window', () => {
     // back short with a cursor rather than growing the window to fit.
     expect(page.messages.length).toBeGreaterThan(0)
     expect(page.messages.length).toBeLessThan(2000)
-    expect(page.nextCursor).toBe(page.messages[0]!.id)
+    expect(cursorId(page.nextCursor)).toBe(page.messages[0]!.id)
     // The window is capped at 2x the budget and is covered twice — once by the
     // scan, once by the read.
     expect(account.bytes).toBeLessThan(byteBudget * 4)
@@ -227,7 +232,7 @@ describe('messages page read cost — round trips', () => {
     const { account, page } = await costOf('round-trips', { limit: 5000 })
 
     expect(page.messages.length).toBeLessThan(3000)
-    expect(page.nextCursor).toBe(page.messages[0]!.id)
+    expect(cursorId(page.nextCursor)).toBe(page.messages[0]!.id)
     expect(account.bytes).toBeGreaterThan(8 * MB)
     // 8 backward reads (64KB doubling to 1MB), then the window in 1MB forward
     // reads. Fixed 64KB reads took ~130 for the same page.
@@ -242,7 +247,7 @@ describe('messages page read cost — round trips', () => {
 
     expect(page.messages.length).toBeGreaterThan(0)
     expect(page.messages.length).toBeLessThan(2000)
-    expect(page.nextCursor).toBe(page.messages[0]!.id)
+    expect(cursorId(page.nextCursor)).toBe(page.messages[0]!.id)
     // Four backward reads (64+128+256+512KB), then the ~512KB window in one
     // forward read plus the end-of-file read. Fixed 64KB reads took ~19.
     expect(account.reads).toBeLessThanOrEqual(6)
@@ -251,10 +256,11 @@ describe('messages page read cost — round trips', () => {
 })
 
 describe('messages page read cost — cursor pages', () => {
-  // A cursor page cannot stop at the first match: a replayed duplicate row
-  // carries the same uuid, and the transform anchors on the deepest occurrence,
-  // so the scan walks to the start of the file by design. These tests pin that
-  // it walks it once — the double-full-read regression showed up here first.
+  // A bare-id cursor page cannot stop at the first match: a replayed duplicate
+  // row carries the same uuid, and the transform anchors on the deepest
+  // occurrence, so the scan walks to the start of the file by design. These
+  // tests pin that it walks it once — the double-full-read regression showed
+  // up here first. An offset cursor seeks instead (last test).
 
   it('traverses the transcript once for a cursor at the very start', async () => {
     const size = await writeTranscript('deep-cursor', thread(600, 2600))
@@ -288,5 +294,46 @@ describe('messages page read cost — cursor pages', () => {
     // Nothing to serve means nothing to read: the search ends at the start of
     // the file and no window is materialized.
     expect(account.bytes).toBeLessThan(size + CHUNK_SLACK)
+  })
+
+  it('reads the grace and the page, not the transcript, for an offset cursor at the start', async () => {
+    const size = await writeTranscript('seek-cursor', thread(1500, 2600))
+    expect(size).toBeGreaterThan(4 * MB)
+    const transcriptBytes = await fs.promises.readFile(
+      path.join(testDir, 'agents', AGENT, 'workspace', '.claude', 'projects', '-workspace', 'seek-cursor.jsonl')
+    )
+    const offset = transcriptBytes.indexOf('{"type":"user","uuid":"u-5"')
+    expect(offset).toBeGreaterThan(0)
+
+    const seeked = await costOf('seek-cursor', { limit: 10, cursor: `u-5:${offset}` })
+    const scanned = await costOf('seek-cursor', { limit: 10, cursor: 'u-5' })
+
+    expect(seeked.page.messages).toEqual(scanned.page.messages)
+    expect(seeked.page.messages.length).toBeGreaterThan(0)
+    // The window (grace above the row plus the page below it) and a few
+    // 64KB probes, where the bare-id scan walks all 4MB.
+    expect(seeked.account.bytes).toBeLessThan(CURSOR_GRACE + 4 * 64 * KB + CHUNK_SLACK)
+    expect(scanned.account.bytes).toBeGreaterThan(size)
+    expect(seeked.account.reads).toBeLessThan(10)
+    // One open serves the seek's forward reads and its walk.
+    expect(seeked.account.opens).toBe(scanned.account.opens)
+  })
+
+  it('drops a stale offset cursor after two reads, then scans by id', async () => {
+    await writeTranscript('stale-cursor', thread(1500, 2600))
+    const transcriptBytes = await fs.promises.readFile(
+      path.join(testDir, 'agents', AGENT, 'workspace', '.claude', 'projects', '-workspace', 'stale-cursor.jsonl')
+    )
+    const offset = transcriptBytes.indexOf('{"type":"user","uuid":"u-5"')
+
+    const scanned = await costOf('stale-cursor', { limit: 10, cursor: 'u-5' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // An offset inside the row: what a rewritten transcript leaves behind.
+    const stale = await costOf('stale-cursor', { limit: 10, cursor: `u-5:${offset + 3}` })
+
+    expect(stale.page.messages).toEqual(scanned.page.messages)
+    // The row's end and the row itself. The grace end is not read for a row
+    // that turns out not to be the cursor's.
+    expect(stale.account.reads).toBe(scanned.account.reads + 2)
   })
 })

@@ -64,13 +64,17 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   // Resolve the route param to the canonical id the way the real hook does,
   // using the mocked params + agents so active-state tests behave faithfully.
-  useRouteAgentId: () => {
-    const slug = mockRouteParams.slug
-    if (!slug) return undefined
-    const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
-    return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
-  },
+  useRouteAgentId: () => mockResolveAgentId(mockRouteParams.slug),
+  useResolvedAgentId: (slug: string | undefined) => mockResolveAgentId(slug),
 }))
+function mockResolveAgentId(slug: string | undefined) {
+  if (!slug) return undefined
+  const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
+  return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
+}
+// The rows' route selection is the real one (the shared setup stubs it),
+// running over the mocked router state below.
+vi.mock('@renderer/router/use-route-agent', async (importOriginal) => importOriginal())
 
 const mockCreateUntitledAgent = vi.fn()
 vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
@@ -86,8 +90,29 @@ vi.mock('@renderer/hooks/use-agent-members', () => ({
 }))
 
 const mockUseSessions = vi.fn()
+const mockUseNotableSessions = vi.fn()
+// `mockUseSessions` is the server's list for an agent. The row reads its first
+// rows and their count; `fullListReads` records who asked for every session.
+const fullListReads: string[] = []
+let mockServerReportsTotal = true
+const RECENT_LIMIT = 6
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: (slug: string | null) => mockUseSessions(slug),
+  useSessions: (slug: string | null) => {
+    if (!slug) return { data: undefined, isLoading: false }
+    fullListReads.push(slug)
+    return mockUseSessions(slug)
+  },
+  useRecentSessions: (slug: string | null) => {
+    if (!slug) return { data: undefined, isLoading: false }
+    const result = mockUseSessions(slug)
+    return { ...result, data: result.data?.slice(0, RECENT_LIMIT) }
+  },
+  useNotableSessions: (slug: string | null) => slug ? mockUseNotableSessions(slug) : { data: undefined },
+  useSessionTotal: (slug: string | null) => (slug && mockServerReportsTotal ? mockUseSessions(slug).data?.length : undefined),
+  recentSessionsQueryOptions: (_queryClient: unknown, slug: string) => ({
+    queryKey: ['sessions', slug, 'recent', RECENT_LIMIT],
+    queryFn: () => Promise.resolve([]),
+  }),
   useCreateSession: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
@@ -146,6 +171,8 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
 // (matches the global setup mock, which this file-level mock replaces).
 let mockRouteParams: Record<string, string | undefined> = {}
 let mockRoutePathname = '/'
+// The deepest match's path template; the rows read the view kind from it.
+let mockRouteFullPath = '/'
 let mockHistorySubscribers: Array<(opts: { action: { type: string } }) => void> = []
 const mockHistory = {
   location: { state: { __TSR_index: 0 } },
@@ -165,9 +192,15 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     ...actual,
     useRouter: () => ({ history: mockHistory }),
     useNavigate: () => mockNavigate,
-    useParams: () => mockRouteParams,
-    useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
-      opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
+    useParams: (opts?: { select?: (params: Record<string, string | undefined>) => unknown }) =>
+      opts?.select ? opts.select(mockRouteParams) : mockRouteParams,
+    useRouterState: (opts?: { select?: (s: unknown) => unknown }) =>
+      opts?.select
+        ? opts.select({
+            location: { pathname: mockRoutePathname },
+            matches: [{ fullPath: mockRouteFullPath, params: mockRouteParams, search: {} }],
+          })
+        : undefined,
   }
 })
 
@@ -263,12 +296,12 @@ vi.mock('@renderer/components/sessions/session-context-menu', async () => {
       activity,
     }: {
       children: React.ReactNode
-      activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+      activity: { isActive: boolean; isAwaitingInput: boolean }
     }) => (
       <ContextMenu>
         <ContextMenuTrigger asChild>
           {isValidElement(children)
-            ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
+            ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive) } as any)
             : children}
         </ContextMenuTrigger>
       </ContextMenu>
@@ -456,6 +489,9 @@ beforeEach(() => {
   mockGetPlatform.mockReturnValue('web')
   mockRouteParams = {}
   mockRoutePathname = '/'
+  mockRouteFullPath = '/'
+  fullListReads.length = 0
+  mockServerReportsTotal = true
   mockHistorySubscribers = []
   setMockHistoryIndex(0)
   _resetApiTargetForTest()
@@ -469,6 +505,7 @@ beforeEach(() => {
     data: slug === 'test-agent' ? [makeSession()] : [],
     isLoading: false,
   }))
+  mockUseNotableSessions.mockReturnValue({ data: undefined })
   mockUserContext.isAuthMode = false
   mockUserContext.user = null
   mockUserContext.agentMemberCount.mockReturnValue(1)
@@ -673,7 +710,7 @@ describe('AppSidebar — agent rows', () => {
     expect(members.className).not.toContain('focus-within')
     expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
     expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
-    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', true)
   })
 
   it.each([
@@ -684,7 +721,9 @@ describe('AppSidebar — agent rows', () => {
     mockUserContext.agentMemberCount.mockReturnValue(count)
     renderWithProviders(<AppSidebar />)
     expect(screen.queryByTestId('sidebar-members-test-agent')).toBeNull()
-    expect(mockUseAgentMembers).not.toHaveBeenCalled()
+    // Every row mounts the stack (a member agent can make it appear), but a
+    // private agent's roster is never fetched.
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith(expect.anything(), true)
   })
 
   it('renders agent rows', () => {
@@ -854,6 +893,57 @@ describe('AppSidebar — agent rows', () => {
     const sessionItem = screen.getByTestId('session-item-session-1')
     expect(sessionItem).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
     expect(sessionItem).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent', sessionId: 'session-1' }))
+  })
+
+  describe('sessions under a row', () => {
+    const manySessions = (count: number) =>
+      Array.from({ length: count }, (_, i) => makeSession({ id: `session-${i + 1}`, name: `Session ${i + 1}` }))
+    const useAgentSessions = (count: number) => {
+      mockRouteParams = { slug: 'test-agent' }
+      mockUseSessions.mockImplementation((slug: string | null) => ({
+        data: slug === 'test-agent' ? manySessions(count) : [],
+        isLoading: false,
+      }))
+    }
+    const sessionRows = () => screen.queryAllByTestId(/^session-item-/).map((row) => row.getAttribute('data-testid'))
+
+    it('shows the first five and the total from the bounded read, without reading every session', () => {
+      useAgentSessions(40)
+      renderWithProviders(<AppSidebar />)
+      expect(sessionRows()).toEqual([1, 2, 3, 4, 5].map((n) => `session-item-session-${n}`))
+      expect(screen.getByRole('button', { name: 'Show all (40)' })).toBeInTheDocument()
+      expect(fullListReads).toEqual([])
+    })
+
+    it('offers no "Show all" for five sessions or fewer', () => {
+      useAgentSessions(5)
+      renderWithProviders(<AppSidebar />)
+      expect(sessionRows()).toHaveLength(5)
+      expect(screen.queryByRole('button', { name: /Show all/ })).not.toBeInTheDocument()
+      expect(fullListReads).toEqual([])
+    })
+
+    it('reads every session once "Show all" is pressed, and goes back to five on "Show less"', async () => {
+      const user = userEvent.setup()
+      // "Show less" scrolls the row back into view; jsdom has no layout to scroll.
+      Element.prototype.scrollIntoView = vi.fn()
+      useAgentSessions(8)
+      renderWithProviders(<AppSidebar />)
+      await user.click(screen.getByRole('button', { name: 'Show all (8)' }))
+      expect(fullListReads).toContain('test-agent')
+      expect(sessionRows()).toHaveLength(8)
+      await user.click(screen.getByRole('button', { name: 'Show less' }))
+      expect(sessionRows()).toHaveLength(5)
+    })
+
+    it('counts from the full list where the server does not report a total', () => {
+      mockServerReportsTotal = false
+      useAgentSessions(9)
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByRole('button', { name: 'Show all (9)' })).toBeInTheDocument()
+      expect(sessionRows()).toHaveLength(5)
+      expect(fullListReads).toContain('test-agent')
+    })
   })
 
   it('shows an unread dot on a session sub-item with hasUnreadNotifications', () => {
@@ -1059,7 +1149,7 @@ describe('AppSidebar — agent row indicator', () => {
       error: null,
     })
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('agent-item-test-agent')).toHaveAccessibleName(new RegExp(`\\b${label}\\b`))
+    expect(screen.getByTestId('agent-item-test-agent')).toHaveAccessibleName(new RegExp(`\\b${label}\\b`, 'i'))
   })
 
   it('falls back to agent-level flags when sessions data is not yet loaded', () => {
@@ -1107,6 +1197,46 @@ describe('AppSidebar — agent row indicator', () => {
     const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
     expect(within(agentRow).queryByTestId('agent-status-running')).not.toBeInTheDocument()
     expect(screen.queryByTestId('agent-avatar-badge-test-agent')).not.toBeInTheDocument()
+  })
+
+  it('names the active session in a collapsed row and restores last activity when it finishes', () => {
+    const lastActivityAt = new Date(Date.now() - 5 * 60 * 1000)
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true, lastActivityAt })],
+    })
+    mockUseNotableSessions.mockReturnValue({ data: [makeSession({ name: 'Prediction Market Research', isActive: true })] })
+
+    const { rerender } = renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    expect(row).toHaveTextContent('Working on Prediction Market Research')
+    expect(row).not.toHaveTextContent('Last active')
+    expect(screen.queryByTestId('session-item-session-1')).not.toBeInTheDocument()
+    expect(mockUseNotableSessions).toHaveBeenCalledWith('test-agent')
+
+    mockUseAgents.mockReturnValue({ data: [makeAgent({ lastActivityAt })] })
+    rerender(<AppSidebar />)
+    expect(row).toHaveTextContent('Last active')
+  })
+
+  it('names two working sessions outside the recent slice and skips a session awaiting input', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true, sessionCount: 10 })],
+    })
+    const working = [
+      makeSession({ id: 'build', name: 'Build Dashboard', isActive: true }),
+      makeSession({ id: 'review', name: 'Review Pricing', isActive: true }),
+      makeSession({ id: 'draft', name: 'Draft Report', isActive: true }),
+    ]
+    const waiting = makeSession({ id: 'waiting', name: 'Needs Review', isActive: true, isAwaitingInput: true })
+    const recent = Array.from({ length: RECENT_LIMIT }, (_, i) => makeSession({ id: `recent-${i}` }))
+    mockUseSessions.mockReturnValue({ data: [...recent, waiting, ...working], isLoading: false })
+    mockUseNotableSessions.mockReturnValue({ data: [waiting, ...working] })
+    mockRouteParams = { slug: 'test-agent' }
+
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    expect(within(row).getByTitle('Working on Build Dashboard and Review Pricing')).toBeVisible()
+    expect(fullListReads).toEqual([])
   })
 
   it('shows awaiting on the expanded agent row when a session awaits input (top-nav parity)', () => {

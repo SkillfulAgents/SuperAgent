@@ -167,4 +167,13 @@ describe('useLoginWindow', () => {
 
     expect(result.current.pending).toBe(true)
   })
+
+  it('with a sign-in sheet, asks for the Apple prompt only when the attempt does', async () => {
+    const { result } = renderHook(() => useLoginWindow({ authSession: true }))
+    await act(async () => { await result.current.open(async () => 'https://login.test', { withApple: true }) })
+    expect(fakeLoginWindow.withApple).toBe(true)
+
+    await act(async () => { await result.current.open(async () => 'https://login.test') })
+    expect(fakeLoginWindow.withApple).toBe(false)
+  })
 })

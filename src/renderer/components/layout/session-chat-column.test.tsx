@@ -56,6 +56,7 @@ const mockStream = {
 }
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStream,
+  isSessionStreamOpen: () => false,
 }))
 
 // A composer-placed error component that withholds the composer, like the paywall while blocked.
@@ -168,6 +169,24 @@ describe('SessionChatColumn composer swap', () => {
     renderWithProviders(<SessionChatColumn {...baseProps} />)
     expect(screen.getByText('Send')).toBeInTheDocument()
     expect(screen.getByText('New line')).toBeInTheDocument()
+  })
+
+  it('fades the hint row with plain gradients: no backdrop filter and no mask over the transcript', () => {
+    // The transcript scrolls under this row, so a backdrop-filter or a mask
+    // here is redone on every streamed token and every scroll frame.
+    renderWithProviders(<SessionChatColumn {...baseProps} />)
+
+    const row = screen.getByText('Send').closest('.overflow-hidden')
+    const panels = Array.from(row?.querySelectorAll<HTMLElement>(':scope > [aria-hidden="true"]') ?? [])
+    expect(panels).toHaveLength(2)
+    for (const panel of panels) {
+      expect(panel.className).not.toMatch(/backdrop-/)
+      expect(panel.className).not.toMatch(/mask/)
+      expect(panel.style.backdropFilter ?? '').toBe('')
+      expect(panel.style.maskImage ?? '').toBe('')
+      expect(panel.style.getPropertyValue('-webkit-mask-image')).toBe('')
+      expect(panel.style.backgroundImage).toMatch(/^linear-gradient\(to (right|left), hsl\(var\(--background\) \/ 1\) 0%.* 100%\)$/)
+    }
   })
 
   it('hides the keyboard hint footer when a request is pending', () => {

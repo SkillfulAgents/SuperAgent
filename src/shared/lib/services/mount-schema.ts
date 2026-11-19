@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { directoryRefSchema } from '@shared/lib/team-directory/candidate-schema'
 import type { StoredVolume } from '@shared/lib/types/mount'
 import type { LocalVolumeConfig } from '@shared/lib/volumes/volume-config-schema'
 
@@ -31,7 +32,8 @@ export const updateVolumeSchema = z.object({
 
 export const addMountSchema = z.union([
   z.object({ volumeId: z.string().min(1), readOnly: z.boolean().optional(), restart: z.boolean().optional() }).strict(),
-  createVolumeSchema.extend({ restart: z.boolean().optional() }),
+  // `onlyNew`: a source that already has a drive is refused (Team Brain set-up makes its own).
+  createVolumeSchema.extend({ restart: z.boolean().optional(), onlyNew: z.boolean().optional() }),
 ])
 
 export const updateMountSchema = z.object({ readOnly: z.boolean() }).strict()
@@ -40,4 +42,10 @@ export const updateMountSchema = z.object({ readOnly: z.boolean() }).strict()
 export const legacyVolumeRowSchema = z.union([
   z.object({ id: z.string().min(1), name: z.string(), type: z.string(), config: z.json() }),
   folderRowSchema,
+])
+
+/** Sharing accepts one existing account or one verified team-directory person. */
+export const volumeGrantSchema = z.union([
+  z.object({ userId: z.string().min(1), role: z.literal('owner').optional() }).strict(),
+  z.object({ directoryRef: directoryRefSchema.strict(), role: z.literal('owner').optional() }).strict(),
 ])

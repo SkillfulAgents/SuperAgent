@@ -35,6 +35,8 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { parseUserTags } from '@shared/lib/utils/mentions'
+import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { finalizeAutomationStatus, recordErrorProvider, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -323,6 +325,7 @@ export class LiveSession {
       emit,
       responseStarted: () => this.response.beginStreamedText(),
       textStreamed: (text) => this.response.appendStreamedText(text),
+      mayStreamLate: () => this.ctx.isCurrent(),
     })
     // The background work, and the process it belongs to, carry over with
     // the level set describing them: the incoming handshake decides whether
@@ -874,6 +877,8 @@ export class LiveSession {
    */
   dispose(options: { replaced?: boolean } = {}): void {
     this.cancelSettleAfterStop()
+    this.stream.dropHeldToolInput()
+    this.subagents.dropHeldToolInputs()
     // The session is gone: a sign-in the host is still deciding raises no card.
     this.toolCalls.dropLoginDecisions()
     if (!options.replaced) this.toolCalls.dropHostRunChecks()
@@ -1149,6 +1154,7 @@ export class LiveSession {
     // output: hidden in the transcript, so neither an answer nor a refetch.
     if (isSyntheticPlaceholderMessage(content)) return
     const text = this.response.assistantFrame(content)
+    if (text && !content.error) this.notifyTagged(content, text)
     // Email and chat deliver only stream_delta: a finished answer that
     // streamed no deltas would show in the transcript and never be sent.
     if (text !== null && !content.error && this.stream.currentText.length === 0 && text) {
@@ -1404,6 +1410,10 @@ export class LiveSession {
     // queued turn nor resets that turn's answer early.
     if (!classification.isInterrupt && content.subtype !== 'resume') this.response.turnCompleted()
     this.stream.isStreaming = false
+    // A result that cut a tool call short (an API error mid-input) leaves its
+    // last input frame held: sent after the turn settles, it would reopen
+    // the card in clients that had just reset.
+    this.stream.dropHeldToolInput()
 
     if (isError && inferOomSigkillFatal(content) && this.ctx.runtime.fatalResult(this.ctx.transport(), 'oom_sigkill') === 'defer_for_recovery') {
       this.ctx.runtime.unexpectedDeath()
@@ -1473,7 +1483,9 @@ export class LiveSession {
     // The output is complete whether or not the session settles: the
     // renderer reconciles what streamed against the transcript (whose write
     // can lag), or a follow-up turn's stream_start could blink it out.
-    this.ctx.emit({ type: 'turn_output_complete' })
+    // The sends this turn answered, a batch taken in mid-turn included. A resume pauses inside the turn.
+    const answered = content.subtype !== 'resume' && Array.isArray(content.user_message_uuids) ? content.user_message_uuids : undefined
+    this.ctx.emit({ type: 'turn_output_complete', ...(answered && { answered }) })
     // A UI hint: background tasks outlive the turn's output.
     const stillOpen = this.background.openCount()
     if (stillOpen > 0) {
@@ -1544,7 +1556,6 @@ export class LiveSession {
     let errorPresentation: ProviderErrorPresentation | null = null
     try {
       const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : await getActiveLlmProvider()
-      turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
       errorPresentation = await turnProvider.presentationForTurnError(apiErrorStatus ?? undefined, errorMessage, apiErrorCode)
     } catch (error) {
       console.error(`[LiveSession] Could not present the error of session ${this.ctx.sessionId}:`, error)
@@ -1696,6 +1707,22 @@ export class LiveSession {
     })
   }
 
+  /** A message that tags people with `[@Name](user:<id>)`. The host decides who hears. */
+  private notifyTagged(content: FrameContent, text: string): void {
+    // Once per person per message: a message's text can arrive as several frames.
+    const messageId = typeof content.message?.id === 'string' ? content.message.id : content.uuid
+    const userIds = parseUserTags(text).mentions.map((mention) => mention.id).filter((id) => !this.response.toldInMessage.has(`${messageId}\0${id}`))
+    if (userIds.length === 0 || typeof content.uuid !== 'string' || !content.uuid) return
+    for (const id of userIds) {
+      this.response.toldInMessage.add(`${messageId}\0${id}`)
+      this.response.taggedUserIds.add(id)
+    }
+    const { agentSlug, sessionId } = this.ctx
+    // A message of several frames shows under its first frame's uuid, which need not be the frame with the tag.
+    const messageUuid = this.response.firstEntryUuid(messageId) ?? content.uuid
+    this.ctx.host.send('notification', { kind: 'message_mentions', agentSlug, sessionId, messageUuid, userIds, text: stripMarkdownPreview(text) })
+  }
+
   /**
    * The turn finished. The transcript's end is read now, as the turn ends,
    * and sent once known, so the notification's context lookup stops where
@@ -1704,6 +1731,7 @@ export class LiveSession {
   private notifyCompleted(): void {
     const { agentSlug, sessionId, store } = this.ctx
     const responseText = this.response.answer
+    const taggedUserIds = [...this.response.taggedUserIds]
     let timer: ReturnType<typeof setTimeout> | undefined
     const tooSlow = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), TRANSCRIPT_END_WAIT_MS)
@@ -1715,7 +1743,7 @@ export class LiveSession {
     // Read at the turn's end, announced in turn order: a later turn whose
     // read finishes first waits for this one.
     this.ctx.completions().after(Promise.race([transcriptEnd, tooSlow]).finally(() => clearTimeout(timer)), (responseTranscriptEndOffset) => {
-      this.ctx.host.send('notification', { kind: 'session_complete', agentSlug, sessionId, responseText, responseTranscriptEndOffset })
+      this.ctx.host.send('notification', { kind: 'session_complete', agentSlug, sessionId, responseText, responseTranscriptEndOffset, taggedUserIds })
     })
   }
 

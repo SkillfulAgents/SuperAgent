@@ -113,6 +113,8 @@ export class AgentInputRequests {
    */
   /** Each claimed request's holder: the token it was handed and when its lease runs out (epoch ms). */
   private claimed = new Map<string, { token: string; expiresAt: number }>()
+  /** Callbacks waiting for an open request to settle (`onSettled`). */
+  private settleListeners = new Map<string, Array<() => void>>()
 
   private mismatchCount = 0
 
@@ -176,7 +178,35 @@ export class AgentInputRequests {
     })
     if (this.recentResolutions.length > RECENT_RESOLUTIONS_LIMIT) this.recentResolutions.shift()
     this.emitTransition({ type: 'resolved', request, outcome })
+    this.notifySettled(id)
     return request
+  }
+
+  /**
+   * Call `listener` once the request `id` settles, however it settles; at once
+   * when it is not open.
+   */
+  onSettled(id: string, listener: () => void): void {
+    if (!this.requests.has(id)) {
+      listener()
+      return
+    }
+    const listeners = this.settleListeners.get(id)
+    if (listeners) listeners.push(listener)
+    else this.settleListeners.set(id, [listener])
+  }
+
+  private notifySettled(id: string): void {
+    const listeners = this.settleListeners.get(id)
+    if (!listeners) return
+    this.settleListeners.delete(id)
+    for (const listener of listeners) {
+      try {
+        listener()
+      } catch (error) {
+        console.error('[AgentInputRequests] settle listener failed:', error)
+      }
+    }
   }
 
   private emitTransition(transition: UserInputRequestTransition): void {
@@ -446,6 +476,8 @@ export class AgentInputRequests {
   reset(): void {
     this.requests.clear()
     this.claimed.clear()
+    // Nothing is open any more: whoever waited on a request stops waiting.
+    for (const id of [...this.settleListeners.keys()]) this.notifySettled(id)
     this.recentResolutions = []
     this.mismatchCount = 0
   }

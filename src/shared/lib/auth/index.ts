@@ -1,5 +1,5 @@
 import { betterAuth } from 'better-auth'
-import { createAuthMiddleware, isAPIError } from 'better-auth/api'
+import { APIError, createAuthMiddleware, isAPIError } from 'better-auth/api'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { setCookieCache } from 'better-auth/cookies'
 import { admin, bearer } from 'better-auth/plugins'
@@ -24,6 +24,15 @@ import { oidcIssuerPolicy } from './oidc-issuer-policy'
 // so consumers that only need the check don't pull in ESM deps.
 export { isAuthMode } from './mode'
 
+// Better Auth removes sessions, accounts, then the user. Any of those can be the
+// first row for this user. These hooks run after it authorizes the removal.
+async function releaseDriveOwnership(userId: string, requestPath: string | undefined, adminId: string | undefined) {
+  if (requestPath !== '/admin/remove-user') return
+  const { releaseUserVolumeGrants } = await import('@shared/lib/services/volume-access-service')
+  if (!adminId || adminId === userId) throw new APIError('FORBIDDEN')
+  await releaseUserVolumeGrants(userId, adminId)
+}
+
 /** Everything the Better Auth instance is built from that can change while the app runs. */
 interface AuthInputs {
   authSettings: AuthSettings
@@ -33,9 +42,13 @@ interface AuthInputs {
   secret: string
 }
 
-/** Read the inputs fresh: settings, the trusted origins and base URL they give, the OIDC providers, the secret. */
+/**
+ * Read the inputs fresh: settings, the trusted origins and base URL they give, the OIDC providers, the secret.
+ * Settings and the secret are separate records and neither read needs the other, so they are read
+ * together: every authenticated request waits for this before its session is read.
+ */
 async function loadAuthInputs(): Promise<AuthInputs> {
-  const settings = await getSettings()
+  const [settings, secret] = await Promise.all([getSettings(), getOrCreateAuthSecret()])
   const trustedOrigins = trustedOriginsFrom(settings)
   const baseURL = appBaseUrlFrom(trustedOrigins)
   return {
@@ -43,7 +56,7 @@ async function loadAuthInputs(): Promise<AuthInputs> {
     trustedOrigins,
     baseURL,
     oauthProviders: getGenericOAuthProviderConfigs(baseURL),
-    secret: await getOrCreateAuthSecret(),
+    secret,
   }
 }
 
@@ -67,6 +80,11 @@ export function resetAuth() {
  * instance when they differ from the ones the current instance was built
  * from, so a settings change committed by any process takes effect here on
  * the next call. Only valid when isAuthMode() is true.
+ *
+ * A caller waits for this before it reads a session, and does not start the
+ * read on the instance it had: an instance built from older settings still
+ * writes with them (a session due for refresh gets its expiry from that
+ * instance's lifetime), even when the answer is thrown away.
  */
 export async function getAuth() {
   const inputs = await loadAuthInputs()
@@ -93,6 +111,8 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         verification: schema.verification,
       },
     }),
+    // A session is read with its user in one query (the relations are in db/schema.ts).
+    advanced: { database: { joins: true } },
     emailAndPassword: {
       enabled: true,
       minPasswordLength: authSettings.passwordMinLength,
@@ -195,7 +215,8 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
       user: {
         delete: {
           // What a cascade cannot do: revoke provider connections first, then settings and audit.
-          before: async (deletedUser) => {
+          before: async (deletedUser, ctx) => {
+            await releaseDriveOwnership(deletedUser.id, ctx?.path, ctx?.context.session?.user.id)
             const { beforeUserRemoved } = await import('@shared/lib/services/user-removal-service')
             await beforeUserRemoved(deletedUser.id)
           },
@@ -270,6 +291,7 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
           // Remove-user deletes the account rows before the user row, so keep the
           // Platform member id now for the revoke in user.delete.before.
           before: async (account, ctx) => {
+            await releaseDriveOwnership(account.userId, ctx?.path, ctx?.context.session?.user.id)
             if (ctx?.path !== '/admin/remove-user' || account.providerId !== 'platform') return
             const { rememberPlatformMember } = await import('@shared/lib/services/user-removal-service')
             rememberPlatformMember(account.userId, account.accountId)
@@ -300,6 +322,9 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         },
       },
       session: {
+        delete: {
+          before: (session, ctx) => releaseDriveOwnership(session.userId, ctx?.path, ctx?.context.session?.user.id),
+        },
         create: {
           before: async (session, context) => {
             // Stamp how this session came to exist onto the row itself. The

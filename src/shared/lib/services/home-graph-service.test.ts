@@ -82,6 +82,7 @@ function seed() {
     { id: 'p3', callerAgentSlug: 'agent2', targetAgentSlug: 'agent1', operation: 'invoke', decision: 'block', createdAt: NOW, updatedAt: NOW },
     { id: 'p4', callerAgentSlug: 'agent2', targetAgentSlug: null, operation: 'invoke', decision: 'allow', createdAt: NOW, updatedAt: NOW },
     { id: 'p5', callerAgentSlug: 'hidden', targetAgentSlug: 'agent1', operation: 'invoke', decision: 'allow', createdAt: NOW, updatedAt: NOW },
+    { id: 'review', callerAgentSlug: 'agent2', targetAgentSlug: 'agent3', operation: 'invoke', decision: 'review', createdAt: NOW, updatedAt: NOW },
     { id: 'p6', callerAgentSlug: 'agent1', targetAgentSlug: 'hidden', operation: 'invoke', decision: 'allow', createdAt: NOW, updatedAt: NOW },
   ]).run()
 
@@ -139,7 +140,7 @@ describe('home-graph-service', () => {
   })
 
   it('returns links, triggers, and permissions scoped to the visible agents', async () => {
-    const graph = await buildHomeGraph(scope())
+    const graph = await buildHomeGraph(scope({ agentSlugs: ['agent1', 'agent2', 'agent3'] }))
 
     expect(graph.accountLinks).toEqual(
       expect.arrayContaining([
@@ -165,7 +166,7 @@ describe('home-graph-service', () => {
       expect.objectContaining({ id: 'cr1', agentSlug: 'agent2', executionCount: 3, isRecurring: true }),
     ])
 
-    // invoke + non-block + concrete target + visible caller AND target only
+    // invoke + allow + concrete target + visible caller AND target only
     // (a non-visible target slug must never reach the response).
     expect(graph.permissions).toEqual([{ caller: 'agent1', target: 'agent2' }])
   })

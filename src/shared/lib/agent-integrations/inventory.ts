@@ -1,5 +1,5 @@
 import { listAgentIntegrations } from '../services/agent-integration-service'
-import { listAgentIntegrationSessions } from '../services/agent-integration-session-service'
+import { listActiveAgentIntegrationSessions } from '../services/agent-integration-session-service'
 import { agentIntegrationRegistry } from './registry'
 import { integrationMcpName } from './mcp'
 import { publicIntegrationStatus } from './serialization'
@@ -9,7 +9,7 @@ import { publicIntegrationStatus } from './serialization'
 export async function listAgentIntegrationInventory(agentSlug: string) {
   return Promise.all((await listAgentIntegrations(agentSlug)).map(async row => {
     const definition = agentIntegrationRegistry.getDefinition(row.provider)
-    const sessions = await agentIntegrationRegistry.conversations(row, (await listAgentIntegrationSessions(row.id)).filter(session => !session.archivedAt), { threads: true })
+    const sessions = await agentIntegrationRegistry.conversations(row, await listActiveAgentIntegrationSessions(row.id), { threads: true })
     let mcp = null
     try {
       const connection = row.status === 'paused' ? null : await agentIntegrationRegistry.getMcpConnection(row)

@@ -91,6 +91,11 @@ export const notificationsSearchSchema = z.object({
   filter: notificationFilterSchema.optional().catch(undefined),
 })
 
+// The message a session opens on (a mention's click target).
+export const sessionSearchSchema = z.object({
+  message: z.string().min(1).max(64).optional().catch(undefined),
+})
+
 const arrivalParams = Object.fromEntries(
   SUPPORTED_PROVIDERS.flatMap((p) => (p.arrivalParam ? [[p.arrivalParam, z.string().optional().catch(undefined)]] : [])),
 )

@@ -1,7 +1,8 @@
 import { z } from 'zod'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
+import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
@@ -316,6 +317,44 @@ export async function getUserSettings(userId: string): Promise<UserSettingsData>
     .run()
 
   return initial
+}
+
+/** User ids per statement at most, on a driver with SQLite's own bound-parameter limit. */
+const MAX_USER_IDS_PER_STATEMENT = 500
+
+/**
+ * The settings of several users in one statement, for a caller that would
+ * otherwise read them one user at a time (a notification's fan-out). Every id
+ * asked for is in the result: a user with no stored row, or an invalid one,
+ * has the defaults, as {@link getUserSettings} would answer.
+ *
+ * Read only: nothing is persisted for a user with no row, and the 'local'
+ * sentinel is not seeded from the app settings, so local mode keeps calling
+ * {@link getUserSettings}.
+ */
+export async function getUserSettingsForUsers(
+  userIds: readonly string[]
+): Promise<Map<string, UserSettingsData>> {
+  const ids = [...new Set(userIds)]
+  const stored = new Map<string, string>()
+  const perStatement = Math.min(MAX_USER_IDS_PER_STATEMENT, maxBoundParameters())
+  for (let i = 0; i < ids.length; i += perStatement) {
+    const rows = await db
+      .select({ userId: userSettings.userId, settings: userSettings.settings })
+      .from(userSettings)
+      .where(inArray(userSettings.userId, ids.slice(i, i + perStatement)))
+      .all()
+    for (const row of rows) stored.set(row.userId, row.settings)
+  }
+
+  let defaults: UserSettingsData | undefined
+  const result = new Map<string, UserSettingsData>()
+  for (const id of ids) {
+    const document = stored.get(id)
+    const parsed = document === undefined ? null : parseStoredSettings(document)
+    result.set(id, parsed ?? (defaults ??= getDefaultUserSettings()))
+  }
+  return result
 }
 
 /** The stored document, or null when it is not valid (corrupted JSON falls back to defaults). */

@@ -18,18 +18,19 @@ import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './regis
 import { integrationRelays } from './relay-transport'
 import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
+import { answeredWayLabel, pickLoginWay } from '@shared/lib/browser-vault/login-host'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
 import {
   listStartupIntegrations,
   getIntegration,
   updateIntegrationStatus,
   getIntegrationSession,
+  getIntegrationSessionBySessionId,
   createIntegrationSession,
   updateIntegrationSessionName,
   archiveIntegrationSession,
   touchIntegrationSession,
   listIntegrationSessions,
-  listActiveIntegrationSessions,
   resolveActiveSession,
   getLastDisplayName,
 } from './store'
@@ -42,6 +43,7 @@ import { restoreStreamPayloadSchema, type RestoreStreamPayload } from './restore
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
 import { continuationPrompt } from './continuation-prompt'
+import { answerSetupRequests } from './setup-request'
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
 const COMPONENT = 'agent-integration'
@@ -92,6 +94,8 @@ interface ManagedSession {
   recoveryReported?: boolean
   /** The job of a recovery retry that is scheduled. */
   recoveryWake?: string
+  /** The last output check `sessionId` passed, for the text deltas right behind it (see streamAccess). */
+  outputAccess?: { sessionId: string; integration: AgentIntegrationRecord; checkedAt: number }
 }
 
 /** A context's routing fields, with `update` applied: what a connector delivers by. */
@@ -182,7 +186,9 @@ export class AgentIntegrationManager implements Service {
 
   // Integration-level: one connector per integration
   private connections: Map<string, IntegrationConnection> = new Map()
-  // Per-chat session: one streaming context per (integrationId, externalId)
+  // Per-chat session: one streaming context per (integrationId, externalId),
+  // held while the chat's session runs. A chat whose session is idle is only
+  // its row: `sessionStarted` finds it again by the session.
   private chatSessions: Map<string, ManagedSession> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
   // Authorization hints for each integration from its first connect attempt until it is removed or the manager stops.
@@ -216,6 +222,8 @@ export class AgentIntegrationManager implements Service {
   // Session row ids whose clear has begun (see noteSessionClear); the row may
   // still read as active until the archive lands.
   private clearedSessionRows = new Set<string>()
+  // Bumped synchronously each time a session starts a turn (see sessionStarted).
+  private sessionStarts = 0
   // In-flight system-resume pass; concurrent reconnectAll calls coalesce onto it.
   private resumeReconcile: Promise<void> | null = null
   // A resume arrived while a pass was in flight: run one more FORCE pass when
@@ -224,6 +232,9 @@ export class AgentIntegrationManager implements Service {
   private resumeQueued = false
   // Follow-up delays after the resume force pass, while anything is still down.
   private static readonly RESUME_RETRY_DELAYS_MS = [15_000, 30_000, 60_000]
+  // How long an output check a session passed stands for the text deltas behind it.
+  // A chat shows streamed text at most once in this long (STREAM_UPDATE_MS).
+  private static readonly DELTA_ACCESS_REUSE_MS = 1_000
   // Upper bound on waiting for an old connector to tear down before rebuilding.
   private static readonly DISCONNECT_TIMEOUT_MS = 5_000
   // Per-(integration,chat) serialized tail promise. Entries self-evict once their
@@ -243,6 +254,42 @@ export class AgentIntegrationManager implements Service {
   private async isAllowed(integrationId: string, externalId: string): Promise<boolean> {
     const context = await this.context(integrationId, externalId)
     return !!context && !!(await this.connections.get(integrationId)?.connector.isAllowed(context))
+  }
+
+  /**
+   * The installation as stored now, if `externalId` may still receive its
+   * session's output; nothing otherwise. One read of the row: the connector's
+   * policy decides from it instead of reading it again.
+   */
+  private async outputAccess(integrationId: string, externalId: string): Promise<AgentIntegrationRecord | undefined> {
+    const connector = this.connections.get(integrationId)?.connector
+    if (!connector) return
+    const integration = await getIntegration(integrationId)
+    if (!integration || !(await connector.isAllowed({ integration, externalId }, { current: true }))) return
+    return integration
+  }
+
+  /**
+   * `outputAccess` for one event of the session a chat follows. Text deltas
+   * arrive tens a second, so one that follows a check its session passed less
+   * than DELTA_ACCESS_REUSE_MS ago is delivered on that check, with what it
+   * read; every other event reads, and so does the first delta after the
+   * bound. Access that ends in the database alone (a write from another
+   * process, or the moment before this one's teardown) therefore stops a
+   * streaming reply within the bound, and everything else at the next event.
+   * The check lives on the live session and no longer than it: a chat that is
+   * torn down or re-pointed starts from a read.
+   */
+  private async streamAccess(session: ManagedSession, sessionId: string, event: unknown): Promise<AgentIntegrationRecord | undefined> {
+    const held = session.outputAccess
+    const now = Date.now()
+    if ((event as { type?: string } | null)?.type === 'stream_delta' && held?.sessionId === sessionId
+      && now >= held.checkedAt && now - held.checkedAt < AgentIntegrationManager.DELTA_ACCESS_REUSE_MS) return held.integration
+    session.outputAccess = undefined
+    const integration = await this.outputAccess(session.integration.id, session.chatId)
+    // Dated from before the read, so the bound holds however long the read took.
+    if (integration) session.outputAccess = { sessionId, integration, checkedAt: now }
+    return integration
   }
 
   private async deliver(integrationId: string, externalId: string, output: IntegrationOutput, sessionId?: string): Promise<void> {
@@ -327,6 +374,7 @@ export class AgentIntegrationManager implements Service {
     this.lostVersions.clear()
     this.pausedIds.clear()
     this.sessionClears = 0
+    this.sessionStarts = 0
     this.clearedSessionRows.clear()
     this.messageQueues.clear()
     this.isRunning = false
@@ -747,38 +795,22 @@ export class AgentIntegrationManager implements Service {
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
+    // The agent may have handed exactly this setup to the user, and be waiting on it.
+    background(answerSetupRequests(integration), { name: 'integration-manager.answer-setup-requests' })
 
-    // Restore SSE subscriptions for ACTIVE, allowed chat sessions only. Archived/
-    // cleared/timed-out sessions must not be re-subscribed, or stale agent output
-    // could be forwarded back to the external chat (SUP-233); unapproved chats are
-    // skipped by the access check below.
-    const existingSessions = await listActiveIntegrationSessions(integration.id)
-    for (const session of existingSessions) {
-      if (!(await this.isAllowed(integration.id, session.externalId))) continue
-      // The access check is a window in which the chat can be cleared and its
-      // row archived: only a row that is still the live one is re-subscribed,
-      // and only while this connect still owns the integration. The lookup is
-      // a window too: a clear that completes while it is in flight can leave
-      // it answering with the row it read before, so a lookup that a clear
-      // overlapped is repeated.
-      let live: Awaited<ReturnType<typeof getIntegrationSession>> | undefined
-      for (let attempt = 0; attempt < 3 && live === undefined; attempt++) {
-        const clearsBefore = this.sessionClears
-        const row = await getIntegrationSession(integration.id, session.externalId)
-        if (this.sessionClears === clearsBefore) live = row
-      }
-      // A clear whose archive is still pending can leave the row reading as
-      // active through every retry; the row id it marked at the start says so.
-      if (live?.sessionId !== session.sessionId || this.clearedSessionRows.has(live.id)) continue
+    // Follow again the chats whose session is running now: a turn that began
+    // while no connection was there to hear it (a creation accepted during
+    // teardown, a turn started from another surface). An idle chat is not
+    // loaded; its next turn announces itself (see sessionStarted). Recovery
+    // follows only a row that is still the chat's active one, so archived,
+    // cleared and timed-out sessions stay unheard (SUP-233).
+    const running = await agentRegistry.get(integration.agentSlug).live()
+    for (const sessionId of new Set([...running.activeSessionIds, ...running.awaitingSessionIds])) {
+      const row = await getIntegrationSessionBySessionId(integration.agentSlug, sessionId)
+      if (row?.integrationId !== id || row.archivedAt) continue
       if (this.generationOf(id) !== generation) return false
-      await this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
-      const state = await agentRegistry.get(integration.agentSlug).sessions.live(session.sessionId)
-      // A creation accepted during teardown can acquire its mapping after the
-      // old connector vanished. Reattach that known running turn on reconnect.
-      if (state.activity !== 'idle' && !state.streamAttached) {
-        background(this.recoverSessionContext(id, session.externalId, generation, session.sessionId)
-          .catch(error => reportError(error, 'restore-stream', { integrationId: id, sessionId: session.sessionId })), { name: 'integration-manager.restore-stream' })
-      }
+      background(this.recoverSessionContext(id, row.externalId, generation, sessionId)
+        .catch(error => reportError(error, 'restore-stream', { integrationId: id, sessionId })), { name: 'integration-manager.restore-stream' })
     }
     // Recovery is bounded to work the family declares unfinished, and runs off
     // the boot/connect critical path so one slow container cannot block others.
@@ -987,18 +1019,24 @@ export class AgentIntegrationManager implements Service {
   }
 
   // `observe` is the chat session to mark live before the event is handled.
-  // The access check behind it is a database read, so it runs on the queue:
+  // The access check behind both is a database read, so it runs on the queue:
   // events keep the order they arrived in, and a failed check lands in the
-  // error boundary below instead of escaping as an unhandled rejection.
+  // error boundary below instead of escaping as an unhandled rejection. It is
+  // made at most once per event (see streamAccess for text deltas), and what
+  // it read is what the event is delivered with.
   private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, observe?: ManagedSession): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(async () => {
       try {
-        if (observe && (await this.isAllowed(integrationId, chatId)) && this.isCurrentSession(integrationId, chatId, observe, sessionId)) {
+        // No live session, or output queued before a rotation: there is nothing
+        // to observe or deliver, so nothing to read either.
+        const live = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+        const integration = live && live.sessionId === sessionId ? await this.streamAccess(live, sessionId, event) : undefined
+        if (observe && integration && this.isCurrentSession(integrationId, chatId, observe, sessionId)) {
           await this.observe(observe)
         }
-        await this.handleSSEEvent(integrationId, chatId, event, sessionId)
+        await this.handleSSEEvent(integrationId, chatId, event, sessionId, integration)
       } catch (err) {
         console.error(`[AgentIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
@@ -1023,6 +1061,12 @@ export class AgentIntegrationManager implements Service {
 
   private async runHealthChecks(): Promise<void> {
     for (const session of [...this.chatSessions.values()]) {
+      const starts = this.sessionStarts
+      if (await this.isSettled(session)) {
+        // A turn that started while the session was read is this chat's to hear.
+        if (this.sessionStarts === starts) this.releaseChat(session)
+        continue
+      }
       if (!(await this.isAllowed(session.integration.id, session.chatId))) continue
       // The access check is a window in which the chat can be cleared.
       if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) continue
@@ -1037,6 +1081,47 @@ export class AgentIntegrationManager implements Service {
     }
 
     await this.reconcileIntegrations({ force: false })
+  }
+
+  /**
+   * A session started a turn, from any surface (a chat message, the app, a
+   * scheduled wake, another agent). A chat is held only while its session
+   * runs, so one that is not held is found by the session and followed from
+   * here; what the session does next reaches it.
+   */
+  async sessionStarted(agentSlug: string, sessionId: string): Promise<void> {
+    this.sessionStarts += 1
+    if (!this.isRunning) return
+    for (const held of this.chatSessions.values()) {
+      if (held.sessionId === sessionId && held.integration.agentSlug === agentSlug) return
+    }
+    if (![...this.connections.values()].some(conn => conn.integration.agentSlug === agentSlug)) return
+    const row = await getIntegrationSessionBySessionId(agentSlug, sessionId)
+    if (!row || row.archivedAt) return
+    await this.recoverSessionContext(row.integrationId, row.externalId, this.generationOf(row.integrationId), sessionId)
+  }
+
+  /** The chat's session runs nothing and waits on nothing, and no message or event of the chat is being handled. */
+  private async isSettled(session: ManagedSession): Promise<boolean> {
+    const key = this.getChatSessionKey(session.integration.id, session.chatId)
+    const handling = () => this.messageQueues.has(key) || this.messageQueues.has(`sse:${key}`) || !!session.recovery || !!session.recoveryWake
+    if (handling()) return false
+    if (!session.sessionId) return true
+    const live = await agentRegistry.get(session.integration.agentSlug).sessions.live(session.sessionId)
+    return live.activity === 'idle' && !live.isAwaitingInput && live.openRequests.length === 0 && !handling()
+  }
+
+  /**
+   * Stop holding a chat whose session settled. Its row stays active: the
+   * chat's next message resolves it, and a turn started elsewhere finds it by
+   * the session. Thread chats stay open until they rotate, so a busy workspace
+   * has thousands of rows, and holding each one made connect and every health
+   * pass cost as much as all of them.
+   */
+  private releaseChat(session: ManagedSession): void {
+    if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) return
+    this.stopSession(session)
+    this.chatSessions.delete(this.getChatSessionKey(session.integration.id, session.chatId))
   }
 
   /**
@@ -1257,7 +1342,7 @@ export class AgentIntegrationManager implements Service {
         await attempt.bind(null)
       }
     }
-    const input = await conn.connector.prepareInput(message, { ...context, actor, sessionId })
+    const input = await conn.connector.prepareInput(message, { ...context, actor, sessionId, deliveryId: attempt.id })
     if (input.skip) return
     // The awaited provider context work may race pause, auth loss or reset.
     // Use the current mapping as well as generation immediately before handoff.
@@ -1561,22 +1646,22 @@ export class AgentIntegrationManager implements Service {
 
   // ── SSE event handling ────────────────────────────────────────────
 
-  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): Promise<void> {
+  /**
+   * `integration` is the installation as this event's access check read it
+   * (see enqueueSSEEvent); none means the chat may not receive the event.
+   */
+  private async handleSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, integration: AgentIntegrationRecord | undefined): Promise<void> {
     const key = this.getChatSessionKey(integrationId, chatId)
+    // Read here, after the check's awaits: the chat can be cleared during them.
     const session = this.chatSessions.get(key)
     if (!session) return
 
     // Fail closed: never forward agent output to a chat that is no longer allowed.
     // Teardown normally unsubscribes on revoke/deny, but this guards the window
     // where an event is already in flight when access is revoked.
-    if (!(await this.isAllowed(integrationId, chatId))) return
+    if (!integration) return
 
     if (session.sessionId !== sessionId) return // discard output queued before rotation
-    const integration = await getIntegration(integrationId)
-    if (!integration) return
-    // Both awaits above are windows in which the chat can be cleared; the
-    // session captured before them must still be the live one.
-    if (!this.isCurrentSession(integrationId, chatId, session, sessionId)) return
     const eventType = (event as { type?: string } | null)?.type
     if (eventType === 'session_active' || eventType === 'session_idle' || eventType === 'session_error') session.recovered = true
     const context = routing(session.context, { integration })
@@ -1657,6 +1742,20 @@ export class AgentIntegrationManager implements Service {
       return
     }
     const actor = agentRegistry.get(integration.agentSlug)
+    // A way to verify it's you (loginWaysCard): the host clicks it on the page.
+    const open = await actor.inputs.get(toolUseId)
+    if (open?.kind === 'login') {
+      const label = answeredWayLabel(response)
+      const picked = label && open.scope.sessionId
+        ? await pickLoginWay({ agentSlug: integration.agentSlug, sessionId: open.scope.sessionId, toolUseId, pick: { label } }).catch((error: unknown) => {
+            reportError(error, 'pick-login-way', { integrationId, toolUseId })
+            return null
+          })
+        : null
+      if (picked?.ok) event.onAnswered?.()
+      else await this.replyAlreadyHandled(integrationId, chatId)
+      return
+    }
     let answer = await actor.inputs.answer(toolUseId, response)
     if (answer === 'not-open' && await this.recoverOpenQuestion(integration, chatId, toolUseId)) {
       answer = await actor.inputs.answer(toolUseId, response)

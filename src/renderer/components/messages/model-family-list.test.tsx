@@ -15,6 +15,10 @@ import {
 } from './model-family-list'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
+import { getProviderCatalog } from '@shared/lib/llm-provider/model-catalog'
+import { QwenSubscriptionLlmProvider } from '@shared/lib/llm-provider/qwen-subscription-provider'
+
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => ({}) }))
 
 const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STD: EffortLevel[] = ['low', 'medium', 'high']
@@ -47,6 +51,9 @@ describe('familyDisplayName', () => {
     expect(familyDisplayName('muse-wonder')).toBe('Muse Wonder')
     expect(familyDisplayName('gemini-carbon')).toBe('Gemini Carbon')
     expect(familyDisplayName('gemini-argon')).toBe('Gemini Argon')
+    expect(familyDisplayName('gemini-hydrogen')).toBe('Gemini Hydrogen')
+    expect(familyDisplayName('gemini-neon')).toBe('Gemini Neon')
+    expect(familyDisplayName('muse-ember')).toBe('Muse Ember')
     expect(familyDisplayName('muse')).toBe('Muse Spark')
     expect(familyDisplayName('muse-contributor')).toBe('Muse Spark Contributor')
   })
@@ -153,6 +160,30 @@ describe('findCatalogModel', () => {
 })
 
 describe('ModelFamilyList', () => {
+  it('shows the Qwen Token Plan generations newest-first and Max before other variants', async () => {
+    const catalog = new QwenSubscriptionLlmProvider().getBuiltinCatalog()
+    const onPick = vi.fn()
+    const { container } = render(<ModelFamilyList catalog={catalog} value="qwen4-max-preview" onPick={onPick} />)
+    const rows = testIds(container).filter(id => [
+      'model-pinned-qwen4-max-preview', 'model-family-qwen3.8',
+      'model-family-qwen3.7', 'model-pinned-qwen3.6-flash',
+    ].includes(id))
+    expect(rows).toEqual([
+      'model-pinned-qwen4-max-preview', 'model-family-qwen3.8',
+      'model-family-qwen3.7', 'model-pinned-qwen3.6-flash',
+    ])
+    expect(testIds(container).filter(id => /^model-pinned-qwen3\.[78]-/.test(id))).toEqual([
+      'model-pinned-qwen3.8-max', 'model-pinned-qwen3.8-flash',
+      'model-pinned-qwen3.7-max', 'model-pinned-qwen3.7-plus',
+    ])
+    expect(vendorDefault(catalog, 'qwen')?.id).toBe('qwen3.8-max')
+    expect(findCatalogModel('qwen', catalog)?.id).toBe('qwen3.8-max')
+    await userEvent.click(screen.getByTestId('model-family-qwen3.7'))
+    expect(onPick).toHaveBeenLastCalledWith('qwen3.7-max')
+    await userEvent.click(screen.getByTestId('model-pinned-qwen4-max-preview'))
+    expect(onPick).toHaveBeenLastCalledWith('qwen4-max-preview')
+  })
+
   it('collapses a lineage family to one row with version pin chips, newest-first', async () => {
     const onPick = vi.fn()
     const user = userEvent.setup()
@@ -338,6 +369,19 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent(/^5\.6$/)
     await user.click(screen.getByTestId('model-family-gpt-luna'))
     expect(onPick).toHaveBeenLastCalledWith('gpt-6-luna')
+  })
+
+  it('ranks the Platform Google rows in Google\'s own order, not by price', () => {
+    // Neon's output rate ($15) is above Carbon's intro rate ($10), so price alone would put Neon first.
+    const { container } = render(
+      <ModelFamilyList catalog={getProviderCatalog('platform')} value="gemini-4-carbon" onPick={vi.fn()} />,
+    )
+    expect(testIds(container).filter((id) => /^model-family-gemini-[a-z]+$/.test(id))).toEqual([
+      'model-family-gemini-carbon',
+      'model-family-gemini-neon',
+      'model-family-gemini-argon',
+      'model-family-gemini-hydrogen',
+    ])
   })
 
   it('shows a stored legacy family alias as that family\'s latest', () => {

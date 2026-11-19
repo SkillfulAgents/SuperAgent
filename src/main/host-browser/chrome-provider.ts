@@ -6,12 +6,6 @@ import os from 'os'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { drivesUserChrome } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
-import {
-  ChromeProfileAccessError,
-  listChromeProfiles,
-  copyChromeProfileData,
-  reportChromeProfileAccessError,
-} from '@shared/lib/browser/chrome-profile'
 import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -249,12 +243,7 @@ export class ChromeProvider implements HostBrowserProvider {
     for (const p of candidate.paths) {
       if (fs.existsSync(p)) {
         this.detectedPath = p
-        return {
-          id: this.id,
-          name: this.name,
-          available: true,
-          profiles: listChromeProfiles(),
-        }
+        return { id: this.id, name: this.name, available: true }
       }
     }
 
@@ -315,13 +304,12 @@ export class ChromeProvider implements HostBrowserProvider {
     await waitForBrowserProfileCleanup()
 
     const port = await this.findFreePort()
-    const profileId = options?.chromeProfileId
 
     // Chrome refuses to enable CDP on its default (real) data directory:
     //   "DevTools remote debugging requires a non-default data directory"
-    // So we always use a dedicated user-data-dir per instance. When a profile is
-    // selected, we copy session data (cookies, login data, etc.) from the real
-    // Chrome profile into our dedicated dir before launching.
+    // So every instance gets a dedicated user-data-dir. It starts empty and
+    // keeps only what the agent signs in to; nothing is read from the person's
+    // own Chrome profiles.
     const userDataDir = path.join(getDataDir(), 'host-browser-profiles', instanceId)
     fs.mkdirSync(userDataDir, { recursive: true })
 
@@ -332,25 +320,6 @@ export class ChromeProvider implements HostBrowserProvider {
     for (const lockName of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
       const lockPath = path.join(userDataDir, lockName)
       try { fs.rmSync(lockPath, { force: true }) } catch { /* ignore */ }
-    }
-
-    if (profileId) {
-      const destProfileDir = path.join(userDataDir, 'Default')
-      // Only copy the user's Chrome profile on first launch. Subsequent launches
-      // should keep the session data (cookies, local storage, etc.) that the
-      // agent accumulated during its browsing sessions.
-      const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
-      try {
-        if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
-          console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
-        }
-      } catch (error) {
-        // A profile this app may not read: launch without its logins rather
-        // than not at all.
-        if (!(error instanceof ChromeProfileAccessError)) throw error
-        console.warn(`[ChromeProvider] Launching instance ${instanceId} without Chrome profile "${profileId}":`, error)
-        reportChromeProfileAccessError(error)
-      }
     }
 
     // Set Chrome download preferences so files go to the agent's workspace
@@ -666,7 +635,6 @@ export class ChromeProvider implements HostBrowserProvider {
           stderr: stderr.slice(-2000),
           crashReport: collectRecentCrashReport(),
           userDataDir,
-          profileId,
           spawnArgs: [
             `--remote-debugging-port=${port}`,
             `--remote-debugging-address=${CDP_LOOPBACK_ADDRESS}`,

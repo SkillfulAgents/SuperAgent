@@ -102,7 +102,7 @@ class AccountMcpConnection implements McpConnection {
     let accessToken = this.row.accessToken
     if (this.row.authType !== 'none') {
       if (this.row.tokenExpiresAt && this.row.tokenExpiresAt.getTime() < Date.now() && this.row.refreshToken) {
-        accessToken = await tryRefreshToken(this.row)
+        accessToken = await refreshTokenOnce(this.row)
         if (!accessToken) {
           await this.markAuthRequired('Token refresh failed')
           return { ok: false }
@@ -140,6 +140,20 @@ class AccountMcpConnection implements McpConnection {
   }
 
   async reportHealth(_available: boolean): Promise<void> { /* Account MCPs have no availability monitor. */ }
+}
+
+// Same-process callers share one refresh: the server may rotate the refresh
+// token, so a second POST of the old one can fail and mark the server auth_required.
+const refreshing = new Map<string, Promise<string | null>>()
+
+function refreshTokenOnce(mcp: Parameters<typeof tryRefreshToken>[0]): Promise<string | null> {
+  const key = `${mcp.id}:${mcp.refreshToken}`
+  let request = refreshing.get(key)
+  if (!request) {
+    request = tryRefreshToken(mcp).finally(() => refreshing.delete(key))
+    refreshing.set(key, request)
+  }
+  return request
 }
 
 /**

@@ -14,4 +14,7 @@ export const skillsetCacheBlobSchema = z.object({
   files: z.array(packedSkillsetFileSchema),
 })
 
+/** The folder's index.json stored apart, with the version of the stored folder it was taken from. */
+export const storedSkillsetIndexSchema = z.object({ version: z.string().uuid(), text: z.string() })
+
 export type PackedSkillsetFile = z.infer<typeof packedSkillsetFileSchema>

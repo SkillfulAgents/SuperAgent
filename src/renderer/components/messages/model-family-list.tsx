@@ -28,6 +28,7 @@ const VENDOR_LABELS: Record<string, string> = {
   kimi: 'Moonshot AI',
   deepseek: 'DeepSeek',
   gemini: 'Google',
+  qwen: 'Alibaba',
 }
 
 // Tab order: frontier labs first, open-weight labs after, so the overflow
@@ -77,8 +78,9 @@ export function vendorDefault(
  * keep one row per concrete model.
  */
 const LINEAGE_FAMILIES = new Set([
-  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor',
-  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-carbon', 'gemini-argon',
+  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor', 'muse-ember',
+  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-carbon', 'gemini-argon', 'gemini-hydrogen',
+  'gemini-neon',
 ])
 
 /**
@@ -137,6 +139,12 @@ function comparePriceDesc(a: ModelDefinition, b: ModelDefinition): number {
     bp.inputPerMtok - ap.inputPerMtok ||
     Number(!!b.isLatest) - Number(!!a.isLatest)
   )
+}
+
+/** Strongest-first by the catalog's `strengthRank` when both declare one, else by price. */
+function compareStrength(a: ModelDefinition, b: ModelDefinition): number {
+  if (a.strengthRank !== undefined && b.strengthRank !== undefined) return a.strengthRank - b.strengthRank
+  return comparePriceDesc(a, b)
 }
 
 /** The priciest member — what ranks a collapsed row among its siblings. */
@@ -507,7 +515,8 @@ function LineRow({
  * …) collapse to one row with per-version pin chips revealed on hover/selection,
  * and non-lineage models whose labels share a versioned base ("GPT-5.6
  * Sol/Terra/Luna") collapse the same way; remaining models render one row each.
- * Rows list strongest-first, ranked by each row's priciest model; version chips
+ * Rows list strongest-first, ranked by each row's priciest model (or by the
+ * catalog's `strengthRank` where declared); version chips
  * within a row stay newest-first. When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
@@ -543,7 +552,7 @@ function groupVendorModels(
     lineage: LINEAGE_FAMILIES.has(family),
   }))
   // Strongest family first, ranked by its priciest version.
-  groups.sort((a, b) => comparePriceDesc(strongestOf(a.versions), strongestOf(b.versions)))
+  groups.sort((a, b) => compareStrength(strongestOf(a.versions), strongestOf(b.versions)))
   loose.sort(comparePriceDesc)
   return { families: groups, standalone: loose }
 }

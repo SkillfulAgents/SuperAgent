@@ -316,68 +316,10 @@ async function changeManifest<R>(
   }
 }
 
-/**
- * The committed chunks one after another, read only as they are asked for
- * (`highWaterMark: 0`), so the next chunk stays closed until the one before it
- * has been read through and proved the size the manifest says.
- */
-function readChunksInOrder(store: UploadByteStore, attempt: ChunkAttempt, chunks: CommittedChunk[]): ReadableStream<Uint8Array> {
-  let index = 0
-  let open: ReadableStreamDefaultReader<Uint8Array> | null = null
-  let readOfChunk = 0
-  let cancelled = false
-  const closeOpen = async (reason: unknown): Promise<void> => {
-    const reader = open
-    open = null
-    await reader?.cancel(reason).catch(() => undefined)
-  }
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        for (;;) {
-          const chunk = chunks[index]
-          if (!chunk) {
-            controller.close()
-            return
-          }
-          if (!open) {
-            const source = await store.stream(bytesKey(attempt.ownerPart, attempt.uploadId, chunk.attemptId))
-            if (cancelled) {
-              await source?.cancel().catch(() => undefined)
-              return
-            }
-            if (!source) throw new Error(`Upload chunk ${index} is missing`)
-            open = source.getReader()
-            readOfChunk = 0
-          }
-          const { done, value } = await open.read()
-          if (done) {
-            if (readOfChunk !== chunk.size) throw new Error(`Upload chunk ${index} is ${readOfChunk} bytes, its manifest says ${chunk.size}`)
-            open = null
-            index++
-            continue
-          }
-          readOfChunk += value.byteLength
-          if (readOfChunk > chunk.size) throw new Error(`Upload chunk ${index} is over the ${chunk.size} bytes its manifest says`)
-          controller.enqueue(value)
-          return
-        }
-      } catch (error) {
-        await closeOpen(error)
-        throw error
-      }
-    },
-    cancel(reason) {
-      cancelled = true
-      return closeOpen(reason)
-    },
-  }, { highWaterMark: 0 })
-}
-
 /** What `finish` gets, and how to remove the file it may have asked for. */
 function openAssembled(store: UploadByteStore, attempt: ChunkAttempt, chunks: CommittedChunk[]) {
   const filePath = path.join(getTempUploadsDir(), ASSEMBLED_DIR, `${attempt.ownerPart}.${attempt.uploadId}.${attempt.attemptId}`)
-  const stream = () => readChunksInOrder(store, attempt, chunks)
+  const stream = () => store.streamInOrder(chunks.map((chunk) => ({ key: bytesKey(attempt.ownerPart, attempt.uploadId, chunk.attemptId), size: chunk.size })))
   const spool = async (): Promise<string> => {
     await ensureDirectory(path.dirname(filePath))
     await pipeline(Readable.fromWeb(stream() as NodeReadableStream), fs.createWriteStream(filePath))

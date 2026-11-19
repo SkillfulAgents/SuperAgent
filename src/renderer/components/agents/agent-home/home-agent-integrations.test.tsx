@@ -1,4 +1,6 @@
 const availability = vi.hoisted(() => ({ providers: ['telegram', 'slack', 'imessage', 'linear', 'platform-email'] as string[] | undefined }))
+const section = vi.hoisted(() => ({ open: true }))
+const mockUseAvailableProviders = vi.hoisted(() => vi.fn())
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -7,12 +9,12 @@ import { HomeAgentIntegrations } from './home-agent-integrations'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ChatIntegration, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
-// These tests cover the section's content; the collapsed-by-default row itself
-// is covered in home-collapsible.test.tsx, so here it always renders open.
+// The collapsed-by-default row itself is covered in home-collapsible.test.tsx.
+// Like the real one, a closed section does not mount its content.
 vi.mock('./home-collapsible', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./home-collapsible')>()),
   HomeCollapsible: ({ title, children }: { title: string; children: import('react').ReactNode }) => (
-    <div><span>{title}</span>{children}</div>
+    <div><span>{title}</span>{section.open ? children : null}</div>
   ),
 }))
 
@@ -25,7 +27,10 @@ const mockUseChatIntegrations = vi.fn()
 const mockUseChatIntegrationAccess = vi.fn()
 
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
-  useAvailableAgentIntegrationProviders: () => ({ data: availability.providers?.map(provider => ({ provider })) }),
+  useAvailableAgentIntegrationProviders: () => {
+    mockUseAvailableProviders()
+    return { data: availability.providers?.map(provider => ({ provider })) }
+  },
   useAgentIntegrations: (...args: unknown[]) => mockUseChatIntegrations(...args),
   useAgentIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
 }))
@@ -172,7 +177,7 @@ it('does not invite viewers to configure providers or render an empty setup grid
   mockUseChatIntegrations.mockReturnValue({ data: [] })
   const { container } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
   expect(screen.getByText('No external integrations have been configured for this agent.')).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /connect via/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /^set up /i })).not.toBeInTheDocument()
   expect(container.querySelector('.grid')).toBeNull()
 })
 
@@ -181,12 +186,12 @@ it('offers only the providers the host makes available', () => {
   mockUseChatIntegrations.mockReturnValue({ data: [] })
   availability.providers = ['slack']
   const { rerender } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.getByRole('button', { name: 'Connect via Slack' })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Connect via Email' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Set up Slack' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Set up Email' })).not.toBeInTheDocument()
   availability.providers = ['platform-email']
   rerender(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Connect via Slack' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Set up Email' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
 })
 
 it('offers nothing until host availability is known and preserves installed rows', () => {
@@ -195,4 +200,17 @@ it('offers nothing until host availability is known and preserves installed rows
   renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
   expect(screen.getByText('Test Bot')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /Add Integration/ })).not.toBeInTheDocument()
+})
+
+it('reads the setup providers only while the section is open', () => {
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  mockUseAvailableProviders.mockClear()
+  section.open = false
+  try {
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(mockUseChatIntegrations).toHaveBeenCalled()
+    expect(mockUseAvailableProviders).not.toHaveBeenCalled()
+  } finally {
+    section.open = true
+  }
 })

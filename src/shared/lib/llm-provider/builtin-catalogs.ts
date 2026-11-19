@@ -390,6 +390,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
     pricing: pricingFor('z-ai/glm-5.2'),
+    // OpenRouter's live model list context_length, fetched 2026-11-11.
+    contextWindow: 1_048_576,
   },
   {
     id: 'x-ai/grok-4.5',
@@ -610,6 +612,25 @@ const MUSE_WONDER_MODELS: ModelDefinition[] = [
 ]
 
 /**
+ * Meta's small tier, same route and traits as Spark (research.meta.ai/blog/muse-ember).
+ * Prompts over 200K input tokens bill the whole request at 3x.
+ */
+const MUSE_EMBER_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    family: 'muse-ember',
+    id: 'muse-ember-1.0',
+    pricing: pricingFor('muse-ember-1.0'),
+    label: 'Muse Ember 1.0',
+    blurb: 'Meta small model, served via Platform',
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    contextWindow: 1_048_576,
+    longContextPriceCliff: { thresholdTokens: 200_000, inputMultiplier: 3, outputMultiplier: 3 },
+  },
+]
+
+/**
  * OpenAI names GPT models version-then-tier ("GPT-6.1 Sol"), so each tier is
  * its own family: the bare `gpt-sol` alias rides Sol releases the way `opus`
  * rides Opus. `gpt` predates the split and still resolves to Sol.
@@ -711,8 +732,6 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     label: 'GPT-6.1 Sol',
     blurb: 'OpenAI coding tier, served via Platform',
     ...GPT_SOL,
-    isLatest: true,
-    isDefault: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -727,12 +746,44 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     label: 'GPT-6 Astra',
     blurb: 'OpenAI frontier, served via Platform',
     ...GPT_ASTRA,
-    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: pricingFor('gpt-6-astra'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-astra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6.2-sol',
+    label: 'GPT-6.2 Sol',
+    blurb: 'OpenAI coding tier, served via Platform',
+    ...GPT_SOL,
+    isLatest: true,
+    isDefault: true,
+    supportedEfforts: ALL_EFFORTS,
+    // OpenAI has no Flex tier for GPT-6.2.
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6.2-sol'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6.2-sol).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6.2-astra',
+    label: 'GPT-6.2 Astra',
+    blurb: 'OpenAI frontier, served via Platform',
+    ...GPT_ASTRA,
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    // OpenAI has no Flex tier for GPT-6.2.
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6.2-astra'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6.2-astra).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
@@ -786,12 +837,15 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
     // Same route and limits as gemini-4-argon below; measured 2026-11-10:
     // efforts low/medium/high only (xhigh/max 400). Listed first so it is the
-    // Google tab default, as Google's strongest model.
+    // Google tab default, as Google's strongest model. The Google rows carry
+    // `strengthRank` in Google's own order (Carbon, Neon, then Argon and
+    // Hydrogen): Carbon's intro price is below Neon's, so price would misrank them.
     id: 'gemini-4-carbon',
     label: 'Gemini 4 Carbon',
     blurb: 'Google strongest model, served via Platform',
     family: 'gemini-carbon',
     isLatest: true,
+    strengthRank: 1,
     isDefault: true,
     icon: 'gemini',
     supportedEfforts: STANDARD_EFFORTS,
@@ -800,6 +854,23 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportsImageInput: true,
     // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
     pricing: pricingFor('gemini-4-carbon'),
+    contextWindow: 1_048_576,
+  },
+  {
+    // Same route as gemini-4-argon; measured 2026-11-18: efforts low through
+    // xhigh (max 400). Flat price across the 1M window.
+    id: 'gemini-4-neon',
+    label: 'Gemini 4 Neon',
+    blurb: 'Google balanced model, served via Platform',
+    family: 'gemini-neon',
+    isLatest: true,
+    strengthRank: 2,
+    icon: 'gemini',
+    supportedEfforts: XHIGH_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    pricing: pricingFor('gemini-4-neon'),
     contextWindow: 1_048_576,
   },
   {
@@ -813,6 +884,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Google flagship, served via Platform',
     family: 'gemini-argon',
     isLatest: true,
+    strengthRank: 3,
     icon: 'gemini',
     supportedEfforts: STANDARD_EFFORTS,
     supportsWebSearch: false,
@@ -821,6 +893,23 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
     pricing: pricingFor('gemini-4-argon'),
     // Unified input + output limit (ai.google.dev/gemini-api/docs/models/gemini-4-argon).
+    contextWindow: 1_048_576,
+  },
+  {
+    // Same route as gemini-4-argon; measured 2026-11-12: efforts low through
+    // xhigh (max 400). Flat price across the 1M window.
+    id: 'gemini-4-hydrogen',
+    label: 'Gemini 4 Hydrogen',
+    blurb: 'Google fast model, served via Platform',
+    family: 'gemini-hydrogen',
+    isLatest: true,
+    strengthRank: 4,
+    icon: 'gemini',
+    supportedEfforts: XHIGH_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    pricing: pricingFor('gemini-4-hydrogen'),
     contextWindow: 1_048_576,
   },
   {
@@ -848,6 +937,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   },
   ...MUSE_WONDER_MODELS,
   ...MUSE_SPARK_MODELS,
+  ...MUSE_EMBER_MODELS,
   {
     // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.
     id: 'glm-5.3-flash',

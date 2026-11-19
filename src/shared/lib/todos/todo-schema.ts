@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { UserInputRequestKind } from '@shared/lib/tools/requests/request-schema'
-import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
+import { EFFORT_LEVELS, SPEED_LEVELS } from '@shared/lib/container/types'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.
@@ -196,6 +197,7 @@ const ASK_BY_KIND: Record<UserInputRequestKind, TodoAsk> = {
   mcp_reauth_required: 'reconnect',
   connected_account: 'connect',
   remote_mcp: 'connect',
+  integration_setup: 'connect',
   secret: 'info',
   file: 'info',
   browser_input: 'info',
@@ -216,19 +218,18 @@ export const TODO_ASK_LABELS: Record<TodoAsk, string> = {
   info: 'Needs info',
 }
 
-/** What the list endpoint returns per item. Times are epoch milliseconds. */
-export interface TodoView {
+/**
+ * What the list endpoint returns per item. Times are epoch milliseconds. Its
+ * runtime options are what was picked to run it on; each null starts it on
+ * the agent's default.
+ */
+export interface TodoView extends StoredRuntimeOptions {
   id: string
   title: string
   description: string
   agentSlug: string | null
   /** A draft to be given to an agent created for it when it starts. */
   newAgent: boolean
-  /** What was picked to run it on; each null starts it on the agent's default. */
-  model: string | null
-  llmProviderId: string | null
-  effort: EffortLevel | null
-  speed: SpeedLevel | null
   sessionId: string | null
   status: TodoStatus
   column: TodoColumn

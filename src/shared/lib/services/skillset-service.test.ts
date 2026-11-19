@@ -161,6 +161,7 @@ import {
   validateSkillZip,
   importSkillFromZip,
 } from './skillset-service'
+import { closeAppState, initializeLocalAppState } from '@shared/lib/app-state'
 import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
 import { getSettings } from '@shared/lib/config/settings'
 
@@ -179,6 +180,8 @@ describe('skillset-service', () => {
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
     vi.clearAllMocks()
+    await closeAppState()
+    await initializeLocalAppState()
   })
 
   afterEach(async () => {
@@ -188,6 +191,7 @@ describe('skillset-service', () => {
       delete process.env.SUPERAGENT_DATA_DIR
     }
     await fs.promises.rm(testDir, { recursive: true, force: true })
+    await closeAppState()
   })
 
   // ============================================================================
@@ -581,6 +585,24 @@ Instructions here`
   // ============================================================================
 
   describe('refreshAgentSkills', () => {
+    it('copies nothing from outside the skillset cache when an install record names a path that leaves it', async () => {
+      const otherAgentFolder = path.join(testDir, 'agents', 'other-agent', 'workspace', 'private')
+      await fs.promises.mkdir(otherAgentFolder, { recursive: true })
+      await fs.promises.writeFile(path.join(otherAgentFolder, 'notes.txt'), 'private notes', 'utf-8')
+      const rewritten = buildMetadata({
+        skillsetId: 'x',
+        skillPath: '../../agents/other-agent/workspace/private/SKILL.md',
+        openPrUrl: 'x',
+        originalContentHash: '0',
+      })
+      const skillDir = await createSkillDir('test-agent', 'x', '# x', rewritten)
+
+      await refreshAgentSkills('test-agent', [])
+
+      expect(fs.existsSync(path.join(skillDir, 'notes.txt'))).toBe(false)
+      expect(await getInstalledSkillMetadata('test-agent', 'x')).toBeNull()
+    })
+
     beforeEach(() => {
       mockExecFileAsNoOp()
     })
@@ -927,6 +949,37 @@ Instructions here`
       await createSkillsetCache(config.id, index)
       await expect(refreshSkillset(ref, { maxAgeMs: 60_000 })).resolves.toEqual(index)
       expect(setUrlCalls).toBe(3)
+    })
+
+    it('background refresh in a process that just started reuses a refresh another process made', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let setUrlCalls = 0
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-url') setUrlCalls += 1
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(ref)).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(1)
+
+      // The service's module loaded again holds nothing in memory, as a new process does. AppState is the same.
+      vi.resetModules()
+      const startedLater = await import('./skillset-service')
+
+      await expect(startedLater.refreshSkillset(ref, { maxAgeMs: 60_000 })).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(1)
     })
 
     it('coalesces concurrent first-time cache builds for the same cache directory', async () => {
@@ -3233,6 +3286,21 @@ metadata:
       for (const [name, content] of Object.entries(files)) {
         expect(fs.readFileSync(path.join(targetDir, name.slice('binary-skill/'.length)))).toEqual(content)
       }
+    })
+
+    it('imports from a ZIP file on disk, streaming a multi-MB entry intact', async () => {
+      const agentSlug = 'file-import-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+      const large = crypto.randomBytes(3 * 1024 * 1024)
+      const zipPath = path.join(testDir, 'skill.zip')
+      fs.writeFileSync(zipPath, await createZipBuffer({ 'SKILL.md': MINIMAL_SKILL_MD, 'assets/large.bin': large }))
+
+      const result = await importSkillFromZip(agentSlug, { filePath: zipPath })
+
+      const skillDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', result.skillDir)
+      expect(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8')).toBe(MINIMAL_SKILL_MD)
+      // A byte compare: toEqual walks a multi-MB Buffer element by element for seconds.
+      expect(fs.readFileSync(path.join(skillDir, 'assets', 'large.bin')).equals(large)).toBe(true)
     })
 
     it('export then import preserves files', async () => {

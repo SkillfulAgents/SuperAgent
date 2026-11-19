@@ -769,5 +769,102 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1794261056427,
     "hash": "00ee07e7ef2c3cfc242f056c6d8da8fd74ad5f00a0809ec22bf057f0b283710a"
+  },
+  {
+    "sql": [
+      "CREATE INDEX `chat_integration_sessions_session_id_idx` ON `chat_integration_sessions` (`session_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794451767741,
+    "hash": "2c87583b4f97fb0437d89d54aaecc08d1d02381685edfc04c15ebaebde39e8c3"
+  },
+  {
+    "sql": [
+      "DROP INDEX `audit_log_object_idx`;",
+      "\nCREATE INDEX `audit_log_object_created_at_idx` ON `audit_log` (`object`,`created_at`);",
+      "\nDROP INDEX `chat_integration_sessions_integration_id_idx`;",
+      "\nCREATE INDEX `chat_integration_sessions_integration_chat_idx` ON `chat_integration_sessions` (`integration_id`,`external_chat_id`);",
+      "\nDROP INDEX `notifications_agent_slug_is_read_idx`;",
+      "\nCREATE INDEX `notifications_agent_read_type_idx` ON `notifications` (`agent_slug`,`is_read`,`type`,`recipient_user_id`,`session_id`);",
+      "\nCREATE INDEX `notifications_agent_created_at_idx` ON `notifications` (`agent_slug`,`created_at`);",
+      "\nCREATE INDEX `scheduled_tasks_agent_slug_status_idx` ON `scheduled_tasks` (`agent_slug`,`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794868843117,
+    "hash": "d4ce1cca596492dca6fbeaf7f86ba65f0471fa7e9950d4e6906753b058969861"
+  },
+  {
+    "sql": [
+      "-- Generated, then one statement added by hand (the UPDATE below).\n-- `todos.llm_provider_id` was a bare column: unlike scheduled_tasks,\n-- webhook_triggers and chat_integrations it had no reference to\n-- `llm_connections`, so deleting a connection left drafts pointing at it.\n-- SQLite cannot add a FK with ALTER, so the table is rebuilt.\n--\n-- Migrations run in one transaction, where `PRAGMA foreign_keys=OFF` is a\n-- no-op, so the copy into the new table is checked row by row. A todo that\n-- already points at a deleted connection would fail it; those picks are\n-- cleared first, which is what ON DELETE SET NULL would have done. Nothing\n-- references `todos`, so dropping it cascades into nothing.\nUPDATE `todos` SET `llm_provider_id` = NULL WHERE `llm_provider_id` IS NOT NULL AND `llm_provider_id` NOT IN (SELECT `id` FROM `llm_connections`);",
+      "\nPRAGMA foreign_keys=OFF;",
+      "\nCREATE TABLE `__new_todos` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`title` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`agent_slug` text,\n\t`new_agent` integer DEFAULT false NOT NULL,\n\t`model` text,\n\t`llm_provider_id` text,\n\t`effort` text,\n\t`speed` text,\n\t`session_id` text,\n\t`status` text DEFAULT 'draft' NOT NULL,\n\t`position` real NOT NULL,\n\t`start_claim` text,\n\t`start_claimed_at` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`started_at` integer,\n\t`completed_at` integer,\n\t`attachments` text DEFAULT '[]' NOT NULL,\n\tFOREIGN KEY (`llm_provider_id`) REFERENCES `llm_connections`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"todos_session_check\" CHECK(\"__new_todos\".\"session_id\" is null or (\"__new_todos\".\"agent_slug\" is not null and \"__new_todos\".\"status\" <> 'draft'))\n);\n",
+      "\nINSERT INTO `__new_todos`(\"id\", \"user_id\", \"title\", \"description\", \"agent_slug\", \"new_agent\", \"model\", \"llm_provider_id\", \"effort\", \"speed\", \"session_id\", \"status\", \"position\", \"start_claim\", \"start_claimed_at\", \"created_at\", \"updated_at\", \"started_at\", \"completed_at\", \"attachments\") SELECT \"id\", \"user_id\", \"title\", \"description\", \"agent_slug\", \"new_agent\", \"model\", \"llm_provider_id\", \"effort\", \"speed\", \"session_id\", \"status\", \"position\", \"start_claim\", \"start_claimed_at\", \"created_at\", \"updated_at\", \"started_at\", \"completed_at\", \"attachments\" FROM `todos`;",
+      "\nDROP TABLE `todos`;",
+      "\nALTER TABLE `__new_todos` RENAME TO `todos`;",
+      "\nPRAGMA foreign_keys=ON;",
+      "\nCREATE INDEX `todos_user_idx` ON `todos` (`user_id`);",
+      "\nCREATE INDEX `todos_agent_session_idx` ON `todos` (`agent_slug`,`session_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1795027962529,
+    "hash": "051af179d120653b096c843fc46e8d87c83ed9b61f9dd9aba7f02d135f32fe9b"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `volume_acl` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`volume_id` text NOT NULL,\n\t`user_id` text,\n\t`role` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`volume_id`) REFERENCES `volume_definitions`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"volume_acl_role_check\" CHECK(\"volume_acl\".\"role\" = 'owner')\n);\n",
+      "\nCREATE UNIQUE INDEX `volume_acl_member_unique` ON `volume_acl` (`volume_id`,`user_id`);",
+      "\nCREATE UNIQUE INDEX `volume_acl_workspace_unique` ON `volume_acl` (`volume_id`) WHERE \"volume_acl\".\"user_id\" is null;",
+      "\nCREATE INDEX `volume_acl_user_idx` ON `volume_acl` (`user_id`);",
+      "\n-- Rebuilding a referenced parent with foreign keys enabled would cascade into its\n-- attachments. Preserve every mount identity, name, timestamp and access level.\nCREATE TABLE __drive_acl_mounts AS SELECT * FROM agent_volumes;\n",
+      "\nDELETE FROM agent_volumes;",
+      "\nCREATE TABLE `__new_volume_definitions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`visibility` text NOT NULL,\n\t`name` text NOT NULL,\n\t`type` text NOT NULL,\n\t`config` text NOT NULL,\n\t`global_access` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"volume_visibility_check\" CHECK(\"__new_volume_definitions\".\"visibility\" in ('public', 'private') and (\"__new_volume_definitions\".\"global_access\" is null or \"__new_volume_definitions\".\"visibility\" = 'public'))\n);\n",
+      "\nINSERT INTO `__new_volume_definitions`(\"id\", \"user_id\", \"visibility\", \"name\", \"type\", \"config\", \"global_access\", \"created_at\", \"updated_at\") SELECT \"id\", \"user_id\", CASE WHEN user_id IS NULL THEN 'public' ELSE 'private' END, \"name\", \"type\", \"config\", \"global_access\", \"created_at\", \"updated_at\" FROM `volume_definitions`;",
+      "\nDROP TABLE `volume_definitions`;",
+      "\nALTER TABLE `__new_volume_definitions` RENAME TO `volume_definitions`;",
+      "\nINSERT INTO agent_volumes SELECT * FROM __drive_acl_mounts;\n",
+      "\nDROP TABLE __drive_acl_mounts;",
+      "\nCREATE INDEX `volume_definitions_creator_idx` ON `volume_definitions` (`user_id`);\n",
+      "\nINSERT INTO volume_acl(id, volume_id, user_id, role, created_at)\nSELECT lower(hex(randomblob(16))), id, user_id, 'owner', created_at FROM volume_definitions;\n",
+      "\n-- Creating the definition, including create-and-attach and legacy imports, always\n-- creates its first owner in the same statement. Local drives belong to the workspace.\nCREATE TRIGGER volume_seed_owner AFTER INSERT ON volume_definitions BEGIN\n  INSERT INTO volume_acl(id, volume_id, user_id, role, created_at)\n  VALUES(lower(hex(randomblob(16))), NEW.id, NEW.user_id, 'owner', NEW.created_at);\nEND;\n",
+      "\nCREATE TRIGGER volume_workspace_owner_public BEFORE INSERT ON volume_acl\nWHEN NEW.user_id IS NULL AND EXISTS (\n  SELECT 1 FROM volume_definitions WHERE id = NEW.volume_id AND visibility = 'private'\n) BEGIN\n  SELECT RAISE(ABORT, 'A private drive requires a named owner');\nEND;\n",
+      "\nCREATE TRIGGER volume_acl_immutable_principal BEFORE UPDATE OF volume_id, user_id ON volume_acl\nWHEN NEW.volume_id IS NOT OLD.volume_id OR NEW.user_id IS NOT OLD.user_id BEGIN\n  SELECT RAISE(ABORT, 'Add an owner before removing another');\nEND;\n",
+      "\nCREATE TRIGGER volume_remove_workspace_owner AFTER UPDATE OF visibility ON volume_definitions\nWHEN NEW.visibility = 'private' AND OLD.visibility = 'public' BEGIN\n  DELETE FROM volume_acl WHERE volume_id = NEW.id AND user_id IS NULL;\nEND;\n",
+      "\n-- Also covers a user's FK cascade. Deleting the drive itself is allowed because\n-- SQLite removes the parent before running its cascading deletes.\nCREATE TRIGGER volume_keep_owner BEFORE DELETE ON volume_acl\nWHEN EXISTS (SELECT 1 FROM volume_definitions WHERE id = OLD.volume_id)\nAND NOT EXISTS (SELECT 1 FROM volume_acl WHERE volume_id = OLD.volume_id AND id <> OLD.id AND role = 'owner')\nBEGIN\n  SELECT RAISE(ABORT, 'A drive must have at least one owner');\nEND;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795041346189,
+    "hash": "59e122deaf50c4bef30c9727bd3370fd00d05832d9a18020d41d8c46e69708ff"
+  },
+  {
+    "sql": [
+      "-- Drive visibility checks the current Team Brain designation in its UPDATE.\n-- Check the other direction at the settings write too: choosing a drive and\n-- making it private in another window cannot both succeed.\nCREATE TRIGGER team_brain_public_drive_insert BEFORE INSERT ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value) AND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n",
+      "\nCREATE TRIGGER team_brain_public_drive_update BEFORE UPDATE OF value ON app_records\nWHEN NEW.key = 'settings' AND json_valid(NEW.value)\nAND json_extract(NEW.value, '$.teamBrain.volumeId') IS NOT\n  CASE WHEN json_valid(OLD.value) THEN json_extract(OLD.value, '$.teamBrain.volumeId') END\nAND EXISTS (\n  SELECT 1 FROM volume_definitions\n  WHERE id = json_extract(NEW.value, '$.teamBrain.volumeId') AND visibility = 'private'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'Team Brain requires a public drive');\nEND;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795048855087,
+    "hash": "d0708071a2b154fbf64540385e5586487a239d5460d7b7ba8737d4f6abf4c9c0"
+  },
+  {
+    "sql": [
+      "PRAGMA foreign_keys=OFF;",
+      "\nCREATE TABLE `__new_message_author` (\n\t`id` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`user_id` text,\n\t`integration_id` text,\n\t`display` text,\n\t`author_agent_slug` text,\n\t`billed_user_id` text,\n\t`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,\n\tPRIMARY KEY(`agent_slug`, `session_id`, `id`),\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`billed_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"message_author_author_check\" CHECK(\n    (\"__new_message_author\".\"user_id\" is not null) + (\"__new_message_author\".\"integration_id\" is not null) + (\"__new_message_author\".\"author_agent_slug\" is not null) = 1\n    and (\"__new_message_author\".\"integration_id\" is null) = (\"__new_message_author\".\"display\" is null)\n    and (\"__new_message_author\".\"billed_user_id\" is null or \"__new_message_author\".\"author_agent_slug\" is not null))\n);\n",
+      "\n-- Main has person and integration rows. The previous PR build also recorded\n-- the calling agent alongside its payer in user_id. The trailing NULL supplies\n-- the missing column on main; an existing column from * takes precedence.\nINSERT INTO `__new_message_author` (id, session_id, agent_slug, user_id, integration_id, display, author_agent_slug, billed_user_id, created_at)\nSELECT id, session_id, agent_slug, CASE WHEN author_agent_slug IS NULL THEN user_id END, integration_id, display,\n       author_agent_slug, CASE WHEN author_agent_slug IS NOT NULL THEN user_id END, created_at\nFROM (SELECT *, NULL AS author_agent_slug FROM `message_author`);\n",
+      "\nDROP TABLE `message_author`;",
+      "\nALTER TABLE `__new_message_author` RENAME TO `message_author`;",
+      "\nPRAGMA foreign_keys=ON;",
+      "\nCREATE INDEX `message_author_session_idx` ON `message_author` (`session_id`);",
+      "\nCREATE UNIQUE INDEX `message_author_integration_delivery_idx` ON `message_author` (`id`) WHERE \"message_author\".\"integration_id\" is not null;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795053244107,
+    "hash": "a7213cf3790efe8a2f872d2388f93e5e9d4574cda1bf602f4b04d80a6b91cbc5"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `browser_accounts` ADD `sign_in_methods` text DEFAULT '{}' NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1795056099108,
+    "hash": "109901b115f99f73f721670b26d4837958d6703ee9f6b5cbd72dfd1176ca7e45"
   }
 ]

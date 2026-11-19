@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
 
 /**
@@ -17,13 +17,7 @@ import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
 type Variables = { callerSlug: string }
 const xAgentSessions = new Hono<{ Variables: Variables }>()
 
-xAgentSessions.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  const callerSlug = token ? await validateProxyToken(token) : null
-  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgentSessions.use('*', requireAgentCaller)
 
 // A name, and nothing else: how a session was started and who started it are
 // the app's to say, not the agent's.

@@ -1,15 +1,24 @@
 /**
- * Persistent key → Browserbase contextId mappings shared by the Browserbase
- * and platform host-browser providers, one app record per key
- * (`browser-context:<provider>:<key>`; imported from the old
- * `browserbase-contexts.json` / `platform-browserbase-contexts.json` files by
- * data migration 9).
+ * Persistent key → remote context id mappings of the cloud host-browser
+ * providers (a Browserbase context id for Browserbase and the platform, a
+ * Steel profile id for Steel), one app record per key
+ * (`browser-context:<provider>:<key>`; the Browserbase ones imported from the
+ * old `browserbase-contexts.json` / `platform-browserbase-contexts.json` files
+ * by data migration 9).
  *
  * A mapping is written with insert-if-absent, so creating one key's mapping
  * never touches another's, and a stored id that cannot be read throws instead
  * of being treated as absent (which would create, and bill, a new context).
+ * A mapping whose context the provider no longer has is replaced with a
+ * compare-and-set on the stale id.
  */
-import { insertRecordIfAbsent, readRecord, serializeRecordValue, type RecordDb } from '@shared/lib/app-records/records'
+import {
+  compareAndSetRecord,
+  insertRecordIfAbsent,
+  readRecord,
+  serializeRecordValue,
+  type RecordDb,
+} from '@shared/lib/app-records/records'
 import {
   browserContextIdRecordSchema,
   browserContextKey,
@@ -81,7 +90,7 @@ export async function getOrCreateMapping(
     if (!committed) throw new Error(`Browser context mapping ${recordKey} disappeared after it was written`)
     if (committed !== contextId) {
       // Another process committed a mapping for this key first; use it.
-      captureException(new Error('Browserbase context orphaned by a concurrent first open'), {
+      captureException(new Error('Browser context orphaned by a concurrent first open'), {
         level: 'warning',
         tags: { area: 'host-browser-context-map', op: 'race' },
         extra: { provider, key, orphanedContextId: contextId },
@@ -95,4 +104,28 @@ export async function getOrCreateMapping(
   } finally {
     inflightContextCreations.delete(inflightKey)
   }
+}
+
+/**
+ * Point `key` at `nextId` in place of `staleId`, a context the provider says
+ * it no longer has (Steel deletes a profile unused for 30 days). Written only
+ * while the mapping still holds `staleId` (or holds nothing): when another
+ * process replaced it first, its id stands. Returns the id the mapping holds
+ * afterwards.
+ */
+export async function replaceContextMapping(
+  provider: BrowserContextProvider,
+  key: string,
+  staleId: string,
+  nextId: string,
+  db?: RecordDb,
+): Promise<string> {
+  const recordKey = browserContextKey(provider, key)
+  const value = serializeRecordValue(recordKey, nextId, browserContextIdRecordSchema)
+  const current = await readRecord(recordKey, browserContextIdRecordSchema, db)
+  if (!current) await insertRecordIfAbsent(recordKey, value, db)
+  else if (current.value === staleId) await compareAndSetRecord(recordKey, current.revision, value, db)
+  const committed = await readContextMapping(provider, key, db)
+  if (!committed) throw new Error(`Browser context mapping ${recordKey} disappeared after it was written`)
+  return committed
 }

@@ -30,7 +30,7 @@ import { clientFacts, serverFacts } from './facts'
  *
  * Note what is deliberately NOT gated on this. Where the answer comes from the
  * *server*, it already comes from the machine that owns it and needs no gate:
- * the host-browser providers and their Chrome profiles (`detectAllProviders()`),
+ * the host-browser providers (`detectAllProviders()`),
  * STT availability (`/api/voice/configured`), and runtime readiness all describe
  * whichever Superagent is being driven.
  *
@@ -159,4 +159,13 @@ export function listsRecentFiles(): boolean {
 export function signsInWithAuthSession(): boolean {
   const client = clientFacts()
   return client.shell === 'electron' && client.os === 'darwin' && runsInAppSandbox(client)
+}
+
+/**
+ * Whether the first screen offers the native Sign in with Apple prompt: the
+ * Mac App Store build, which carries the entitlement, and where the prompt's
+ * hand-off sheet exists.
+ */
+export function signsInWithApple(): boolean {
+  return signsInWithAuthSession()
 }

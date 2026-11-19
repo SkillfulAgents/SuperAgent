@@ -40,3 +40,12 @@ export function isSlackBlocksRejection(err: unknown): boolean {
   const e = err as { code?: unknown; data?: { error?: unknown } }
   return e.code === SLACK_PLATFORM_ERROR_CODE && typeof e.data?.error === 'string' && BLOCKS_REJECTION_CODES.has(e.data.error)
 }
+
+/** Slack refusing an image block whose uploaded file it is still processing: `invalid_blocks` naming the file. */
+export function isSlackFileNotReady(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { code?: unknown; data?: { error?: unknown; response_metadata?: { messages?: unknown } } }
+  const messages = e.data?.response_metadata?.messages
+  return e.code === SLACK_PLATFORM_ERROR_CODE && e.data?.error === 'invalid_blocks' &&
+    Array.isArray(messages) && messages.some((message) => typeof message === 'string' && message.includes('invalid slack file'))
+}

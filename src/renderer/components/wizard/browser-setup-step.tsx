@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
-import { BrowserbaseSettings } from '@renderer/components/settings/browser-tab'
+import { BrowserbaseSettings, SteelSettings, TabtenderSettings } from '@renderer/components/settings/browser-tab'
+import { useSteelCredentials } from '@renderer/hooks/use-steel-credentials'
+import { useTabtenderCredentials } from '@renderer/hooks/use-tabtender-credentials'
 import type { HostBrowserProviderId } from '@shared/lib/config/settings'
 
 const CONTAINER_VALUE = '__container__'
@@ -20,16 +21,16 @@ const BROWSER_HOST_OPTIONS: Array<{
     id: 'chrome' as HostBrowserProviderId,
     label: 'Google Chrome',
     recommended: true,
-    description: 'Your agents can use sites you\'re already logged into Chrome.',
-    subdescription: 'Just pick a Chrome profile.',
+    description: 'Your agents browse in Chrome on this computer, each with its own profile.',
+    subdescription: 'Nothing from your own Chrome profiles is shared.',
   },
   {
     id: CONTAINER_VALUE,
     label: 'Built-in Browser',
     recommended: false,
     isDefault: true,
-    description: 'Your agents will need you to log in before they can use a site.',
-    subdescription: 'No stored passwords or cookies.',
+    description: 'Your agents browse in a headless browser inside their container.',
+    subdescription: 'Nothing opens on your computer.',
   },
   {
     id: 'browserbase' as HostBrowserProviderId,
@@ -37,6 +38,20 @@ const BROWSER_HOST_OPTIONS: Array<{
     recommended: false,
     isAdvanced: true,
     description: 'Remote cloud browser. Requires a Browserbase account.',
+  },
+  {
+    id: 'steel' as HostBrowserProviderId,
+    label: 'Steel',
+    recommended: false,
+    isAdvanced: true,
+    description: 'Remote cloud browser. Requires a Steel account.',
+  },
+  {
+    id: 'tabtender' as HostBrowserProviderId,
+    label: 'Tab Tender',
+    recommended: false,
+    isAdvanced: true,
+    description: 'Your own browser server on a Mac or Windows machine. Requires a running Tab Tender server.',
   },
 ]
 
@@ -50,31 +65,38 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
 
   const [hostProvider, setHostProvider] = useState<string | null>(null)
   const [showAdvancedBrowsers, setShowAdvancedBrowsers] = useState(false)
-  const [chromeProfileId, setChromeProfileId] = useState<string | null>(null)
   const [browserbaseApiKey, setBrowserbaseApiKey] = useState('')
   const [browserbaseProjectId, setBrowserbaseProjectId] = useState('')
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
+  const steelCredentials = useSteelCredentials()
+  const tabtenderCredentials = useTabtenderCredentials()
 
   const providers = settings?.hostBrowserStatus?.providers ?? []
   const chromeProvider = providers.find((p) => p.id === 'chrome')
   const isChromeAvailable = !!chromeProvider?.available
   const smartDefault = isChromeAvailable ? 'chrome' : CONTAINER_VALUE
   const effectiveProvider = hostProvider ?? settings?.app?.hostBrowserProvider ?? smartDefault
-  const chromeProfiles = chromeProvider?.profiles ?? []
-  const effectiveChromeProfileId = chromeProfileId ?? settings?.app?.chromeProfileId ?? ''
 
   const browserbaseProvider = providers.find((p) => p.id === 'browserbase')
   const hasSavedBrowserbaseCredentials = !!browserbaseProvider?.available
+  const steelKeyStatus = settings?.apiKeyStatus?.steel
+  const hasSavedSteelKey = !!steelKeyStatus?.isConfigured
+  const tabtenderStatus = settings?.apiKeyStatus?.tabtender
+  const hasSavedTabtender = !!tabtenderStatus?.isConfigured
 
-  // If Browserbase is selected, can only proceed with valid credentials
+  // A cloud browser can only be picked with its credentials saved
   useEffect(() => {
     if (effectiveProvider === 'browserbase') {
       onCanProceedChange?.(hasSavedBrowserbaseCredentials)
+    } else if (effectiveProvider === 'steel') {
+      onCanProceedChange?.(hasSavedSteelKey)
+    } else if (effectiveProvider === 'tabtender') {
+      onCanProceedChange?.(hasSavedTabtender)
     } else {
       onCanProceedChange?.(true)
     }
-  }, [effectiveProvider, hasSavedBrowserbaseCredentials, onCanProceedChange])
+  }, [effectiveProvider, hasSavedBrowserbaseCredentials, hasSavedSteelKey, hasSavedTabtender, onCanProceedChange])
 
   // Persist the auto-selected Chrome provider so that users who see Chrome
   // pre-selected and click Next without interacting still have the preference
@@ -196,24 +218,6 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
                 </div>
               </button>
 
-              {option.id === 'chrome' && chromeProfiles.length > 0 && (
-                <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                  <div className="overflow-hidden">
-                    <div className="px-3 pb-3 pt-2">
-                      <ChromeProfileSelect
-                        profiles={chromeProfiles}
-                        value={effectiveChromeProfileId}
-                        onValueChange={(profileId) => {
-                          setChromeProfileId(profileId)
-                          updateSettings.mutate({ app: { chromeProfileId: profileId } })
-                        }}
-                        idPrefix="wizard-chrome-profile"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
               {option.id === 'browserbase' && (
                 <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                   <div className="overflow-hidden">
@@ -246,6 +250,36 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
                     }}
                   />
                 </div>
+                  </div>
+                </div>
+              )}
+
+              {option.id === 'steel' && (
+                <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                  <div className="overflow-hidden">
+                    <div className="px-3 pb-3 pt-0">
+                      <SteelSettings
+                        form={steelCredentials}
+                        hasSavedCredentials={hasSavedSteelKey}
+                        credentialSource={steelKeyStatus?.source}
+                        disabled={false}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {option.id === 'tabtender' && (
+                <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                  <div className="overflow-hidden">
+                    <div className="px-3 pb-3 pt-0">
+                      <TabtenderSettings
+                        form={tabtenderCredentials}
+                        hasSavedCredentials={hasSavedTabtender}
+                        credentialSource={tabtenderStatus?.source}
+                        disabled={false}
+                      />
+                    </div>
                   </div>
                 </div>
               )}

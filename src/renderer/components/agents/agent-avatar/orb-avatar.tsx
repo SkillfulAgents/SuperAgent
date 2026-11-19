@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { cn } from '@shared/lib/utils/cn'
-import type { OrbAppearance } from './avatar-orbs'
-import { shapePath, type OrbShape } from './orb-shapes'
+import type { OrbAppearance } from '@shared/lib/types/agent-avatar-orbs'
+import { shapePath, type OrbShape } from '@shared/lib/types/agent-avatar-shapes'
 import type { OrbState } from './orb-states'
 import { useOrbAnimation } from './use-orb-animation'
 

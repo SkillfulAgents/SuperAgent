@@ -28,7 +28,8 @@ import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
 import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
-import { collectTurnDeliveredFiles, type DeliveredFile } from './delivered-files'
+import { collectDeliveries, collectTurnDeliveredFiles, type DeliveredFile } from './delivered-files'
+import { useCheckDeliveredFiles } from '@renderer/components/file-preview/use-reload-when-changed'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
@@ -56,6 +57,7 @@ import {
   reuseEqualEmbeddedImageAliases,
   type EmbeddedImageAliases,
 } from '@renderer/lib/parse-tool-result'
+import { type LocateOutcome, type MessageTarget } from './locate-message'
 
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 
@@ -145,6 +147,11 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
   )
 }
 
+/** A user message the app sent in the user's name (the sign-in form's request): part of the work, not a turn of its own. */
+function foldsIntoWork(item: { type: string }): boolean {
+  return item.type === 'user' && !!classifyUserMessage(item as ApiMessage).foldsIntoWork
+}
+
 /** A transcript entry carries `sent` (trimmed) as typed, or behind the sender prefix a shared agent receives. */
 function isSentText(transcriptText: string | undefined, sent: string): boolean {
   const text = transcriptText?.trim() ?? ''
@@ -164,9 +171,10 @@ interface MessageListProps {
   suppressScrollToBottom?: boolean
   /** Height of an overlaid footer that the live edge must remain above. */
   bottomInset?: number
+  messageTarget?: MessageTarget
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0, messageTarget }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
   // useMutation returns a new object every render; only `mutate` is stable, and the
@@ -583,6 +591,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     () => collectTurnDeliveredFiles(messages ?? [], !isActive || hasTurnStartingPendingMessage),
     [messages, isActive, hasTurnStartingPendingMessage]
   )
+  // A file delivered again while it is open in the drawer is rechecked at once.
+  const deliveries = useMemo(() => collectDeliveries(messages ?? []), [messages])
+  useCheckDeliveredFiles(deliveries, agentSlug)
 
   // If there's unpersisted streaming content, defer the last turn's elapsed time
   // to render after the streaming section (otherwise it appears above the streaming message).
@@ -723,7 +734,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       let phaseStartIndex = actualTurnStartIndex
       for (let i = actualTurnStartIndex + 1; i < endIndex; i++) {
         const item = visibleMessages[i]
-        if (item.type !== 'user' || !item.queued) continue
+        if (item.type !== 'user' || !item.queued || foldsIntoWork(item)) continue
         finishWorkPhase(phaseStartIndex, i, false)
         phaseStartIndex = i
       }
@@ -731,7 +742,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
 
     for (let i = 0; i < visibleMessages.length; i++) {
-      if (!isTurnStartingUserMessage(visibleMessages[i])) continue
+      if (!isTurnStartingUserMessage(visibleMessages[i]) || foldsIntoWork(visibleMessages[i])) continue
       if (actualTurnStartIndex !== null) finishActualTurn(i)
       actualTurnStartIndex = i
     }
@@ -748,6 +759,26 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       collapsedMessageById: collapsedById,
     }
   }, [visibleMessages, isActive, hasTurnStartingPendingMessage])
+
+  // Landing opens the message's turn and keeps it open once the URL drops the request.
+  const targetIndex = useMemo(
+    () => (messageTarget ? visibleMessages.findIndex((m) => m.id === messageTarget.id) : -1),
+    [messageTarget, visibleMessages],
+  )
+  const locatingTurnId = messageTarget ? completedTurnByItemId.get(messageTarget.id)?.id : undefined
+  const [ringId, setRingId] = useState<string>()
+  const onTargetSettled = useCallback((outcome: LocateOutcome) => {
+    if (outcome === 'landed' && messageTarget) {
+      if (locatingTurnId) setExpandedTurnIds((current) => new Set(current).add(locatingTurnId))
+      setRingId(messageTarget.id)
+    }
+    messageTarget?.onSettled(outcome)
+  }, [messageTarget, locatingTurnId])
+  useEffect(() => {
+    if (!ringId) return
+    const timer = setTimeout(() => setRingId(undefined), 2000)
+    return () => clearTimeout(timer)
+  }, [ringId])
 
   // All scrolling behavior — live-edge following (the owned engine), the
   // new-turn reading-line reserve, windowed rendering of long histories. The
@@ -770,6 +801,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     handleTouchMove,
     handleTouchEnd,
   } = useMessageListScroll({
+    target: messageTarget ? { id: messageTarget.id, index: targetIndex } : undefined,
+    onTargetSettled,
     visibleMessages,
     pendingUserMessages,
     bottomInset,
@@ -838,6 +871,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       ),
     [peerUserMessages, messages, user?.id]
   )
+
+  // Our own ghosts, less any whose persisted copy (by its server uuid) is already
+  // in the transcript. The materialize effect drops that ghost too, but only after
+  // the commit that first draws the copy, so for one frame the message showed twice.
+  // Text-fallback matches stay with the effect, which claims each persisted copy once.
+  const visiblePendingMessages = useMemo(() => {
+    if (!pendingUserMessages?.some((p) => p.uuid)) return pendingUserMessages
+    const ids = new Set(messages?.map((m) => m.id))
+    return pendingUserMessages.filter((p) => !p.uuid || !ids.has(p.uuid))
+  }, [pendingUserMessages, messages])
 
 
   // Cancel a queued message before the agent picks it up. cancelled: false
@@ -1032,7 +1075,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         ) : null}
         {windowedMessages.map((item, index) => {
           const turn = completedTurnByItemId.get(item.id)
-          const expanded = !!turn && expandedTurnIds.has(turn.id)
+          const expanded = !!turn && (expandedTurnIds.has(turn.id) || turn.id === locatingTurnId)
           const previousItem = index > 0 ? windowedMessages[index - 1] : null
           const previousTurn = previousItem
             ? completedTurnByItemId.get(previousItem.id)
@@ -1052,7 +1095,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isFoldedWorkItem =
             (isAssistantItem && !isAnswerMessage) ||
             item.type === 'compact_boundary' ||
-            item.type === 'monitor_event'
+            item.type === 'monitor_event' ||
+            foldsIntoWork(item)
           const hideItem = collapsed && isFoldedWorkItem
           const isRevealedWorkItem = expanded && isFoldedWorkItem
 
@@ -1101,6 +1145,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       }
                       embeddedImageAliases={embeddedImageAliases}
                       suppressInlineError={item.id === currentRoutedError?.messageId}
+                      highlighted={item.id === ringId}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
@@ -1160,7 +1205,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             {renderPeerGhost(peer)}
           </Fragment>
         ))}
-        {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
+        {visiblePendingMessages?.filter((p) => !p.queued).map((pending) => (
           <Fragment key={pending.localId}>
             <div data-turn-anchor-id={pending.localId}>
               {renderPendingGhost(pending)}
@@ -1291,7 +1336,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         {/* Queued ghosts — waiting for the agent loop to pick them up, so they
             always sit below the current turn's streaming output and tools. */}
         {visiblePeerMessages.filter((p) => p.queued).map(renderPeerGhost)}
-        {pendingUserMessages?.filter((p) => p.queued).map(renderPendingGhost)}
+        {visiblePendingMessages?.filter((p) => p.queued).map(renderPendingGhost)}
 
         {/* Connection lost warning during active session */}
         {isActive && !isOnline && (

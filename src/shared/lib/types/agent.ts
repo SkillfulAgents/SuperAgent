@@ -4,7 +4,8 @@
  * Type definitions for file-based agent storage
  */
 
-import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
+import type { RuntimeOptions } from '../container/runtime-options'
+import type { SlashCommandInfo } from '../container/types'
 import type { LlmProviderId } from '../llm-provider/provider-types'
 
 // ============================================================================
@@ -72,7 +73,7 @@ export interface SessionUsage {
 }
 
 /** What the app keeps about a session, in the agent's session index. */
-export interface SessionMetadata {
+export interface SessionMetadata extends RuntimeOptions {
   name?: string
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
@@ -116,14 +117,9 @@ export interface SessionMetadata {
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
-  // Last effort level used by the user on this session (seeds the composer on reload)
-  effort?: EffortLevel
-  // Last processing speed used by the user on this session (seeds the composer on reload)
-  speed?: SpeedLevel
-  // Last model used by the user on this session (seeds the composer on reload).
-  // Stored as the provider's pinned ID, not the family.
-  model?: string
-  llmProviderId?: string | null
+  // The inherited RuntimeOptions are the last ones the user used on this
+  // session; they seed the composer on reload. The model is the provider's
+  // pinned ID, not the family.
   // Provider that produced each API-error message, keyed by transcript uuid,
   // so the error keeps its own provider's copy after the session switches.
   errorProviders?: Record<string, LlmProviderId>
@@ -302,6 +298,12 @@ export interface JsonlFileHistoryEntry {
  * Union type for all JSONL entry types
  */
 export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
+
+/** The CLI persists a mid-turn user prompt as a queued command attachment. */
+export function isQueuedUserPrompt(entry: JsonlEntry): entry is JsonlAttachmentEntry & { attachment: { prompt: string | ContentBlock[] } } {
+  return entry.type === 'attachment' && entry.attachment?.type === 'queued_command' &&
+    entry.attachment.commandMode === 'prompt' && !entry.attachment.isMeta && entry.attachment.prompt !== undefined
+}
 
 // ============================================================================
 // Session activity (working-indicator projection)

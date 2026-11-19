@@ -1,7 +1,7 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import { webhookRelayAvailable } from './webhook-relay-env';
-import { isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
+import { computerUseGuides, computerUseHostLine, isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
 import {
   query,
   startup,
@@ -25,7 +25,7 @@ import { gamutPluginDir } from './gamut-plugin';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createMeetingsMcpServer, createRulesMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
-import { computerUseTools } from './tools/computer-use';
+import { COMPUTER_USE_SERVER, COMPUTER_USE_TOOL_PREFIX, computerUseTools } from './tools/computer-use';
 import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { builtinHints, createHintHookMatchers } from './hints';
@@ -117,6 +117,21 @@ const SYSTEM_PROMPT = loadPrompt('system-prompt.md');
 const WEB_BROWSER_AGENT_PROMPT = loadPrompt('web-browser-agent-prompt.md');
 const COMPUTER_USE_AGENT_PROMPT = loadPrompt('computer-use-agent-prompt.md');
 const DASHBOARD_BUILDER_AGENT_PROMPT = loadPrompt('dashboard-builder-agent-prompt.md');
+
+// The window a non-Claude model without a catalog window is given through
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS: the CLI's own default for unknown models
+// before 2.1.323 raised it to 1M.
+const UNKNOWN_MODEL_CONTEXT_WINDOW = 200_000;
+
+/**
+ * A Claude model id in any of our providers' spellings (claude-…,
+ * us.anthropic.claude-…, anthropic/claude-…). Every Claude id in our catalogs
+ * is one the CLI knows, so it sizes them itself and ignores
+ * CLAUDE_CODE_MAX_CONTEXT_TOKENS for them.
+ */
+function isClaudeModelId(id: string): boolean {
+  return /claude/i.test(id);
+}
 
 interface RemoteMcpConfig {
   id: string;
@@ -345,6 +360,8 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** With computer use: the host's OS and agent-desktop's guide for it, rendered in the tail; '' otherwise. */
+  computerUseHostLine: string;
   /** The Mac App Store edition: the prompt says what its sandbox leaves out. */
   appSandbox: boolean;
   /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
@@ -422,6 +439,9 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    // In the tail, not the computer-use section: the static body stays the
+    // same bytes on every host.
+    computerUseHostLine: isComputerUseHost() ? computerUseHostLine() : '',
     appSandbox: isAppSandboxHost(),
     meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
@@ -1016,8 +1036,22 @@ export class ClaudeCodeProcess extends EventEmitter {
     return this.warmHandle !== null;
   }
 
-  private contextWindowForModel(model: string | undefined): number | undefined {
-    return model ? this.modelContextWindows[model] : undefined;
+  /**
+   * CLAUDE_CODE_MAX_CONTEXT_TOKENS for a query led by `model`, or undefined to
+   * leave it unset. The CLI reads it as ONE window for every model it does not
+   * know, the lead and each subagent alike, and never for a Claude model it
+   * knows. With it unset, an unknown model is assumed to hold 1M (200K before
+   * CLI 2.1.323), so a smaller one fills up and then fails every turn instead
+   * of compacting. A non-Claude lead gets its catalog window; under a Claude
+   * lead the value reaches only the non-Claude subagents, so it is the
+   * smallest of their windows. A model with no catalog window counts as 200K.
+   */
+  private contextWindowEnvFor(model: string | undefined): number | undefined {
+    const windowOf = (id: string) => this.modelContextWindows[id] ?? UNKNOWN_MODEL_CONTEXT_WINDOW;
+    if (model && !isClaudeModelId(model)) return windowOf(model);
+    const nonClaudeSubagents = [...this.subagentModels.map((m) => m.id), this.browserModel, this.dashboardBuilderModel]
+      .filter((id): id is string => !!id && !isClaudeModelId(id));
+    return nonClaudeSubagents.length > 0 ? Math.min(...nonClaudeSubagents.map(windowOf)) : undefined;
   }
 
   /**
@@ -1039,7 +1073,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
-      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer({ alwaysLoad: this.preloadToolsets.has('computer-use') }) } : {}),
+      ...(isComputerUseHost() ? { [COMPUTER_USE_SERVER]: createComputerUseMcpServer({ alwaysLoad: this.preloadToolsets.has('computer-use') }) } : {}),
     };
     this.sdkMcpServerConfigs = servers;
     return servers;
@@ -1296,15 +1330,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         CLAUDE_CODE_ELEGANT_MEADOW: '0',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-        // Tell the SDK the real context window for non-Claude models (it
-        // assumes 200k for unknown ids and auto-compacts against that — 40% of
-        // grok's 500k, 19% of gpt-5.x's 1.05M). The SDK only honors this env
-        // var for non-claude-* models, so it never affects Claude sessions. A
-        // user-set custom env var (spread above) deliberately wins.
-        ...(this.contextWindowForModel(this.model) &&
+        // Tell the CLI the real context window of the non-Claude models it
+        // does not know (see contextWindowEnvFor); a Claude model it knows
+        // never reads this. A user-set custom env var (spread above)
+        // deliberately wins.
+        ...(this.contextWindowEnvFor(this.model) &&
           !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS &&
           !this.llmRuntime?.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
-            CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowEnvFor(this.model)),
           }),
       }), this.speed),
       mcpServers: {
@@ -1334,6 +1367,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             'mcp__user-input__request_file',
             'mcp__user-input__request_browser_input',
             'mcp__user-input__request_login',
+            'mcp__user-input__add_sign_in_method',
           ],
           prompt: WEB_BROWSER_AGENT_PROMPT,
           maxTurns: 500,
@@ -1366,15 +1400,21 @@ export class ClaudeCodeProcess extends EventEmitter {
         },
         ...(isComputerUseHost() ? {
           'computer-use': {
-            description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
+            description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. Launch the app first (computer_launch) and name it in the task. This agent runs on a cheaper model and handles all app interactions autonomously.',
             // Cheap tier (browser model); falls back to the main model — never a
             // hardcoded Claude alias.
             model: this.browserModel || this.model,
             tools: [
-              ...mcpToolNames('computer-use', computerUseTools, ['computer_launch', 'computer_quit', 'computer_ungrab']),
+              // The parent owns the app's lifecycle: it launches and quits.
+              ...mcpToolNames(COMPUTER_USE_SERVER, computerUseTools, ['computer_launch', 'computer_close_app']),
+              // Read for the computer-use guides; Grep for them too, and for a
+              // long result the SDK set aside in a file.
               'Read',
+              'Grep',
             ],
-            prompt: COMPUTER_USE_AGENT_PROMPT,
+            // agent-desktop's own guides follow our few lines, so the agent
+            // starts from the library's guidance, not a summary of it.
+            prompt: [COMPUTER_USE_AGENT_PROMPT, computerUseHostLine(), computerUseGuides()].filter(Boolean).join('\n\n'),
             maxTurns: 500,
           },
         } : {}),
@@ -1450,7 +1490,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // not additive). This is acceptable because they write the same ID,
         // but if two user-input tools fire concurrently the first ID could
         // be overwritten before consumeCurrentToolUseId is called.
-        if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
+        if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith(COMPUTER_USE_TOOL_PREFIX)) && options.toolUseID) {
           inputManager.setCurrentToolUseId(options.toolUseID, this.sessionId);
         }
 
@@ -1486,7 +1526,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             ],
           },
           {
-            matcher: 'mcp__computer-use__.*',
+            matcher: `${COMPUTER_USE_TOOL_PREFIX}.*`,
             hooks: [
               async (_input, toolUseId) => {
                 if (toolUseId) {
@@ -1991,7 +2031,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // that changes the catalog window (e.g. claude → grok) can't use dynamic
     // setModel — the new model would run against the old window.
     const contextWindowChanged =
-      modelChanged && this.contextWindowForModel(model) !== this.contextWindowForModel(this.model);
+      modelChanged && this.contextWindowEnvFor(model) !== this.contextWindowEnvFor(this.model);
 
     // Capability policies follow the host's CURRENT settings, refreshed on
     // every message so a long-lived session tracks settings changes. Review

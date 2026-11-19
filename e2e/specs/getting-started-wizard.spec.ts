@@ -151,6 +151,44 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
   })
 
+  test('Steel, an advanced browser, needs its API key before Next', async ({ page, request }) => {
+    await request.put('/api/user-settings', { data: { setupCompleted: false } })
+    await appPage.goto()
+    await appPage.waitForAppLoaded()
+    await wizardPage.expectVisible()
+    await wizardPage.chooseManualSetup()
+    await wizardPage.clickNext() // LLM -> Model
+    await wizardPage.expectStep(1)
+    await wizardPage.clickNext() // Model -> Browser
+    await wizardPage.expectStep(2)
+
+    await page.getByText('Show advanced options').click()
+    await page.getByRole('button', { name: /^Steel/ }).click()
+    await expect(page.locator('#steel-api-key')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-next"]')).toBeDisabled()
+
+    await page.getByRole('button', { name: /^Tab Tender/ }).click()
+    await expect(page.locator('#tabtender-url')).toBeVisible()
+    await expect(page.locator('#tabtender-api-key')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-next"]')).toBeDisabled()
+
+    await page.getByRole('button', { name: /^Built-in Browser/ }).click()
+    await expect(page.locator('[data-testid="wizard-next"]')).toBeEnabled()
+
+    // Finish the wizard so the next test starts from its welcome screen.
+    await wizardPage.clickNext() // Browser -> Composio
+    await wizardPage.expectStep(3)
+    await wizardPage.clickSkip() // Composio -> Runtime
+    await wizardPage.expectStep(4)
+    await wizardPage.clickNext() // Runtime -> Privacy
+    await wizardPage.expectStep(5)
+    await wizardPage.clickNext() // Privacy -> Agent
+    await wizardPage.expectStep(6)
+    await wizardPage.clickSkip() // Agent (skip = finish)
+    await wizardPage.expectNotVisible()
+    await request.put('/api/settings', { data: { app: { hostBrowserProvider: null } } })
+  })
+
   test('skip buttons work on optional steps', async ({ request }) => {
     await request.put('/api/user-settings', {
       data: { setupCompleted: false },

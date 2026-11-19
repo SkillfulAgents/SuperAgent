@@ -1,6 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useCallback, useRef, useMemo, memo, type ReactNode } from 'react'
-import { Link2 } from 'lucide-react'
+import { AtSign, Link2 } from 'lucide-react'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
@@ -19,7 +19,7 @@ import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
 import type { MarkdownProps } from '@renderer/components/ui/markdown'
 import { AgentMarkdown } from './agent-markdown'
-import { splitStreamingMarkdown } from './split-streaming-markdown'
+import { splitStreamingMarkdown } from '@shared/lib/split-streaming-markdown'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
@@ -32,11 +32,11 @@ import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from 
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
-import { rehypeMentions } from '@renderer/lib/rehype-mentions'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { formatCompactDistance } from '@renderer/components/connections/utils'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import { format } from 'date-fns'
-import type { Mention } from '@shared/lib/utils/mentions'
+import { parseUserTags, plainUserTags, type Mention } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -68,11 +68,7 @@ function spokenPlugins(spoken: boolean | undefined, offset: number | undefined):
 const NO_MENTIONS: readonly Mention[] = []
 
 export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview, mentions = NO_MENTIONS }: MarkdownBlockProps) {
-  const rehypePlugins = useMemo(() => {
-    const plugins = spokenPlugins(spoken, spokenOffset)
-    if (mentions.length === 0) return plugins
-    return [[rehypeMentions, { mentions, agentSlug }], ...(plugins ?? [])] as MarkdownProps['rehypePlugins']
-  }, [spoken, spokenOffset, mentions, agentSlug])
+  const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
   return (
     <AgentMarkdown
       text={text}
@@ -81,6 +77,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAl
       rehypePlugins={rehypePlugins}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
+      mentions={mentions}
     />
   )
 })
@@ -117,6 +114,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
       rehypePlugins={rehypePlugins}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
+      mentions={NO_MENTIONS}
     />
   )
 })
@@ -156,6 +154,7 @@ interface MessageItemProps {
   voiceReading?: boolean
   /** The temporary row of a reply still streaming. Its persisted message replaces it, so HTML previews wait for that row and run once. */
   isStreamingRow?: boolean
+  highlighted?: boolean
 }
 
 function isSubagentTool(name: string): boolean {
@@ -217,17 +216,19 @@ const SENDER_NAME_INSET = SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP + 14
  * and what was sent with it in one column, the sender's avatar beside it at
  * the bottom corner. Without a sender the children sit in the row as they are.
  */
-function SenderAvatarGroup({ sender, children }: { sender: { id: string; name: string; image?: string | null } | null; children: ReactNode }) {
+function SenderAvatarGroup({ sender, children }: { sender: { id: string; name: string; image?: string | null } | NonNullable<ApiMessage['agentSender']> | null; children: ReactNode }) {
   if (!sender) return <>{children}</>
   return (
     <div className="flex max-w-full items-end" style={{ gap: SENDER_AVATAR_GAP }}>
       <div className="flex min-w-0 flex-col items-end gap-2">{children}</div>
-      <UserAvatar user={sender} size={SENDER_AVATAR_SIZE} />
+      {'slug' in sender
+        ? <AgentAvatar agent={sender} size={SENDER_AVATAR_SIZE} still />
+        : <UserAvatar user={sender} size={SENDER_AVATAR_SIZE} />}
     </div>
   )
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow, highlighted }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -237,12 +238,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // the sender prefix into the sender label and the mentions block into chips,
   // leaving just the typed text. Memoized so the mentions keep their identity.
   const userParts = useMemo(() => (isUser ? parseUserMessageParts(rawText) : null), [isUser, rawText])
-  const mentions = userParts?.mentions.length ? userParts.mentions : undefined
   // A message that opened on a teammate only notified them: the agent did not run.
   const silentMention = !!userParts?.silent
   const senderFromPrefix = userParts?.sender ?? null
   // A mirror prefix carries only a name, so it hashes the name for an initials avatar.
-  const sender = message.sender ?? (senderFromPrefix ? { id: senderFromPrefix, name: senderFromPrefix } : null)
+  const sender = message.agentSender ?? message.sender ?? (senderFromPrefix ? { id: senderFromPrefix, name: senderFromPrefix } : null)
   const attachedFiles = userParts?.attachedFiles ?? []
   const mountedFolders = userParts?.mountedFolders ?? []
   const cleanText = userParts?.text ?? rawText
@@ -251,7 +251,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
     ? parseTaskNotifications(cleanText)
     : { cleanText, workflowResults: [] }
-  const text = textAfterNotifs
+  // An agent tags with `[@Name](user:<id>)`: read as `@Name` plus the person,
+  // the text and list a person's tag gives, so the same chips draw.
+  const agentParts = useMemo(() => (isAssistant ? parseUserTags(textAfterNotifs) : null), [isAssistant, textAfterNotifs])
+  const mentionList = userParts?.mentions ?? agentParts?.mentions ?? []
+  const mentions = mentionList.length ? mentionList : undefined
+  const text = !agentParts ? textAfterNotifs : isStreaming ? plainUserTags(textAfterNotifs, { streaming: true }) : agentParts.text
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
   // Persisted extended-thinking blocks. Defensive shape check — this field
@@ -277,11 +282,16 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // from a read-only mirror prefix. An integration card names its own author,
   // and a bare kind (the interrupt marker) has nothing to sit beside.
   const avatarSender = isUser && !isIntegrationMessage && !bareUserRender && sender?.name ? sender : null
+  // Someone outside the app wrote an integration message, so rendering it reads none of the agent's files.
   const renderMarkdown = useCallback((markdown: string) => (
     <div dir="auto" className={PROSE_CLASS}>
-      <MarkdownBlock text={markdown} embeddedImageAliases={embeddedImageAliases} agentSlug={agentSlug} />
+      <MarkdownBlock
+        text={markdown}
+        embeddedImageAliases={isIntegrationMessage ? undefined : embeddedImageAliases}
+        agentSlug={isIntegrationMessage ? undefined : agentSlug}
+      />
     </div>
-  ), [embeddedImageAliases, agentSlug])
+  ), [embeddedImageAliases, agentSlug, isIntegrationMessage])
 
   // While streaming, pre-split the markdown into fence-safe blocks so each
   // settled block parses once; only the small trailing block re-parses per
@@ -374,6 +384,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
       data-turn-anchor-id={isUser ? message.id : undefined}
+      data-message-id={message.id}
     >
       {/* Message content */}
       <div
@@ -429,11 +440,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 dir="auto"
                 // Assistant bubbles opt into table breakout and must not clip it.
                 data-allow-table-breakout={isAssistant ? '' : undefined}
-                // A notify-only message (it opened on a teammate). Drawn as any other;
-                // marked for tests and anything that needs to tell.
+                // A notify-only message (it opened on a teammate). The bubble is drawn
+                // as any other; the line under it says the agent did not run for it.
                 data-notify-only={silentMention ? '' : undefined}
                 className={cn(
                   'rounded-card max-w-full text-foreground',
+                  // The mention color, for the message a mention click landed on.
+                  highlighted && 'ring-2 ring-violet-500 ring-offset-2 ring-offset-background',
                   !isAssistant && 'overflow-hidden',
                   isUser && 'px-4 py-2 bg-zinc-100 dark:bg-zinc-800/70',
                   // Relative for the read-aloud controls, which overlay the
@@ -559,6 +572,19 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           )}
         </SenderAvatarGroup>
 
+        {/* A notify-only message: the agent did not run for it (who it reached is
+            the tooltip, as under the composer). Under the bubble's edge, outside
+            the group so the avatar stays level with the bubble's bottom. */}
+        {silentMention && (
+          <span
+            className="flex items-center gap-1 text-2xs text-muted-foreground"
+            style={avatarSender ? { marginRight: SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP } : undefined}
+            data-testid="mention-notified"
+          >
+            <AtSign className="h-2.5 w-2.5 shrink-0 text-violet-500" aria-hidden />
+            <span title={`Only notifies ${userParts!.mentions.flatMap((mention) => mention.kind === 'user' ? [mention.name] : []).join(', ')}`}>Message ignored by agent</span>
+          </span>
+        )}
 
         {/* What a dashboard comment told the agent beside the comment, folded */}
         {isUser && userParts?.dashboardContext && (

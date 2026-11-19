@@ -27,14 +27,14 @@ import {
   decodeOrgIdFromToken,
   installPlatformFetchInterceptor,
 } from './platform-attribution'
-import { getPlatformAccessToken } from './services/platform-auth-service'
+import { getPlatformAccessToken, initEnvManagedPlatformStatus } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
 import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
 import { setupMeetingFramesSocket } from '../../main/meeting-frames-socket'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
-import { shutdownAC } from './computer-use/executor'
+import { shutdownComputerUse } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { attachErrorReportingIdentity, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
@@ -106,7 +106,7 @@ class ContainerImageService implements Service {
 function backgroundServices(): Service[] {
   return [
     // Nothing to start, and released last, after everything that uses them.
-    new ReleasedAtShutdown('computer-use', () => shutdownAC()),
+    new ReleasedAtShutdown('computer-use', () => shutdownComputerUse()),
     new ReleasedAtShutdown('active-runner', () => shutdownActiveRunner()),
     // After the containers, whose runtimes the host still needed: every agent
     // lets go of what it holds, its parked reviews and re-auth waits included.
@@ -212,6 +212,40 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
   }
 }
 
+/**
+ * The setup that lives in this process's memory: the analytics version, the
+ * account providers, the verified `PLATFORM_TOKEN` status and platform
+ * attribution. Every process that serves runs it, after AppState and
+ * KeyManager. Running it twice is harmless.
+ */
+export async function prepareProcess(): Promise<void> {
+  setServerAnalyticsVersion(APP_VERSION)
+  // Account providers (Composio, Nango if configured)
+  registerAllAccountProviders()
+  await initEnvManagedPlatformStatus()
+  // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
+  try {
+    const platformToken = await getPlatformAccessToken()
+    if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
+      installPlatformFetchInterceptor()
+    }
+  } catch (error) {
+    captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
+  }
+}
+
+/**
+ * Idempotent checks and writes on data every process of the deployment
+ * shares: the auth gate and the managed platform connection. Once per deploy
+ * is enough. The connection is provisioned before any agent or helper
+ * resolves its initial model.
+ */
+export async function prepareDeployment(): Promise<void> {
+  if (isAuthMode()) await validateAuthModeStartup()
+  const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
+  await ensureManagedPlatformConnection()
+}
+
 async function initializeServicesInner() {
   // The entry point started error reporting (main/index.ts, web/server.ts). Re-attaching the
   // tenant identity is harmless, and gives it to a reporter started before the database opened.
@@ -234,50 +268,26 @@ async function initializeServicesInner() {
     markBoot('settingsRead')
   }
 
-  // Initialize server-side analytics version
-  setServerAnalyticsVersion(APP_VERSION)
-
-  // Register account providers (Composio, Nango if configured)
-  registerAllAccountProviders()
-
   try {
     await reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
 
-  // Auth validation and agent discovery are independent reads. Run them
+  // The process setup and agent discovery are independent reads. Run them
   // together, then join before container initialization so a failed auth gate
-  // still prevents any runtime side effects.
-  const [, agents] = await Promise.all([
-    (async () => {
-      if (isAuthMode()) {
-        await validateAuthModeStartup()
-        try {
-          await clearPendingApprovalBans()
-        } catch (error) {
-          captureException(error, {
-            tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
-          })
-        }
-      }
-
-      // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
-      try {
-        const platformToken = await getPlatformAccessToken()
-        if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
-          installPlatformFetchInterceptor()
-        }
-      } catch (error) {
-        captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
-      }
-    })(),
-    listAgents(),
-  ])
-  // Provision hosted Platform installs and later logins independently of legacy
-  // data migrations, before any agent or helper resolves its initial model.
-  const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
-  await ensureManagedPlatformConnection()
+  // still prevents any runtime side effects. Memory goes first, so a server
+  // that keeps serving after a failed gate still has its account providers.
+  const [, agents] = await Promise.all([prepareProcess().then(prepareDeployment), listAgents()])
+  if (isAuthMode()) {
+    try {
+      await clearPendingApprovalBans()
+    } catch (error) {
+      captureException(error, {
+        tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
+      })
+    }
+  }
   markBoot('dbReady')
 
   discoveredAgentSlugs = agents.map((a) => a.slug)

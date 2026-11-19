@@ -2,12 +2,13 @@ import { defineToolRenderer } from '../renderer-types'
 import { MoonStar, Globe } from 'lucide-react'
 import type { ToolRendererProps, StreamingToolRendererProps } from '../renderer-types'
 import { Field, ResultField } from '../ui/shared'
-import { scheduleResumeDef, type ScheduleResumeInput } from './definition'
+import { scheduleResumeDef } from './definition'
+import type { ScheduleResumeInput } from './schema'
 
 const parseScheduleResumeInput = scheduleResumeDef.parseInput
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { wakeTime, note, timezone } = parseScheduleResumeInput(input)
+  const { wakeTime, summary, note, timezone } = parseScheduleResumeInput(input)
 
   return (
     <div className="space-y-3">
@@ -27,6 +28,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
         )}
       </div>
 
+      {summary && <Field label="Summary">{summary}</Field>}
       {note && <Field label="Wake Note" className="whitespace-pre-wrap">{note}</Field>}
       {result && <ResultField result={result} isError={isError} />}
     </div>
@@ -36,7 +38,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 function StreamingView({ partialInput }: StreamingToolRendererProps) {
   let parsed: ScheduleResumeInput = {}
   try {
-    parsed = JSON.parse(partialInput)
+    parsed = parseScheduleResumeInput(JSON.parse(partialInput))
   } catch {
     // Still streaming
   }
@@ -53,6 +55,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
         )}
       </div>
 
+      {parsed.summary && <Field label="Summary">{parsed.summary}</Field>}
       {parsed.note && (
         <Field label="Wake Note" className="whitespace-pre-wrap">
           {parsed.note}

@@ -86,7 +86,7 @@ it, the renderer hides it, and the agents are never told about it.
 | --- | --- | --- |
 | Computer use | `supportsComputerUse()` | the container's tools and prompt (`HOST_COMPUTER_USE`), the tool call, the Computer Use tab (`offersComputerUseSettings()`), the dispatch launcher's computer-use toggle (`offersLauncherComputerUse()`) and the session create that asks for it |
 | Host scripts | `runsHostScripts()`; the container's script tool follows `HOST_COMPUTER_USE` | the tool call |
-| The person's Chrome: CDP launch, profile copy, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the profile seed, the Apple Passwords runtime |
+| The person's Chrome: CDP launch, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the Apple Passwords runtime |
 | A folder by its path alone: copying a dropped folder in, or a drive of one | `readsHostFolders()`, `usesHostFolderPaths()` | the upload-folder routes, the mount offer on a drop (the folder uploads its files instead), and `prepareLocalVolume()` for a folder without its pick's bookmark |
 | Private skillsets, publishing to GitHub | `runsHostGit()`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
 | Telling a stopped Ollama from a missing one (it looks for the app and the binary) | `findsHostApps()` | `getOllamaStatus()`, which says "not found" instead of "stopped" |
@@ -145,6 +145,15 @@ Only this sign-in is moved. Connecting a third-party account (Composio, MCP,
 Slack, Linear, GitHub) still opens the browser, in every build, and the direct
 build keeps the browser for the Gamut sign-in too: the person is usually signed
 in there already.
+
+**The first screen also offers "Sign in with Apple"** (`signsInWithApple()`),
+because App Review guideline 4.8 asks for it beside Google sign-in. macOS's own
+Apple prompt runs first (`apple_sign_in_start` in the same bridge), then the
+same sheet opens the platform's Apple page, which continues to the same login
+URL. That sheet is ephemeral, sharing no cookies with the browser: the page
+keeps a Gamut session it finds over Apple's answer, so the Apple ID the person
+chose would otherwise lose to whoever is signed in there. Only this build
+carries the `com.apple.developer.applesignin` entitlement.
 
 **The Account tab offers "Request account deletion"** in every build, which
 guideline 5.1.1(v) requires of an app that lets people create an account. See

@@ -67,7 +67,6 @@ class PlatformService implements Service {
 
   /** Connect → refresh; disconnect → clear the cache. Either way the account changed. */
   onAuthChanged(connected: boolean): void {
-    platformPlanCache.clear()
     if (connected) background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
     else this.clearCache()
   }
@@ -100,7 +99,7 @@ class PlatformService implements Service {
     // The snapshot carries the acting account's plan policy too: a billing
     // view after an upgrade unlocks models without waiting for the cache.
     const policy = billingPlanPolicy(billing)
-    if (policy) platformPlanCache.remember(await actingPlanCacheKey(), policy)
+    if (policy) await platformPlanCache.remember(await actingPlanCacheKey(), policy)
     return billing
   }
 

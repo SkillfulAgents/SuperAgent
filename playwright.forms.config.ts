@@ -14,6 +14,9 @@ const command = process.platform === 'win32'
   ? `${inline} && node e2e/setup-e2e-data.js && npm run dev:web`
   : `${inline} node e2e/setup-e2e-data.js && ${inline} npm run dev:web`
 
+// WebKit traces without screenshots: they fill a macOS VM's WindowServer (see playwright.config.ts).
+const webkitTrace = { mode: 'retain-on-failure', screenshots: false } as const
+
 export default defineConfig({
   testDir: './e2e/auth/specs',
   testMatch: '**/account-forms.spec.ts',
@@ -28,9 +31,9 @@ export default defineConfig({
   use: { baseURL, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
   projects: [
     { name: 'forms-chromium', grepInvert: /@touch/, use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } },
-    { name: 'forms-webkit', grepInvert: /@touch/, use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 } } },
+    { name: 'forms-webkit', grepInvert: /@touch/, use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 }, trace: webkitTrace } },
     { name: 'forms-chromium-touch', grep: /@touch/, use: { ...devices['Pixel 7'], viewport: { width: 430, height: 932 } } },
-    { name: 'forms-webkit-touch', grep: /@touch/, use: { ...devices['iPhone 13'], viewport: { width: 390, height: 844 } } },
+    { name: 'forms-webkit-touch', grep: /@touch/, use: { ...devices['iPhone 13'], viewport: { width: 390, height: 844 }, trace: webkitTrace } },
   ],
   webServer: { command, url: `${baseURL}/api/auth-config`, reuseExistingServer: false, timeout: 120_000, stdout: 'pipe' },
 })

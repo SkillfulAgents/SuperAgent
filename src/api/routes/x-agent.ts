@@ -4,18 +4,20 @@
  * Container-to-host endpoints for cross-agent operations (create / list /
  * invoke / read sessions). Mounted under /api/x-agent (separate from /api/agents
  * to avoid the /:id middleware that requires an existing agent slug in the URL).
+ * Also serves the caller's own members.
  *
  * Auth: every request must carry the calling agent's proxy token via Authorization:
- * Bearer <token>. The route resolves the caller's agent slug from that token and
- * applies xAgentPolicies + ACLs accordingly.
+ * Bearer <token>. The route resolves the caller's agent slug from that token, and
+ * the cross-agent routes apply xAgentPolicies + ACLs accordingly.
  */
-import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentPick, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, isNotNull, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/sqlite-core'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
@@ -23,7 +25,7 @@ import { userExists } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import {
   createAgent,
   listAgents,
@@ -33,16 +35,21 @@ import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-errors'
 import type { FileOps } from '@shared/lib/agent-actor/types'
-import type { ContainerSession } from '@shared/lib/container/types'
+import { EFFORT_LEVELS, SPEED_LEVELS, type ContainerSession, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
+import { clampEffortForDisplay, clampSpeedForDisplay } from '@shared/lib/container/runtime-options'
+import { bindAgentModelChoice } from '@shared/lib/llm-provider/connection-runtime'
+import { connectionCatalogFrom } from '@shared/lib/llm-provider/connections'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
+import { listAgentMembers } from '@shared/lib/services/agent-members-service'
 import {
   evaluate as evaluatePolicy,
+  type XAgentDecision,
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
 import { getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
+import { resolveSessionDefaults, type SessionRuntimePick } from '@shared/lib/services/session-defaults'
 import { captureException } from '@shared/lib/error-reporting'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import {
@@ -73,18 +80,7 @@ const xAgent = new Hono<{ Variables: XAgentVariables }>()
 // Auth: resolve caller agent slug from Bearer token (proxy token)
 // ----------------------------------------------------------------------------
 
-xAgent.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const callerSlug = await validateProxyToken(token)
-  if (!callerSlug) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgent.use('*', requireAgentCaller)
 
 function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')
@@ -117,14 +113,15 @@ async function getLatestMessageAuthorUserId(
   sessionId: string,
 ): Promise<string | undefined> {
   try {
+    // An incoming agent call carries the payer forward into the next call.
+    const payer = sql<string | null>`coalesce(${messageAuthor.userId}, ${messageAuthor.billedUserId})`
     const rows = await db
-      .select({ userId: messageAuthor.userId })
+      .select({ userId: payer })
       .from(messageAuthor)
       .where(and(
         eq(messageAuthor.agentSlug, agentSlug),
         eq(messageAuthor.sessionId, sessionId),
-        // An integration-delivered message has no user author.
-        isNotNull(messageAuthor.userId),
+        isNotNull(payer),
       ))
       .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
       .limit(1)
@@ -164,18 +161,32 @@ async function callerOwnerHasRoleOnTarget(
   minRole: AgentRole,
 ): Promise<boolean> {
   if (!isAuthMode()) return true
-  const callerOwners = await getOwnersOfAgent(callerSlug)
-  if (callerOwners.length === 0) return false
-  const aclRows = await db
-    .select({ userId: agentAcl.userId, role: agentAcl.role })
-    .from(agentAcl)
-    .where(eq(agentAcl.agentSlug, targetSlug))
-  for (const row of aclRows) {
-    if (callerOwners.includes(row.userId) && hasMinRole(row.role as AgentRole, minRole)) {
-      return true
-    }
-  }
-  return false
+  // One statement: the roles the caller's owners hold on the target. No owner
+  // on the caller, or no owner with a row on the target, is no rows.
+  const callerOwner = alias(agentAcl, 'caller_owner')
+  const roles = await db
+    .select({ role: agentAcl.role })
+    .from(callerOwner)
+    .innerJoin(agentAcl, eq(agentAcl.userId, callerOwner.userId))
+    .where(and(
+      eq(callerOwner.agentSlug, callerSlug),
+      eq(callerOwner.role, 'owner'),
+      eq(agentAcl.agentSlug, targetSlug),
+    ))
+  return roles.some((row) => hasMinRole(row.role as AgentRole, minRole))
+}
+
+/**
+ * Start a read whose answer is looked at later. The reads a route starts
+ * together do not depend on each other, and each is still awaited at the point
+ * the route used to make it, so refusals (and a read that fails) are reported
+ * in the same order as when they ran one after another. One that is never
+ * awaited, because an earlier check refused the request, must not surface as an
+ * unhandled rejection.
+ */
+function startRead<T>(read: Promise<T>): Promise<T> {
+  read.catch(() => {})
+  return read
 }
 
 /**
@@ -219,9 +230,16 @@ async function checkAgentPolicy(
   preview?: string,
   fileTransfer?: XAgentFileTransfer,
   callerSessionId?: string,
-): Promise<{ allowed: boolean; reason?: string }> {
+  // The saved decision, when the route already started reading it (startRead).
+  // Only the first read: a card's re-evaluations below always read again.
+  savedDecision?: Promise<XAgentDecision>,
+  runtime?: XAgentRuntime,
+): Promise<{ allowed: boolean; reason?: string; pick?: XAgentPick }> {
+  // An agent acting on its own sessions crosses no agent boundary: no policy
+  // applies and nobody is asked.
+  if (targetSlug === callerSlug) return { allowed: true }
   if (operation !== 'create') {
-    const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+    const decision = await (savedDecision ?? evaluatePolicy(callerSlug, operation, targetSlug))
     if (decision === 'allow') return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
@@ -230,9 +248,16 @@ async function checkAgentPolicy(
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
     const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
-      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, runtime, callerSessionId },
       raise,
-    ))
+    ), operation === 'create' ? {} : {
+      // When an "always" decision on another card changes the policy, this
+      // request is decided again rather than released.
+      reevaluate: async () => {
+        const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+        return decision === 'block' ? 'deny' : decision
+      },
+    })
     if (review.decision === 'deny') {
       return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }
@@ -240,7 +265,7 @@ async function checkAgentPolicy(
     if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
       return { allowed: false, reason: 'Blocked by policy' }
     }
-    return { allowed: true }
+    return { allowed: true, pick: review.pick }
   } catch (error) {
     return {
       allowed: false,
@@ -273,6 +298,23 @@ xAgent.post('/list', async (c) => {
       description: a.description,
     }))
   return c.json({ agents: filtered })
+})
+
+// ----------------------------------------------------------------------------
+// POST /api/x-agent/members - the caller's own members. Not reviewed: every
+// member of the agent can already read this roster.
+// ----------------------------------------------------------------------------
+
+// Bounds the agent's context, as chat directory listings do.
+const MAX_LISTED_MEMBERS = 500
+
+xAgent.post('/members', async (c) => {
+  if (!isAuthMode()) return c.json({ truncated: false, members: [] })
+  const members = await listAgentMembers(getCallerSlug(c))
+  return c.json({
+    truncated: members.length > MAX_LISTED_MEMBERS,
+    members: members.slice(0, MAX_LISTED_MEMBERS).map(({ id, name, email, role, invited }) => ({ id, name, email, role, invited })),
+  })
 })
 
 // ----------------------------------------------------------------------------
@@ -332,19 +374,21 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, limit = 50, offset = 0 } = c.req.valid('json')
 
-  // Resolve the model-supplied display slug to the canonical id and rebind, so
-  // every downstream ACL / policy / fs use below keys on the id, not the prefix.
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
-
-  const target = await getAgentRecord(targetSlug)
+  // Resolve the model-supplied display slug to the agent and rebind, so every
+  // downstream ACL / policy / fs use below keys on the id, not the prefix.
+  const target = await agentCatalog.resolveRecord(rawTargetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
 
-  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
+  const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))
+  const savedDecision = startRead(evaluatePolicy(callerSlug, 'read', targetSlug))
+  if (!(await access)) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
+  const policy = await checkAgentPolicy(
+    callerSlug, 'read', targetSlug, target.name, undefined, undefined, undefined, savedDecision,
+  )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
@@ -560,18 +604,20 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, sessionId, sync, limit, fullTranscript } = c.req.valid('json')
 
-  // Resolve the model-supplied display slug to the canonical id and rebind.
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
-
-  const target = await getAgentRecord(targetSlug)
+  // Resolve the model-supplied display slug to the agent and rebind.
+  const target = await agentCatalog.resolveRecord(rawTargetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
 
-  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
+  const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))
+  const savedDecision = startRead(evaluatePolicy(callerSlug, 'read', targetSlug))
+  if (!(await access)) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
+  const policy = await checkAgentPolicy(
+    callerSlug, 'read', targetSlug, target.name, undefined, undefined, undefined, savedDecision,
+  )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
@@ -643,11 +689,11 @@ function attachmentDisposition(filename: string): string {
 xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, sessionId, deliveryId } = c.req.valid('json')
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
-
-  const target = await getAgentRecord(targetSlug)
+  const target = await agentCatalog.resolveRecord(rawTargetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
+  // The policy is read where it always was, after the delivery is found: that
+  // lookup parses a transcript, and a Block saved meanwhile must still apply.
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
@@ -703,15 +749,63 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
 // POST /api/x-agent/invoke - send prompt to a target agent (new or existing session)
 // ----------------------------------------------------------------------------
 
+/**
+ * The model a new invoked session starts on: the caller's pick, checked
+ * against the target agent's models and the member's plan, else the target's
+ * default. Returns the pick for the start and what the card shows.
+ */
+async function invokeRuntime(
+  targetSlug: string,
+  model: string | undefined,
+  effort: EffortLevel | undefined,
+  speed: SpeedLevel | undefined,
+): Promise<{ error: string } | { pick: SessionRuntimePick; runtime?: XAgentRuntime }> {
+  const settings = await getSettings()
+  const { agentPrefs, resolve } = await resolveSessionDefaults(settings, targetSlug)
+  let bound: { model?: string; llmProviderId?: string }
+  try {
+    bound = await bindAgentModelChoice(model, agentPrefs, settings)
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+  const pick = { ...bound, effort, speed }
+  const resolved = await resolve(pick)
+  // The resolve passes over a pick the member's plan cannot run.
+  if (bound.model && (resolved.model !== bound.model || resolved.llmProviderId !== bound.llmProviderId)) {
+    return { error: `Model "${model}" is not available on this plan. Leave out model to use the agent's default.` }
+  }
+  // Only a catalog model is named to the person: without a connections setup the name is the agent's own text.
+  if (!('connection' in resolved)) return { pick }
+  const catalogModel = connectionCatalogFrom(resolved.connection, settings).find((m) => m.id === resolved.wireModel)
+  // A legacy-pinned default can run a wire id its connection's catalog does not list.
+  if (!catalogModel) return { pick }
+  const shownEffort = clampEffortForDisplay(resolved.effort, catalogModel.supportedEfforts)
+  const shownSpeed = clampSpeedForDisplay(resolved.speed, catalogModel)
+  return {
+    pick,
+    runtime: {
+      // The catalog id the picker on the card matches against, not an alias.
+      model: catalogModel.id,
+      llmProviderId: resolved.llmProviderId,
+      ...(shownEffort ? { effort: shownEffort } : {}),
+      ...(shownSpeed ? { speed: shownSpeed } : {}),
+      label: catalogModel.label,
+    },
+  }
+}
+
 const invokeBodySchema = z.object({
-  slug: z.string(),
+  slug: z.string().optional(),
   prompt: z.string().min(1),
   sessionId: z.string().optional(),
   sync: z.boolean().optional(),
   attachments: xAgentAttachmentsSchema.optional(),
+  model: z.string().min(1).optional(),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+  speed: z.enum(SPEED_LEVELS).optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
-  // can reject calls from sessions that were themselves invoked by another agent
-  // (one-hop rule — also blocks A→B→A and any deeper chain transitively).
+  // can reject calls from sessions that were themselves invoked by an agent
+  // (one-hop rule).
   _callerSessionId: z.string().optional(),
 })
 
@@ -730,59 +824,63 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     sessionId: existingSessionId,
     sync,
     attachments = [],
+    model,
+    effort,
+    speed,
     _callerSessionId,
   } = c.req.valid('json')
 
-  // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
-  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
+  // Resolve display slug → the agent, so ACL / policy / runtime all use its id.
+  // No slug means the caller's own agent.
+  const target = await agentCatalog.resolveRecord(rawTargetSlug ?? callerSlug)
+  if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  const targetSlug = target.slug
 
-  if (targetSlug === callerSlug) {
-    return c.json({ error: 'Agent cannot invoke itself' }, 400)
+  // What the checks below read depends only on the caller and the resolved
+  // target, so the reads start together; each is awaited at its own check.
+  const callerMetaRead = startRead(_callerSessionId
+    ? agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
+    : Promise.resolve(null))
+  const triggeringUserRead = startRead(isAuthMode() && _callerSessionId
+    ? getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    : Promise.resolve(undefined))
+  const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))
+  // No policy applies to the caller's own agent (checkAgentPolicy).
+  const savedDecision = targetSlug === callerSlug
+    ? undefined
+    : startRead(evaluatePolicy(callerSlug, 'invoke', targetSlug))
+  if (existingSessionId && (model || effort || speed)) {
+    return c.json({ error: 'model, effort and speed apply to new sessions only. Leave them out to continue session_id on its own model.' }, 400)
   }
 
-  // One-hop rule: sessions started by another agent cannot invoke further.
-  const callerMeta = _callerSessionId
-    ? await agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
-    : null
+  // One-hop rule: sessions started by an agent invoke cannot invoke further.
+  const callerMeta = await callerMetaRead
   if (callerMeta?.invokedByAgentSlug) {
     return c.json(
       {
         error:
-          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke other agents. ` +
+          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke agents. ` +
           'Cross-agent invocation is one hop deep.',
       },
       403,
     )
   }
 
+  // A running session takes an invoke into its turn, so a session messaging
+  // itself would read its own prompt as a follow-up, and a sync wait would wait
+  // on the turn that is waiting for it.
+  if (targetSlug === callerSlug && existingSessionId && existingSessionId === _callerSessionId) {
+    return c.json({ error: 'A session cannot send a message to itself. Omit session_id to start a worker session.' }, 400)
+  }
+
   // Capture the triggering message's author before a review prompt can pause
   // this request and newer messages can arrive in a shared caller session.
   // This remains a best-effort "latest author" heuristic until the container
   // can pass the exact driving message UUID.
-  const triggeringUserId = isAuthMode() && _callerSessionId
-    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
-    : undefined
+  const triggeringUserId = await triggeringUserRead
 
-  const target = await getAgentRecord(targetSlug)
-  if (!target) return c.json({ error: 'Target agent not found' }, 404)
-
-  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))) {
+  if (!(await access)) {
     return c.json({ error: 'Forbidden: caller has no user access to target agent' }, 403)
-  }
-
-  const policy = await checkAgentPolicy(
-    callerSlug,
-    'invoke',
-    targetSlug,
-    target.name,
-    prompt.slice(0, 200),
-    attachments.length ? { kind: 'send', paths: attachments } : undefined,
-    // Shows the review in the calling session, so a chat can answer it.
-    _callerSessionId,
-  )
-  if (!policy.allowed) {
-    return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
   // Attribute to the triggering message author. Session creator and caller
@@ -799,6 +897,46 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       })
     }
   }
+
+  // A new session's model is checked and shown on the card before anyone
+  // approves it. A blocked call is refused first, with no model lookup.
+  let pick: SessionRuntimePick = {}
+  let runtime: XAgentRuntime | undefined
+  if (!existingSessionId) {
+    if (await savedDecision === 'block') {
+      return c.json({ error: 'Blocked by policy' }, 403)
+    }
+    let checked: Awaited<ReturnType<typeof invokeRuntime>>
+    try {
+      checked = await runWithOptionalUser(attributedUserId, () => invokeRuntime(targetSlug, model, effort, speed))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[x-agent] invoke failed', { callerSlug, targetSlug, stage: 'resolve_model', error: message })
+      captureException(err, { tags: { ...X_AGENT_SENTRY, stage: 'resolve_model' }, extra: { callerSlug, targetSlug } })
+      return c.json({ error: `Failed to invoke agent (resolve_model): ${message}` }, 500)
+    }
+    if ('error' in checked) return c.json({ error: checked.error }, 400)
+    pick = checked.pick
+    runtime = checked.runtime
+  }
+
+  const policy = await checkAgentPolicy(
+    callerSlug,
+    'invoke',
+    targetSlug,
+    target.name,
+    prompt.slice(0, 200),
+    attachments.length ? { kind: 'send', paths: attachments } : undefined,
+    // Shows the review in the calling session, so a chat can answer it.
+    _callerSessionId,
+    savedDecision,
+    runtime,
+  )
+  if (!policy.allowed) {
+    return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
+  }
+  // The person allowing the card picked another model for the new session.
+  if (policy.pick) pick = policy.pick
 
   return runWithOptionalUser(attributedUserId, async () => {
     // Stages for runtime 500s: ensure_running → create_session / send_message.
@@ -865,7 +1003,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             id: candidateUuid,
             sessionId: existingSessionId,
             agentSlug: targetSlug,
-            userId: attributedUserId,
+            billedUserId: attributedUserId,
+            authorAgentSlug: callerSlug,
           })
           if (recorded) messageUuid = candidateUuid
         }
@@ -874,7 +1013,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // references deleted bytes or loses its author.
         const discardUndelivered = async () => {
           promptDeliveryStarted = false
-          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+          if (messageUuid) await deleteMessageAuthorBestEffort(targetSlug, existingSessionId, messageUuid)
           if (stagedTargetDirectory) {
             await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
             stagedTargetDirectory = undefined
@@ -951,7 +1090,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       const availableEnvVars = await getSecretEnvVars(targetSlug)
       // One read of the settings for this invocation's session start.
       const { agentLimits, customEnvVars, maxBrowserTabs, models, resolve } = await resolveSessionDefaults(await getSettings(), targetSlug)
-      const resolved = await resolve({})
+      const resolved = await resolve(pick)
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -1035,7 +1174,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           id: initialMessageUuid,
           sessionId: newSessionId,
           agentSlug: targetSlug,
-          userId: createdByUserId,
+          billedUserId: createdByUserId,
+          authorAgentSlug: callerSlug,
         })
       }
       // The x-agent provenance exists now: the target's trigger and history

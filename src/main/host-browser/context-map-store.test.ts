@@ -5,7 +5,7 @@
  * write, and never treated as absent when it cannot be read.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { getOrCreateMapping, readContextMapping } from './context-map-store'
+import { getOrCreateMapping, readContextMapping, replaceContextMapping } from './context-map-store'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import * as records from '@shared/lib/app-records/records'
 import { insertRecordIfAbsent, InvalidAppRecordError } from '@shared/lib/app-records/records'
@@ -104,5 +104,31 @@ describe('getOrCreateMapping', () => {
   it('a failed create leaves nothing behind, so the next open can create again', async () => {
     await expect(getOrCreateMapping('browserbase', 'a', async () => { throw new Error('402') }, db)).rejects.toThrow('402')
     expect(await getOrCreateMapping('browserbase', 'a', async () => 'ctx-2', db)).toBe('ctx-2')
+  })
+})
+
+describe('replaceContextMapping', () => {
+  it('replaces the stale id', async () => {
+    await getOrCreateMapping('steel', 'agent', async () => 'profile-gone', db)
+    expect(await replaceContextMapping('steel', 'agent', 'profile-gone', 'profile-new', db)).toBe('profile-new')
+    expect(await readContextMapping('steel', 'agent', db)).toBe('profile-new')
+  })
+
+  it("keeps an id another process put there first, and says which", async () => {
+    await getOrCreateMapping('steel', 'agent', async () => 'profile-theirs', db)
+    expect(await replaceContextMapping('steel', 'agent', 'profile-gone', 'profile-mine', db)).toBe('profile-theirs')
+    expect(await readContextMapping('steel', 'agent', db)).toBe('profile-theirs')
+  })
+
+  it('writes the new id when the mapping is gone', async () => {
+    expect(await replaceContextMapping('steel', 'agent', 'profile-gone', 'profile-new', db)).toBe('profile-new')
+  })
+
+  it("never touches another provider's or key's mapping", async () => {
+    await getOrCreateMapping('browserbase', 'agent', async () => 'ctx', db)
+    await getOrCreateMapping('steel', 'other', async () => 'profile-other', db)
+    await replaceContextMapping('steel', 'agent', 'x', 'profile-new', db)
+    expect(await readContextMapping('browserbase', 'agent', db)).toBe('ctx')
+    expect(await readContextMapping('steel', 'other', db)).toBe('profile-other')
   })
 })

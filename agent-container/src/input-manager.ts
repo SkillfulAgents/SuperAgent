@@ -70,6 +70,7 @@ const AUTOMATED_INPUT_TYPES: ReadonlySet<string> = new Set([
   'get_available_triggers',
   'setup_trigger',
   'cancel_trigger',
+  'add_sign_in_method',
 ])
 export const AUTOMATED_INPUT_TTL_MS = 10 * 60 * 1000
 

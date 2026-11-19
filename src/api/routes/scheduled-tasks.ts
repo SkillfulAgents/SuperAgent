@@ -248,14 +248,9 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
-    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
-    if ('model' in body) updates.model = parsed.data.model ?? null
-    if ('effort' in body) updates.effort = parsed.data.effort ?? null
-    if ('speed' in body) updates.speed = parsed.data.speed ?? null
-
+    // The parsed patch has a key only where the body had one, which is what the update reads.
     await assertConnectionSelectionAccess(parsed.data.llmProviderId, task?.llmProviderId)
-    const updated = await updateTaskRuntimeOptions(task!.id, updates)
+    const updated = await updateTaskRuntimeOptions(task!.id, parsed.data)
     if (!updated) {
       return c.json({ error: 'Task not found or not editable' }, 404)
     }
@@ -279,7 +274,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
-    // Session wake ("Wake now"): resume the target session instead of creating
+    // Session wake ("Run now"): resume the target session instead of creating
     // a new one. deliverSessionWake is the same claimed path the scheduler
     // uses, so a wakeup firing at the same instant can never double-deliver.
     if (task.resumeSessionId) {

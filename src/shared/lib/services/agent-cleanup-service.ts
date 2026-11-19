@@ -20,6 +20,7 @@ import { cancelWebhookTriggerWithCleanup } from '@shared/lib/services/webhook-tr
 import { unlinkAgentStatements } from '@shared/lib/services/todo-service'
 import { invalidateRuleCache } from '@shared/lib/proxy/rules/store'
 import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
+import { agentRegistry } from '@shared/lib/agent-actor'
 
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
@@ -47,6 +48,8 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
     // Todo board items outlive the agent: they let go of it instead.
     ...unlinkAgentStatements(agentSlug),
   ])
+  // A later agent that gets the same slug must not inherit its "always" grants.
+  await agentRegistry.get(agentSlug).inputs.computerUse.revokeAll()
   // ACL rows are gone too, so an agent-scoped hint could be filtered out.
   // This content-free hint makes every connected cache recheck its own scope.
   globalFeed.publish({ type: 'notifications_changed' })

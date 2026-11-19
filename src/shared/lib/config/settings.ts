@@ -19,6 +19,7 @@ import {
 import { InvalidAppRecordError } from '@shared/lib/app-records/errors'
 import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { globalInstructionsSchema } from './global-instructions-schema'
+import { requestScopedSettings, settingsWritten } from './settings-request-memo'
 import { readyTeamBrain, teamBrainStoredSchema, type TeamBrainRecord, type TeamBrainStored } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
@@ -73,6 +74,10 @@ export interface ApiKeySettings {
   composioUserId?: string
   browserbaseApiKey?: string
   browserbaseProjectId?: string
+  steelApiKey?: string
+  /** Base URL of a Tab Tender server (e.g. https://browsers.example.com); not secret, saved with its key. */
+  tabtenderUrl?: string
+  tabtenderApiKey?: string
   deepgramApiKey?: string
   openaiApiKey?: string
   nangoSecretKey?: string
@@ -113,7 +118,7 @@ export interface AgentLimitsSettings {
   maxBudgetUsd?: number
 }
 
-export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel' | 'tabtender'
 
 export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
 
@@ -133,7 +138,6 @@ export interface AppPreferences {
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
-  chromeProfileId?: string
   chromeHeadless?: boolean
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
@@ -158,6 +162,13 @@ export interface AppPreferences {
   browserbaseProxyCountry?: string
   browserbaseProxyState?: string
   browserbaseProxyCity?: string
+
+  // Steel session settings
+  steelSolveCaptcha?: boolean
+  steelProxies?: boolean
+  steelProxyCountry?: string
+  steelProxyState?: string
+  steelProxyCity?: string
 }
 
 /** Default-on MicroVM preference; other runtimes ignore this setting. */
@@ -381,7 +392,6 @@ export interface ApiKeyStatus {
 // Note: This creates a type-only dependency, avoiding circular imports
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RuntimeReadiness } from '@shared/lib/container/types'
-import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
 // Canonical provider-info type (catalog + defaultModels) lives with the
 // provider layer; import it (type-only, no runtime cycle) so the two never drift.
 import type { LlmProviderInfo } from '../llm-provider'
@@ -391,7 +401,6 @@ export interface HostBrowserProviderInfo {
   name: string
   available: boolean
   reason?: string
-  profiles?: ChromeProfile[]
 }
 
 export interface HostBrowserStatus {
@@ -400,16 +409,18 @@ export interface HostBrowserStatus {
 
 export type { LlmProviderInfo }
 
+/** The web icon itself is served by /api/favicon, so settings reads say only whether one is set. */
+export type AppPreferencesResponse = Omit<AppPreferences, 'faviconDataUrl'> & { hasCustomFavicon: boolean }
+
 export interface GlobalSettingsResponse {
   dataDir: string
   /** Host machine's total physical memory — lets the UI warn about oversized VM memory picks. */
   hostTotalMemoryBytes?: number
   container: ContainerSettings
-  app: AppPreferences
+  app: AppPreferencesResponse
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
   llmProvider: LlmProviderId
-  llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
   modelPricing?: GlobalModelPricing
   // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
@@ -425,6 +436,9 @@ export interface GlobalSettingsResponse {
     composio: ApiKeyStatus
     nango: ApiKeyStatus
     browserbase: ApiKeyStatus
+    steel: ApiKeyStatus
+    /** Configured only with both a server URL and a key. */
+    tabtender: ApiKeyStatus
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
     exa: ApiKeyStatus
@@ -432,6 +446,8 @@ export interface GlobalSettingsResponse {
   composioUserId?: string
   /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */
   genericBaseUrl?: string
+  /** The Tab Tender server in use, saved or from `TABTENDER_URL`. Not a secret — echoed so Settings can show it. */
+  tabtenderUrl?: string
   accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings
@@ -459,8 +475,10 @@ export interface GlobalSettingsResponse {
  */
 export type ModelPickerSettingsResponse = Pick<
   GlobalSettingsResponse,
-  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
+  'llmProvider' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
 > & {
+  // Every provider's catalog (over 100 KB); only this response carries it.
+  llmProviderStatus: LlmProviderInfo[]
   connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
   defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
   legacyLlmProviderId?: string
@@ -751,17 +769,24 @@ export async function loadSettingsStrict(db?: RecordDb): Promise<AppSettings> {
 }
 
 /**
- * The current settings, read from the store on every call (there is no
- * process-wide copy: a write committed by another process is what the next
- * call returns). Tolerant of an invalid stored value: it degrades to the
- * defaults, reported, but nothing writes those defaults back, because every
- * write goes through {@link updateSettings}, which reads strictly. A database
- * error is not an invalid value and propagates.
+ * The current settings, read from the store (there is no process-wide copy: a
+ * write committed by another process is what the next operation reads).
+ * Tolerant of an invalid stored value: it degrades to the defaults, reported,
+ * but nothing writes those defaults back, because every write goes through
+ * {@link updateSettings}, which reads strictly. A database error is not an
+ * invalid value and propagates.
  *
  * Read once per operation and pass the value on, rather than calling this
- * from every helper an operation reaches.
+ * from every helper an operation reaches. Inside one API request the calls
+ * share a single read, each getting its own copy (see
+ * `settings-request-memo.ts`); everywhere else, and with an explicit `db`,
+ * every call reads.
  */
 export async function getSettings(db?: RecordDb): Promise<AppSettings> {
+  return db ? readSettingsTolerant(db) : requestScopedSettings(() => readSettingsTolerant())
+}
+
+async function readSettingsTolerant(db?: RecordDb): Promise<AppSettings> {
   try {
     return await loadSettingsStrict(db)
   } catch (error) {
@@ -823,6 +848,9 @@ export async function updateSettings(
     const written = revision === 0
       ? await insertRecordIfAbsent(SETTINGS_RECORD_KEY, value, db)
       : await compareAndSetRecord(SETTINGS_RECORD_KEY, revision, value, db)
+    // The stored settings changed, by this write or by the writer it lost to:
+    // a request that read them earlier must not keep that read.
+    settingsWritten()
     if (written) return { before, after: draft, written: true }
   }
   throw new SettingsWriteConflictError()
@@ -1017,6 +1045,43 @@ export function effectiveBrowserbaseProjectIdFrom(settings: Pick<AppSettings, 'a
     return settings.apiKeys.browserbaseProjectId
   }
   return process.env.BROWSERBASE_PROJECT_ID
+}
+
+/** Where the Steel API key comes from: saved settings, else `STEEL_API_KEY`. */
+export function steelApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
+  if (settings.apiKeys?.steelApiKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.STEEL_API_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+/** The Steel API key to use: saved settings take precedence over `STEEL_API_KEY`. */
+export function effectiveSteelApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
+  if (settings.apiKeys?.steelApiKey) {
+    return settings.apiKeys.steelApiKey
+  }
+  return process.env.STEEL_API_KEY
+}
+
+/** The Tab Tender server to use: a saved URL takes precedence over `TABTENDER_URL`. */
+export function effectiveTabtenderUrlFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
+  return settings.apiKeys?.tabtenderUrl || process.env.TABTENDER_URL || undefined
+}
+
+/** The Tab Tender API key to use: a saved key takes precedence over `TABTENDER_API_KEY`. */
+export function effectiveTabtenderApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
+  return settings.apiKeys?.tabtenderApiKey || process.env.TABTENDER_API_KEY || undefined
+}
+
+/** Where the Tab Tender credentials come from: configured only with both a URL and a key. */
+export function tabtenderApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
+  if (!effectiveTabtenderUrlFrom(settings) || !effectiveTabtenderApiKeyFrom(settings)) {
+    return { isConfigured: false, source: 'none' }
+  }
+  return { isConfigured: true, source: settings.apiKeys?.tabtenderApiKey ? 'settings' : 'env' }
 }
 
 /**

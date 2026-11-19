@@ -4,6 +4,7 @@ import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
+import type { MessageTarget } from './locate-message'
 
 interface SessionThreadProps {
   sessionId: string | null
@@ -24,6 +25,7 @@ interface SessionThreadProps {
   pendingRequestCount?: number
   onPendingMessageAppeared?: (localId: string) => void
   suppressScrollToBottom?: boolean
+  messageTarget?: MessageTarget
 }
 
 /**
@@ -47,6 +49,7 @@ export function SessionThread({
   pendingRequestCount,
   onPendingMessageAppeared,
   suppressScrollToBottom,
+  messageTarget,
 }: SessionThreadProps) {
   const footerRef = useRef<HTMLDivElement>(null)
   const [footerHeight, setFooterHeight] = useState(0)
@@ -99,6 +102,7 @@ export function SessionThread({
             onPendingMessageAppeared={onPendingMessageAppeared}
             suppressScrollToBottom={suppressScrollToBottom}
             bottomInset={overlayFooter ? footerHeight : 0}
+            messageTarget={messageTarget}
           />
         )}
         <div

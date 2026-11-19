@@ -70,6 +70,7 @@ export async function notifySessionMentions(
         recipientUserId: teammate.id,
         senderName: sender.name,
         text: mentions.text,
+        relayToInvited: true,
       })
     } catch (error) {
       captureException(error, { tags: { component: 'agents', operation: 'notify-mention' }, level: 'warning' })

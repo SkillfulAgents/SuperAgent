@@ -398,6 +398,153 @@ describe('useMessageStream', () => {
     expect(selectedRenders).toBe(selectedBefore + 1)
   })
 
+  describe('readyStreamingToolUses', () => {
+    // The field list usePendingRequests selects, in the parent of the session column.
+    const PENDING_REQUEST_FIELDS = ['isActive', 'readyStreamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'] as const
+    const DELTAS = 25
+
+    async function setup() {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const counts = { ready: 0, perDelta: 0 }
+      const ready = renderHook(() => {
+        counts.ready++
+        return useMessageStream('session-1', 'agent-1', PENDING_REQUEST_FIELDS)
+      }, { wrapper })
+      // The selection usePendingRequests made before: one render per delta.
+      const perDelta = renderHook(() => {
+        counts.perDelta++
+        return useMessageStream('session-1', 'agent-1', ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
+      }, { wrapper })
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+        es.simulateMessage({ type: 'session_active' })
+        es.simulateMessage({ type: 'stream_start' })
+      })
+      return { ready, perDelta, counts, es }
+    }
+
+    function streamInput(es: MockEventSource, toolId: string, toolName: string, deltas: number) {
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_start', toolId, toolName, partialInput: '' })
+      })
+      let partialInput = ''
+      for (let i = 0; i < deltas; i++) {
+        partialInput += 'x'
+        act(() => {
+          es.simulateMessage({ type: 'tool_use_streaming', toolId, toolName, partialInput })
+        })
+      }
+      return partialInput
+    }
+
+    it('does not re-render its selector on tool-input deltas', async () => {
+      const { ready, perDelta, counts, es } = await setup()
+      const readyBefore = counts.ready
+      const perDeltaBefore = counts.perDelta
+      const identityBefore = ready.result.current.readyStreamingToolUses
+
+      streamInput(es, 'tc-1', 'AskUserQuestion', DELTAS)
+
+      expect(perDelta.result.current.streamingToolUses).toHaveLength(1)
+      expect(counts.perDelta - perDeltaBefore).toBe(DELTAS + 1)
+      expect(counts.ready).toBe(readyBefore)
+      expect(ready.result.current.readyStreamingToolUses).toBe(identityBefore)
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it('updates once on tool_use_ready, with the complete input', async () => {
+      const { ready, counts, es } = await setup()
+      const partialInput = streamInput(es, 'tc-1', 'AskUserQuestion', 3)
+      const readyBefore = counts.ready
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+
+      expect(counts.ready).toBe(readyBefore + 1)
+      expect(ready.result.current.readyStreamingToolUses).toEqual([
+        { id: 'tc-1', name: 'AskUserQuestion', partialInput, ready: true },
+      ])
+    })
+
+    it('keeps its identity while another tool streams, and lists both once that one is ready', async () => {
+      const { ready, counts, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 2)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      const readyBefore = counts.ready
+      const identityBefore = ready.result.current.readyStreamingToolUses
+
+      streamInput(es, 'tc-2', 'Bash', DELTAS)
+      expect(counts.ready).toBe(readyBefore)
+      expect(ready.result.current.readyStreamingToolUses).toBe(identityBefore)
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-2', toolName: 'Bash' })
+      })
+      expect(counts.ready).toBe(readyBefore + 1)
+      expect(ready.result.current.readyStreamingToolUses.map((tool) => tool.id)).toEqual(['tc-1', 'tc-2'])
+    })
+
+    it('drops a ready tool whose input streams again', async () => {
+      const { ready, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toHaveLength(1)
+
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_streaming', toolId: 'tc-1', toolName: 'AskUserQuestion', partialInput: '{}' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it.each([
+      ['session_idle', (es: MockEventSource) => es.simulateMessage({ type: 'session_idle' })],
+      ['session_error', (es: MockEventSource) => es.simulateMessage({ type: 'session_error', error: 'boom' })],
+      ['stream_start', (es: MockEventSource) => es.simulateMessage({ type: 'stream_start' })],
+      ['a reconnect', (es: MockEventSource) => es.simulateMessage({ type: 'connected', isActive: true })],
+      ['a connection error', (es: MockEventSource) => es.simulateError()],
+    ])('is emptied by %s, like streamingToolUses', async (_name, clear) => {
+      const { ready, perDelta, es } = await setup()
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(ready.result.current.readyStreamingToolUses).toHaveLength(1)
+
+      act(() => {
+        clear(es)
+      })
+      expect(perDelta.result.current.streamingToolUses).toEqual([])
+      expect(ready.result.current.readyStreamingToolUses).toEqual([])
+    })
+
+    it('is empty for a caller that switches to another session', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result, rerender } = renderHook(
+        ({ sessionId }: { sessionId: string }) => useMessageStream(sessionId, 'agent-1', PENDING_REQUEST_FIELDS),
+        { wrapper: createWrapper(), initialProps: { sessionId: 'session-1' } },
+      )
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+      streamInput(es, 'tc-1', 'AskUserQuestion', 1)
+      act(() => {
+        es.simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1', toolName: 'AskUserQuestion' })
+      })
+      expect(result.current.readyStreamingToolUses).toHaveLength(1)
+
+      rerender({ sessionId: 'session-2' })
+      expect(result.current.readyStreamingToolUses).toEqual([])
+    })
+  })
+
   it('handles session_idle event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -888,12 +1035,38 @@ describe('useMessageStream', () => {
 
   // ---- Additional request event types ----
 
+  it('reports a session stream as open only while its connection is open', async () => {
+    const { useMessageStream, isSessionStreamOpen } = await getHookModule()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+
+    expect(isSessionStreamOpen('session-1')).toBe(true)
+    expect(isSessionStreamOpen('session-2')).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].close()
+    })
+
+    expect(isSessionStreamOpen('session-1')).toBe(false)
+  })
+
   // ---- Query invalidation ----
 
-  it('invalidates sessions query on session_active', async () => {
+  // The global stream gets every lifecycle event too and refetches the session
+  // lists itself. This stream only echoes the status into the cached rows.
+  function seedSessionLists(queryClient: QueryClient, isActive: boolean) {
+    const own = ['sessions', 'agent-1']
+    const other = ['sessions', 'agent-2']
+    queryClient.setQueryData(own, [{ id: 'session-1', agentSlug: 'agent-1', name: 'Morning check-in', isActive }])
+    queryClient.setQueryData(other, [{ id: 'session-9', agentSlug: 'agent-2', name: 'Weekly report', isActive: false }])
+    const rowIsActive = () => queryClient.getQueryData<Array<{ isActive?: boolean }>>(own)?.[0]?.isActive
+    const invalidated = (key: string[]) => queryClient.getQueryState(key)?.isInvalidated
+    return { own, other, rowIsActive, invalidated }
+  }
+
+  it('echoes session_active into the cached row without refetching session lists', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    const lists = seedSessionLists(wrapper.queryClient, false)
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
       { wrapper }
@@ -902,20 +1075,22 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
     })
-    spy.mockClear()
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(lists.rowIsActive()).toBe(true)
+    expect(lists.invalidated(lists.own)).toBe(false)
+    expect(lists.invalidated(lists.other)).toBe(false)
   })
 
-  it('invalidates messages (trailing-throttled) and sessions on session_idle', async () => {
+  it('invalidates messages (trailing-throttled) and echoes the status on session_idle', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -931,8 +1106,9 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
       })
 
-      // The sessions invalidation is not throttled.
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.rowIsActive()).toBe(false)
+      expect(lists.invalidated(lists.own)).toBe(false)
+      expect(lists.invalidated(lists.other)).toBe(false)
       // The messages refetch collapses into the throttle's trailing edge —
       // 'connected' consumed the leading edge moments earlier.
       expect(spy).not.toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
@@ -1505,11 +1681,12 @@ describe('useMessageStream', () => {
     expect(countFor('session-2')).toBe(1)
   })
 
-  it('invalidates messages (trailing-throttled) and sessions on session_error', async () => {
+  it('invalidates messages (trailing-throttled) and echoes the status on session_error', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -1525,7 +1702,9 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'session_error', error: 'boom' })
       })
 
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.rowIsActive()).toBe(false)
+      expect(lists.invalidated(lists.own)).toBe(false)
+      expect(lists.invalidated(lists.other)).toBe(false)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
       })
@@ -1710,10 +1889,12 @@ describe('useMessageStream', () => {
     expect(result.current.browserActive).toBe(false)
   })
 
-  it('handles session_updated event — invalidates session queries', async () => {
+  it('leaves session_updated to the global stream, which gets it too', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    const lists = seedSessionLists(wrapper.queryClient, false)
+    const detail = ['session', 'session-1', 'agent-1']
+    wrapper.queryClient.setQueryData(detail, { id: 'session-1', agentSlug: 'agent-1', name: 'Morning check-in' })
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
       { wrapper }
@@ -1722,14 +1903,14 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
     })
-    spy.mockClear()
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_updated' })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['session', 'session-1'] })
+    expect(lists.invalidated(lists.own)).toBe(false)
+    expect(lists.invalidated(lists.other)).toBe(false)
+    expect(lists.invalidated(detail)).toBe(false)
   })
 
   it('handles scheduled_task_created event — invalidates scheduled tasks', async () => {
@@ -1787,9 +1968,10 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(true)
   })
 
-  it('invalidates status queries when a blocking user-input tool becomes ready', async () => {
+  it('invalidates this agent\'s session lists and the agents when a blocking user-input tool becomes ready', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
+    const lists = seedSessionLists(wrapper.queryClient, true)
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -1818,7 +2000,8 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(lists.invalidated(lists.own)).toBe(true)
+    expect(lists.invalidated(lists.other)).toBe(false)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['agents'] })
   })
 
@@ -2471,11 +2654,12 @@ describe('useMessageStream', () => {
     expect(result.current.completedSubagents?.has('pt-2')).toBe(true)
   })
 
-  it('ping invalidates messages (trailing-throttled) and sessions when correcting active state', async () => {
+  it('ping invalidates messages (trailing-throttled) and this agent\'s session lists when correcting active state', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -2494,7 +2678,8 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: false })
       })
 
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.invalidated(lists.own)).toBe(true)
+      expect(lists.invalidated(lists.other)).toBe(false)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
       })
@@ -3951,4 +4136,21 @@ describe('typing leases', () => {
       vi.useRealTimers()
     }
   })
+
+  it('counts a turn when one starts or the stream takes a snapshot, not when a message is queued mid-turn', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { useSessionTurn } = await import('@renderer/lib/session-turns')
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    const { result } = renderHook(() => useSessionTurn('session-1'))
+    const es = MockEventSource.instances[0]
+    const start = result.current
+
+    act(() => es.simulateMessage({ type: 'session_active', queuedMidTurn: true }))
+    expect(result.current).toBe(start)
+    act(() => es.simulateMessage({ type: 'session_active' }))
+    expect(result.current).toBe(start + 1)
+    act(() => es.simulateMessage({ type: 'connected', isActive: true }))
+    expect(result.current).toBe(start + 2)
+  })
+
 })

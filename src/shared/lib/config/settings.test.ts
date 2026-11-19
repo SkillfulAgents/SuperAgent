@@ -832,7 +832,7 @@ describe('getSettings', () => {
         JSON.stringify({
           app: {
             theme: 'dark',
-            chromeProfileId: 'profile-123',
+            chromeHeadless: true,
             allowPrereleaseUpdates: true,
             setupCompleted: true,
           },
@@ -842,7 +842,7 @@ describe('getSettings', () => {
       const result = await getSettings()
 
       expect(result.app?.theme).toBe('dark')
-      expect(result.app?.chromeProfileId).toBe('profile-123')
+      expect(result.app?.chromeHeadless).toBe(true)
       expect(result.app?.allowPrereleaseUpdates).toBe(true)
       expect(result.app?.setupCompleted).toBe(true)
     })

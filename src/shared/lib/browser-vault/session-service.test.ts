@@ -81,6 +81,14 @@ describe('saved sessions', () => {
     for (const row of rows) expect(row.bundle).not.toContain('session')
   })
 
+  it('keep a Steel capture apart from the other cloud browsers', async () => {
+    const alice = await account('alice')
+    await saveAccountSession({ agentSlug: 'agent-a', account: alice, browserType: 'steel', bundle: bundle('alice-steel') })
+    expect((await readAccountSession(alice, 'steel'))?.bundle.cookies[0].value).toBe('alice-steel-session')
+    expect(await readAccountSession(alice, 'browserbase')).toBeNull()
+    expect(await listAccountSessions([alice.id])).toEqual([expect.objectContaining({ accountId: alice.id, browserType: 'steel' })])
+  })
+
   it('number captures in one sequence across accounts, so a version names one capture', async () => {
     const alice = await account('alice')
     const bob = await account('bob', 'gitlab.com')

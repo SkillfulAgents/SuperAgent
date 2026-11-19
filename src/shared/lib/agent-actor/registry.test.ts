@@ -108,6 +108,8 @@ function fakeDeps() {
     idleSince: vi.fn<() => number | null>().mockReturnValue(null),
     getHealthWarnings: vi.fn().mockReturnValue([]),
     isStale: vi.fn().mockReturnValue(false),
+    holdsDrives: vi.fn().mockReturnValue(true),
+    isStarting: vi.fn().mockReturnValue(false),
     markStale: vi.fn(),
     restartContainer: vi.fn().mockResolvedValue(undefined),
   })
@@ -226,12 +228,8 @@ describe('createAgentRegistry', () => {
     const registry = createAgentRegistry(fake.deps)
     expect(fake.containerHost.attachAgentWorkspaces).toHaveBeenCalledTimes(1)
     const access = fake.containerHost.attachAgentWorkspaces.mock.calls[0][0] as {
-      files: (slug: string) => unknown
       instructions: (slug: string) => Promise<string | null>
     }
-    // The same file operations the actor hands out, for the same agent.
-    expect(access.files('a')).toBe(registry.get('a').files)
-    expect(access.files('b')).not.toBe(registry.get('a').files)
     // Instructions are the actor's config document.
     const getDoc = vi.spyOn(registry.get('a').config, 'get').mockResolvedValue('---\nname: A\n---\n')
     expect(await access.instructions('a')).toBe('---\nname: A\n---\n')
@@ -592,7 +590,7 @@ describe('createAgentRegistry', () => {
       const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' }, { waitId: 'wait-1' })
       const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' }, { waitId: 'wait-2' })
       await actor.inputs.computerUse.grant('use_host_shell', 'once')
-      await actor.inputs.computerUse.setGrabbedApp('Calculator')
+      await actor.inputs.computerUse.setActiveApp('s1', 'Calculator')
       expect((await actor.live()).openRequests).toHaveLength(4)
       fake.transitions.mockClear()
       const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
@@ -626,7 +624,7 @@ describe('createAgentRegistry', () => {
       expect(freshLive.openRequests).toEqual([])
       expect(freshLive.pendingReviews).toEqual([])
       expect(await fresh.inputs.recentResolution('q1')).toBeUndefined()
-      expect(fresh.state.computerUse.grabbed()).toBeUndefined()
+      expect(fresh.state.computerUse.activeApp('s1')).toBeUndefined()
       expect(await fresh.state.computerUse.activeGrants()).toEqual([])
       expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
       expect(fresh.state.mcpReauth.openEntryIds()).toEqual([])
@@ -700,14 +698,18 @@ describe('createAgentRegistry', () => {
   })
 
   describe('a read → decide → write is one op', () => {
-    it('container.invalidate marks a running container stale, restarts it when asked, and leaves a stopped one', async () => {
+    it('container.invalidate marks a container holding its drives stale, restarts a running one when asked, and leaves the rest', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       const runtime = fake.containerHost.runtime('a')
       expect(await actor.container.invalidate()).toBe('marked-stale')
       expect(runtime.markStale).toHaveBeenCalledOnce()
       expect(await actor.container.invalidate({ restart: true })).toBe('restarted')
       expect(runtime.restartContainer).toHaveBeenCalledOnce()
-      runtime.getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
+      // A start past its drive read comes up stale rather than being torn down.
+      runtime.isStarting.mockReturnValue(true)
+      expect(await actor.container.invalidate({ restart: true })).toBe('marked-stale')
+      expect(runtime.restartContainer).toHaveBeenCalledOnce()
+      runtime.holdsDrives.mockReturnValue(false)
       expect(await actor.container.invalidate({ restart: true })).toBe('not-running')
       expect(runtime.restartContainer).toHaveBeenCalledOnce()
     })
@@ -770,19 +772,32 @@ describe('createAgentRegistry', () => {
       })
     })
 
-    it('computerUse.releaseGrab forgets the grab, revokes the app and tells the session\'s viewers', async () => {
+    it('computerUse.releaseApp forgets the grab, revokes the app and tells the session\'s viewers', async () => {
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       await actor.inputs.computerUse.grant('use_application', 'always', 'Calculator')
-      await actor.inputs.computerUse.setGrabbedApp('Calculator')
+      await actor.inputs.computerUse.setActiveApp('s1', 'Calculator')
       const emit = vi.spyOn(actor.state.sessions, 'emit')
       const revoke = vi.spyOn(actor.state.computerUse, 'revoke')
 
-      expect(await actor.inputs.computerUse.releaseGrab('s1')).toEqual({ appName: 'Calculator' })
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: 'Calculator' })
 
-      expect(actor.state.computerUse.grabbed()).toBeUndefined()
+      expect(actor.state.computerUse.activeApp('s1')).toBeUndefined()
       expect(revoke).toHaveBeenCalledWith('use_application', 'Calculator')
-      expect(emit).toHaveBeenCalledWith('s1', { type: 'computer_use_grab_changed', app: null })
-      expect(await actor.inputs.computerUse.releaseGrab('s1')).toEqual({ appName: undefined })
+      expect(emit).toHaveBeenCalledWith('s1', { type: 'computer_use_app_changed', app: null })
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: undefined })
+    })
+
+    it('computerUse.releaseApp takes back the app of the session it is asked for, not another session\'s', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      await actor.inputs.computerUse.setActiveApp('s1', 'Safari')
+      await actor.inputs.computerUse.setActiveApp('s2', 'Mail')
+      const revoke = vi.spyOn(actor.state.computerUse, 'revoke')
+
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: 'Safari' })
+
+      expect(revoke).toHaveBeenCalledWith('use_application', 'Safari')
+      expect(revoke).not.toHaveBeenCalledWith('use_application', 'Mail')
+      expect(actor.state.computerUse.activeApp('s2')).toBe('Mail')
     })
 
     it('a re-auth card answered with another connection releases its parked calls, or settles the card when none are parked', async () => {

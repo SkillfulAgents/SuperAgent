@@ -12,7 +12,7 @@ import { updateAgentIntegrationStatus } from '../services/agent-integration-serv
 import { backgroundSettled } from '../background'
 import { getRequestUserId, runWithRequestUser } from '../platform-attribution/request-context'
 import { publishIntegrationAuthorization } from './authorization-events'
-import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
+import type { AgentIntegrationRecord, IntegrationInputContext, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
 
 const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
@@ -63,9 +63,10 @@ vi.mock('@shared/lib/agent-actor', async () => {
   return {
   agentCatalog: { exists: async () => true },
   agentRegistry: { get: () => viaTestTransport({
-    live: async () => ({ activeSessionIds: ['session-1'] }),
+    // The sessions of its chats run a turn whenever the test says a session is busy.
+    live: async () => ({ activeSessionIds: state.activity() === 'idle' ? [] : [...state.mappings.values()].map(mapping => mapping.sessionId), awaitingSessionIds: [] }),
     container: { start: state.start },
-    inputs: { answer: state.answer },
+    inputs: { answer: state.answer, get: async () => null },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
       markActive: state.markActive, markIdle: state.markIdle, attach: state.attach,
@@ -116,7 +117,7 @@ class ObjectIntegration extends AgentIntegration {
   allowed = true
   outputs: Array<{ context: IntegrationSessionContext; output: IntegrationOutput }> = []
   released: IntegrationSessionContext[] = []
-  prepareInput = vi.fn(async (event: IntegrationInputEvent): Promise<PreparedIntegrationInput> => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
+  prepareInput = vi.fn(async (event: IntegrationInputEvent, _context?: IntegrationInputContext): Promise<PreparedIntegrationInput> => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
   sessionsToRecover = async () => state.recovery
   session(externalId: string) { return this.host.session(externalId) }
   async connect() { this.connected = true }
@@ -263,7 +264,7 @@ describe('AgentIntegration host contract', () => {
       integration: { id: 'installation-a', name: 'Objects', provider: 'test-objects', family: 'objects' },
     }
 
-    it('records the card under the uuid the message is sent with and shows it live', async () => {
+    it('records the card under the uuid the message is sent with, hands that uuid to the integration, and shows it live', async () => {
       adapter.prepareInput.mockImplementation(withDisplay)
       state.isActive.mockReturnValue(true)
       await manager.start()
@@ -272,11 +273,14 @@ describe('AgentIntegration host contract', () => {
       const initialMessageUuid = state.create.mock.calls[0][0].initialMessageUuid
       expect(initialMessageUuid).toEqual(expect.any(String))
       expect(state.recordMessage).toHaveBeenCalledWith({ id: initialMessageUuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
+      // A turn names the sends it answered by this uuid, so the integration must get the same one.
+      expect(adapter.prepareInput.mock.calls[0][1]?.deliveryId).toBe(initialMessageUuid)
 
       await adapter.input('comment-two', 'follow-up')
       await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
       const [, text, uuid] = state.send.mock.calls[0]
       expect(text).toBe('Object context: follow-up')
+      expect(adapter.prepareInput.mock.calls.at(-1)?.[1]?.deliveryId).toBe(uuid)
       expect(state.recordMessage).toHaveBeenLastCalledWith({ id: uuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
       // The card is the delivery's to show, once its checks pass and with its queued flag: the manager shows none of its own.
       expect(state.deliveries.at(-1)).toEqual({ sessionId: 'session-1', content: text, uuid, echo: { content: text, integration: stored } })
@@ -393,16 +397,15 @@ describe('AgentIntegration host contract', () => {
     await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
     let checks = 0
     let release!: () => void
+    // One check per event, for its observation and its delivery alike; it stalls.
     vi.spyOn(adapter, 'isAllowed').mockImplementation(() => {
       checks += 1
-      // The queued observation's check resolves; the handler's own check stalls.
-      if (checks === 1) return Promise.resolve(true)
       return new Promise<boolean>((resolve) => { release = () => resolve(true) })
     })
     const outputsBefore = adapter.outputs.length
     state.streams.get('session-1')!({ type: 'session_idle' })
-    await vi.waitFor(() => expect(checks).toBe(2))
-    manager.stop() // the chat is cleared while the handler waits
+    await vi.waitFor(() => expect(checks).toBe(1))
+    manager.stop() // the chat is cleared while the event waits
     expect(adapter.released).toHaveLength(1)
     release()
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -620,6 +623,8 @@ it('review: a health check does not re-observe a session cleared during its acce
   await manager.start()
   await adapter.input('review-comment')
   await vi.waitFor(() => expect(state.streams.size).toBe(1))
+  // A chat whose session runs: a settled one is let go without an access check.
+  state.activity.mockReturnValue('working')
   let release!: (value: boolean) => void
   const blocked = new Promise<boolean>(resolve => { release = resolve })
   let reached!: () => void
@@ -663,6 +668,83 @@ it('a health check does not observe a session cleared while its activity was rea
   }
 })
 
+it('a health check stops holding a chat whose session settled, and its next message continues the same session', async () => {
+  await manager.start()
+  await adapter.input('comment-one')
+  await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+  const queues = (manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues
+  await vi.waitFor(() => expect(queues.size).toBe(0))
+  const access = vi.spyOn(adapter, 'isAllowed')
+
+  await (manager as unknown as { runHealthChecks: () => Promise<void> }).runHealthChecks()
+  expect(state.streams.has('session-1')).toBe(false)
+  expect(adapter.released).toHaveLength(1)
+  expect(access).not.toHaveBeenCalled()
+
+  await adapter.input('comment-two', 'back again')
+  await vi.waitFor(() => expect(state.send).toHaveBeenCalledWith('session-1', 'Object context: back again', expect.any(String)))
+  expect(state.create).toHaveBeenCalledOnce()
+  expect(state.streams.has('session-1')).toBe(true)
+})
+
+it('follows a chat it no longer holds when its session starts a turn from another surface', async () => {
+  await manager.start()
+  await adapter.input('comment-one')
+  await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+  const queues = (manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues
+  await vi.waitFor(() => expect(queues.size).toBe(0))
+  await (manager as unknown as { runHealthChecks: () => Promise<void> }).runHealthChecks()
+  expect(state.streams.has('session-1')).toBe(false)
+  adapter.outputs = []
+
+  // A scheduled wake, or a message sent from the app: the session runs again.
+  state.activity.mockReturnValue('working')
+  state.isStreamSubscribed.mockReturnValue(true)
+  await manager.sessionStarted('installation-a', 'session-1')
+  expect(state.streams.has('session-1')).toBe(true)
+  state.streams.get('session-1')?.({ type: 'stream_delta', text: 'Reminder: the report is due' })
+  await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
+  expect(adapter.outputs[0]).toMatchObject({ context: { externalId: 'object-7', sessionId: 'session-1' }, output: { type: 'runtime' } })
+
+  // Not for a session that belongs to no chat.
+  await manager.sessionStarted('installation-a', 'session-of-the-app')
+  expect(state.streams.size).toBe(1)
+})
+
+it('a health check keeps a chat whose session started a turn while it was read', async () => {
+  await manager.start()
+  await adapter.input('comment-one')
+  await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+  const queues = (manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues
+  await vi.waitFor(() => expect(queues.size).toBe(0))
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  let reached!: () => void
+  const reading = new Promise<void>(resolve => { reached = resolve })
+  state.beforeLive = () => { reached(); return blocked }
+  try {
+    const healthCheck = (manager as unknown as { runHealthChecks: () => Promise<void> }).runHealthChecks()
+    await reading
+    // The read answers idle, but the turn began before the chat is let go.
+    state.beforeLive = undefined
+    await manager.sessionStarted('installation-a', 'session-1')
+    release()
+    await healthCheck
+    expect(state.streams.has('session-1')).toBe(true)
+    expect(adapter.released).toHaveLength(0)
+  } finally {
+    state.beforeLive = undefined
+  }
+})
+
+it('does not load the chats whose session is idle when its integration connects', async () => {
+  state.mappings.set('installation-a:object-7', { id: 'mapping-old', integrationId: 'installation-a', externalChatId: 'object-7', sessionId: 'old' })
+  await manager.start()
+  await backgroundSettled()
+  expect(state.streams.size).toBe(0)
+  expect(state.attach).not.toHaveBeenCalled()
+})
+
 it('review: reconnect must not restore a session cleared during its access read', async () => {
   await manager.start()
   await adapter.input('review-comment')
@@ -672,6 +754,8 @@ it('review: reconnect must not restore a session cleared during its access read'
   let reached!: () => void
   const checking = new Promise<void>(resolve => { reached = resolve })
   vi.spyOn(adapter, 'isAllowed').mockImplementationOnce(() => { reached(); return blocked })
+  // Its session runs a turn, so the connect follows it again.
+  state.activity.mockReturnValue('working')
   const reconnecting = manager.addIntegration('installation-a')
   await checking
   // Match the clear route: stop live state, then archive the stored mapping.
@@ -682,6 +766,7 @@ it('review: reconnect must not restore a session cleared during its access read'
   expect(state.streams.has('session-1')).toBe(false)
   release(true)
   await reconnecting
+  await backgroundSettled()
   adapter.outputs = []
   state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output from archived session' })
   await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))
@@ -751,6 +836,8 @@ it('review: clearing during the final restoration lookup must prevent stale outp
     return snapshot
   })
   try {
+    // Its session runs a turn, so the connect follows it again.
+    state.activity.mockReturnValue('working')
     const reconnecting = manager.addIntegration('installation-a')
     await reading
     // Match the API route: clear live state, then archive the stored mapping.
@@ -761,6 +848,7 @@ it('review: clearing during the final restoration lookup must prevent stale outp
     expect(state.streams.has('session-1')).toBe(false)
     release()
     await reconnecting
+    await backgroundSettled()
     adapter.outputs = []
     state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output from archived session' })
     await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))
@@ -810,6 +898,8 @@ it('review: a restoration retry cannot outlive a clear that is still in progress
     return snapshot
   })
   try {
+    // Its session runs a turn, so the connect follows it again.
+    state.activity.mockReturnValue('working')
     const reconnecting = manager.addIntegration('installation-a')
     await firstRead.promise
     const clearing = (async () => {
@@ -826,6 +916,8 @@ it('review: a restoration retry cannot outlive a clear that is still in progress
     expect(state.mappings.has('installation-a:object-7')).toBe(false)
     releaseRetry.release()
     await reconnecting
+    // The connect does not wait for the chats it follows again.
+    await new Promise(resolve => setTimeout(resolve, 0))
     adapter.outputs = []
     state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output after completed clear' })
     await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))

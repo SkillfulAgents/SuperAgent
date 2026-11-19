@@ -11,6 +11,8 @@
 
 import pLimit from 'p-limit'
 import { REMOVE_SESSION, type SessionIndexEntry } from '@shared/lib/agent-actor/session-index'
+import { summarizeSessions } from '@shared/lib/agent-actor/session-summary'
+import type { SessionSummary } from '@shared/lib/agent-actor/types'
 import {
   isSessionIdWellFormed,
   sessionDirPath,
@@ -20,6 +22,8 @@ import {
 import {
   isAbsentFile,
   iterateLinesBackward,
+  iterateLinesBackwardFrom,
+  lineStartAtOrAfter,
   readChunkFor,
   readJsonl,
   readTailLines,
@@ -46,6 +50,7 @@ import {
   type SessionActivityFields,
 } from '@shared/lib/session-ordering'
 import { replaceInlineMediaWithRefs } from './session-media'
+import { formatPageCursor, parsePageCursor } from './session-page-cursor'
 import { sessionMetadataHolds } from './session-metadata-holds'
 import { isHiddenAutomatedSession, sessionOrigin } from './session-visibility'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
@@ -57,6 +62,7 @@ import {
   JsonlMessageEntry,
   JsonlSystemEntry,
   JsonlAttachmentEntry,
+  isQueuedUserPrompt,
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
@@ -289,17 +295,8 @@ function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
  * user-typed queued command (task notifications, meta/system injections).
  */
 function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
-  if (entry.type !== 'attachment') return entry
-  const { attachment, forkedFrom } = entry as JsonlAttachmentEntry
-  if (
-    !attachment ||
-    attachment.type !== 'queued_command' ||
-    attachment.commandMode !== 'prompt' ||
-    attachment.isMeta ||
-    attachment.prompt === undefined
-  ) {
-    return entry
-  }
+  if (!isQueuedUserPrompt(entry)) return entry
+  const { attachment, forkedFrom } = entry
   return {
     type: 'user',
     // source_uuid is the CLI's queue-entry id; prefer it since it's also the
@@ -469,27 +466,8 @@ async function transcriptExists(store: SessionStore, jsonlPath: string): Promise
  * many agents (the agents list, on every poll) needs both, and a second
  * read of each agent's index for it doubles what the poll costs.
  */
-export async function getSessionSummary(store: SessionStore): Promise<{
-  sessionIds: string[]
-  sessionCount: number
-  lastActivityAt: Date | null
-  metadata: SessionMetadataMap
-}> {
-  const sessionIds: string[] = []
-  const metadata: SessionMetadataMap = {}
-  let latestMs: number | null = null
-  for (const { sessionId, meta, transcript } of await store.index.entries()) {
-    if (meta) metadata[sessionId] = meta
-    if (!transcript) continue
-    sessionIds.push(sessionId)
-    if (latestMs === null || transcript.mtimeMs > latestMs) latestMs = transcript.mtimeMs
-  }
-  return {
-    sessionIds,
-    sessionCount: sessionIds.length,
-    lastActivityAt: latestMs === null ? null : new Date(latestMs),
-    metadata,
-  }
+export async function getSessionSummary(store: SessionStore): Promise<SessionSummary> {
+  return summarizeSessions(await store.index.entries())
 }
 
 export type SessionSortBy = 'last_activity_at'
@@ -726,9 +704,10 @@ export interface SessionMessagesPage {
   nextCursor: string | null
 }
 
-// Hard bound on how deep paging can reach: every cursor request re-scans from
-// EOF, so history beyond this many raw JSONL lines is unreachable (walk is
-// O(depth²)). Lifting it needs an offset-carrying cursor that seeks instead.
+// Hard bound on the raw JSONL lines one index scan walks. The trailing page
+// and `uuid:offset` cursors start the scan at their own row, so for them this
+// only bounds one window. A bare-id cursor re-scans from EOF to find its row,
+// so for it this is how deep paging can reach (walk is O(depth²)).
 const MAX_TAIL_LINES = 50_000
 // Soft cap on the raw bytes a single page window may materialize. A window
 // that hits it is served short with a nextCursor, and the client's existing
@@ -763,8 +742,22 @@ const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
 // trailing page (whose window always ends at EOF).
 const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
 
-function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
-  return hasOlder && messages[0] ? messages[0].id : null
+/** The page's oldest item id, with its row's offset so the next request
+ * seeks. The offset goes out only when it lies strictly below the row this
+ * request anchored on, so a chain of seeks only moves down the file and ends.
+ * `pageStartBelowAnchor` gives a cursor page such a head; when a scan cap
+ * leaves none in the window, the cursor goes out as a bare id. */
+function pageCursor(
+  messages: TransformedItem[],
+  hasOlder: boolean,
+  rowOffsets: Map<string, number>,
+  anchorOffset: number | undefined
+): string | null {
+  const first = messages[0]
+  if (!hasOlder || !first) return null
+  const offset = rowOffsets.get(first.id)
+  const descends = offset !== undefined && (anchorOffset === undefined || offset < anchorOffset)
+  return formatPageCursor(first.id, descends ? offset : undefined)
 }
 
 /** A cursor that names a row the window merged into another item.
@@ -789,27 +782,59 @@ function isPhantomCursor(
   return entries.some((e) => e.type === 'assistant' && e.message.id === row.message.id && itemIds.has(e.uuid))
 }
 
-/** Number of leading items whose head row lies at or before the newest copy
- * of `cursor` in `entries` — the items older than that copy, when the copy
- * itself merged into one of them. */
-function countItemsThrough(
-  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+/** An item made from a system row: the transform shows these in runs. */
+function isSystemItem(item: TransformedItem): boolean {
+  return item.type === 'compact_boundary' || item.type === 'memory_recall' || item.type === 'informational'
+}
+
+/** Whether the system item at `idx` shows before a response whose first row
+ * lies below its own: a row written between two rows of one response. */
+function showsBeforeOlderRow(
   transformed: TransformedItem[],
-  cursor: string
+  rowOffsets: Map<string, number>,
+  idx: number
+): boolean {
+  const item = transformed[idx]
+  if (!item || !isSystemItem(item)) return false
+  const next = transformed.slice(idx + 1).find((later) => !isSystemItem(later))
+  const own = rowOffsets.get(item.id)
+  const nextOffset = next ? rowOffsets.get(next.id) : undefined
+  return own !== undefined && nextOffset !== undefined && nextOffset < own
+}
+
+/** Number of leading items whose head row lies at or before the anchored row:
+ * the items older than that row, when the row heads no item of its own (the
+ * window deduped it to an older copy, or merged it into its response). */
+function countItemsThrough(
+  transformed: TransformedItem[],
+  rowOffsets: Map<string, number>,
+  anchorOffset: number
 ): number {
-  const headPos = new Map<string, number>()
-  let cursorPos = -1
-  for (const [i, e] of entries.entries()) {
-    if (!headPos.has(e.uuid)) headPos.set(e.uuid, i)
-    if (e.uuid === cursor) cursorPos = i
-  }
-  if (cursorPos === -1) return -1
   let count = 0
   for (const [i, item] of transformed.entries()) {
-    const pos = headPos.get(item.id)
-    if (pos !== undefined && pos <= cursorPos) count = i + 1
+    const offset = rowOffsets.get(item.id)
+    if (offset !== undefined && offset <= anchorOffset) count = i + 1
   }
   return count
+}
+
+/** Start index of the page `[start, end)`: `limit` items, widened down to the
+ * first item whose row lies below the anchored row. Display reordering can
+ * head a page with a system row from above the cursor row (a boundary shows
+ * before an informational that precedes it in the file); a cursor on that row
+ * would seek back up the file. The extra items are the rest of the cursor's
+ * own system run. */
+function pageStartBelowAnchor(
+  transformed: TransformedItem[],
+  rowOffsets: Map<string, number>,
+  anchorOffset: number,
+  end: number,
+  limit: number,
+  floor: number
+): number {
+  let start = Math.max(floor, end - limit)
+  while (start > floor && (rowOffsets.get(transformed[start]!.id) ?? -1) >= anchorOffset) start--
+  return start
 }
 
 /** Tail-window read + parse + transform shared by the page and delta readers.
@@ -945,6 +970,10 @@ interface PageWindowNotFound {
   found: false
   /** The scan ran to the file start (so the id is truly gone, not just deep). */
   reachedStart: boolean
+  /** Offset mode: the row at the cursor's offset is not the cursor's row (the
+   * transcript was rewritten since the cursor was issued). The caller retries
+   * with the bare-id scan. */
+  stale?: true
 }
 
 interface PageWindowFound {
@@ -966,6 +995,8 @@ interface PageWindowFound {
   /** Bytes the window read (pass 2) is expected to cover — to EOF as of the
    * scan when `endOffset` is undefined. Sizes that read's chunks. */
   readBytes: number
+  /** Cursor pages: line-start offset of the row the scan anchored on. */
+  anchorOffset?: number
 }
 
 type PageWindowScan = PageWindowFound | PageWindowNotFound
@@ -1050,6 +1081,7 @@ async function scanMessagesPageWindow(
   opts: {
     limit: number
     cursor?: string
+    cursorOffset?: number
     byteBudget: number
     signal?: AbortSignal
     /** `'shallowest'`: anchor at the newest verified occurrence of the cursor
@@ -1059,10 +1091,38 @@ async function scanMessagesPageWindow(
     anchor?: 'deepest' | 'shallowest'
   }
 ): Promise<PageWindowScan> {
-  const { limit, cursor, byteBudget, signal } = opts
-  const anchorShallowest = opts.anchor === 'shallowest'
+  const { limit, cursor, cursorOffset, byteBudget, signal } = opts
+  const seeking = cursor !== undefined && cursorOffset !== undefined
+  // A seek anchors on the validated row only: a deeper copy of the same uuid
+  // is a replayed row's original, and re-anchoring on it would skip the
+  // history between the two.
+  const anchorOnce = opts.anchor === 'shallowest' || seeking
   const hardCap = byteBudget * MESSAGES_PAGE_HARD_CAP_FACTOR
   const cursorNeedle = cursor !== undefined ? Buffer.from(JSON.stringify(cursor)) : null
+  const stale: PageWindowNotFound = { found: false, reachedStart: false, stale: true }
+  // A seek walks back from the cursor row's end, and finds the grace end
+  // forward, since the lines above the row are never walked. One open serves
+  // both forward reads and the walk: on network storage every open and every
+  // read is a round trip.
+  let seekGraceEnd: number | undefined
+  async function* seekLines(rowStart: number): AsyncGenerator<{ line: Buffer; offset: number }> {
+    const file = await store.files.open(jsonlPath)
+    try {
+      const size = await file.size()
+      const rowEnd = (await lineStartAtOrAfter(file, size, rowStart + 1, signal)) ?? size
+      const walk = iterateLinesBackwardFrom(file, rowEnd, signal)
+      const first = await walk.next()
+      if (first.done) return
+      yield first.value
+      // Resumed, so the scan took that line as the cursor row. A stale cursor
+      // returns on it instead and never pays for this read.
+      seekGraceEnd = await lineStartAtOrAfter(file, size, rowEnd + CURSOR_WINDOW_GRACE_BYTES, signal)
+      yield* walk
+    } finally {
+      await file.close()
+    }
+  }
+  const lines = seeking ? seekLines(cursorOffset) : iterateLinesBackward(store.files, jsonlPath, signal)
   // Items needed below the cursor (or below EOF): the page plus the head
   // item that slicing sacrifices when the window start may cut it.
   const targetItems = limit + 1
@@ -1083,6 +1143,7 @@ async function scanMessagesPageWindow(
   let displayCount = 0
   let windowBytes = 0
   let startOffset = 0
+  let anchorOffset: number | undefined
   let hitLineCap = false
   // Conservative default: with nothing counted, treat the head as partial.
   let deepestCountedIsGroup = true
@@ -1104,7 +1165,9 @@ async function scanMessagesPageWindow(
   // End of the newest line: the file's end as this scan saw it.
   let scanEnd: number | undefined
 
-  for await (const { line, offset } of iterateLinesBackward(store.files, jsonlPath, signal)) {
+  for await (const { line, offset } of lines) {
+    // A seek's first line must be the cursor row (checked below).
+    if (seeking && !anchored && offset !== cursorOffset) return stale
     linesScanned++
     if (linesScanned > MAX_TAIL_LINES) {
       // Same reachability contract as the old tail reader: history deeper
@@ -1121,7 +1184,7 @@ async function scanMessagesPageWindow(
       if (
         normalized !== undefined &&
         (normalized as { uuid?: string }).uuid === cursor &&
-        !(anchored && anchorShallowest)
+        !(anchored && anchorOnce)
       ) {
         // (Re-)anchor at this occurrence — the deepest seen so far wins.
         mode = 'counting'
@@ -1138,12 +1201,14 @@ async function scanMessagesPageWindow(
         suppressUntilAnchorRow = normalized.type === 'system'
         boundaryCountedSinceAnchor = false
         startOffset = offset
+        anchorOffset = offset
         endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
         continue
       }
       // A quoted-id byte match inside content or parentUuid parses to a
       // different uuid — not an occurrence.
     }
+    if (seeking && !anchored) return stale
 
     if (mode === 'searching' || mode === 'settled') continue
 
@@ -1163,7 +1228,8 @@ async function scanMessagesPageWindow(
         continue
       }
       mode = 'settled'
-      if (!cursorNeedle) break
+      // A bare-id scan walks on: a deeper copy of the cursor row re-anchors.
+      if (!cursorNeedle || seeking) break
       continue
     }
 
@@ -1175,22 +1241,14 @@ async function scanMessagesPageWindow(
         ? (normalized as JsonlMessageEntry)
         : undefined
     const pendingInfoBefore = state.pendingInformationalContent
-    // Checked BEFORE the classifier registers this row's uuid: a
-    // byte-identical replayed row shares its original's uuid, and the
-    // transform keys system-item anchors BY uuid — a duplicate row is the
-    // same anchor, not a new one. Treating it as new would reset the
-    // boundary-collapse span and lift system-cursor suppression, letting the
-    // page target be satisfied by items that never display.
-    const isDuplicateRow =
-      msgEntry !== undefined && !!msgEntry.uuid && state.seenUuids.has(msgEntry.uuid)
     const counted = normalized !== undefined && countsAsDisplayStart(normalized, state)
-    // An anchor row is one the transform attaches system items to — a real
+    // An anchor row is one that ends a system run in the transform — a real
     // message entry, not a filtered/skipped one (meta rows, compact
-    // summaries, an informational's synthetic user copy) and not a replayed
-    // duplicate of an anchor already seen.
+    // summaries, an informational's synthetic user copy). A replayed copy of
+    // a row ends a run like the row itself: the transform keeps the runs on
+    // either side of it apart.
     const isAnchorRow =
       msgEntry !== undefined &&
-      !isDuplicateRow &&
       !('isMeta' in msgEntry && msgEntry.isMeta) &&
       !msgEntry.isCompactSummary &&
       !(
@@ -1254,17 +1312,25 @@ async function scanMessagesPageWindow(
     }
   }
 
+  // A seek whose walk yielded nothing: the file shrank under the cursor.
+  if (seeking && !anchored) return stale
   if (!anchored) {
     // Cursor never found: vanished id, or deeper than the line cap.
     return { found: false, reachedStart: !hitLineCap }
   }
+  // A seek walks no line above the cursor row, so its grace end is the one
+  // `seekLines` read, once the row was validated.
+  if (seeking) endOffset = seekGraceEnd
+  // With the grace reaching EOF the read covers at most the grace past that row.
+  const readEnd = endOffset ?? (seeking && scanEnd !== undefined ? scanEnd + CURSOR_WINDOW_GRACE_BYTES : scanEnd)
   return {
     found: true,
     startOffset,
     endOffset,
     reachedStart: startOffset === 0,
     dropHead: deepestCountedIsGroup,
-    readBytes: Math.max(0, (endOffset ?? scanEnd ?? startOffset) - startOffset),
+    readBytes: Math.max(0, (readEnd ?? startOffset) - startOffset),
+    anchorOffset,
   }
 }
 
@@ -1281,8 +1347,14 @@ async function readEntriesRange(
   signal?: AbortSignal,
   media?: boolean,
   chunkBytes?: number
-): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
+): Promise<{
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  /** Line-start offset per uuid, oldest occurrence (the transform's dedupe
+   * winner). The offset half of the page's next cursor. */
+  rowOffsets: Map<string, number>
+}> {
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  const rowOffsets = new Map<string, number>()
   // Rows arrive in file order from a line-boundary start, so accumulating
   // their lengths reproduces each row's absolute offset — what media refs
   // address into. The +1 is the newline the reader strips.
@@ -1312,9 +1384,10 @@ async function readEntriesRange(
         replaceInlineMediaWithRefs(normalized, { line, lineOffset: offset })
       }
       entries.push(normalized)
+      if (normalized.uuid && !rowOffsets.has(normalized.uuid)) rowOffsets.set(normalized.uuid, offset)
     }
   }
-  return entries
+  return { entries, rowOffsets }
 }
 
 /** Trailing (or `cursor`-before) display page.
@@ -1340,8 +1413,12 @@ export async function getSessionMessagesPage(
   }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = transcriptPath(store, sessionId)
-  const { limit, cursor, signal } = opts
+  const { limit, signal } = opts
   const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
+  // `uuid:offset` seeks to the row; a bare uuid scans from EOF as before.
+  const parsedCursor = opts.cursor !== undefined ? parsePageCursor(opts.cursor) : undefined
+  const cursor = parsedCursor?.id
+  let cursorOffset = parsedCursor?.offset
 
   // No existence pre-check: a registered session that has not streamed yet
   // has no transcript and pages as empty, and a stat before every read is a
@@ -1350,9 +1427,22 @@ export async function getSessionMessagesPage(
   // the absence is answered with the same empty terminal page.
   let scan: PageWindowScan
   let entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  let rowOffsets: Map<string, number>
   try {
-    scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal })
+    scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, cursorOffset, byteBudget, signal })
     signal?.throwIfAborted()
+    if (!scan.found && scan.stale) {
+      // Deletion, retention or resync rewrote the transcript since the cursor
+      // was issued. The bare-id scan finds the row in the current layout, or
+      // ends pagination if it is gone.
+      console.warn(
+        `getSessionMessagesPage: cursor offset ${cursorOffset} for ${cursor} is stale ` +
+        `in session ${sessionId}; falling back to the id scan`
+      )
+      cursorOffset = undefined
+      scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal })
+      signal?.throwIfAborted()
+    }
     if (!scan.found) {
       // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
       // Never point the client at a newer message — it would loop on
@@ -1365,7 +1455,7 @@ export async function getSessionMessagesPage(
       }
       return { messages: [], nextCursor: null }
     }
-    entries = await readEntriesRange(
+    ;({ entries, rowOffsets } = await readEntriesRange(
       store,
       jsonlPath,
       scan.startOffset,
@@ -1373,7 +1463,7 @@ export async function getSessionMessagesPage(
       signal,
       opts.media === 'ref',
       readChunkFor(scan.readBytes)
-    )
+    ))
   } catch (error) {
     if (isAbsentFile(error)) {
       return { messages: [], nextCursor: null }
@@ -1387,6 +1477,27 @@ export async function getSessionMessagesPage(
 
   if (cursor) {
     let idx = transformed.findIndex((item) => item.id === cursor)
+    if (
+      cursorOffset !== undefined &&
+      (idx === -1
+        ? isPhantomCursor(entries, transformed, cursor)
+        : rowOffsets.get(cursor) !== scan.anchorOffset)
+    ) {
+      // A seek anchored on the copy the client saw, and the window also holds
+      // an older copy: the transform put the item there, or merged the row
+      // into its response. Split at the anchored copy, not at the id, so the
+      // rows between the two copies are served.
+      const systemCopy = idx !== -1 && isSystemItem(transformed[idx]!)
+      idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
+      // A replayed system row stands inside a run, and a run shows its
+      // recalls first whatever their order in the file: one that follows the
+      // copy in the file showed before it, on the page before the one the
+      // client has. The split takes the rest of the run, at the price of
+      // repeating a row the client may hold.
+      if (systemCopy) {
+        while (idx < transformed.length && isSystemItem(transformed[idx]!)) idx++
+      }
+    }
     if (idx === -1 && isPhantomCursor(entries, transformed, cursor)) {
       // The client saw the cursor's row as an item of its own: the copy
       // nearest EOF, which the deepest-anchored window merges away. Re-anchor
@@ -1400,7 +1511,7 @@ export async function getSessionMessagesPage(
         scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal, anchor: 'shallowest' })
         signal?.throwIfAborted()
         if (!scan.found) return { messages: [], nextCursor: null }
-        entries = await readEntriesRange(
+        ;({ entries, rowOffsets } = await readEntriesRange(
           store,
           jsonlPath,
           scan.startOffset,
@@ -1408,7 +1519,7 @@ export async function getSessionMessagesPage(
           signal,
           opts.media === 'ref',
           readChunkFor(scan.readBytes)
-        )
+        ))
       } catch (error) {
         if (isAbsentFile(error)) return { messages: [], nextCursor: null }
         throw error
@@ -1421,20 +1532,36 @@ export async function getSessionMessagesPage(
       // The copy renders as the phantom when its original lies outside this
       // window; when the original is inside, the copy merges into it and the
       // page is everything up to the copy's position instead.
-      if (idx === -1) idx = countItemsThrough(entries, transformed, cursor)
+      if (idx === -1 && rowOffsets.has(cursor)) {
+        idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
+      }
+    }
+    if (idx === -1 && rowOffsets.has(cursor)) {
+      // The row is in the window and heads no item here, though it did in the
+      // window that made it a cursor. The page is what lies at or below the
+      // row.
+      idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
+    } else if (transformed[idx]?.id === cursor && showsBeforeOlderRow(transformed, rowOffsets, idx)) {
+      // A system row written between two rows of a response shows before the
+      // response, whose first row lies below it. The window that made the row
+      // a cursor may have held only the response's later rows, as an item of
+      // their own, so the response is not yet served. The page is what lies
+      // at or below the row, at the price of repeating the response when that
+      // window held it whole.
+      idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
     }
     if (idx === -1) {
-      // The index scan located the cursor's line but the transform of the
-      // materialized window disagrees — a concurrent rewrite between the two
-      // passes. Terminate like a vanished cursor rather than serving a
-      // mislabeled page.
+      // The index scan located the cursor's line but the materialized window
+      // does not hold it — a concurrent rewrite between the two passes.
+      // Terminate like a vanished cursor rather than serving a mislabeled
+      // page.
       console.warn(
         `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
         `read for session ${sessionId}; ending pagination`
       )
       return { messages: [], nextCursor: null }
     }
-    const start = Math.max(dropHead ? 1 : 0, idx - limit)
+    const start = pageStartBelowAnchor(transformed, rowOffsets, scan.anchorOffset!, idx, limit, dropHead ? 1 : 0)
     const messages = transformed.slice(start, idx)
     const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
     // Sequential walks end here when a cap truncates the page to empty.
@@ -1444,7 +1571,7 @@ export async function getSessionMessagesPage(
         `scan cap below cursor ${cursor}; deeper history is unreachable`
       )
     }
-    return { messages, nextCursor: pageCursor(messages, hasOlder) }
+    return { messages, nextCursor: pageCursor(messages, hasOlder, rowOffsets, scan.anchorOffset) }
   }
 
   const usable = dropHead ? transformed.slice(1) : transformed
@@ -1456,7 +1583,7 @@ export async function getSessionMessagesPage(
       `hard cap before a complete display item; serving an empty page`
     )
   }
-  return { messages, nextCursor: pageCursor(messages, hasOlder) }
+  return { messages, nextCursor: pageCursor(messages, hasOlder, rowOffsets, undefined) }
 }
 
 export interface SessionMessagesDelta {

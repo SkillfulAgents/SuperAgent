@@ -74,6 +74,7 @@ import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
+import { runWithSettingsMemo } from '@shared/lib/config/settings-request-memo'
 import { defaultCacheControl } from './middleware/default-cache-control'
 import { apiErrorHandler } from './error-handler'
 
@@ -86,13 +87,19 @@ const app = new Hono()
 // awaits is otherwise invisible to every later signal check (see the module).
 app.use('*', armAbortSignal)
 
+// One settings read per request: the auth middleware, the handler and the
+// services it calls share it. Dropped when the handler settles, so a stream it
+// returned reads afresh (see settings-request-memo.ts).
+app.use('*', (_c, next) => runWithSettingsMemo(next))
+
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
 app.use('*', cors({
   ...(trustedOrigins?.length ? { origin: trustedOrigins } : {}),
   // The packaged renderer is file:// calling loopback, so the cloud router's
   // not-ready marker (relayed by cloud-proxy.ts) is only readable if exposed here.
-  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER],
+  // So is a workspace file's ETag, which an open preview polls for changes.
+  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER, 'ETag'],
 }))
 
 // Uncacheable unless a route opts in — see the middleware for why an absent

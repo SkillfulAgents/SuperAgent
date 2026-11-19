@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CircleCheckBig, Hand, Ban, ChevronDown, CircleDashed } from 'lucide-react'
+import { CircleCheckBig, Hand, Ban, ChevronDown, CircleDashed, RotateCcw } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import {
   Tooltip,
@@ -125,8 +125,8 @@ export function PolicyDecisionToggle({
 /**
  * Compact dropdown variant of the policy control: the trigger shows the current
  * decision's icon and a chevron; the menu offers the three decisions plus
- * "Default" (inherit). Used where a full segmented toggle is too heavy — e.g.
- * scope-group headers.
+ * "Reset to default" while something is set. Used where a full segmented toggle
+ * is too heavy — e.g. scope-group headers.
  */
 export function PolicyDecisionDropdown({
   value,
@@ -134,21 +134,28 @@ export function PolicyDecisionDropdown({
   className,
   includeDefault = true,
   disabled = false,
+  inheritedValue,
+  inheritedLabel,
 }: {
   value: PolicyDecision
   onChange: (value: PolicyDecision) => void
   className?: string
   /**
-   * When false, the "Default" (inherit) menu item is omitted — for strict
+   * When false, the "Reset to default" menu item is omitted — for strict
    * three-way policies with no inherit tier, mirroring the toggle's
    * `allowDeselect={false}`.
    */
   includeDefault?: boolean
   /** Prevent another write for this policy while its current change is saving. */
   disabled?: boolean
+  /** What applies when `value` is 'default'. Shown muted, as on the toggle. */
+  inheritedValue?: Exclude<PolicyDecision, 'default'>
+  /** Where `inheritedValue` comes from, e.g. "from Global". */
+  inheritedLabel?: string
 }) {
   const [open, setOpen] = useState(false)
-  const current = options.find((o) => o.value === value)
+  const inheriting = value === 'default' && inheritedValue !== undefined
+  const current = options.find((o) => o.value === (inheriting ? inheritedValue : value))
   const CurrentIcon = current?.icon
   return (
     <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
@@ -158,6 +165,7 @@ export function PolicyDecisionDropdown({
           disabled={disabled}
           data-testid="policy-dropdown-trigger"
           data-decision={value}
+          data-inherited={inheriting}
           className={cn(
             'flex h-7 w-36 items-center gap-1.5 whitespace-nowrap rounded-control border border-input bg-transparent px-2 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring',
             disabled && 'cursor-wait opacity-60',
@@ -165,11 +173,14 @@ export function PolicyDecisionDropdown({
           )}
         >
           {current && CurrentIcon ? (
-            <CurrentIcon className={cn('h-3.5 w-3.5 shrink-0', current.activeColor)} />
+            <CurrentIcon className={cn('h-3.5 w-3.5 shrink-0', current.activeColor, inheriting && 'opacity-60')} />
           ) : (
             <CircleDashed className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           )}
-          {current ? current.tooltip : 'Default'}
+          <span className={cn('truncate', inheriting && 'text-muted-foreground')}>
+            {current ? current.tooltip : 'Default'}
+            {inheriting && inheritedLabel && ` (${inheritedLabel})`}
+          </span>
           <ChevronDown className="ml-auto h-3.5 w-3.5 shrink-0 opacity-50" />
         </button>
       </PopoverTrigger>
@@ -196,22 +207,18 @@ export function PolicyDecisionDropdown({
             </button>
           )
         })}
-        {includeDefault && (
+        {includeDefault && value !== 'default' && (
           <button
             type="button"
             data-testid="policy-menu-default"
-            data-active={value === 'default'}
             onClick={() => {
               onChange('default')
               setOpen(false)
             }}
-            className={cn(
-              'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted',
-              value === 'default' && 'bg-muted',
-            )}
+            className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted"
           >
-            <CircleDashed className="h-3.5 w-3.5 text-muted-foreground" />
-            Default
+            <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+            Reset to default
           </button>
         )}
       </PopoverContent>

@@ -77,7 +77,7 @@ vi.mock('./mcp-server', () => ({
   createWidgetsMcpServer: () => ({}),
 }))
 vi.mock('./tools/browser', () => ({ createBrowserTools: () => [] }))
-vi.mock('./tools/computer-use', () => ({ computerUseTools: [] }))
+vi.mock('./tools/computer-use', () => ({ COMPUTER_USE_SERVER: 'agent-desktop', COMPUTER_USE_TOOL_PREFIX: 'mcp__agent-desktop__', computerUseTools: [] }))
 vi.mock('./file-hooks', () => ({ fileHooks: {}, resolveToolFilePath: () => '' }))
 
 import { ClaudeCodeProcess } from './claude-code'

@@ -125,16 +125,55 @@ describe('ComputerUseRequestItem permission labels', () => {
 })
 
 describe('ComputerUseRequestItem grants', () => {
-  it.each([
-    ['computer-use-allow-once-btn', 'timed'],
-    ['computer-use-always-allow-btn', 'always'],
-  ])('%s sends a %s grant', async (testId, grantType) => {
+  const sentBody = async (): Promise<Record<string, unknown>> => {
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalled())
+    return JSON.parse(mockApiFetch.mock.calls[0][1].body as string) as Record<string, unknown>
+  }
+
+  /** Click the card's buttons in order; a menu option follows the button that opens its menu. */
+  const click = async (...testIds: string[]) => {
     mockApiFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
-    render(<ComputerUseRequestItem {...PROPS} />)
-    await userEvent.click(screen.getByTestId(testId))
-    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/computer-use'),
-      expect.objectContaining({ body: expect.stringContaining(`"grantType":"${grantType}"`) }),
-    ))
+    for (const testId of testIds) await userEvent.click(await screen.findByTestId(testId))
+  }
+
+  it.each([
+    [['computer-use-allow-once-btn'], { grantType: 'timed' }],
+    [['computer-use-always-allow-btn', 'computer-use-always-allow-option'], { grantType: 'always' }],
+    [['computer-use-always-allow-btn', 'computer-use-any-app-timed-option'], { grantType: 'timed', grantAnyApp: true }],
+    [['computer-use-always-allow-btn', 'computer-use-any-app-always-option'], { grantType: 'always', grantAnyApp: true }],
+  ])('%j sends %j for a call in a named app', async (testIds, expected) => {
+    render(<ComputerUseRequestItem {...PROPS} appName="Notes" permissionLevel="use_application" />)
+    await click(...testIds)
+    const body = await sentBody()
+    expect(body).toMatchObject({ appName: 'Notes', ...expected })
+    if (!('grantAnyApp' in expected)) expect(body).not.toHaveProperty('grantAnyApp')
+  })
+
+  // A click at a screen point whose app could not be told: no one-app grant
+  // can cover the next one, so the card must not offer one.
+  it.each([
+    [['computer-use-allow-once-btn'], { grantType: 'once' }],
+    [['computer-use-always-allow-btn', 'computer-use-any-app-timed-option'], { grantType: 'timed', grantAnyApp: true }],
+    [['computer-use-always-allow-btn', 'computer-use-any-app-always-option'], { grantType: 'always', grantAnyApp: true }],
+  ])('%j sends %j for a call whose app is unknown', async (testIds, expected) => {
+    render(<ComputerUseRequestItem {...PROPS} appName={undefined} permissionLevel="use_application" />)
+    expect(screen.getByText('Allow this agent to act on your computer?')).toBeInTheDocument()
+    expect(screen.getByTestId('computer-use-allow-once-btn')).toHaveTextContent('Allow Once')
+    await click(...testIds)
+    expect(await sentBody()).toMatchObject(expected)
+  })
+
+  it('offers no one-app grant for a call whose app is unknown', async () => {
+    render(<ComputerUseRequestItem {...PROPS} appName={undefined} permissionLevel="use_application" />)
+    await userEvent.click(screen.getByTestId('computer-use-always-allow-btn'))
+    await screen.findByTestId('computer-use-any-app-always-option')
+    expect(screen.queryByTestId('computer-use-always-allow-option')).not.toBeInTheDocument()
+  })
+
+  it('offers no any-app grant on a shell request, which it would not cover', async () => {
+    render(<ComputerUseRequestItem {...PROPS} method="run" permissionLevel="use_host_shell" />)
+    await userEvent.click(screen.getByTestId('computer-use-always-allow-btn'))
+    await screen.findByTestId('computer-use-always-allow-option')
+    expect(screen.queryByTestId('computer-use-any-app-always-option')).not.toBeInTheDocument()
   })
 })

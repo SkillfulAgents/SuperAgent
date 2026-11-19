@@ -4,7 +4,9 @@ import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
+import type { ApiMessage } from '@shared/lib/types/api'
 import { appendMentions } from '@shared/lib/utils/mentions'
+import * as orbVisibility from '@renderer/components/agents/agent-avatar/orb-visibility'
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
 vi.mock('./subagent-block', () => ({
@@ -161,6 +163,23 @@ describe('MessageItem', () => {
       expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
       expect(screen.getByTestId('user-mention').previousSibling?.textContent).toBe(', then ping ')
       expect(screen.getByTestId('message-user').querySelector('[data-notify-only]')).toBeNull()
+      expect(screen.queryByTestId('mention-notified')).toBeNull()
+    })
+
+    it("draws an agent's [@Name](user:<id>) tag as a person's chip", () => {
+      render(<MessageItem message={createAssistantMessage({ content: { text: '[@Mike Smith](user:mike-id), please decide' } })} agentSlug="support01x" />)
+      expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
+      expect(screen.getByTestId('message-assistant')).not.toHaveTextContent('user:')
+    })
+
+    it('draws no chip for a user: link the server would not read as a tag, or in a person\'s message', () => {
+      for (const text of ['see [Mike](user:mike-id)', '[@](user:mike-id)', '[**@Mike**](user:mike-id)', '[@Mike](user:mike-id "title")']) {
+        const { unmount } = render(<MessageItem message={createAssistantMessage({ content: { text } })} />)
+        expect(screen.queryByTestId('user-mention')).toBeNull()
+        unmount()
+      }
+      render(<MessageItem message={createUserMessage({ content: { text: '[@Mike](user:mike-id)' } })} />)
+      expect(screen.queryByTestId('user-mention')).toBeNull()
     })
 
     it('leaves a name inside code as typed', () => {
@@ -175,11 +194,13 @@ describe('MessageItem', () => {
       const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
       render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
 
-      // Drawn like any message: no dashed bubble, no separate "Notified" line.
+      // The bubble is drawn like any other; the line under it says the agent
+      // did not run, with who was notified as its tooltip.
       const bubble = screen.getByTestId('user-mention').closest('[data-notify-only]')
       expect(bubble).not.toBeNull()
       expect(bubble).not.toHaveClass('border-dashed')
-      expect(screen.queryByText(/Notified/)).toBeNull()
+      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Message ignored by agent')
+      expect(screen.getByTitle('Only notifies Mike Smith')).toBeInTheDocument()
     })
   })
 
@@ -258,6 +279,37 @@ describe('MessageItem', () => {
       const link = screen.getByText('Click here')
       expect(link).toHaveAttribute('target', '_blank')
       expect(link).toHaveAttribute('href', 'https://example.com')
+    })
+
+    it('resolves the agent\'s files in agent and user text, never in a message an integration relayed', () => {
+      const text = '![chart](/workspace/out/chart.png) [Report](/workspace/out/report.md)'
+      for (const message of [createAssistantMessage({ content: { text } }), createUserMessage({ content: { text } })]) {
+        const { container, unmount } = render(<MessageItem message={message} agentSlug="a1" />)
+        expect(container.querySelector('img')?.getAttribute('src')).toMatch(/\/api\/agents\/a1\/files\/out\/chart\.png/)
+        expect(screen.getByRole('link', { name: 'Report' })).toHaveAttribute('href', expect.stringMatching(/\/api\/agents\/a1\/files\/out\/report\.md$/))
+        unmount()
+      }
+
+      // Someone outside the app wrote it, so rendering it reads nothing.
+      const integration: NonNullable<ApiMessage['integration']> = {
+        version: 1,
+        integration: { id: 'i-1', name: 'Slack', provider: 'slack', family: 'chat' },
+        event: { type: 'message', label: 'New message' },
+        request: { text },
+        source: { kind: 'channel', identifier: 'C1' },
+      }
+      const shot = 'file:///home/claude/shot.png'
+      render(
+        <MessageItem
+          message={createUserMessage({ content: { text: `${text} ![shot](${shot})` }, integration: { ...integration, request: { text: `${text} ![shot](${shot})` } } })}
+          agentSlug="a1"
+          embeddedImageAliases={new Map([[shot, '/api/agents/a1/sessions/s/media/ref']])}
+        />,
+      )
+      for (const name of ['chart', 'shot']) {
+        expect(screen.getByRole('img', { name }).getAttribute('src') ?? '').not.toContain('/api/agents/')
+      }
+      expect(screen.queryByRole('link', { name: 'Report' })).toBeNull()
     })
 
     it('renders a container screenshot through its verified tool-result alias', () => {
@@ -756,6 +808,21 @@ describe('MessageItem', () => {
       render(<MessageItem message={msg} />)
       const avatar = screen.getByRole('img', { name: 'Alice Baker' })
       expect(avatar.querySelector('img')).toHaveAttribute('src', 'https://example.com/alice.png')
+    })
+
+    it('draws the agent sender and holds its orb still', ({ onTestFinished }) => {
+      const observe = vi.spyOn(orbVisibility, 'observeOrbVisibility')
+      onTestFinished(() => observe.mockRestore())
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        agentSender: { slug: 'research-agent', name: 'Research Agent', avatar: { color: 'tonal-blue', shape: 'triangle' } },
+      })
+      render(<MessageItem message={msg} />)
+      expect(document.querySelector('[data-avatar-orb]')).toBeInTheDocument()
+      expect(observe).not.toHaveBeenCalled()
+      expect(screen.queryByRole('img', { name: 'Research Agent' })).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Research Agentjust now$/)
     })
 
     it('falls back to initials for a sender lifted from a mirror prefix', () => {

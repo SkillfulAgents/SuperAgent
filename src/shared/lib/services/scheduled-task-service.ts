@@ -1,4 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
+import { storedRuntimeOptionsUpdate, type StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 /**
  * Scheduled Task Service
  *
@@ -24,7 +25,7 @@ export type { ScheduledTask, NewScheduledTask }
 // Types
 // ============================================================================
 
-export interface CreateScheduledTaskParams {
+export interface CreateScheduledTaskParams extends Partial<StoredRuntimeOptions> {
   agentSlug: string
   scheduleType: 'at' | 'cron'
   scheduleExpression: string
@@ -33,10 +34,6 @@ export interface CreateScheduledTaskParams {
   createdBySessionId?: string
   createdByUserId?: string
   timezone?: string
-  llmProviderId?: string | null
-  model?: string
-  effort?: string
-  speed?: string
   // When set, firing this task resumes the referenced session instead of
   // creating a new one. Prefer createSessionWake(), which also enforces the
   // one-pending-wake-per-session invariant.
@@ -50,8 +47,10 @@ export interface CreateSessionWakeParams {
   // Why the session is sleeping / what to check on wake — echoed back verbatim
   // in the wake message. Stored as the task prompt.
   note: string
+  // One line for the user, shown in the pending-wake banner. Stored as the task
+  // name (the scheduled task's display name).
+  summary?: string
   sessionId: string
-  name?: string
   createdByUserId?: string
   timezone?: string
 }
@@ -216,7 +215,7 @@ async function replaceSessionWake(
     scheduleType: 'at',
     scheduleExpression: params.scheduleExpression,
     prompt: params.note,
-    name: params.name,
+    name: params.summary,
     status: 'pending',
     nextExecutionAt,
     isRecurring: false,
@@ -790,23 +789,12 @@ export async function recordManualExecution(
  */
 export async function updateTaskRuntimeOptions(
   taskId: string,
-  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
+  options: Partial<StoredRuntimeOptions>,
 ): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
 
-  const updates: Record<string, string | null> = {}
-  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
-  if ('model' in options) {
-    updates.model = options.model ?? null
-    if (!options.model) updates.llmProviderId = null
-    else if (options.llmProviderId === undefined) {
-      const llmDefault = (await getSettings()).llmDefault
-      if (llmDefault) updates.llmProviderId = task.llmProviderId ?? llmDefault.llmProviderId
-    }
-  }
-  if ('effort' in options) updates.effort = options.effort ?? null
-  if ('speed' in options) updates.speed = options.speed ?? null
+  const updates = await storedRuntimeOptionsUpdate(options, task, async () => (await getSettings()).llmDefault?.llmProviderId)
 
   const result = await db
     .update(scheduledTasks)

@@ -21,6 +21,10 @@ test('only someone who uses both agents can allow an agent request', async ({ us
   const stamp = Date.now()
   const ids: string[] = []
   for (const [page, name] of [[olivia, 'Olivia'], [uma, 'Uma'], [vic, 'Vic']] as const) {
+    // The fixture's pages live for the whole worker and may still hold another
+    // spec's session. Better Auth refuses a POST that carries a session cookie
+    // and no Origin (403 MISSING_OR_NULL_ORIGIN), and page.request sends none.
+    await page.context().clearCookies()
     const response = await page.request.post('/api/auth/sign-up/email', {
       data: { name, email: `${name.toLowerCase()}-x-agent-${stamp}@example.test`, password: 'CrossAgentTesting123!' },
     })

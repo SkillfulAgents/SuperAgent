@@ -4,6 +4,7 @@ import { githubVolumeConfigSchema } from './github-schema'
 import { removeGithubSync } from './github-sync'
 import { S3MountableVolume } from './s3-mountable-volume'
 import { s3VolumeConfigSchema, s3StoredConfigSchema } from './s3-schema'
+import { s3Namespace } from './s3-client'
 import { prepareS3Volume, validateS3Volume } from './s3-validation'
 import type { VolumeValidation } from './volume-validation-schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeType } from '@shared/lib/types/mount'
@@ -29,6 +30,8 @@ interface VolumeTypeEntry {
   remove?: (id: string) => Promise<void>
   instantiate(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null
   prepare(config: unknown, creator?: { userId: string | null }): Promise<{ name: string; config: unknown }>
+  /** Where the files live, in this type's own form, plus the account they are read through. Equal keys, same files. */
+  sourceKey(config: unknown): string | null
   browseFolders?: VolumeFolderBrowser
   createFolder?: VolumeFolderCreator
   validate?: (config: unknown, viewer: VolumeSetupViewer) => Promise<VolumeValidation>
@@ -40,6 +43,7 @@ function volumeType<C, S = C>(
   schema: z.ZodType<C>,
   create: (row: StoredVolume, config: S, agentSlug?: string) => BaseMountableVolume<unknown>,
   prepare: (config: C, creator?: { userId: string | null }) => Promise<{ name: string; config: S }>,
+  sourceKey: (config: S) => unknown[],
   options: { stored?: z.ZodType<S>; browseFolders?: VolumeFolderBrowser; createFolder?: VolumeFolderCreator; validate?: VolumeTypeEntry['validate'] } = {},
 ): VolumeTypeEntry {
   // With no stored schema, S defaults to C.
@@ -54,6 +58,10 @@ function volumeType<C, S = C>(
       console.warn(`[volumes] Volume ${row.id} of type ${row.type} has an invalid config; leaving it out:`, config.error.message)
       return null
     },
+    sourceKey(config) {
+      const parsed = stored.safeParse(config)
+      return parsed.success ? JSON.stringify(sourceKey(parsed.data)) : null
+    },
     async prepare(input, creator) {
       const config = schema.safeParse(input)
       if (!config.success) throw new Error(`Invalid volume config: ${z.prettifyError(config.error)}`)
@@ -66,18 +74,19 @@ const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
   github: {
     ...volumeType(githubVolumeConfigSchema, (row, config, agentSlug) => new GithubMountableVolume(row.id, row.name, config,
       'volumeId' in row && typeof row.volumeId === 'string' ? row.volumeId : row.id, agentSlug), prepareGithubVolume,
-      { browseFolders: GithubMountableVolume.browseFolders, createFolder: GithubMountableVolume.createFolder }),
+      config => [config.accountId, config.repoId, config.branch, config.path], { browseFolders: GithubMountableVolume.browseFolders, createFolder: GithubMountableVolume.createFolder }),
     remove: removeGithubSync,
   },
   s3: volumeType(s3VolumeConfigSchema, (row, config, agentSlug) => new S3MountableVolume(row.id, row.name, config, agentSlug), prepareS3Volume,
-    { stored: s3StoredConfigSchema, validate: validateS3Volume }),
+    config => [s3Namespace(config), config.prefix], { stored: s3StoredConfigSchema, validate: validateS3Volume }),
   dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume,
-    { browseFolders: DropboxMountableVolume.browseFolders, createFolder: DropboxMountableVolume.createFolder }),
+    config => [config.accountId, config.path.toLowerCase()], { browseFolders: DropboxMountableVolume.browseFolders, createFolder: DropboxMountableVolume.createFolder }),
   googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume,
-    { browseFolders: GoogleDriveMountableVolume.browseFolders, createFolder: GoogleDriveMountableVolume.createFolder }),
-  local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
+    config => [config.accountId, config.folderId], { browseFolders: GoogleDriveMountableVolume.browseFolders, createFolder: GoogleDriveMountableVolume.createFolder }),
+  local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume,
+    config => [config.path]),
   platform: volumeType(storedPlatformVolumeConfigSchema, (row, config, agentSlug) => new PlatformMountableVolume(row.id, row.name, config, agentSlug), preparePlatformVolume,
-    { browseFolders: PlatformMountableVolume.browseFolders, createFolder: PlatformMountableVolume.createFolder }),
+    config => [config.volumeId], { browseFolders: PlatformMountableVolume.browseFolders, createFolder: PlatformMountableVolume.createFolder }),
 }
 
 function isVolumeType(type: string): type is VolumeType {
@@ -87,6 +96,11 @@ function isVolumeType(type: string): type is VolumeType {
 /** The volume a stored row describes, or null when its config is not that type's. */
 export function instantiateVolume(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null {
   return volumeTypes[row.type].instantiate(row, agentSlug)
+}
+
+/** Equal for two drives of a type that read the same files; null for a config that is not the type's. */
+export function sourceKey(row: Pick<StoredVolume, 'type' | 'config'>): string | null {
+  return volumeTypes[row.type].sourceKey(row.config)
 }
 
 /** A new volume of a type, checked by that type, or a rejection whose message is for the user. */

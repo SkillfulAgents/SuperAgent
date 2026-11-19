@@ -64,6 +64,18 @@ beforeEach(() => {
   state.fetchBilling.mockReset()
 })
 
+describe('a billing read', () => {
+  it('has the pickers read model availability again, since the server replaced its cached policy', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const availabilityKey = ['provider-model-availability', 'connection_1', null]
+    client.setQueryData(availabilityKey, null)
+    state.fetchBilling.mockResolvedValueOnce(response(RESTRICTED_BILLING))
+    const view = renderHook(() => usePlatformPlan(), { wrapper: wrapper(client) })
+    await waitFor(() => expect(view.result.current.excludedLabel).toBe('Claude Fable'))
+    expect(client.getQueryState(availabilityKey)?.isInvalidated).toBe(true)
+  })
+})
+
 describe('usePlatformPlan billing identity', () => {
   it.each([
     ['another workspace', { orgId: 'org_b' }],

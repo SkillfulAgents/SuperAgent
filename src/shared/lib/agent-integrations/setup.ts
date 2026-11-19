@@ -61,10 +61,9 @@ function takeProvision(input: unknown): { input: unknown; provision?: ProvisionR
 export async function prepareIntegrationSetup(provider: string, rawInput: unknown, context: IntegrationSetupContext, fromAgent = false): Promise<PreparedIntegrationSetup> {
   await assertIntegrationAvailable(provider)
   const setup = getIntegrationSetup(provider)
-  if (fromAgent && !setup.allowAgentCreation) throw new IntegrationSetupError('This account must be set up by its owner in the agent integration page.', 403)
   const { input, provision } = takeProvision(rawInput)
   if (provision && fromAgent) throw new IntegrationSetupError('An agent can’t create apps; its owner sets them up in the agent integration page.', 403)
-  const { relay: wantsRelay, verification, ...prepared } = await setup.prepare(input, context)
+  const { relay: wantsRelay, verification, ...prepared } = await setup.prepare(input, fromAgent ? { ...context, fromAgent } : context)
   const definition = agentIntegrationRegistry.getDefinition(provider)!
   const transports = supportedTransports(definition)
   if (wantsRelay && !transports.includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)

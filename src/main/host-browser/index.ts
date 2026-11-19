@@ -2,6 +2,8 @@ import { getSettings } from '@shared/lib/config/settings'
 import { ChromeProvider } from './chrome-provider'
 import { BrowserbaseProvider } from './browserbase-provider'
 import { PlatformBrowserProvider } from './platform-provider'
+import { SteelProvider } from './steel-provider'
+import { TabtenderProvider } from './tabtender-provider'
 import type { HostBrowserProvider, HostBrowserProviderStatus } from './types'
 
 export type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
@@ -11,11 +13,15 @@ export type { HostBrowserProviderId } from './types'
 const chromeProvider = new ChromeProvider()
 const browserbaseProvider = new BrowserbaseProvider()
 const platformBrowserProvider = new PlatformBrowserProvider()
+const steelProvider = new SteelProvider()
+const tabtenderProvider = new TabtenderProvider()
 
 const providerMap: Record<string, HostBrowserProvider> = {
   chrome: chromeProvider,
   browserbase: browserbaseProvider,
   platform: platformBrowserProvider,
+  steel: steelProvider,
+  tabtender: tabtenderProvider,
 }
 
 /**
@@ -34,7 +40,13 @@ export async function getActiveProvider(): Promise<HostBrowserProvider | null> {
  * Used by the settings API to populate the provider dropdown.
  */
 export async function detectAllProviders(): Promise<HostBrowserProviderStatus[]> {
-  return Promise.all([chromeProvider.detect(), browserbaseProvider.detect(), platformBrowserProvider.detect()])
+  return Promise.all([
+    chromeProvider.detect(),
+    browserbaseProvider.detect(),
+    platformBrowserProvider.detect(),
+    steelProvider.detect(),
+    tabtenderProvider.detect(),
+  ])
 }
 
 /**
@@ -62,6 +74,8 @@ export async function stopAllProviders(): Promise<void> {
     chromeProvider.stopAll(),
     browserbaseProvider.stopAll(),
     platformBrowserProvider.stopAll(),
+    steelProvider.stopAll(),
+    tabtenderProvider.stopAll(),
   ])
 }
 
@@ -70,7 +84,9 @@ export async function stopAllProviders(): Promise<void> {
  */
 export function setOnExternalClose(callback: (instanceId: string) => void): void {
   chromeProvider.onExternalClose = callback
-  // Browserbase / platform don't fire external close events, but wire up for consistency
+  // The cloud providers don't fire external close events, but wire up for consistency
   browserbaseProvider.onExternalClose = callback
   platformBrowserProvider.onExternalClose = callback
+  steelProvider.onExternalClose = callback
+  tabtenderProvider.onExternalClose = callback
 }

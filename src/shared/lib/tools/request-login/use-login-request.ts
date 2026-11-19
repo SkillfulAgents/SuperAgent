@@ -7,6 +7,7 @@ import {
   loginFillResultSchema,
   loginSessionAnswerSchema,
   loginVaultInfoSchema,
+  loginWayResultSchema,
   type LoginContext,
   type LoginVaultInfo,
 } from './login-request'
@@ -181,6 +182,28 @@ export function useLoginRequestActions({ agentSlug, sessionId, toolUseId }: UseL
       }
     })
 
+  /**
+   * The way the user picked on a page that asks how to verify it's you: the
+   * host clicks it. For the page's only way with nothing to click, they say
+   * they answered it on their device.
+   */
+  const chooseWay = (context: LoginContext, index: number) =>
+    runLoginAction<LoginRequestState>(key, 'way', async () => {
+      const data = await postJson(`${base}/login-way`, { toolUseId, origin: context.origin, index })
+      if (data.alreadySettled) return { status: 'settled' }
+      if (data.browserClosed === true) return { status: 'browser_closed', kept: null }
+      const result = loginWayResultSchema.parse(data)
+      return { status: 'way', label: context.ways[index]?.label ?? '', clicked: result.clicked, problems: result.problems }
+    })
+
+  /**
+   * "Also add an authenticator app" on a step of two-step verification: the
+   * agent is asked now, apart from how the request is answered.
+   */
+  const requestMethod = async () => {
+    await postJson(`${base}/login-request/method`, { toolUseId })
+  }
+
   /** The user signed in on the page themselves. */
   const completeManually = () =>
     runLoginAction<LoginRequestState>(key, 'manual', async () => {
@@ -206,5 +229,5 @@ export function useLoginRequestActions({ agentSlug, sessionId, toolUseId }: UseL
       return { status: 'declined' }
     })
 
-  return { state, fill, signInVia, completeManually, decline }
+  return { state, fill, signInVia, chooseWay, requestMethod, completeManually, decline }
 }

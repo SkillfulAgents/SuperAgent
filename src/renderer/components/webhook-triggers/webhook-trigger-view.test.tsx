@@ -174,8 +174,7 @@ describe('WebhookTriggerView runtime options', () => {
   it('passes the saved connection to the model card', () => {
     render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
     expect(runtimeCardProps.current).toMatchObject({
-      llmProviderId: 'conn-claude-subscription',
-      model: 'claude-opus-4-5',
+      stored: { llmProviderId: 'conn-claude-subscription', model: 'claude-opus-4-5' },
     })
   })
 })

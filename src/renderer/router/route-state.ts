@@ -57,6 +57,22 @@ export interface RouteSnapshot {
   search: Record<string, unknown>
 }
 
+/**
+ * The deepest matched route, with params/search merged across every match so
+ * the leaf sees ancestor params (the agent `slug`).
+ */
+export function routeSnapshot(
+  matches: ReadonlyArray<{ fullPath: string; params: unknown; search: unknown }>,
+): RouteSnapshot {
+  const params: Record<string, string | undefined> = {}
+  const search: Record<string, unknown> = {}
+  for (const m of matches) {
+    Object.assign(params, m.params)
+    Object.assign(search, m.search)
+  }
+  return { to: matches[matches.length - 1]?.fullPath ?? '/', params, search }
+}
+
 function assertNever(x: never): never {
   throw new Error(`Unhandled AgentView kind: ${JSON.stringify(x)}`)
 }

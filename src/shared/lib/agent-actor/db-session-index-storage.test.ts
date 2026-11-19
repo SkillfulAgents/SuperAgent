@@ -1,10 +1,41 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
+import { setMaxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { agentSessions } from '@shared/lib/db/schema'
 import { createTestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+import type { AppDatabase } from '@shared/lib/db'
 import { createDbSessionIndexStorage, dropDbSessionIndex } from './db-session-index-storage'
 import { describeSessionIndexStorageContract } from './testing/session-index-storage-contract'
+
+/** The app's handle, recording how many parameters each write it runs binds. */
+function countingBoundParameters(db: AppDatabase): { db: AppDatabase; counts: number[] } {
+  const counts: number[] = []
+  const track = <T extends object>(builder: T): T => new Proxy(builder, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (typeof value !== 'function') return value
+      if (prop === 'run') {
+        return (...args: unknown[]) => {
+          counts.push((target as unknown as { toSQL(): { params: unknown[] } }).toSQL().params.length)
+          return value.apply(target, args)
+        }
+      }
+      return (...args: unknown[]) => {
+        const next = value.apply(target, args)
+        return next && typeof next === 'object' && 'toSQL' in next ? track(next) : next
+      }
+    },
+  })
+  const counting = new Proxy(db, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (prop !== 'insert' && prop !== 'delete') return value
+      return (...args: unknown[]) => track(value.apply(target, args))
+    },
+  })
+  return { db: counting, counts }
+}
 
 const database = perTestDatabase()
 vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
@@ -66,5 +97,34 @@ describe('DbSessionIndexStorage', () => {
 
     expect(await one.list()).toEqual([])
     expect(await database.db.select().from(agentSessions).where(eq(agentSessions.agentSlug, 'agent-two')).all()).toHaveLength(1)
+  })
+
+  describe('on a driver that binds at most 100 parameters a statement', () => {
+    afterEach(() => setMaxBoundParameters(undefined))
+
+    it('keeps every fill and delete statement within that limit', async () => {
+      setMaxBoundParameters(100)
+      const { db, counts } = countingBoundParameters(database.db)
+      const storage = createDbSessionIndexStorage('agent-one', db)
+      const sessionIds = Array.from({ length: 120 }, (_, i) => `s${i}`)
+
+      await storage.fill(sessionIds.map((sessionId) => ({ sessionId, meta: { name: sessionId }, transcript: { mtimeMs: 2, birthtimeMs: 1, size: 3 } })))
+      expect(await storage.list()).toHaveLength(120)
+      await storage.delete(sessionIds)
+      expect(await storage.list()).toEqual([])
+
+      // 16 rows a statement: 8 fills and 8 deletes.
+      expect(counts).toHaveLength(16)
+      expect(Math.max(...counts)).toBeLessThanOrEqual(100)
+    })
+  })
+
+  it('fills in one statement on SQLite\'s own limit', async () => {
+    const { db, counts } = countingBoundParameters(database.db)
+    const storage = createDbSessionIndexStorage('agent-one', db)
+
+    await storage.fill(Array.from({ length: 120 }, (_, i) => ({ sessionId: `s${i}`, meta: null, transcript: null })))
+
+    expect(counts).toHaveLength(1)
   })
 })

@@ -11,7 +11,8 @@ vi.mock('../db', () => ({
   get db() { return testDb },
 }))
 
-import { getDefaultUserSettings, getUserSettings, updateUserSettings } from './user-settings-service'
+import { setMaxBoundParameters } from '../db/bound-parameters'
+import { getDefaultUserSettings, getUserSettings, getUserSettingsForUsers, updateUserSettings } from './user-settings-service'
 
 describe('user-settings-service', () => {
   beforeEach(async () => {
@@ -27,6 +28,51 @@ describe('user-settings-service', () => {
     expect(await getUserSettings('u1')).toEqual(getDefaultUserSettings())
     const rows = await testDb.select().from(schema.userSettings).where(eq(schema.userSettings.userId, 'u1')).all()
     expect(rows).toHaveLength(1)
+  })
+
+  describe('getUserSettingsForUsers', () => {
+    afterEach(() => {
+      setMaxBoundParameters(undefined)
+      vi.restoreAllMocks()
+    })
+
+    it('answers for every id in one statement: stored settings, and defaults for a missing or invalid row', async () => {
+      await updateUserSettings('stored', { notifications: { ...getDefaultUserSettings().notifications, sessionComplete: false } })
+      await testDb.insert(schema.userSettings).values({ userId: 'corrupt', settings: '{not json', updatedAt: new Date(0) }).run()
+      const select = vi.spyOn(testDb, 'select')
+
+      const settings = await getUserSettingsForUsers(['stored', 'missing', 'corrupt', 'stored'])
+
+      expect(select).toHaveBeenCalledTimes(1)
+      expect([...settings.keys()].sort()).toEqual(['corrupt', 'missing', 'stored'])
+      expect(settings.get('stored')?.notifications.sessionComplete).toBe(false)
+      expect(settings.get('missing')).toEqual(getDefaultUserSettings())
+      expect(settings.get('corrupt')).toEqual(getDefaultUserSettings())
+    })
+
+    it('writes nothing for a user with no row', async () => {
+      await getUserSettingsForUsers(['missing'])
+
+      expect(await testDb.select().from(schema.userSettings).all()).toHaveLength(0)
+    })
+
+    it('asks nothing of the database for no users', async () => {
+      const select = vi.spyOn(testDb, 'select')
+
+      expect((await getUserSettingsForUsers([])).size).toBe(0)
+      expect(select).not.toHaveBeenCalled()
+    })
+
+    it('splits the read when the ids exceed what one statement may bind', async () => {
+      setMaxBoundParameters(2)
+      for (const id of ['a', 'b', 'c', 'd', 'e']) await updateUserSettings(id, { theme: 'dark' })
+      const select = vi.spyOn(testDb, 'select')
+
+      const settings = await getUserSettingsForUsers(['a', 'b', 'c', 'd', 'e'])
+
+      expect(select).toHaveBeenCalledTimes(3)
+      expect([...settings.values()].map((s) => s.theme)).toEqual(['dark', 'dark', 'dark', 'dark', 'dark'])
+    })
   })
 
   it('merges a partial update into the stored document', async () => {

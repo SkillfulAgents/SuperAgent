@@ -74,3 +74,19 @@ it('uploads raw bytes through the legacy endpoint', async () => {
   expect(response.status).toBe(200)
   expect(await fs.promises.readFile(path.join(root, 'folder/report.bin'))).toEqual(Buffer.from([0, 255, 1]))
 })
+it('creates a folder, nested ones too, and its missing parents', async () => {
+  const nested = await app.request('/files/.claude/skills/dream/mkdir', { method: 'POST' })
+  expect(nested.status).toBe(200)
+  expect(await nested.json()).toEqual({ success: true, path: '.claude/skills/dream' })
+  expect((await fs.promises.stat(path.join(root, '.claude/skills/dream'))).isDirectory()).toBe(true)
+  const top = await app.request('/files/notes/mkdir', { method: 'POST' })
+  expect(top.status).toBe(200)
+  expect((await fs.promises.stat(path.join(root, 'notes'))).isDirectory()).toBe(true)
+  // Again: a folder that exists is not an error.
+  expect((await app.request('/files/notes/mkdir', { method: 'POST' })).status).toBe(200)
+})
+it('refuses to create a folder outside the workspace', async () => {
+  const response = await app.request(`/files/${encodeURIComponent('../outside')}/mkdir`, { method: 'POST' })
+  expect([400, 403]).toContain(response.status)
+  expect(fs.existsSync(path.join(root, '../outside'))).toBe(false)
+})

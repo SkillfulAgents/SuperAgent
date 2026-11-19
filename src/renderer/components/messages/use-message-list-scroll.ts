@@ -12,6 +12,7 @@ import {
 } from 'react'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 import type { PendingMessage } from './pending-message'
+import { landingTop, nextLocateStep, type LocateOutcome } from './locate-message'
 
 // On very long threads we render only a trailing window of messages to keep the
 // DOM small. Sessions with <= BASE_WINDOW visible items render in full, so small
@@ -170,6 +171,9 @@ interface ScrollSample {
 }
 
 interface MessageListScrollOptions<T> {
+  /** A message to land on, with its index in visibleMessages (-1 while not loaded). A new id starts a new request. */
+  target?: { id: string; index: number }
+  onTargetSettled?: (outcome: LocateOutcome) => void
   /** Messages after visibility filtering — what the trailing window slices. */
   visibleMessages: readonly T[]
   /** A new non-queued ghost anchors its turn's reading line (`data-turn-anchor-id`). */
@@ -211,6 +215,8 @@ interface MessageListScrollOptions<T> {
  */
 export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   const {
+    target,
+    onTargetSettled,
     visibleMessages,
     pendingUserMessages,
     bottomInset,
@@ -628,6 +634,18 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     rememberPosition()
   })
 
+  const locateRef = useRef<{ id: string; startedAt: number } | null>(null)
+  const lastTargetIdRef = useRef<string | undefined>(undefined)
+
+  // Keep the reader's content in place when an older page prepends. Skipped while
+  // following at the bottom, where the window doesn't grow and nothing would consume it.
+  const capturePrepend = useCallback(() => {
+    const viewport = scrollRef.current
+    if (viewport && (!followingRef.current || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100)) {
+      prevScrollHeightRef.current = viewport.scrollHeight
+    }
+  }, [])
+
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
     const baseline = baselineRef.current
@@ -748,25 +766,14 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
         prevScrollHeightRef.current = el.scrollHeight
         setWindowSize((n) => n + LOAD_STEP)
       } else if (hasOlder && !isFetchingOlder && fetchOlder) {
-        void fetchOlder(() => {
-          // Back at the bottom mid-fetch: the trailing window doesn't move on
-          // prepend, so skip the capture — a lingering guard would block the
-          // next scroll-up gesture. Derived from geometry at capture time.
-          const viewport = scrollRef.current
-          if (
-            viewport &&
-            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
-          ) {
-            prevScrollHeightRef.current = viewport.scrollHeight
-          }
-        })
+        void fetchOlder(capturePrepend)
       }
     }
 
     // Re-read rather than reuse the entry sample: reserve eating above may
     // have changed the spacer (and with it scrollHeight) inside this handler.
     rememberPosition()
-  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
+  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, capturePrepend, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -782,6 +789,45 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       rememberPosition()
     }
   }, [windowSize, rememberPosition])
+
+  // Land on a target message. Runs after the initial pin and the prepend
+  // anchoring, so a loaded target is in place at first paint.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    if (target?.id !== lastTargetIdRef.current) {
+      lastTargetIdRef.current = target?.id
+      locateRef.current = target ? { id: target.id, startedAt: performance.now() } : null
+    }
+    const locate = locateRef.current
+    if (!locate || !target) return
+    const settle = (outcome: LocateOutcome) => {
+      locateRef.current = null
+      onTargetSettled?.(outcome)
+    }
+    if (lastInputAtRef.current > locate.startedAt) return settle('stopped')
+    const step = nextLocateStep({
+      rendered: target.index >= 0 && target.index >= visibleMessages.length - windowSize,
+      loaded: target.index >= 0,
+      hasOlder,
+      isFetchingOlder,
+    })
+    if (step === 'grow') setWindowSize(visibleMessages.length - target.index)
+    else if (step === 'fetch') {
+      // A page that adds nothing (failed, or history rewritten) ends the request.
+      void fetchOlder?.(capturePrepend).then((added) => { if (!added && locateRef.current === locate) settle('stopped') })
+    } else if (step === 'stop') settle('stopped')
+    else if (step === 'place') {
+      const row = contentBodyRef.current?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(locate.id)}"]`)
+      if (!row) return settle('stopped')
+      releaseFollow()
+      const rowBox = row.getBoundingClientRect()
+      const top = rowBox.top - el.getBoundingClientRect().top + el.scrollTop
+      writeScrollTop(el, landingTop(top, rowBox.height, el.clientHeight - bottomInset))
+      rememberPosition()
+      settle('landed')
+    }
+  }, [target, isFetchingOlder, visibleMessages.length, windowSize, hasOlder, onTargetSettled, fetchOlder, capturePrepend, releaseFollow, writeScrollTop, bottomInset, rememberPosition])
 
   const scrollToBottom = useCallback(() => {
     // Drop the turn reserve first so the trip's target is the true live edge,

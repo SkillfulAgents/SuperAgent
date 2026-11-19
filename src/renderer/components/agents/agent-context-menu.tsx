@@ -30,7 +30,8 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
-import { useAgents, useRouteAgentId, useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useIsRouteAgent } from '@renderer/router/use-route-agent'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
@@ -93,6 +94,13 @@ interface AgentContextMenuProps {
   disableTouchLongPress?: boolean
 }
 
+/** True from the first render on which `open` is true. */
+function useOpenedOnce(open: boolean): boolean {
+  const [opened, setOpened] = useState(open)
+  if (open && !opened) setOpened(true)
+  return opened || open
+}
+
 /**
  * The one agent menu. Every entry point — sidebar row right-click, home card
  * right-click/long-press, breadcrumb right-click, and the agent home's
@@ -117,6 +125,14 @@ export function AgentContextMenu({
   const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [newName, setNewName] = useState(agent.name)
   const [isLeaving, setIsLeaving] = useState(false)
+  // A closed Radix dialog still renders its root, portal and presence on every
+  // render of this menu, and there is one menu per sidebar row. Each dialog is
+  // therefore mounted when it first opens, and stays mounted after that so its
+  // exit animation and focus return run exactly as they did.
+  const mountDeleteDialog = useOpenedOnce(showDeleteDialog)
+  const mountRenameDialog = useOpenedOnce(showRenameDialog)
+  const mountLeaveDialog = useOpenedOnce(showLeaveDialog)
+  const mountNewFolderDialog = useOpenedOnce(showNewFolderDialog)
   // Hand-offs to another surface on the page (the inline title, the Share
   // popover) wait for the menu to finish closing (onCloseAutoFocus): the menu
   // is modal, so an input mounted while it is still open has its autofocus
@@ -127,10 +143,11 @@ export function AgentContextMenu({
   const updateAgent = useUpdateAgent()
   const navigate = useNavigate()
   const { setPendingAgentHomeAction } = useNavTransient()
-  // undefined when the menu is opened off the agent route (e.g. from the sidebar
+  // False when the menu is opened off the agent route (e.g. from the sidebar
   // list), so the up-nav only fires when we're actually viewing the agent being
-  // deleted/left. Resolves the URL display slug to the canonical id to compare.
-  const routeAgentId = useRouteAgentId()
+  // left. A per-agent boolean, not the route's agent id: this menu wraps every
+  // sidebar row, and the id would re-render all of them on each agent switch.
+  const isRouteAgent = useIsRouteAgent(agent)
   const { canAdminAgent, isAuthMode } = useUser()
   const queryClient = useQueryClient()
   const isOwner = canAdminAgent(agent.slug)
@@ -283,7 +300,7 @@ export function AgentContextMenu({
         return
       }
       setShowLeaveDialog(false)
-      if (routeAgentId === agent.slug) {
+      if (isRouteAgent) {
         void navigate({ to: '/' })
       }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
@@ -412,109 +429,117 @@ export function AgentContextMenu({
         </ContextMenuContent>
       </ContextMenu>
 
-      <DeleteAgentConfirmDialog
-        agentSlug={agent.slug}
-        agentName={agent.name}
-        open={showDeleteDialog}
-        onOpenChange={setShowDeleteDialog}
-      />
+      {mountDeleteDialog && (
+        <DeleteAgentConfirmDialog
+          agentSlug={agent.slug}
+          agentName={agent.name}
+          open={showDeleteDialog}
+          onOpenChange={setShowDeleteDialog}
+        />
+      )}
 
       {/* Rename for surfaces without their own name editor (sidebar, home cards). */}
-      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
-        <DialogContent className="overflow-hidden" data-testid="rename-agent-dialog">
-          <DialogHeader>
-            <DialogTitle>Rename Agent</DialogTitle>
-            <DialogDescription>Enter a new name for this agent.</DialogDescription>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              void handleRename()
-            }}
-          >
-            <Input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Agent name"
-              aria-label="Agent name"
-              autoFocus
-              data-testid="rename-agent-name-input"
-            />
-            <DialogFooter className="mt-4">
-              <Button type="button" variant="outline" onClick={() => setShowRenameDialog(false)}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={updateAgent.isPending || !newName.trim()}
-                data-testid="confirm-rename-agent-button"
-              >
-                {updateAgent.isPending ? 'Renaming...' : 'Rename'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
-        <AlertDialogContent data-testid="confirm-leave-agent-dialog">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Leave Agent</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to leave &quot;{agent.name}&quot;? You will lose access
-              to this agent and its sessions. An owner will need to re-invite you to regain access.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleLeave}
-              disabled={isLeaving}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="confirm-leave-agent-button"
-            >
-              {isLeaving ? 'Leaving...' : 'Leave'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
-        <AlertDialogContent data-testid="new-agent-folder-dialog">
-          <AlertDialogHeader>
-            <AlertDialogTitle>New Section</AlertDialogTitle>
-            <AlertDialogDescription>
-              Sections organise your left nav only. Shared agents keep their own
-              place for everybody else.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <Input
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
+      {mountRenameDialog && (
+        <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
+          <DialogContent className="overflow-hidden" data-testid="rename-agent-dialog">
+            <DialogHeader>
+              <DialogTitle>Rename Agent</DialogTitle>
+              <DialogDescription>Enter a new name for this agent.</DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={(e) => {
                 e.preventDefault()
-                handleCreateFolderWithAgent()
-              }
-            }}
-            placeholder="Section name"
-            aria-label="Section name"
-            autoFocus
-            maxLength={120}
-            data-testid="new-agent-folder-name-input"
-          />
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleCreateFolderWithAgent}
-              disabled={!newFolderName.trim()}
-              data-testid="confirm-new-agent-folder-button"
+                void handleRename()
+              }}
             >
-              Create &amp; Move
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              <Input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Agent name"
+                aria-label="Agent name"
+                autoFocus
+                data-testid="rename-agent-name-input"
+              />
+              <DialogFooter className="mt-4">
+                <Button type="button" variant="outline" onClick={() => setShowRenameDialog(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={updateAgent.isPending || !newName.trim()}
+                  data-testid="confirm-rename-agent-button"
+                >
+                  {updateAgent.isPending ? 'Renaming...' : 'Rename'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {mountLeaveDialog && (
+        <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
+          <AlertDialogContent data-testid="confirm-leave-agent-dialog">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Leave Agent</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to leave &quot;{agent.name}&quot;? You will lose access
+                to this agent and its sessions. An owner will need to re-invite you to regain access.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleLeave}
+                disabled={isLeaving}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                data-testid="confirm-leave-agent-button"
+              >
+                {isLeaving ? 'Leaving...' : 'Leave'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+
+      {mountNewFolderDialog && (
+        <AlertDialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
+          <AlertDialogContent data-testid="new-agent-folder-dialog">
+            <AlertDialogHeader>
+              <AlertDialogTitle>New Section</AlertDialogTitle>
+              <AlertDialogDescription>
+                Sections organise your left nav only. Shared agents keep their own
+                place for everybody else.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <Input
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleCreateFolderWithAgent()
+                }
+              }}
+              placeholder="Section name"
+              aria-label="Section name"
+              autoFocus
+              maxLength={120}
+              data-testid="new-agent-folder-name-input"
+            />
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleCreateFolderWithAgent}
+                disabled={!newFolderName.trim()}
+                data-testid="confirm-new-agent-folder-button"
+              >
+                Create &amp; Move
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </>
   )
 }

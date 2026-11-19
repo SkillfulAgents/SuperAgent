@@ -1180,6 +1180,9 @@ describe('subagent streaming', () => {
     expect(starts[0].toolName).toBe('Bash')
     expect(starts[0].toolId).toBe('sub-tool-1')
 
+    // The second frame is held for its interval; the block's stop sends it.
+    sendSidechainStreamEvent({ type: 'content_block_stop' })
+
     const streaming = sseEvents.filter(e => e.type === 'subagent_tool_use_streaming')
     expect(streaming).toHaveLength(2)
     // Input accumulates

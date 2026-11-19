@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useDraftsStore } from '@renderer/context/drafts-context'
+import { agentHomeId, useDraftsStore } from '@renderer/context/drafts-context'
 import { useForkAndCompact } from '@renderer/hooks/use-sessions'
 import {
   newSessionCarryoverKey,
@@ -94,7 +94,7 @@ export function useStaleSession({
   const startFresh = useCallback(() => {
     if (!sessionId || forkInFlightRef.current) return
     const { draftText, carryover } = splitComposerSnapshot(composerSnapshotRef.current?.())
-    if (draftText !== undefined) draftsStore.set(`agent:${agentSlug}`, draftText)
+    if (draftText !== undefined) draftsStore.set(`session:${agentHomeId(agentSlug)}`, draftText)
     draftsStore.set(newSessionCarryoverKey(agentSlug), carryover)
     draftsStore.set(`session:${sessionId}`, undefined)
     void navigate({ to: '/agents/$slug', params: { slug: routeAgentSlug ?? agentSlug } })

@@ -13,22 +13,19 @@ const {
   closeQuickDispatchWindow,
   closeAllDashboardWindows,
   startCloudBootPrefetch,
-  refreshTrayMenu,
-  refreshAppMenu,
+  targetSwitched,
   settings,
 } = vi.hoisted(() => ({
   closeQuickDispatchWindow: vi.fn(),
   closeAllDashboardWindows: vi.fn(),
   startCloudBootPrefetch: vi.fn(async () => {}),
-  refreshTrayMenu: vi.fn(),
-  refreshAppMenu: vi.fn(),
+  targetSwitched: vi.fn(),
   settings: { value: {} as Record<string, unknown>, failWrite: false },
 }))
 
 vi.mock('./quick-dispatch-window', () => ({ closeQuickDispatchWindow }))
 vi.mock('./dashboard-window', () => ({ closeAllDashboardWindows }))
-vi.mock('./tray', () => ({ refreshTrayMenu }))
-vi.mock('./app-menu', () => ({ refreshAppMenu }))
+vi.mock('./agent-status-source', () => ({ agentStatusSource: { targetSwitched } }))
 vi.mock('@shared/lib/services/cloud-boot-prefetch', () => ({ startCloudBootPrefetch }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -51,8 +48,7 @@ beforeEach(() => {
   closeQuickDispatchWindow.mockClear()
   closeAllDashboardWindows.mockClear()
   startCloudBootPrefetch.mockClear()
-  refreshTrayMenu.mockClear()
-  refreshAppMenu.mockClear()
+  targetSwitched.mockClear()
 })
 
 describe('resolveApiTargetForRenderer', () => {
@@ -133,18 +129,17 @@ describe('applyPreferredApiTarget', () => {
   })
 
   it('rebuilds the tray and app menu now, instead of waiting out their poll', async () => {
-    // Both list agents from the effective target; on their 30s interval the
-    // previous Superagent's agents would sit in the menus for up to that long.
+    // Both list agents from the effective target; until their shared list's
+    // next poll, or the window's next push, the previous Superagent's agents
+    // would sit in the menus.
     await applyPreferredApiTarget('cloud')
-    expect(refreshTrayMenu).toHaveBeenCalled()
-    expect(refreshAppMenu).toHaveBeenCalled()
+    expect(targetSwitched).toHaveBeenCalledTimes(1)
   })
 
   it('rebuilds them switching back to local too', async () => {
     settings.value.apiTarget = 'cloud'
     await applyPreferredApiTarget('local')
-    expect(refreshTrayMenu).toHaveBeenCalled()
-    expect(refreshAppMenu).toHaveBeenCalled()
+    expect(targetSwitched).toHaveBeenCalledTimes(1)
   })
 
   it('starts the workspace round trips here, before the reload', async () => {
@@ -167,7 +162,7 @@ describe('applyPreferredApiTarget', () => {
     expect(closeQuickDispatchWindow).not.toHaveBeenCalled()
     expect(closeAllDashboardWindows).not.toHaveBeenCalled()
     expect(startCloudBootPrefetch).not.toHaveBeenCalled()
-    expect(refreshTrayMenu).not.toHaveBeenCalled()
+    expect(targetSwitched).not.toHaveBeenCalled()
   })
 
   it('does not call out for a target it refused to store', async () => {

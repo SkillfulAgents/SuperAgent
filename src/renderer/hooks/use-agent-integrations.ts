@@ -12,6 +12,7 @@ import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/s
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 export type { AgentIntegrationSession, ChatIntegrationAccess }
@@ -51,8 +52,8 @@ export const agentIntegrationKeys = {
 
 /** Host owns the decision; capability changes only invalidate discovery. */
 export function useAvailableAgentIntegrationProviders() {
-  const { data: platform } = usePlatformAuthStatus()
-  const { data: relay } = useWebhookRelay()
+  const { data: platform, isLoading: platformLoading } = usePlatformAuthStatus()
+  const { data: relay, isLoading: relayLoading } = useWebhookRelay()
   return useQuery<AgentIntegrationDefinition[]>({
     queryKey: ['agent-integration-providers', platform?.connected, relay?.available],
     queryFn: async () => {
@@ -60,6 +61,8 @@ export function useAvailableAgentIntegrationProviders() {
       if (!response.ok) throw new Error('Failed to fetch available integrations')
       return response.json()
     },
+    // Both answers are in the key, so a read before they arrive is read again right after.
+    enabled: !platformLoading && !relayLoading,
   })
 }
 
@@ -204,10 +207,7 @@ export function useCreateAgentIntegration() {
       config: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      llmProviderId?: string | null; model?: string | null
-      effort?: string | null
-      speed?: string | null
-    }) => {
+    } & Partial<StoredRuntimeOptions>) => {
       const { agentSlug, ...body } = params
       const res = await apiFetch(`/api/agent-integrations/agents/${agentSlug}`, {
         method: 'POST',
@@ -254,11 +254,8 @@ export function useUpdateAgentIntegration() {
       config?: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      llmProviderId?: string | null; model?: string | null
-      effort?: string | null
-      speed?: string | null
       status?: 'active' | 'paused'
-    }) => {
+    } & Partial<StoredRuntimeOptions>) => {
       const res = await apiFetch(`/api/agent-integrations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

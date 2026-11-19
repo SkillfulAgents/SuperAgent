@@ -202,6 +202,13 @@ The following APIs are automatically available in all dashboards (injected by th
 - **LLM (Anthropic SDK)** — An Anthropic SDK-compatible `Anthropic` client for calling Claude. No API keys needed. See `/opt/gamut/plugin/skills/dashboards/LLM_API.md` for full documentation and examples.
 - **Session Dispatch** — `window.__GAMUT_DASHBOARD__.dispatchSession({ prompt, title? })` asks the app to start a new session on this dashboard's own agent. The app always shows the user a confirmation popup first (with the prompt editable), so wire it to explicit user actions like buttons — never call it automatically. See `/opt/gamut/plugin/skills/dashboards/SESSION_DISPATCH.md` for full documentation and examples.
 
+## Storing Data
+
+`/workspace` can be a network drive, where each file read is a network round trip. Synchronous reads (`readFileSync`, `bun:sqlite`) block every other request while they wait.
+
+- Load data once and keep it in memory. Reload it only when the source changes.
+- With SQLite, set the page cache above the database size (`PRAGMA cache_size = -65536` gives 64 MB; the default is 2 MB), and keep the default rollback journal instead of WAL.
+
 ## Best Practices
 
 - **Keep dependencies minimal** — fewer deps means faster installs and starts
@@ -233,6 +240,7 @@ The following APIs are automatically available in all dashboards (injected by th
 - using the host browser for a private container URL;
 - configuring a router with `/` rather than `routerBasePath`;
 - assuming the screenshot proves controls or client routing work;
+- reading the same files from `/workspace` again on every request;
 - restarting repeatedly without fixing a crash loop's root cause.
 
 Clear logs before a fresh reproduction when old output makes diagnosis ambiguous.

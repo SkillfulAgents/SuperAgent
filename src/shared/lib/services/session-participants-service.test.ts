@@ -59,6 +59,14 @@ describe('getSessionParticipants', () => {
     expect(result.size).toBe(0)
   })
 
+  it('leaves out the person billed for a message another agent sent', async () => {
+    await testDb.insert(schema.messageAuthor).values({ id: 'm-agent', sessionId: 's1', agentSlug: 'agent-a', billedUserId: 'ann', authorAgentSlug: 'agent-b', createdAt: new Date(100) }).run()
+    await authored('s1', 'bob', 200)
+
+    const result = await getSessionParticipants('agent-a', ['s1'])
+    expect(result.get('s1')?.map(p => p.id)).toEqual(['bob'])
+  })
+
   it('reads past one chunk of session ids', async () => {
     const ids = Array.from({ length: 1201 }, (_, i) => `s-${i}`)
     await authored('s-1200', 'ann', 100)

@@ -352,7 +352,9 @@ describe('generateSystemPrompt rendering', () => {
     }
     const shipped = readdirSync(join(__dirname, '..', 'docs'))
       .filter(name => name.endsWith('.md') && name !== 'README.md')
-    expect([...referenced].sort()).toEqual(shipped.sort())
+    // Every top-level guide is reachable from the prompt; a guide's own
+    // references (computer-use/macos.md) may be named too, and exist (above).
+    expect([...referenced].filter(path => !path.includes('/')).sort()).toEqual(shipped.sort())
   })
 
   // Same failure as a missing guide, one step worse: the agent runs the command
@@ -419,8 +421,8 @@ describe('generateSystemPrompt rendering', () => {
     ]
 
     for (const file of files) {
-      // `/settings/<tab>` and `/agents/<slug>` are in-app routes (in-app-links.md), not files.
-      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#|\/settings\/|\/agents\/)([^)]+)\)/g)) {
+      // `/settings/<tab>` and `/agents/<slug>` are in-app routes, and `/workspace/` and `/mounts/` are agent files (in-app-links.md), not docs.
+      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#|\/settings\/|\/agents\/|\/workspace\/|\/mounts\/)([^)]+)\)/g)) {
         const target = join(dirname(file), match[1])
         expect(existsSync(target), `${basename(file)} links to missing ${match[1]}`).toBe(true)
       }

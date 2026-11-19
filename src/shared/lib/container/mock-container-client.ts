@@ -1046,6 +1046,7 @@ const MOCK_LOGIN_CONTEXT = {
   ],
   held: [] as Array<{ kind: string; label: string }>,
   providers: [] as string[],
+  ways: [] as Array<{ label: string; method: string; clickable: boolean }>,
 }
 
 /** How the mock page's inputs of each kind look, as the real container would describe them. */
@@ -1063,6 +1064,11 @@ const MOCK_FIELD_SHAPES: Record<string, { inputType: string; inputMode: string; 
  * form when the call is unknown.
  */
 function mockLoginContext(input: Record<string, unknown> | undefined) {
+  // A page that asks how to verify it's you: its ways, and no fields.
+  if (input && Array.isArray(input.ways) && input.ways.length > 0) {
+    const ways = input.ways as Array<{ ref?: string; label: string; method: string }>
+    return { ...MOCK_LOGIN_CONTEXT, submit: false, fields: [], ways: ways.map(({ ref, label, method }) => ({ label, method, clickable: typeof ref === 'string' })) }
+  }
   if (!input || !Array.isArray(input.fields)) return MOCK_LOGIN_CONTEXT
   const fields = input.fields as Array<{ ref?: string; kind: string; label: string }>
   return {
@@ -2172,6 +2178,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Wide enough to fork a running turn before it finishes, even on a slow runner
+    ['work very slowly', new SlowWorkScenario(12000)],
     // Long compaction window: queue a message while the session is compacting
     ['compact slowly', new SlowCompactionScenario(10000)],
     // Onboarding sessions start on a cold agent, so their transcript lands
@@ -2316,6 +2324,31 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
             { kind: 'password', label: 'Password' },
           ],
           submit: '@e6',
+        },
+      },
+    ])],
+    // A page that asks how to verify it's you: two ways, and its only way
+    // with nothing to click (a prompt on the user's phone).
+    ['vault login ways', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          ways: [
+            { ref: '@e9', label: 'Get a code by text message at (•••) •••-0108', method: 'text_message' },
+            { ref: '@e10', label: 'Tap Yes on your phone', method: 'phone_prompt' },
+          ],
+        },
+      },
+    ])],
+    ['vault login prompt', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          ways: [{ label: 'Check your phone: Example sent a notification. Tap Yes on it to sign in.', method: 'phone_prompt' }],
         },
       },
     ])],
@@ -2467,8 +2500,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ])],
     ['use computer', new UserInputRequestScenario([
       {
-        name: 'mcp__computer-use__computer_apps',
-        input: { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+        name: 'mcp__agent-desktop__computer_list_apps',
+        input: {},
       },
     ])],
     // Same request pair as 'ask parallel' below, but with real-CLI parallel
@@ -2612,6 +2645,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       ].join('\n'),
       'Here are the search results.'
     )],
+    // Integration setup handed to the user
+    ['ask integration setup', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_integration_setup',
+        input: { provider: 'linear', prefill: { name: 'Support Triage' }, reason: 'Finish setting up my Linear app, so the team can delegate support issues to me' },
+      },
+    ])],
     // Connected account request scenario
     ['ask account', new UserInputRequestScenario([
       {
@@ -2676,11 +2716,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],
     // Schedule resume (session long-sleep) scenario — the host interceptor
     // persists a real wake row targeting this session, so E2E can exercise the
-    // pending-wake banner, sidebar badge, and Wake now / Cancel actions.
+    // pending-wake banner, sidebar badge, and Run now / Cancel actions.
     ['schedule resume', new ToolUseScenario(
       'mcp__user-input__schedule_resume',
       {
         wakeTime: 'at now + 2 hours',
+        summary: 'Waiting on the review to be approved',
         note: 'Check whether the review has been approved',
       },
       'Scheduled this session to auto-resume in 2 hours.',
@@ -3363,6 +3404,29 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const filled = body.values.filter(Boolean).length
       const outcomes = body.values.map((value: string) => (value ? 'filled' : 'skipped'))
       return new Response(JSON.stringify({ success: true, filled, failed: 0, outcomes, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+
+    // A way picked on a page that asks how to verify it's you: the real
+    // container clicks it and answers the parked call; the mock records it.
+    if (fetchPath === '/browser/login/choose' && init?.method === 'POST') {
+      let body: { toolUseId: string; expectedOrigin: string; index: number }
+      try {
+        body = JSON.parse(String(init.body))
+      } catch {
+        return new Response(JSON.stringify({ error: 'Invalid sign-in request' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      const pending = this.pendingInputs.get(body.toolUseId)
+      if (!pending) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is no longer open' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (body.expectedOrigin !== MOCK_LOGIN_CONTEXT.origin) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is for a different site' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      const way = mockLoginContext(pending.input).ways[body.index]
+      if (!way) return new Response(JSON.stringify({ error: 'The page offers no such way' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      this.writeMockRecord({ type: 'loginWay', agentSlug: this.config.agentId, toolUseId: body.toolUseId, index: body.index })
+      await this.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, { method: 'POST', body: '{}' })
+      return new Response(JSON.stringify({ success: true, clicked: way.clickable, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
     if (fetchPath === '/inputs/pending') {

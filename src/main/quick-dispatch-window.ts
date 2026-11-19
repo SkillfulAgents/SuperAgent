@@ -43,8 +43,8 @@ function buildQuickDispatchWindow(): BrowserWindow {
   // Liquid Glass (macOS 26+) is a native view behind the web content of a
   // fully transparent window (quick-dispatch-glass.ts), so it is decided here,
   // at construction. Older macOS keeps Electron's vibrancy. The glass bridge
-  // loads at startup (prewarmQuickDispatchWindow); a window built before it
-  // settles gets vibrancy.
+  // loads at startup (scheduleQuickDispatchPrewarm waits for it); a window
+  // built before it settles gets vibrancy.
   const wantsGlass = quickDispatchGlassAvailable()
   const win = new BrowserWindow({
     width: QUICK_WIDTH,
@@ -172,19 +172,56 @@ function buildQuickDispatchWindow(): BrowserWindow {
 /** Lazily create the (hidden) launcher window and return it. */
 export function getQuickDispatchWindow(): BrowserWindow {
   if (!quickWindow || quickWindow.isDestroyed()) {
+    // Built on demand (the shortcut, an opened file) ahead of a pending prewarm:
+    // that prewarm has nothing left to do.
+    cancelQuickDispatchPrewarm()
     quickWindow = buildQuickDispatchWindow()
   }
   return quickWindow
 }
 
+// --- Prewarm. The hidden window is pre-created so the first open is instant,
+// but not during startup: it is a second renderer process that loads its own
+// bundle and calls the API, and it would compete with the main window's first
+// load. It is built once the main window has painted, or after a fallback wait
+// when no paint is coming (the window is hidden, minimized or was never
+// created: a hidden window runs no animation frames, so it never reports one).
+// Until then the launcher is built on demand, by getQuickDispatchWindow().
+
+/** How long the prewarm waits for the main window's paint before going ahead. */
+export const PREWARM_FALLBACK_MS = 15_000
+
+let mainWindowPainted = false
+// Set while a prewarm is waiting for the main window's paint.
+let prewarmFallback: ReturnType<typeof setTimeout> | null = null
+
+function cancelQuickDispatchPrewarm(): void {
+  if (!prewarmFallback) return
+  clearTimeout(prewarmFallback)
+  prewarmFallback = null
+}
+
 /**
- * Pre-create the hidden window at startup so the first open is instant. Waits
- * for the glass bridge first, since the window's material is fixed when it is
- * built; startApp starts that load early, so this wait is normally already over.
+ * Arrange for the hidden window to be pre-created once the main window has
+ * painted. Resolves when the launcher can be built, not when it has been: it
+ * waits for the glass bridge, since the window's material is fixed when it is
+ * built and a caller may build it on demand right after (startApp starts that
+ * load early, so this wait is normally already over).
  */
-export async function prewarmQuickDispatchWindow(): Promise<void> {
+export async function scheduleQuickDispatchPrewarm(): Promise<void> {
   await loadQuickDispatchGlass()
-  getQuickDispatchWindow()
+  if (prewarmFallback || (quickWindow && !quickWindow.isDestroyed())) return
+  if (mainWindowPainted) {
+    getQuickDispatchWindow()
+    return
+  }
+  prewarmFallback = setTimeout(() => getQuickDispatchWindow(), PREWARM_FALLBACK_MS)
+}
+
+/** The main window has something on screen: a pending prewarm can go ahead. */
+export function quickDispatchMainWindowPainted(): void {
+  mainWindowPainted = true
+  if (prewarmFallback) getQuickDispatchWindow()
 }
 
 function positionQuickWindow(win: BrowserWindow): void {
@@ -232,6 +269,10 @@ export function toggleQuickDispatchWindow(): void {
 }
 
 export function closeQuickDispatchWindow(): void {
+  // Shutdown and a target switch both end here. Neither wants a window built
+  // behind it: after a switch the launcher is built on demand, as it is after
+  // any later switch.
+  cancelQuickDispatchPrewarm()
   if (quickWindow && !quickWindow.isDestroyed()) {
     quickWindow.destroy()
   }

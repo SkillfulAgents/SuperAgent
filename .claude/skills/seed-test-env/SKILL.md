@@ -63,7 +63,7 @@ Read the source install's settings (step 1) and write a filtered copy to `<TARGE
 - `apiKeys` (anthropicApiKey, deepgramApiKey, openaiApiKey, composioUserId — whatever is present)
 - `llmProvider` and any provider-specific config
 - `models` (agentModel, browserModel, summarizerModel)
-- `app` — but **strip** `chromeProfileId` (path won't apply) and any path-bound fields
+- `app` — but **strip** any path-bound fields
 - `container` (lima/docker runner config — without this the container won't start). **Always override `container.agentImage` to `superagent-container:latest`** so the test instance uses the locally-built dev image instead of pulling the published one from `ghcr.io/skillfulagents/...`. That tag is what `npm run build:container` produces. If the user has tagged it differently, they'll tell you — otherwise default to `superagent-container:latest`.
 - `skillsets` (so the test instance has the same skill catalog)
 - `platformAuth` token block if present (so platform LLM provider keeps working)
@@ -71,7 +71,6 @@ Read the source install's settings (step 1) and write a filtered copy to `<TARGE
 
 **Skip:**
 - `mounts` (host paths won't apply to a fresh test agent)
-- `chromeProfileId`
 - Any session-specific or per-agent state
 
 If a key is missing in prod, just omit it — don't invent values. If `apiKeys.anthropicApiKey` is missing, surface that loudly in the final summary so the user knows to add one.

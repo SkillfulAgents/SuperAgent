@@ -1,8 +1,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { chromium } from 'playwright-core'
 import { z } from 'zod'
 import { getActivePage } from './browser-upload'
+import { loadChromium } from './load-chromium'
 
 const BrowserDownloadRequestSchema = z.object({
   sessionId: z.string().min(1),
@@ -226,6 +226,7 @@ export async function fetchResourceViaBrowser(
     return { buffer: parsed.buffer, contentType: parsed.contentType, contentDisposition: null }
   }
 
+  const chromium = await loadChromium()
   const browser = await chromium.connectOverCDP(options.getConnectionUrl())
   try {
     if (scheme === 'blob') {
