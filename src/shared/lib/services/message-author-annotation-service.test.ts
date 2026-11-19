@@ -257,16 +257,40 @@ describe('annotateMessageAuthors', () => {
     expect(select).not.toHaveBeenCalled()
   })
 
-  // Cloudflare D1 allows 100 bound parameters per statement.
-  it.each([1, 300, 500, 5000])('binds two parameters for %i message ids', (count) => {
-    const ids = Array.from({ length: count }, (_, i) => `message-${i}`)
+  it.each(['items', 'session'] as const)('keeps agent senders scoped to the recipient and independent of the payer (%s)', async (scope) => {
+    await testDb.insert(schema.user).values({ id: 'payer', name: 'Payer', email: 'payer@example.test' }).run()
+    await testDb.insert(schema.agents).values({ slug: 'writer', name: 'Writer', avatarColor: 'tonal-pink', avatarShape: 'circle', createdAt: new Date() }).run()
+    await testDb.insert(schema.messageAuthor).values({
+      id: 'same-message', sessionId: SESSION, agentSlug: AGENT, authorAgentSlug: 'writer', billedUserId: 'payer',
+    }).run()
+    const read = async (recipient: string, senders = true) => {
+      const item = userItem('same-message')
+      await annotateMessageAuthors(recipient, SESSION, [item], { senders, scope })
+      return item
+    }
+    const expected = { slug: 'writer', name: 'Writer', avatar: { color: 'tonal-pink', shape: 'circle' } }
+    const original = await read(AGENT)
+    expect(original.agentSender).toEqual(expected)
+    expect(original.sender).toBeUndefined()
+    expect((await read('imported-agent')).agentSender).toBeUndefined()
+    expect((await read(AGENT, false)).agentSender).toBeUndefined()
 
-    const { params } = messageAuthorsQuery(SESSION, ids).toSQL()
-
-    expect(params).toEqual([SESSION, JSON.stringify(ids)])
+    await testDb.delete(schema.user).where(eq(schema.user.id, 'payer')).run()
+    expect((await read(AGENT)).agentSender).toEqual(expected)
+    await testDb.delete(schema.agents).where(eq(schema.agents.slug, 'writer')).run()
+    expect((await read(AGENT)).agentSender).toEqual({ slug: 'writer', name: 'writer', avatar: null })
   })
 
-  it('binds one parameter for the whole transcript', () => {
-    expect(messageAuthorsQuery(SESSION, null).toSQL().params).toEqual([SESSION])
+  // Cloudflare D1 allows 100 bound parameters per statement.
+  it.each([1, 300, 500, 5000])('binds three parameters for %i message ids', (count) => {
+    const ids = Array.from({ length: count }, (_, i) => `message-${i}`)
+
+    const { params } = messageAuthorsQuery(AGENT, SESSION, ids).toSQL()
+
+    expect(params).toEqual([AGENT, SESSION, JSON.stringify(ids)])
+  })
+
+  it('binds only the recipient and session for the whole transcript', () => {
+    expect(messageAuthorsQuery(AGENT, SESSION, null).toSQL().params).toEqual([AGENT, SESSION])
   })
 })

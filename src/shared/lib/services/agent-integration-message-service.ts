@@ -4,8 +4,8 @@
  * A message an integration delivered has a `message_author` row naming the
  * integration instead of a user, keyed by the uuid it was sent with, and the
  * row carries the card the app draws for it. The transcript keeps exactly the
- * text the agent received. The messages API joins cards back on by uuid alone:
- * the CLI keeps the uuid for a message queued mid-turn too (as the
+ * text the agent received. The messages API joins cards by recipient, session,
+ * and message uuid. The CLI keeps the uuid for a message queued mid-turn too (as the
  * queued_command's source_uuid, which becomes its transcript id). Only the host
  * writes rows and mints their uuids, so no message — whatever its text — can
  * claim another's card. Session, agent and fork handling are message_author's.
@@ -43,7 +43,7 @@ export async function recordIntegrationMessage(record: IntegrationMessageRecord)
     // A retried delivery re-records under the same uuid, possibly into a new
     // session after self-heal: the latest attempt's session wins.
     await db.insert(messageAuthor).values({ id: record.id, ...row })
-      .onConflictDoUpdate({ target: messageAuthor.id, set: row })
+      .onConflictDoUpdate({ target: messageAuthor.id, targetWhere: isNotNull(messageAuthor.integrationId), set: row })
     return display
   } catch (error) {
     captureException(error, {

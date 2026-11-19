@@ -32,6 +32,7 @@ import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from 
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { formatCompactDistance } from '@renderer/components/connections/utils'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import { format } from 'date-fns'
@@ -215,12 +216,14 @@ const SENDER_NAME_INSET = SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP + 14
  * and what was sent with it in one column, the sender's avatar beside it at
  * the bottom corner. Without a sender the children sit in the row as they are.
  */
-function SenderAvatarGroup({ sender, children }: { sender: { id: string; name: string; image?: string | null } | null; children: ReactNode }) {
+function SenderAvatarGroup({ sender, children }: { sender: { id: string; name: string; image?: string | null } | NonNullable<ApiMessage['agentSender']> | null; children: ReactNode }) {
   if (!sender) return <>{children}</>
   return (
     <div className="flex max-w-full items-end" style={{ gap: SENDER_AVATAR_GAP }}>
       <div className="flex min-w-0 flex-col items-end gap-2">{children}</div>
-      <UserAvatar user={sender} size={SENDER_AVATAR_SIZE} />
+      {'slug' in sender
+        ? <AgentAvatar agent={sender} size={SENDER_AVATAR_SIZE} still />
+        : <UserAvatar user={sender} size={SENDER_AVATAR_SIZE} />}
     </div>
   )
 }
@@ -239,7 +242,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const silentMention = !!userParts?.silent
   const senderFromPrefix = userParts?.sender ?? null
   // A mirror prefix carries only a name, so it hashes the name for an initials avatar.
-  const sender = message.sender ?? (senderFromPrefix ? { id: senderFromPrefix, name: senderFromPrefix } : null)
+  const sender = message.agentSender ?? message.sender ?? (senderFromPrefix ? { id: senderFromPrefix, name: senderFromPrefix } : null)
   const attachedFiles = userParts?.attachedFiles ?? []
   const mountedFolders = userParts?.mountedFolders ?? []
   const cleanText = userParts?.text ?? rawText

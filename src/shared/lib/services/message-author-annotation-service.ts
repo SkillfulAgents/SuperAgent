@@ -1,7 +1,7 @@
 /**
  * Who sent the user messages in a response, joined on from `message_author`
  * in one statement: an integration's card (`integration`) and, when asked for,
- * the person's profile (`sender`).
+ * the person's profile (`sender`) or the calling agent (`agentSender`).
  *
  * The statement binds a fixed number of parameters however many messages the
  * response holds. The ids travel as one JSON array read with `json_each`, not
@@ -11,7 +11,8 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { messageAuthor, user } from '@shared/lib/db/schema'
+import { agents, messageAuthor, user } from '@shared/lib/db/schema'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import { toUserProfile, userProfileFields } from '@shared/lib/services/user-profile-service'
 import type { TransformedItem } from '@shared/lib/utils/message-transform'
@@ -31,18 +32,21 @@ function parseDisplay(json: string | null): IntegrationMessageDisplay | null {
  * fields. `ids` narrows it to those messages; it is bound as one parameter.
  * Exported for the test that pins the parameter count.
  */
-export function messageAuthorsQuery(sessionId: string, ids: readonly string[] | null) {
+export function messageAuthorsQuery(agentSlug: string, sessionId: string, ids: readonly string[] | null) {
   return db
     .select({
       id: messageAuthor.id,
-      agentSlug: messageAuthor.agentSlug,
+      authorAgentSlug: messageAuthor.authorAgentSlug,
+      agent: { name: agents.name, color: agents.avatarColor, shape: agents.avatarShape },
       integrationId: messageAuthor.integrationId,
       display: messageAuthor.display,
       profile: userProfileFields(),
     })
     .from(messageAuthor)
     .leftJoin(user, eq(user.id, messageAuthor.userId))
+    .leftJoin(agents, eq(agents.slug, messageAuthor.authorAgentSlug))
     .where(and(
+      eq(messageAuthor.agentSlug, agentSlug),
       eq(messageAuthor.sessionId, sessionId),
       ids ? inArray(messageAuthor.id, sql`(select value from json_each(${JSON.stringify(ids)}))`) : undefined,
     ))
@@ -51,7 +55,7 @@ export function messageAuthorsQuery(sessionId: string, ids: readonly string[] | 
 type UserItem = Extract<TransformedItem, { type: 'user' | 'assistant' }>
 
 export interface AnnotateMessageAuthorsOptions {
-  /** Attach `sender` to messages a person wrote (auth mode). */
+  /** Attach the person or agent that sent the message (auth mode). */
   senders: boolean
   /**
    * Which rows to read. `items` (the default) reads the rows of the messages
@@ -63,10 +67,8 @@ export interface AnnotateMessageAuthorsOptions {
 }
 
 /**
- * Attach `integration` and `sender` to the user messages in a response, by
- * transcript id. A card is only joined to a message of the agent it was
- * recorded for, and one that no longer validates is skipped: that message
- * renders as text. A message whose author has no user row gets no sender.
+ * Attach the sender recorded for this recipient and transcript. A full import
+ * can carry the same session and message IDs into another agent's workspace.
  */
 export async function annotateMessageAuthors(
   agentSlug: string,
@@ -77,16 +79,20 @@ export async function annotateMessageAuthors(
   const users = items.filter((item): item is UserItem => !!item && item.type === 'user')
   if (users.length === 0) return
 
-  const rows = await messageAuthorsQuery(sessionId, options.scope === 'session' ? null : users.map(item => item.id)).all()
+  const rows = await messageAuthorsQuery(agentSlug, sessionId, options.scope === 'session' ? null : users.map(item => item.id)).all()
 
   const byId = new Map(rows.map(row => [row.id, row]))
   for (const item of users) {
     const row = byId.get(item.id)
     if (!row) continue
-    if (row.integrationId !== null && row.agentSlug === agentSlug) {
+    if (row.integrationId !== null) {
       const display = parseDisplay(row.display)
       if (display) item.integration = display
+    } else if (options.senders && row.authorAgentSlug) {
+      const avatar = row.agent && agentAvatarSchema.safeParse({ color: row.agent.color, shape: row.agent.shape }).data
+      item.agentSender = { slug: row.authorAgentSlug, name: row.agent?.name ?? row.authorAgentSlug, avatar: avatar ?? null }
+    } else if (options.senders && row.profile) {
+      item.sender = toUserProfile(row.profile)
     }
-    if (options.senders && row.profile) item.sender = toUserProfile(row.profile)
   }
 }

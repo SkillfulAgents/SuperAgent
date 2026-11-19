@@ -57,17 +57,19 @@ author in `message_author` (`user_id` null, `integration_id` set, the card in
 `display`) before the handoff. The row is keyed by the delivery ID, which is also the
 message uuid (and `initialMessageUuid` for a new session). A retry upserts the same row,
 moving it to a replacement session after self-heal; a failed or uncertain handoff keeps
-it, since the runtime may have accepted the message. The messages API joins it onto the
-user message as `integration` by exact uuid only; people's rows keep producing `sender`.
+it, since the runtime may have accepted the message. The messages API finds the row by
+recipient, session and message uuid. Integration rows produce `integration`, people's
+rows produce `sender`, and agent calls produce `agentSender` when senders are requested.
 A message queued mid-turn keeps its uuid too: the CLI writes it as the queued command's
 `source_uuid`, which becomes its transcript id. No message text is ever matched, so an
 identical message typed in the app never picks up a card. Live watchers get the same
 card in the `user_message` event. Author rows follow the existing `message_author`
 lifecycle, now in every mode: forks re-key them, and session, agent and factory-reset
-deletion remove them. A forked copy of a message queued mid-turn keeps its uuid, which
-already keys the source's row, so it renders as text. A card that does not validate is
-not stored, and the message renders as its text. Recording and broadcasting never block
-delivery.
+deletion remove them. A queued prompt keeps its uuid in a fork. People and agent callers
+keep their attribution in each session. Integration delivery IDs are unique across
+sessions so a retry can move its card. A forked copy of a queued integration message
+renders as text, as does a message whose card fails validation. Recording and
+broadcasting never block delivery.
 
 Only the host writes these rows, so a card cannot be spoofed by message text, and the
 external text keeps its untrusted-input role. In the renderer, the `integration` kind

@@ -241,6 +241,8 @@ export interface ApiMessage {
   toolCalls: ApiToolCall[]
   createdAt: Date
   sender?: ApiMessageSender
+  /** Set instead of `sender` when another agent sent the message. */
+  agentSender?: Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
   /**
    * Present on a message an integration delivered (Slack, Linear, …). Written
    * by the host beside the transcript, never parsed from the message text, so

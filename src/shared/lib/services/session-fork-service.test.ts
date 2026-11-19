@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { eq } from 'drizzle-orm'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { messageAuthor, user } from '@shared/lib/db/schema'
 import { ContainerNotFoundError } from '@shared/lib/container/types'
 
 const {
@@ -41,11 +44,6 @@ vi.mock('@shared/lib/agent-actor/jsonl-files', async (importOriginal) => ({
   streamJsonl: () => streamJsonlFile(),
 }))
 
-const { insertMessageAuthorsBestEffort, dbSelectFrom } = vi.hoisted(() => ({
-  insertMessageAuthorsBestEffort: vi.fn(),
-  dbSelectFrom: vi.fn(),
-}))
-
 vi.mock('./session-service', () => ({
   readSessionMetadata,
   getSession,
@@ -80,33 +78,9 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   getAgentWorkspaceDir: () => '/',
 }))
 
-vi.mock('@/api/routes/message-author', () => ({
-  insertMessageAuthorsBestEffort,
-}))
-
-const { hasIntegrationMessages } = vi.hoisted(() => ({
-  hasIntegrationMessages: vi.fn(async () => false),
-}))
-vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ hasIntegrationMessages }))
-
+let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({
-  db: {
-    select: () => ({
-      from: () => ({
-        where: (...args: unknown[]) => dbSelectFrom(...args),
-      }),
-    }),
-  },
-}))
-
-vi.mock('@shared/lib/db/schema', () => ({
-  messageAuthor: { id: 'id', sessionId: 'session_id', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
-}))
-
-vi.mock('drizzle-orm', () => ({
-  eq: (col: string, val: string) => ({ col, val }),
-  and: (...args: unknown[]) => args,
-  inArray: (col: string, vals: string[]) => ({ col, vals }),
+  get db() { return handle.db },
 }))
 
 import { forkSession } from './session-fork-service'
@@ -128,7 +102,8 @@ const sourceMeta = {
 }
 
 describe('forkSession', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    handle = await createTestDatabase()
     vi.clearAllMocks()
     isSessionActive.mockReturnValue(false)
     sessionIsKnown.mockResolvedValue(true)
@@ -141,9 +116,8 @@ describe('forkSession', () => {
     deleteInContainer.mockResolvedValue(true)
     copyDirectoryFiltered.mockResolvedValue(undefined)
     streamJsonlFile.mockImplementation(async function* () { yield })
-    insertMessageAuthorsBestEffort.mockResolvedValue(true)
-    dbSelectFrom.mockResolvedValue([])
   })
+  afterEach(async () => { await handle.close() })
 
   it('starts the container boot alongside the source read', async () => {
     let releaseGet!: () => void
@@ -207,25 +181,53 @@ describe('forkSession', () => {
     await pending
   })
 
-  it('re-keys integration authors in every mode, cards included', async () => {
-    hasIntegrationMessages.mockResolvedValueOnce(true)
+  it('copies re-keyed integration cards and leaves queued delivery IDs with the source', async () => {
+    const card = { sessionId: 'src-1', agentSlug: 'test-agent', integrationId: 'integration-1', display: '{"version":1}' }
+    await handle.db.insert(messageAuthor).values([{ ...card, id: 'old-user' }, { ...card, id: 'queued-delivery' }]).run()
     streamJsonlFile.mockImplementation(async function* () {
       yield { type: 'user', uuid: 'new-user', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-user' } }
       yield { type: 'assistant', uuid: 'new-assistant', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-assistant' } }
+      yield {
+        type: 'attachment', uuid: 'new-attachment', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-attachment' },
+        attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'delivery', source_uuid: 'queued-delivery' },
+      }
     })
-    dbSelectFrom.mockResolvedValueOnce([{ id: 'old-user', userId: null, integrationId: 'integration-1', display: '{"version":1}' }])
-
     const fork = await forkSession('test-agent', 'src-1')
-
-    expect(insertMessageAuthorsBestEffort).toHaveBeenCalledExactlyOnceWith([
-      { id: 'new-user', sessionId: fork.id, agentSlug: 'test-agent', userId: null, integrationId: 'integration-1', display: '{"version":1}' },
+    expect(await handle.db.select().from(messageAuthor).where(eq(messageAuthor.sessionId, fork.id)).all()).toMatchObject([
+      { id: 'new-user', agentSlug: 'test-agent', userId: null, integrationId: 'integration-1', display: '{"version":1}' },
     ])
+    expect(await handle.db.select().from(messageAuthor).where(eq(messageAuthor.id, 'queued-delivery')).all()).toMatchObject([
+      { ...card, id: 'queued-delivery' },
+    ])
+  })
+
+  it('copies regular and queued agent senders from this recipient into the fork', async () => {
+    await handle.db.insert(user).values({ id: 'payer', name: 'Payer', email: 'payer@example.test' }).run()
+    const author = { sessionId: 'src-1', agentSlug: 'test-agent', authorAgentSlug: 'research-agent', billedUserId: 'payer' }
+    await handle.db.insert(messageAuthor).values([
+      { ...author, id: 'old-user' },
+      { ...author, id: 'queue-id' },
+      { ...author, id: 'only-in-import', agentSlug: 'other-recipient' },
+    ]).run()
+    streamJsonlFile.mockImplementation(async function* () {
+      yield { type: 'user', uuid: 'new-user', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-user' } }
+      yield { type: 'user', uuid: 'unattributed', forkedFrom: { sessionId: 'src-1', messageUuid: 'only-in-import' } }
+      yield {
+        type: 'attachment', uuid: 'new-attachment', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-attachment' },
+        attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'follow up', source_uuid: 'queue-id' },
+      }
+    })
+    const fork = await forkSession('test-agent', 'src-1', { copyAttribution: true })
+    expect(await handle.db.select().from(messageAuthor).where(eq(messageAuthor.sessionId, fork.id)).orderBy(messageAuthor.id).all()).toMatchObject([
+      { ...author, sessionId: fork.id, id: 'new-user' },
+      { ...author, sessionId: fork.id, id: 'queue-id' },
+    ])
+    expect(await handle.db.select().from(messageAuthor).where(eq(messageAuthor.id, 'queue-id')).all()).toHaveLength(2)
   })
 
   it('does not scan the fork without auth attribution or integration authors', async () => {
     await forkSession('test-agent', 'src-1')
     expect(streamJsonlFile).not.toHaveBeenCalled()
-    expect(insertMessageAuthorsBestEffort).not.toHaveBeenCalled()
   })
 
   it('does not re-read metadata for runtime choices', async () => {

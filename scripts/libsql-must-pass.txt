@@ -137,3 +137,5 @@ src/shared/lib/config/settings-request-memo.test.ts
 src/shared/lib/services/audit-log-service.test.ts
 src/shared/lib/db/migrations/todos-connection-fk.test.ts
 src/shared/lib/services/message-author-annotation-service.test.ts
+src/shared/lib/db/migrations/message-agent-senders.test.ts
+src/shared/lib/services/session-fork-service.test.ts

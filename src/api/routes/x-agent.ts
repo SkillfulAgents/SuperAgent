@@ -16,7 +16,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, isNotNull, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
@@ -113,14 +113,15 @@ async function getLatestMessageAuthorUserId(
   sessionId: string,
 ): Promise<string | undefined> {
   try {
+    // An incoming agent call carries the payer forward into the next call.
+    const payer = sql<string | null>`coalesce(${messageAuthor.userId}, ${messageAuthor.billedUserId})`
     const rows = await db
-      .select({ userId: messageAuthor.userId })
+      .select({ userId: payer })
       .from(messageAuthor)
       .where(and(
         eq(messageAuthor.agentSlug, agentSlug),
         eq(messageAuthor.sessionId, sessionId),
-        // An integration-delivered message has no user author.
-        isNotNull(messageAuthor.userId),
+        isNotNull(payer),
       ))
       .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
       .limit(1)
@@ -1002,7 +1003,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             id: candidateUuid,
             sessionId: existingSessionId,
             agentSlug: targetSlug,
-            userId: attributedUserId,
+            billedUserId: attributedUserId,
+            authorAgentSlug: callerSlug,
           })
           if (recorded) messageUuid = candidateUuid
         }
@@ -1011,7 +1013,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // references deleted bytes or loses its author.
         const discardUndelivered = async () => {
           promptDeliveryStarted = false
-          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+          if (messageUuid) await deleteMessageAuthorBestEffort(targetSlug, existingSessionId, messageUuid)
           if (stagedTargetDirectory) {
             await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
             stagedTargetDirectory = undefined
@@ -1172,7 +1174,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           id: initialMessageUuid,
           sessionId: newSessionId,
           agentSlug: targetSlug,
-          userId: createdByUserId,
+          billedUserId: createdByUserId,
+          authorAgentSlug: callerSlug,
         })
       }
       // The x-agent provenance exists now: the target's trigger and history

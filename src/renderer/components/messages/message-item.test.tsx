@@ -6,6 +6,7 @@ import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-er
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
 import type { ApiMessage } from '@shared/lib/types/api'
 import { appendMentions } from '@shared/lib/utils/mentions'
+import * as orbVisibility from '@renderer/components/agents/agent-avatar/orb-visibility'
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
 vi.mock('./subagent-block', () => ({
@@ -807,6 +808,21 @@ describe('MessageItem', () => {
       render(<MessageItem message={msg} />)
       const avatar = screen.getByRole('img', { name: 'Alice Baker' })
       expect(avatar.querySelector('img')).toHaveAttribute('src', 'https://example.com/alice.png')
+    })
+
+    it('draws the agent sender and holds its orb still', ({ onTestFinished }) => {
+      const observe = vi.spyOn(orbVisibility, 'observeOrbVisibility')
+      onTestFinished(() => observe.mockRestore())
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        agentSender: { slug: 'research-agent', name: 'Research Agent', avatar: { color: 'tonal-blue', shape: 'triangle' } },
+      })
+      render(<MessageItem message={msg} />)
+      expect(document.querySelector('[data-avatar-orb]')).toBeInTheDocument()
+      expect(observe).not.toHaveBeenCalled()
+      expect(screen.queryByRole('img', { name: 'Research Agent' })).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Research Agentjust now$/)
     })
 
     it('falls back to initials for a sender lifted from a mirror prefix', () => {

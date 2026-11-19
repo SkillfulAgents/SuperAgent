@@ -843,5 +843,20 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1795048855087,
     "hash": "d0708071a2b154fbf64540385e5586487a239d5460d7b7ba8737d4f6abf4c9c0"
+  },
+  {
+    "sql": [
+      "PRAGMA foreign_keys=OFF;",
+      "\nCREATE TABLE `__new_message_author` (\n\t`id` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`user_id` text,\n\t`integration_id` text,\n\t`display` text,\n\t`author_agent_slug` text,\n\t`billed_user_id` text,\n\t`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,\n\tPRIMARY KEY(`agent_slug`, `session_id`, `id`),\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`billed_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"message_author_author_check\" CHECK(\n    (\"__new_message_author\".\"user_id\" is not null) + (\"__new_message_author\".\"integration_id\" is not null) + (\"__new_message_author\".\"author_agent_slug\" is not null) = 1\n    and (\"__new_message_author\".\"integration_id\" is null) = (\"__new_message_author\".\"display\" is null)\n    and (\"__new_message_author\".\"billed_user_id\" is null or \"__new_message_author\".\"author_agent_slug\" is not null))\n);\n",
+      "\n-- Main has person and integration rows. The previous PR build also recorded\n-- the calling agent alongside its payer in user_id. The trailing NULL supplies\n-- the missing column on main; an existing column from * takes precedence.\nINSERT INTO `__new_message_author` (id, session_id, agent_slug, user_id, integration_id, display, author_agent_slug, billed_user_id, created_at)\nSELECT id, session_id, agent_slug, CASE WHEN author_agent_slug IS NULL THEN user_id END, integration_id, display,\n       author_agent_slug, CASE WHEN author_agent_slug IS NOT NULL THEN user_id END, created_at\nFROM (SELECT *, NULL AS author_agent_slug FROM `message_author`);\n",
+      "\nDROP TABLE `message_author`;",
+      "\nALTER TABLE `__new_message_author` RENAME TO `message_author`;",
+      "\nPRAGMA foreign_keys=ON;",
+      "\nCREATE INDEX `message_author_session_idx` ON `message_author` (`session_id`);",
+      "\nCREATE UNIQUE INDEX `message_author_integration_delivery_idx` ON `message_author` (`id`) WHERE \"message_author\".\"integration_id\" is not null;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795053244107,
+    "hash": "a7213cf3790efe8a2f872d2388f93e5e9d4574cda1bf602f4b04d80a6b91cbc5"
   }
 ]

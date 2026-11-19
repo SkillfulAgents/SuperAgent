@@ -59,6 +59,7 @@ import {
   JsonlMessageEntry,
   JsonlSystemEntry,
   JsonlAttachmentEntry,
+  isQueuedUserPrompt,
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
@@ -291,17 +292,8 @@ function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
  * user-typed queued command (task notifications, meta/system injections).
  */
 function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
-  if (entry.type !== 'attachment') return entry
-  const { attachment, forkedFrom } = entry as JsonlAttachmentEntry
-  if (
-    !attachment ||
-    attachment.type !== 'queued_command' ||
-    attachment.commandMode !== 'prompt' ||
-    attachment.isMeta ||
-    attachment.prompt === undefined
-  ) {
-    return entry
-  }
+  if (!isQueuedUserPrompt(entry)) return entry
+  const { attachment, forkedFrom } = entry
   return {
     type: 'user',
     // source_uuid is the CLI's queue-entry id; prefer it since it's also the

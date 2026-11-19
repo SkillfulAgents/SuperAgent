@@ -2935,7 +2935,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     } catch (error) {
       // A message that certainly never went (refused, or the session is
       // gone) leaves no attribution behind.
-      if (isAuthMode() && deliveryFailure(error)?.accepted === false) await deleteMessageAuthorBestEffort(messageUuid)
+      if (isAuthMode() && deliveryFailure(error)?.accepted === false) await deleteMessageAuthorBestEffort(agentSlug, sessionId, messageUuid)
       throw error
     }
     const queued = delivery.status !== 'sent' || delivery.queued
