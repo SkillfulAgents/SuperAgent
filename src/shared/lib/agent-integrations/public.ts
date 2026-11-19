@@ -27,6 +27,11 @@ export type PublicAgentIntegration<Settings extends object = object> = Pick<Agen
   provisionedApp?: PublicProvisionedApp
 }
 
+/** Multi-step installations exist before the external app has been connected. */
+export function channelSetupComplete(integration: PublicAgentIntegration): boolean {
+  return integration.provisionedApp?.installed ?? integration.hasCredentials
+}
+
 /** Missing capabilities only occurs with legacy chat API responses. */
 export function integrationSupports(integration: PublicAgentIntegration, capability: IntegrationCapability): boolean {
   return integration.capabilities?.includes(capability) ?? true

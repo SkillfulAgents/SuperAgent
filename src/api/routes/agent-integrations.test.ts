@@ -37,6 +37,11 @@ vi.mock('@shared/lib/agent-integrations/registry', async importOriginal => {
   actual.agentIntegrationRegistry.cleanup = cleanup
   return actual
 })
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { createFakeAgentActor, createFakeRegistry } from '@shared/lib/agent-actor/testing/fake-agent-actor'
+import { InMemoryFileOps } from '@shared/lib/agent-actor/testing/in-memory-file-ops'
+import { createInMemoryConfigOps } from '@shared/lib/agent-actor/testing/in-memory-config-ops'
+import { backgroundSettled } from '@shared/lib/background'
 import router from './agent-integrations'
 import { captureException } from '@shared/lib/error-reporting'
 import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
@@ -45,8 +50,15 @@ import { getLinearConfig, updateLinearConfig } from '@shared/lib/task-manager-in
 
 const app = new Hono().route('/api/agent-integrations', router)
 let id: string
+let files: InMemoryFileOps
 beforeEach(async () => {
   vi.clearAllMocks(); auth.role = 'owner'
+  files = new InMemoryFileOps()
+  const registry = createFakeRegistry([createFakeAgentActor('agent', {
+    config: createInMemoryConfigOps(files),
+    files: { getDoc: files.getDoc.bind(files), delete: files.delete.bind(files) },
+  })])
+  vi.spyOn(agentRegistry, 'get').mockImplementation(registry.get)
   handle = await createTestDatabase(); testDb = handle.db
   id = (await createAgentIntegration({ agentSlug: 'agent', provider: 'linear', name: 'Helper', config: {
     redirectUri: 'https://gamut.example/callback', clientId: 'client-id', clientSecret: 'client-secret',
@@ -54,9 +66,75 @@ beforeEach(async () => {
     tokens: { accessToken: 'access-secret', refreshToken: 'refresh-secret', expiresAt: Date.now() + 3600000, scope: 'read write app:mentionable app:assignable' },
   } }))
 })
-afterEach(async () => { await handle.close(); vi.unstubAllGlobals() })
+afterEach(async () => { await backgroundSettled(); await handle.close(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 function patch(body: unknown) { return app.request(`/api/agent-integrations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
 describe('shared integration API', () => {
+  const reminders = '/api/agent-integrations/agents/agent/finished-setup'
+  const step = (provider: string) => ({ type: 'channel', provider })
+  const save = (provider: string) => app.request(reminders + '/' + provider, { method: 'PUT' })
+  const dismiss = (provider: string) => app.request(reminders + '/' + provider, { method: 'DELETE' })
+  const stored = async () => new TextDecoder().decode(await files.getDoc('finish-setup.json') ?? undefined)
+
+  it('keeps one workspace row per deferred channel across retries and concurrent changes', async () => {
+    expect(await (await app.request(reminders)).json()).toEqual({ steps: [] })
+    expect(await files.getDoc('finish-setup.json')).toBeNull()
+    const results = await Promise.all([save('slack'), save('telegram'), save('slack')])
+    expect(results.map(response => response.status)).toEqual([204, 204, 204])
+    const doc = JSON.parse(await stored())
+    expect(doc.steps).toHaveLength(2)
+    expect(doc.steps).toEqual(expect.arrayContaining([step('slack'), step('telegram')]))
+    expect((await dismiss('slack')).status).toBe(204)
+    expect((await dismiss('slack')).status).toBe(204)
+    expect(JSON.parse(await stored())).toEqual({ steps: [step('telegram')] })
+    await createAgentIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'telegram-secret' } })
+    expect(await (await app.request(reminders)).json()).toEqual({ steps: [] })
+    expect(JSON.parse(await stored())).toEqual({ steps: [] })
+  })
+
+  it('renames existing reminders on first use and preserves concurrent edits', async () => {
+    await files.putDoc('finished-setup.json', JSON.stringify({ steps: [step('slack')] }))
+    await Promise.all([app.request(reminders), save('telegram'), dismiss('slack')])
+    expect(JSON.parse(await stored())).toEqual({ steps: [step('telegram')] })
+    expect(await files.getDoc('finished-setup.json')).toBeNull()
+
+    // A restart after copying the file must not bring back a dismissed reminder.
+    await files.putDoc('finished-setup.json', JSON.stringify({ steps: [step('slack')] }))
+    expect(await (await app.request(reminders)).json()).toEqual({ steps: [step('telegram')] })
+    expect(await files.getDoc('finished-setup.json')).toBeNull()
+  })
+
+  it('preserves an unreadable previous file if it cannot migrate the reminders', async () => {
+    await files.putDoc('finished-setup.json', '{')
+    expect((await save('telegram')).status).toBe(500)
+    expect(new TextDecoder().decode(await files.getDoc('finished-setup.json') ?? undefined)).toBe('{')
+    expect(await files.getDoc('finish-setup.json')).toBeNull()
+  })
+
+  it('removes the connected channel from disk when setup succeeds without reopening Home', async () => {
+    await save('slack')
+    await save('telegram')
+    const result = await app.request('/api/agent-integrations/agents/agent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'telegram', config: { botToken: 'test-token' } }),
+    })
+    expect(result.status).toBe(201)
+    await backgroundSettled()
+    expect(JSON.parse(await stored())).toEqual({ steps: [step('slack')] })
+  })
+
+  it('enforces setup permissions and preserves malformed documents on attempted edits', async () => {
+    auth.role = 'viewer'
+    expect((await save('slack')).status).toBe(403)
+    auth.role = 'user'
+    expect((await save('linear')).status).toBe(403)
+    expect((await dismiss('linear')).status).toBe(403)
+    expect((await save('unknown')).status).toBe(400)
+    const malformed = JSON.stringify({ steps: [{ ...step('slack'), token: 'unrecognized' }] })
+    await files.putDoc('finish-setup.json', malformed)
+    expect((await save('slack')).status).toBe(500)
+    expect(await stored()).toBe(malformed)
+  })
+
   it('creates Linear through the shared provider setup contract and requires ownership', async () => {
     const create = () => app.request('/api/agent-integrations/agents/agent', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

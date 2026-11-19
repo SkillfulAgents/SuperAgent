@@ -1,4 +1,5 @@
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
+import type { AgentIntegrationProvider } from '@shared/lib/agent-integrations/provider-types'
 import type { ComponentType } from 'react'
 import type { IntegrationMessageProps } from './messages/types'
 
@@ -17,7 +18,7 @@ export interface IntegrationSetupProps {
  * (`/api/agent-integrations/providers`), not a flag here.
  */
 export interface IntegrationSetupProvider {
-  slug: string
+  slug: AgentIntegrationProvider
   label: string
   description: string
   unavailableReason?: string

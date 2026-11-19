@@ -31,11 +31,15 @@ vi.mock('@renderer/hooks/use-team-brain-access', () => ({
     toggle: (on: boolean) => toggle(slug, on),
   }),
 }))
+vi.mock('@renderer/hooks/use-finished-setup', () => ({
+  useFinishedSetup: () => ({ data: { steps: [] } }),
+}))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrations: () => ({ data: state.integrations, refetch: vi.fn() }),
   useAvailableAgentIntegrationProviders: () => ({ data: availableProviders?.map(provider => ({ provider })) }),
 }))
 vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog', () => ({
+  DeferChannelButton: () => <button>Set this up later</button>,
   AgentIntegrationSetupDialog: ({ provider }: { provider: { slug: string } | null }) => provider && <div role="dialog">{provider.slug}</div>,
 }))
 const show = () => render(<AgentAddonsStep header={null} agentSlug="scout" onBusyChange={vi.fn()} onDreamChange={vi.fn()} />)
@@ -149,7 +153,7 @@ it.each([
 
 it('explains both configured and unavailable channels inside More', async () => {
   availableProviders = ['telegram']
-  state.integrations = [{ provider: 'telegram' }]
+  state.integrations = [{ provider: 'telegram', hasCredentials: true }]
   show()
   const user = userEvent.setup()
   await user.click(screen.getByRole('button', { name: 'More channels' }))

@@ -29,6 +29,7 @@ import { HomePanel } from './home-collapsible'
 import { HomeVolumes } from './home-volumes'
 import { AgentSettingsColumn } from './agent-settings-column'
 import { useRefreshWidgetsOnVisit } from '@renderer/hooks/use-widgets'
+import { HomeFinishSetup } from './home-finish-setup'
 import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
@@ -297,6 +298,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 />
 
                 <div className="space-y-6">
+                  <HomeFinishSetup agentSlug={agent.slug} isOwner={isOwner} />
                   {sessions.length > 0 ? (
                     <HomeGlassPanel
                       title="Recent sessions"

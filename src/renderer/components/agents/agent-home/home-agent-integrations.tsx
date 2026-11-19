@@ -1,3 +1,4 @@
+import { channelSetupComplete } from '@shared/lib/agent-integrations/public'
 import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { useState } from 'react'
 import { Plus } from 'lucide-react'
@@ -151,6 +152,7 @@ function HomeAgentIntegrationsBody({ agentSlug, rows }: { agentSlug: string; row
         </div>
       )}
       <AgentIntegrationSetupDialog
+        allowDefer={!rows.some(row => row.provider === setupProvider?.slug && channelSetupComplete(row))}
         agentSlug={agentSlug}
         provider={setupProvider}
         onOpenChange={(open) => { if (!open) setSetupProvider(null) }}
