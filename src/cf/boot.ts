@@ -127,6 +127,11 @@ export async function checkIdle(slug: AgentSlug): Promise<number | null> {
   return Math.max(idleSince + timeoutMs, now + IDLE_ALARM_RETRY_MS)
 }
 
+/** The agent auto-sleep timeout in the org's settings; 0 when auto-sleep is off. */
+export async function autoSleepTimeoutMs(): Promise<number> {
+  return autoSleepTimeoutMsFrom(await getSettings())
+}
+
 /** This isolate's TaskManager, whose handlers the org's task manager object runs jobs through. */
 export function backgroundTasks(): CloudflareTaskManager {
   if (!tasks) throw new Error('SuperAgent has not booted in this isolate')

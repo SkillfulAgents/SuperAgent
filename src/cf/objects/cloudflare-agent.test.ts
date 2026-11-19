@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cloudflare-agent'
+import { inactivityTimeoutMs, AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cloudflare-agent'
 import { SavedWorkspace, linkTarget, workspaceBlobKey } from '../lib/saved-workspace'
 import { createObjectSessionIndexStorage } from '../lib/object-session-index-storage'
 import type { Env } from '../index'
@@ -12,7 +12,7 @@ import { sleepingStoreOn } from '../cloudflare-container-control'
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 // The app must not boot to list a sleeping agent: its session index is in the object's own SQLite.
 const { boot, syncAgentStatus } = vi.hoisted(() => ({ boot: vi.fn(), syncAgentStatus: vi.fn(async () => {}) }))
-vi.mock('../boot', () => ({ boot, syncAgentStatus, runAgentActorOp: async () => ({ value: 'from the actor' }) }))
+vi.mock('../boot', () => ({ boot, syncAgentStatus, runAgentActorOp: async () => ({ value: 'from the actor' }), autoSleepTimeoutMs: async () => 30 * 60_000 }))
 
 // Workers' FixedLengthStream, which Node lacks: here a pass-through.
 beforeAll(() => {
@@ -772,6 +772,35 @@ describe('AgentDurableObject listing its agent', () => {
   })
 })
 
+describe('AgentDurableObject agent name', () => {
+  const kv = () => {
+    const values = new Map<string, unknown>()
+    return { get: (key: string) => values.get(key), put: (key: string, value: unknown) => void values.set(key, value), delete: (key: string) => values.delete(key) }
+  }
+  const objectWith = (id: { name?: string; toString(): string }, store: ReturnType<typeof kv>) => {
+    const object = Object.create(AgentDurableObject.prototype) as Record<string, unknown>
+    Object.assign(object, { ctx: { id, storage: { kv: store } } })
+    return object as unknown as { agentSlug(): string; agentName(): string }
+  }
+
+  it('keeps the name it was first reached by, for a later instance reached by id', () => {
+    const store = kv()
+    const named = { name: 'sales', toString: () => '92fe3b64fead0000' }
+    // What the constructor does for an instance reached by name.
+    if (named.name) store.put('agent-name', named.name)
+    expect(objectWith(named, store).agentSlug()).toBe('sales')
+
+    const byId = { toString: () => '92fe3b64fead0000' }
+    expect(objectWith(byId, store).agentSlug()).toBe('sales')
+  })
+
+  it('refuses to act for an agent when it was only ever reached by id', () => {
+    const byId = { toString: () => '92fe3b64fead0000' }
+    expect(() => objectWith(byId, kv()).agentSlug()).toThrow(/reached by id/)
+    expect(objectWith(byId, kv()).agentName()).toBe('92fe3b64')
+  })
+})
+
 describe('SavedWorkspace reading a link while its agent sleeps', () => {
   const linked = async () => {
     const store = storage()
@@ -809,32 +838,12 @@ describe('SavedWorkspace reading a link while its agent sleeps', () => {
   })
 })
 
-describe('AgentDurableObject agent name', () => {
-  const kv = () => {
-    const values = new Map<string, unknown>()
-    return { get: (key: string) => values.get(key), put: (key: string, value: unknown) => void values.set(key, value), delete: (key: string) => values.delete(key) }
-  }
-  const objectWith = (id: { name?: string; toString(): string }, store: ReturnType<typeof kv>) => {
-    const object = Object.create(AgentDurableObject.prototype) as Record<string, unknown>
-    Object.assign(object, { ctx: { id, storage: { kv: store } } })
-    return object as unknown as { agentSlug(): string; agentName(): string }
-  }
-
-  it('keeps the name it was first reached by, for a later instance reached by id', () => {
-    const store = kv()
-    const named = { name: 'sales', toString: () => '92fe3b64fead0000' }
-    // What the constructor does for an instance reached by name.
-    if (named.name) store.put('agent-name', named.name)
-    expect(objectWith(named, store).agentSlug()).toBe('sales')
-
-    const byId = { toString: () => '92fe3b64fead0000' }
-    expect(objectWith(byId, store).agentSlug()).toBe('sales')
-  })
-
-  it('refuses to act for an agent when it was only ever reached by id', () => {
-    const byId = { toString: () => '92fe3b64fead0000' }
-    expect(() => objectWith(byId, kv()).agentSlug()).toThrow(/reached by id/)
-    expect(objectWith(byId, kv()).agentName()).toBe('92fe3b64')
+describe('inactivityTimeoutMs', () => {
+  it('runs a container past the auto-sleep timeout, and as long as the runtime allows when auto-sleep is off', () => {
+    expect(inactivityTimeoutMs(30 * 60_000)).toBe(35 * 60_000)
+    expect(inactivityTimeoutMs(120 * 60_000)).toBe(125 * 60_000)
+    expect(inactivityTimeoutMs(24 * 60 * 60_000)).toBe(6 * 60 * 60_000)
+    expect(inactivityTimeoutMs(0)).toBe(6 * 60 * 60_000)
   })
 })
 

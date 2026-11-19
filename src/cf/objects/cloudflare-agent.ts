@@ -49,8 +49,19 @@ const LOCATION_WAIT_MS = 2_000
 // How often and how far apart a container is asked whether it launched the agent, before its silence counts as no answer.
 const STATE_TRIES = 3
 const STATE_RETRY_MS = 200
-// The runtime stops the container once this object has been quiet this long; SuperAgent's own idle check sleeps the agent sooner.
-const INACTIVITY_TIMEOUT_MS = 30 * 60_000
+// The longest the runtime lets a container run on after its object goes quiet.
+const MAX_INACTIVITY_TIMEOUT_MS = 6 * 60 * 60_000
+// How much later than the agent's auto-sleep the runtime may stop its container: SuperAgent's idle check sleeps it first, with a save.
+const INACTIVITY_MARGIN_MS = 5 * 60_000
+
+/**
+ * How long the runtime keeps a container running after its object goes quiet: past the agent's
+ * auto-sleep timeout, so SuperAgent's own idle check sleeps the agent first, and as long as the
+ * runtime allows when auto-sleep is off (0).
+ */
+export function inactivityTimeoutMs(autoSleepMs: number): number {
+  return autoSleepMs > 0 ? Math.min(autoSleepMs + INACTIVITY_MARGIN_MS, MAX_INACTIVITY_TIMEOUT_MS) : MAX_INACTIVITY_TIMEOUT_MS
+}
 // The agent's slug, kept in storage: an instance reached by id (a container's call) has no name of its own.
 const AGENT_NAME_KEY = 'agent-name'
 // A sleeping agent as its actor reports it: a stopped container, and nothing running or waiting.
@@ -571,7 +582,7 @@ export class AgentDurableObject extends DurableObject<Env> {
     await this.routeContainerCalls()
     this.container.start({ ...source, instance: this.env.AGENT_INSTANCE_TYPE?.trim() || INSTANCE, enableInternet: true, env })
     this.watchContainer()
-    await this.container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS)
+    await this.container.setInactivityTimeout(await this.inactivityTimeout())
     await this.waitForPort(WORKSPACE_SERVER_PORT)
   }
 
@@ -619,7 +630,7 @@ export class AgentDurableObject extends DurableObject<Env> {
 
   private async adoptContainer(): Promise<void> {
     await this.routeContainerCalls()
-    await this.container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS)
+    await this.container.setInactivityTimeout(await this.inactivityTimeout())
     this.watchContainer()
   }
 
@@ -762,6 +773,12 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   /** For logs only: the agent, or the object's id when no name is known. */
+  private async inactivityTimeout(): Promise<number> {
+    const app = await import('../boot')
+    await app.boot(this.env)
+    return inactivityTimeoutMs(await app.autoSleepTimeoutMs())
+  }
+
   private agentName(): string {
     return this.ctx.id.name ?? this.ctx.storage?.kv.get<string>(AGENT_NAME_KEY) ?? this.ctx.id.toString().slice(0, 8)
   }
