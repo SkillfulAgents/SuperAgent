@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react'
+import { render as renderBare, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
 
@@ -79,6 +79,7 @@ vi.mock('@renderer/components/messages/composer-options', () => ({
     setModel: vi.fn(),
     setEffort: vi.fn(),
     toRuntimeOptions: () => ({}),
+    markSubmitted: vi.fn(),
   }),
   findCatalogModel: () => ({ label: 'Sonnet', icon: 'sonnet' }),
 }))
@@ -109,6 +110,10 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { QuickDispatch } from './quick-dispatch'
+import { DraftsProvider } from '@renderer/context/drafts-context'
+
+// The launcher's own window mounts it under the drafts store (quick-dispatch-app.tsx), where its composer keeps its draft.
+const render = (ui: React.ReactElement) => renderBare(ui, { wrapper: DraftsProvider })
 
 const SCREENSHOT = 'Screenshot 2026-11-02 at 14.03.22.png'
 

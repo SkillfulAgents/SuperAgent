@@ -4,10 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DraftsProvider, useDraftsStore } from '@renderer/context/drafts-context'
-import {
-  newSessionCarryoverKey,
-  type NewSessionCarryover,
-} from '@renderer/lib/new-session-carryover'
+import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { STALE_TIME_GAP_MS } from '@shared/lib/stale-session/stale-session-config'
 import { useStaleSession } from './use-stale-session'
@@ -89,23 +86,30 @@ describe('useStaleSession', () => {
     expect(renderStale({ isViewOnly: true }).result.current.stale.showNotice).toBe(false)
   })
 
-  it('moves the live composer into a new conversation and navigates home', () => {
+  it('moves the session draft into a new conversation and navigates home', () => {
     const { result } = renderStale()
-    act(() => result.current.stale.registerSnapshot(() => ({
-      text: 'Continue as a new task',
-      attachments: [],
-      model: 'sonnet',
-      effort: 'high',
-      speed: 'normal',
-    })))
+    const file: Attachment = {
+      type: 'file',
+      id: 'f-1',
+      file: new File(['x'], 'notes.txt'),
+      upload: { status: 'done', path: '/workspace/uploads/notes.txt', agentSlug: 'abc123def4' },
+    }
+    // The composer's part: it stops keeping the draft and says what the session runs on.
+    const handOver = vi.fn(() => ({ model: 'sonnet', effort: 'high' as const, speed: 'normal' as const }))
+    act(() => {
+      result.current.store.set('session:session-1', { text: 'Continue as a new task', attachments: [file], options: { effort: 'high' } })
+      result.current.stale.registerDraftHandOver(handOver)
+    })
     act(() => result.current.stale.startFresh())
 
-    expect(result.current.store.get('session:agent-home:abc123def4')).toBe('Continue as a new task')
-    expect(result.current.store.get<NewSessionCarryover>(newSessionCarryoverKey('abc123def4'))).toEqual({
-      attachments: [],
-      model: 'sonnet',
-      effort: 'high',
-      speed: 'normal',
+    expect(handOver).toHaveBeenCalledTimes(1)
+    expect(result.current.store.get('session:agent-home:abc123def4')).toEqual({
+      text: 'Continue as a new task',
+      // The finished upload goes as it is: the same agent's workspace holds it.
+      attachments: [file],
+      // What the person picked stays a pick; what the session runs on is only where the picker starts.
+      options: { effort: 'high' },
+      inheritedOptions: { model: 'sonnet', effort: 'high', speed: 'normal' },
     })
     expect(result.current.store.get('session:session-1')).toBeUndefined()
     expect(navigate).toHaveBeenCalledWith({
@@ -129,7 +133,7 @@ describe('useStaleSession', () => {
     })
     const { result } = renderStale()
     act(() => {
-      result.current.store.set('session:session-1', 'Unsent draft')
+      result.current.store.set('session:session-1', { text: 'Unsent draft' })
       // Two selections in the same event must be guarded before the next render.
       result.current.stale.continueCompacted()
       result.current.stale.continueCompacted()
@@ -138,7 +142,7 @@ describe('useStaleSession', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
     expect(result.current.stale.isPending).toBe(true)
     expect(navigate).not.toHaveBeenCalled()
-    expect(result.current.store.get('session:session-1')).toBe('Unsent draft')
+    expect(result.current.store.get('session:session-1')).toEqual({ text: 'Unsent draft' })
 
     await act(async () => releaseFork())
     await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2))
@@ -152,8 +156,8 @@ describe('useStaleSession', () => {
       to: '/agents/$slug/sessions/$sessionId',
       params: { slug: 'friendly-agent-abc123def4', sessionId: 'fork-1' },
     })
-    expect(result.current.store.get('session:fork-1')).toBe('Unsent draft')
-    expect(result.current.store.get('session:session-1')).toBe('Unsent draft')
+    expect(result.current.store.get('session:fork-1')).toEqual({ text: 'Unsent draft' })
+    expect(result.current.store.get('session:session-1')).toEqual({ text: 'Unsent draft' })
 
     await act(async () => releaseSend())
     await waitFor(() => expect(result.current.stale.isPending).toBe(false))

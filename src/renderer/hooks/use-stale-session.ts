@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { agentHomeId, useDraftsStore } from '@renderer/context/drafts-context'
+import { moveSessionDraftToAgent, useDraftsStore } from '@renderer/context/drafts-context'
 import { useForkAndCompact } from '@renderer/hooks/use-sessions'
-import {
-  newSessionCarryoverKey,
-  splitComposerSnapshot,
-  type ComposerSnapshot,
-} from '@renderer/lib/new-session-carryover'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { shouldPromptForNewSession } from '@shared/lib/stale-session/stale-session-trigger'
 import { STALE_TIME_GAP_MS } from '@shared/lib/stale-session/stale-session-config'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 // setTimeout fires at once for a longer delay.
 const MAX_TIMEOUT_MS = 2 ** 31 - 1
+
+/**
+ * What the session's composer does as its draft leaves for another composer:
+ * it stops keeping the draft, and answers with the runtime options the new
+ * conversation starts from (the session's own, and what the person picked).
+ */
+export type DraftHandOver = () => RuntimeOptions
 
 interface UseStaleSessionArgs {
   sessionId: string | null
@@ -47,7 +50,7 @@ export function useStaleSession({
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
   const wasActiveRef = useRef(isActive)
-  const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
+  const handOverRef = useRef<DraftHandOver | null>(null)
   const forkInFlightRef = useRef(false)
 
   // Persisted activity can lag a just-completed turn. Stamp active -> idle locally
@@ -87,16 +90,15 @@ export function useStaleSession({
     isRunning: isActive && !isWaitingBackground,
   })
 
-  const registerSnapshot = useCallback((getSnapshot: (() => ComposerSnapshot) | null) => {
-    composerSnapshotRef.current = getSnapshot
+  const registerDraftHandOver = useCallback((handOver: DraftHandOver | null) => {
+    handOverRef.current = handOver
   }, [])
 
+  // The draft itself (text, files, picks) is already in the store, where the
+  // composer keeps it as it changes; the composer adds what only it knows.
   const startFresh = useCallback(() => {
     if (!sessionId || forkInFlightRef.current) return
-    const { draftText, carryover } = splitComposerSnapshot(composerSnapshotRef.current?.())
-    if (draftText !== undefined) draftsStore.set(`session:${agentHomeId(agentSlug)}`, draftText)
-    draftsStore.set(newSessionCarryoverKey(agentSlug), carryover)
-    draftsStore.set(`session:${sessionId}`, undefined)
+    moveSessionDraftToAgent(draftsStore, sessionId, agentSlug, handOverRef.current?.())
     void navigate({ to: '/agents/$slug', params: { slug: routeAgentSlug ?? agentSlug } })
   }, [agentSlug, draftsStore, navigate, routeAgentSlug, sessionId])
 
@@ -118,7 +120,7 @@ export function useStaleSession({
     ignore: useCallback(() => setIgnored(true), []),
     popoverOpen,
     setPopoverOpen,
-    registerSnapshot,
+    registerDraftHandOver,
     startFresh,
     continueCompacted,
   }

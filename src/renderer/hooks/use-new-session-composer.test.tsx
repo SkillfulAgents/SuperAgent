@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { useState, type ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UseComposerOptionsArgs } from '@renderer/components/messages/composer-options'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
-import { DraftsProvider } from '@renderer/context/drafts-context'
+import { DraftsProvider, useDraftsStore, type ComposerDraft, type DraftsStore } from '@renderer/context/drafts-context'
 import { useNewSessionComposer } from './use-new-session-composer'
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
     isFetched: false,
   },
   modelOptions: vi.fn(),
+  markSubmitted: vi.fn(),
   runtimeOptions: { model: 'chosen-model', llmProviderId: 'chosen-provider', effort: 'medium', speed: 'fast' },
   upload: vi.fn(),
   fetch: vi.fn(),
@@ -29,7 +31,7 @@ vi.mock('./use-agent-preferences', () => ({ useAgentPreferences: () => mocks.pre
 vi.mock('@renderer/components/messages/composer-options', () => ({
   useComposerOptions: (options: UseComposerOptionsArgs) => {
     mocks.modelOptions(options)
-    return { toRuntimeOptions: () => mocks.runtimeOptions }
+    return { toRuntimeOptions: () => mocks.runtimeOptions, markSubmitted: mocks.markSubmitted }
   },
 }))
 vi.mock('@renderer/lib/upload', () => ({ uploadFileChunked: mocks.upload, UPLOAD_STALL_MS: 30_000 }))
@@ -49,6 +51,24 @@ vi.mock('./use-composer-chips', () => {
 vi.mock('@renderer/lib/error-reporting', () => ({ captureRendererException: vi.fn() }))
 
 const created = { id: 'session-1', initialMessageUuid: 'server-message-1' }
+
+let drafts: DraftsStore
+
+/** A provider whose store already holds `draft` under `draftKey` when the composer mounts: what it starts with. */
+function withDraft(draftKey: string, draft: ComposerDraft) {
+  function Seed({ children }: { children: ReactNode }) {
+    const store = useDraftsStore()
+    useState(() => {
+      drafts = store
+      store.set(draftKey, draft)
+      return null
+    })
+    return children
+  }
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return <DraftsProvider><Seed>{children}</Seed></DraftsProvider>
+  }
+}
 
 describe('useNewSessionComposer', () => {
   beforeEach(() => {
@@ -75,6 +95,8 @@ describe('useNewSessionComposer', () => {
     expect(onSessionCreated).toHaveBeenCalledWith({ agentSlug: 'brain', content: 'Remember this decision', session: created })
     expect(mocks.createOptions).toHaveBeenCalledWith({ agentRuntimeErrorsShownInline: true })
     expect(result.current.composer.message).toBe('')
+    // The session has the picks, so they stop being this composer's unsent ones.
+    expect(mocks.markSubmitted).toHaveBeenCalledWith(mocks.runtimeOptions)
   })
 
   it('keeps the real composer draft and attachments when dispatch fails, then permits retry', async () => {
@@ -84,16 +106,18 @@ describe('useNewSessionComposer', () => {
     const onSessionCreated = vi.fn()
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     const file = new File(['notes'], 'notes.txt', { type: 'text/plain' })
+    // A file the draft holds that never got to upload: one moved here mid-upload, or cut short by leaving the page.
     const { result } = renderHook(() => useNewSessionComposer({
       agentSlug: 'writer', draftKey: 'quick-dispatch', onError, onSessionCreated,
-      initialAttachments: [{ id: 'carryover-file', type: 'file', file }],
-    }), { wrapper: DraftsProvider })
+    }), { wrapper: withDraft('quick-dispatch', { attachments: [{ id: 'drafted-file', type: 'file', file }] }) })
     await waitFor(() => expect(result.current.composer.canSubmit).toBe(true))
     act(() => result.current.composer.setMessage('Use these notes'))
 
     await act(async () => { await result.current.composer.handleSubmit({ preventDefault() {} }) })
     expect(onError).toHaveBeenCalledWith(error)
     expect(onSessionCreated).not.toHaveBeenCalled()
+    expect(mocks.markSubmitted).not.toHaveBeenCalled()
+    expect(drafts.get('quick-dispatch')).toMatchObject({ text: 'Use these notes', attachments: [{ id: 'drafted-file' }] })
     expect(result.current.composer.message).toBe('Use these notes')
     expect(result.current.composer.attachments).toHaveLength(1)
     expect(result.current.composer.canSubmit).toBe(true)
@@ -103,6 +127,7 @@ describe('useNewSessionComposer', () => {
     expect(mocks.createSession.mutateAsync.mock.calls[1][0].message).toContain('/api/agents/writer/upload-file/notes.txt')
     expect(result.current.composer.message).toBe('')
     expect(result.current.composer.attachments).toHaveLength(0)
+    expect(drafts.get('quick-dispatch')).toBeUndefined()
     consoleError.mockRestore()
   })
 
@@ -129,13 +154,13 @@ describe('useNewSessionComposer', () => {
 
   it('reuploads file and folder attachments to the newly selected agent before dispatch', async () => {
     const file = new File(['notes'], 'notes.txt', { type: 'text/plain' })
-    const initialAttachments: Attachment[] = [
+    const attachments: Attachment[] = [
       { id: 'file', type: 'file', file },
       { id: 'folder', type: 'folder', folderName: 'project', folderPath: '/home/test/project', files: [], totalSize: 0 },
     ]
     const { result, rerender } = renderHook(({ agentSlug }) => useNewSessionComposer({
-      agentSlug, draftKey: 'quick-dispatch', initialAttachments, onSessionCreated: vi.fn(),
-    }), { wrapper: DraftsProvider, initialProps: { agentSlug: 'writer' } })
+      agentSlug, draftKey: 'quick-dispatch', onSessionCreated: vi.fn(),
+    }), { wrapper: withDraft('quick-dispatch', { attachments }), initialProps: { agentSlug: 'writer' } })
     await waitFor(() => expect(result.current.composer.canSubmit).toBe(true))
     expect(mocks.upload).toHaveBeenCalledWith(expect.objectContaining({ url: '/api/agents/writer/upload-file', file }))
     expect(mocks.fetch).toHaveBeenCalledWith('/api/agents/writer/upload-folder', expect.objectContaining({
@@ -169,13 +194,13 @@ describe('useNewSessionComposer', () => {
     expect(onSessionCreated).toHaveBeenCalledWith({ agentSlug: 'writer', content: 'Write the report', session: created })
   })
 
-  it('preserves carryover model settings and each surface’s default-adoption policy', () => {
-    const initialOptions = { model: 'carryover-model', llmProviderId: 'carryover-provider', effort: 'low' as const, speed: 'normal' as const }
+  it('starts the picker from a moved draft’s session options, keeps its picks in the draft, and keeps each surface’s default-adoption policy', () => {
+    const inheritedOptions = { model: 'session-model', llmProviderId: 'session-provider', effort: 'low' as const, speed: 'normal' as const }
     const { rerender } = renderHook(({ agentSlug, waitForAgentDefaults, followDefaults }) => useNewSessionComposer({
-      agentSlug, draftKey: 'quick-dispatch', initialOptions, waitForAgentDefaults, followDefaults, onSessionCreated: vi.fn(),
-    }), { wrapper: DraftsProvider, initialProps: { agentSlug: 'writer', waitForAgentDefaults: true, followDefaults: false } })
+      agentSlug, draftKey: 'quick-dispatch', waitForAgentDefaults, followDefaults, onSessionCreated: vi.fn(),
+    }), { wrapper: withDraft('quick-dispatch', { inheritedOptions }), initialProps: { agentSlug: 'writer', waitForAgentDefaults: true, followDefaults: false } })
     expect(mocks.modelOptions).toHaveBeenLastCalledWith(expect.objectContaining({
-      initial: initialOptions, agentKey: 'writer',
+      initial: inheritedOptions, draftKey: 'quick-dispatch', agentKey: 'writer',
       agentDefault: { model: 'agent-model', llmProviderId: 'agent-provider', effort: 'high', speed: 'fast' },
       agentDefaultsReady: false, followDefaults: false,
     }))

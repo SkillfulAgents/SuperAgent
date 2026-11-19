@@ -10,7 +10,7 @@ import { MessageList } from './message-list'
 // Resolves to the mocked module's class below — the one the component's
 // instanceof check sees.
 import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
-import { useDraft } from '@renderer/context/drafts-context'
+import { useDraftText } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
@@ -1078,7 +1078,7 @@ describe('MessageList', () => {
         const [pending, setPending] = useState([
           { localId: 'compact-local', uuid: 'compact-server', text: '/compact', sentAt: Date.now() },
         ])
-        const [draft, setDraft] = useDraft<string>('session:s-1')
+        const [draft, setDraft] = useDraftText('session:s-1')
 
         return (
           <>
@@ -1344,7 +1344,7 @@ describe('MessageList', () => {
       mockStreamState.isActive = false
 
       const DraftProbe = () => {
-        const [draft] = useDraft<string>('session:s-1')
+        const [draft] = useDraftText('session:s-1')
         return <div data-testid="draft-probe">{draft ?? ''}</div>
       }
 
@@ -1388,7 +1388,7 @@ describe('MessageList', () => {
     mockStreamState.discardedCommandUuids = ['u-dead']
 
     const DraftProbe = () => {
-      const [draft] = useDraft<string>('session:s-1')
+      const [draft] = useDraftText('session:s-1')
       return <div data-testid="draft-probe">{draft ?? ''}</div>
     }
 
@@ -1447,7 +1447,7 @@ describe('MessageList', () => {
       mockStreamState.isActive = false
 
       const DraftProbe = () => {
-        const [draft] = useDraft<string>('session:s-1')
+        const [draft] = useDraftText('session:s-1')
         return <div data-testid="draft-probe">{draft ?? ''}</div>
       }
 
@@ -1484,7 +1484,7 @@ describe('MessageList', () => {
       mockStreamState.isActive = false
 
       const DraftProbe = () => {
-        const [draft] = useDraft<string>('session:s-1')
+        const [draft] = useDraftText('session:s-1')
         return <div data-testid="draft-probe">{draft ?? ''}</div>
       }
       const pending = [{ localId: 'l1', uuid: 'server-uuid', text: 'delivered late', sentAt: Date.now() }]
@@ -1550,7 +1550,7 @@ describe('MessageList', () => {
     mockStreamState.isActive = true
 
     const DraftProbe = () => {
-      const [draft] = useDraft<string>('session:s-1')
+      const [draft] = useDraftText('session:s-1')
       return <div data-testid="draft-probe">{draft ?? ''}</div>
     }
 
@@ -1580,7 +1580,7 @@ describe('MessageList', () => {
     const sent = appendMentions('ask @Mike Smith', [{ kind: 'user', id: 'mike-id', name: 'Mike Smith' }])
 
     const DraftProbe = () => {
-      const [draft] = useDraft<string>('session:s-1')
+      const [draft] = useDraftText('session:s-1')
       return <div data-testid="draft-probe">{draft ?? ''}</div>
     }
 
@@ -1611,7 +1611,7 @@ describe('MessageList', () => {
     mockStreamState.isActive = true
 
     const DraftProbe = () => {
-      const [draft] = useDraft<string>('session:s-1')
+      const [draft] = useDraftText('session:s-1')
       return <div data-testid="draft-probe">{draft ?? ''}</div>
     }
 
@@ -1653,7 +1653,7 @@ describe('MessageList', () => {
     mockStreamState.isActive = true
 
     const DraftProbe = () => {
-      const [draft] = useDraft<string>('session:s-1')
+      const [draft] = useDraftText('session:s-1')
       return <div data-testid="draft-probe">{draft ?? ''}</div>
     }
 
@@ -1695,7 +1695,7 @@ describe('MessageList', () => {
     mockStreamState.isActive = true
 
     const DraftProbe = () => {
-      const [draft] = useDraft<string>('session:s-1')
+      const [draft] = useDraftText('session:s-1')
       return <div data-testid="draft-probe">{draft ?? ''}</div>
     }
 

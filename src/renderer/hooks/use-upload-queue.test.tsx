@@ -264,6 +264,31 @@ describe('useUploadQueue', () => {
     expect(uploadOf(result.current.attachments[0])).toMatchObject({ status: 'done', path: '/workspace/docs.zip' })
   })
 
+  it('adopts a chip that came back with a draft: a failure still blocks, a file already here needs nothing, the rest is to upload', async () => {
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/p' })
+    const done: FileAttachment = { ...fileAttachment('done'), upload: { status: 'done', path: '/workspace/done.txt', agentSlug: 'agent-a' } }
+    const elsewhere: FileAttachment = { ...fileAttachment('elsewhere'), upload: { status: 'done', path: '/workspace/e.txt', agentSlug: 'friendly-agent-a' } }
+    const cutShort: FileAttachment = { ...fileAttachment('cut'), upload: { status: 'uploading', percent: 40, agentSlug: 'agent-a' } }
+    const rejected: FileAttachment = { ...fileAttachment('rejected'), error: 'File is too large', errorRetryable: false }
+    const { result } = renderHook(() => useHarness(uploadFile, [done, elsewhere, cutShort, rejected]))
+
+    expect(result.current.queue.adopt(done)).toBe(true)
+    expect(result.current.queue.adopt(elsewhere)).toBe(false)
+    expect(result.current.queue.adopt(cutShort)).toBe(false)
+    expect(result.current.queue.adopt(fileAttachment('never-started'))).toBe(false)
+    // Nothing failed so far, so the send may go.
+    await expect(result.current.queue.waitIdle()).resolves.toEqual({ ok: true })
+
+    expect(result.current.queue.adopt(rejected)).toBe(true)
+    // It cannot be retried, so Send stops on it until the chip is removed, as where it failed.
+    let outcome: { ok: boolean } | undefined
+    await act(async () => { outcome = await result.current.queue.retryAndWait() })
+    expect(outcome).toEqual({ ok: false })
+    expect(uploadFile).not.toHaveBeenCalled()
+    act(() => result.current.queue.remove('rejected'))
+    await expect(result.current.queue.waitIdle()).resolves.toEqual({ ok: true })
+  })
+
   it('does not start an upload when the agent slug is empty', async () => {
     const uploadFile = vi.fn()
     const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')], vi.fn(), ''))

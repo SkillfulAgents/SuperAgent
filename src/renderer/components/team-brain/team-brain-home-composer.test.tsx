@@ -21,8 +21,6 @@ vi.mock('@renderer/hooks/use-new-session-composer', () => ({
   }),
 }))
 vi.mock('@renderer/hooks/use-runtime-status', () => ({ useRuntimeStatus: () => ({ data: undefined, isPending: true }) }))
-const carryover = vi.hoisted(() => ({ value: undefined as { attachments: unknown[]; model?: string } | undefined }))
-vi.mock('@renderer/lib/new-session-carryover', () => ({ useNewSessionCarryover: () => carryover.value }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 // The box itself is the app's; this lists the cards it is handed.
 vi.mock('@renderer/components/messages/chat-composer-box', () => ({
@@ -37,12 +35,12 @@ vi.mock('@renderer/components/messages/chat-composer-box', () => ({
 
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
+import { agentHomeDraftKey } from '@renderer/context/drafts-context'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 afterEach(() => {
   cleanup()
   dialog.open = false
-  carryover.value = undefined
 })
 
 describe('TeamBrainHomeComposer', () => {
@@ -57,11 +55,11 @@ describe('TeamBrainHomeComposer', () => {
     expect(commentsIn).toHaveBeenCalledTimes(1)
   })
 
-  it('starts with what a stale session handed over when it started fresh, as Agent Home does', () => {
-    carryover.value = { attachments: [{ id: 'notes.pdf' }], model: 'opus' }
+  it('starts with what a stale session moved over when it started fresh, as Agent Home does: one draft for both', () => {
     render(<TeamBrainHomeComposer agent={{ slug: 'team-brain' } as ApiAgent} />)
-    expect(composerArgs.at(-1)?.initialAttachments).toEqual([{ id: 'notes.pdf' }])
-    expect(composerArgs.at(-1)?.initialOptions?.model).toBe('opus')
+    // Start Fresh moves the session's text, files and options into the agent's home draft; whichever home composer
+    // mounts next has them, with nothing for the page to pass along.
+    expect(composerArgs.at(-1)?.draftKey).toBe(agentHomeDraftKey('team-brain'))
   })
 
   it('asks how to attach a folder, as Agent Home does, so the folder is not left waiting', async () => {
