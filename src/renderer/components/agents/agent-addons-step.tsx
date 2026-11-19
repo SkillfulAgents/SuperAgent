@@ -1,32 +1,16 @@
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { Brain, Mail, NotebookPen, TrendingUp } from 'lucide-react'
+import { Brain, NotebookPen, TrendingUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@renderer/components/ui/switch'
-import { Dialog, DialogContent, DialogTitle } from '@renderer/components/ui/dialog'
-import { ProvisionedAppCard } from '@renderer/components/agent-integrations/provisioned-app-card'
-import { SlackConnectionSettings } from '@renderer/components/agent-integrations/slack-setup'
-import { publicSlackDelivery } from '@shared/lib/chat-integrations/public'
-import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
+import { AgentCreationChannels } from './agent-creation-channels'
 import { Button } from '@renderer/components/ui/button'
-import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useAgentSkills, useDiscoverableSkills, useDeleteSkill, useInstallSkill } from '@renderer/hooks/use-agent-skills'
-import { useAgentIntegrations, useAvailableAgentIntegrationProviders } from '@renderer/hooks/use-agent-integrations'
 import { useTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
-import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
-import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
-import type { IntegrationSetupProvider } from '@renderer/components/agent-integrations/setup-types'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import { DREAM_SKILL_PATH, isPublicDreamSkill } from '@shared/lib/skillset-provider/dream-skill'
-
-function needsSlackSetup(integration: PublicAgentIntegration) {
-  if (integration.provider !== 'slack') return false
-  if (integration.provisionedApp) return !integration.provisionedApp.installed
-  const slack = publicSlackDelivery(integration)
-  return !!slack?.webhook && !slack.botTokenSaved
-}
 
 export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange }: {
   header: ReactNode
@@ -43,11 +27,6 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   const { data: agents } = useAgents()
   const brain = agents?.find(agent => agent.teamBrain)
   const access = useTeamBrainAccess(brain?.slug ?? '', brain?.teamBrain?.volumeId)
-  const { data: providers } = useAvailableAgentIntegrationProviders()
-  const { data: integrations } = useAgentIntegrations(agentSlug)
-  const [setup, setSetup] = useState<IntegrationSetupProvider | null>(null)
-  const [resumeId, setResumeId] = useState<string | null>(null)
-  const resume = integrations?.find(row => row.id === resumeId && needsSlackSetup(row))
   const [changingSkill, setChangingSkill] = useState(false)
 
   const dream = discoverable.data?.find(s => s.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && s.path === DREAM_SKILL_PATH)
@@ -106,41 +85,11 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
                 onChange={on => access.toggle(agentSlug, on)} />
             </Section>
             <Section title="Channels">
-              {(['platform-email', 'slack'] as const).map(slug => {
-                const title = slug === 'slack' ? 'Slack' : 'Inbox'
-                const rows = integrations?.filter(row => row.provider === slug)
-                const configured = rows?.some(row => !needsSlackSetup(row))
-                const pending = rows?.find(needsSlackSetup)
-                const action = configured ? 'Configured' : pending ? 'Finish setup' : 'Set up'
-                const available = providers?.some(provider => provider.provider === slug)
-                return <div key={slug} className="flex items-center gap-3 px-4 py-3">
-                  <Icon>{slug === 'slack' ? <ServiceIcon slug="slack" fallback="mcp" /> : <Mail />}</Icon>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">{title}</p>
-                    <p className="text-xs text-muted-foreground">{slug === 'slack' ? 'Talk to this agent in Slack.' : 'Give this agent its own email address.'}</p>
-                  </div>
-                  <Button size="sm" variant="outline" disabled={configured || (!available && !pending) || !integrations}
-                    aria-label={`${action} ${title}`}
-                    title={!available && !pending ? `${title} is unavailable in this workspace.` : undefined}
-                    onClick={() => {
-                      if (pending) setResumeId(pending.id)
-                      else setSetup(integrationSetupProviders.find(provider => provider.slug === slug) ?? null)
-                    }}>
-                    {action}
-                  </Button>
-                </div>
-              })}
+              <AgentCreationChannels agentSlug={agentSlug} />
             </Section>
           </div>
         </TooltipProvider>
       </div>
-      <Dialog open={!!resume} onOpenChange={open => { if (!open) setResumeId(null) }}>
-        {resume && <DialogContent className="max-h-[85vh] overflow-y-auto">
-          <DialogTitle>Finish Slack setup</DialogTitle>
-          {resume.provisionedApp ? <ProvisionedAppCard integration={resume} /> : <SlackConnectionSettings integration={resume} />}
-        </DialogContent>}
-      </Dialog>
-      <AgentIntegrationSetupDialog agentSlug={agentSlug} provider={setup} onIntegrationCreated={() => setSetup(null)} onOpenChange={open => { if (!open) setSetup(null) }} />
     </div>
   )
 }

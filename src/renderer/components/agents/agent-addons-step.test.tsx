@@ -9,6 +9,7 @@ import { AgentAddonsStep } from './agent-addons-step'
 const dream = { name: 'dream', path: 'skills/dream/SKILL.md', version: '0.1.0', skillsetId: DEFAULT_PUBLIC_SKILLSET.id }
 
 const state = { integrations: [] as Partial<PublicAgentIntegration>[], skills: [dream] as typeof dream[] | undefined, catalogError: false, brain: true, everyAgent: false }
+let availableProviders: string[] | undefined
 const install = vi.fn()
 const toggle = vi.fn()
 const refetchCatalog = vi.fn()
@@ -28,7 +29,7 @@ vi.mock('@renderer/hooks/use-team-brain-access', () => ({
 }))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrations: () => ({ data: state.integrations }),
-  useAvailableAgentIntegrationProviders: () => ({ data: [{ provider: 'slack' }, { provider: 'platform-email' }] }),
+  useAvailableAgentIntegrationProviders: () => ({ data: availableProviders?.map(provider => ({ provider })) }),
 }))
 vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog', () => ({
   AgentIntegrationSetupDialog: ({ provider }: { provider: { slug: string } | null }) => provider && <div role="dialog">{provider.slug}</div>,
@@ -36,6 +37,7 @@ vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog'
 const show = () => render(<AgentAddonsStep header={null} agentSlug="scout" onBusyChange={vi.fn()} onDreamChange={vi.fn()} />)
 beforeEach(() => {
   vi.clearAllMocks()
+  availableProviders = ['platform-email', 'slack', 'telegram', 'imessage']
   state.integrations = []
   state.skills = [dream]
   state.catalogError = false
@@ -100,6 +102,56 @@ it.each([['Inbox', 'platform-email'], ['Slack', 'slack']])('opens the existing %
   show()
   await userEvent.click(screen.getByRole('button', { name: 'Set up ' + label }))
   expect(screen.getByRole('dialog')).toHaveTextContent(provider)
+})
+
+it.each([['Telegram', 'telegram'], ['iMessage', 'imessage']])('opens %s setup from More channels', async (label, provider) => {
+  show()
+  const action = { name: 'Set up ' + label }
+  expect(screen.queryByRole('button', action)).toBeNull()
+  const more = screen.getByRole('button', { name: 'More channels' })
+  await userEvent.click(more)
+  expect(more).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByRole('button', action)).toBeVisible()
+  await userEvent.click(more)
+  expect(screen.queryByRole('button', action)).toBeNull()
+  await userEvent.click(more)
+  await userEvent.click(screen.getByRole('button', action))
+  expect(screen.getByRole('dialog')).toHaveTextContent(provider)
+})
+
+it.each([
+  { providers: undefined, reason: 'Checking available channels' },
+  { providers: ['slack'], reason: 'Connect your Gamut account to set up Inbox.' },
+])('explains a disabled Inbox action on focus and tap', async ({ providers, reason }) => {
+  availableProviders = providers
+  show()
+  const inbox = screen.getByRole('button', { name: 'Set up Inbox' })
+  expect(inbox).toHaveAttribute('aria-disabled', 'true')
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('switch', { name: 'Team Brain' }))
+  await user.tab()
+  expect(inbox).toHaveFocus()
+  expect(await screen.findByRole('tooltip')).toHaveTextContent(reason)
+  await user.keyboard('{Escape}')
+  expect(screen.queryByRole('tooltip')).toBeNull()
+  await user.click(inbox)
+  expect(await screen.findByRole('tooltip')).toHaveTextContent(reason)
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('explains both configured and unavailable channels inside More', async () => {
+  availableProviders = ['telegram']
+  state.integrations = [{ provider: 'telegram' }]
+  show()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'More channels' }))
+  const telegram = screen.getByRole('button', { name: 'Configured Telegram' })
+  await user.hover(telegram)
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Telegram is already set up')
+  await user.unhover(telegram)
+  await user.click(screen.getByRole('button', { name: 'Set up iMessage' }))
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('iMessage is unavailable in this workspace.')
+  expect(screen.queryByRole('dialog')).toBeNull()
 })
 
 vi.mock('@renderer/components/agent-integrations/provisioned-app-card', () => ({

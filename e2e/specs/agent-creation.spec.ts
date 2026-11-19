@@ -218,6 +218,37 @@ test('removing Dream before leaving the wizard clears its first-job instruction'
   expect(response.request().postDataJSON().message).toBe('Prepare a weekly research brief.')
 })
 
+test('More channels opens Telegram setup and returns to the wizard after connecting', async ({ page }) => {
+  await page.route('**/api/agent-integrations/providers', route => route.fulfill({ json: [{ provider: 'telegram' }] }))
+  let connected = false
+  await page.route('**/api/agent-integrations/agents/*', route => {
+    const agentSlug = route.request().url().split('/').pop()!
+    const record = { id: 'test-telegram', agentSlug, provider: 'telegram', status: 'active', connected: true, hasCredentials: true }
+    if (route.request().method() === 'POST') {
+      expect(route.request().postDataJSON().provider).toBe('telegram')
+      connected = true
+      return route.fulfill({ status: 201, json: record })
+    }
+    return route.fulfill({ json: connected ? [record] : [] })
+  })
+  await reachAddons(page)
+  const inbox = page.getByRole('button', { name: 'Set up Inbox' })
+  await expect(inbox).toBeDisabled()
+  await inbox.hover()
+  await expect(page.getByRole('tooltip')).toHaveText('Connect your Gamut account to set up Inbox.')
+  const telegram = page.getByRole('button', { name: 'Set up Telegram' })
+  await expect(telegram).toBeHidden()
+  await page.getByRole('button', { name: 'More channels' }).click()
+  await expect(page.getByRole('button', { name: 'Set up iMessage' })).toBeDisabled()
+  await telegram.click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Bot Token').fill('fixture-token')
+  await dialog.getByRole('button', { name: 'Connect', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Configured Telegram' })).toBeDisabled()
+  await expect(page.getByTestId('create-agent-finish')).toBeEnabled()
+})
+
 test('Finish setup completes the existing Slack webhook installation in the wizard', async ({ page }) => {
   let agentSlug = ''
   let connected = false
