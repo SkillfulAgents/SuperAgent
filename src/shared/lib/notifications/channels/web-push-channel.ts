@@ -58,7 +58,7 @@ function topicForSession(sessionId: string): string {
 function vapidSubjectForOrigin(origin: string): string {
   return origin.startsWith('https:')
     ? origin
-    : 'https://github.com/SkillfulAgents/SuperAgent'
+    : 'https://www.gamut.so'
 }
 
 /**

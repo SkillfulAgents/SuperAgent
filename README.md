@@ -39,7 +39,7 @@ To get strated with Superagent, you need:
 # Getting Started
 
 ## Desktop App
-Download the latest release from the links above, or visit the [releases page](https://github.com/SkillfulAgents/SuperAgent/releases/latest).
+Download the latest release from the links above, or visit the [releases page](https://github.com/SkillfulAgents/Gamut/releases/latest).
 
 ## Running with Docker
 
