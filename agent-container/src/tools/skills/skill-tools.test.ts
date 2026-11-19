@@ -46,6 +46,14 @@ it('searches through the host with the agent token and prints what install_team_
   expect(result.content[0].text).toContain('skillset_id: platform--team--skills, skill_path: skills/invoice-parser/SKILL.md')
 })
 
+it('leaves the version out for a skill the index lists without one', async () => {
+  stubHost(() => Response.json({ skills: [{ ...invoiceParser, version: '' }], total: 1 }))
+
+  const result = await run(searchTeamSkillsTool, {})
+
+  expect(result.content[0].text).toContain('- invoice-parser (skillset: Team Skills) - Read fields from invoice PDFs')
+})
+
 it('says when the host returned only part of the matches', async () => {
   stubHost(() => Response.json({ skills: [invoiceParser], total: 40 }))
 

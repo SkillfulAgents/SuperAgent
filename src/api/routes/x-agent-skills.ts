@@ -12,7 +12,12 @@ import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { matchSkills } from '@shared/lib/services/skill-search'
-import { getDiscoverableSkills, installDiscoverableSkill, refreshAgentSkills } from '@shared/lib/services/skillset-service'
+import {
+  BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS,
+  getDiscoverableSkills,
+  installDiscoverableSkill,
+  pullSkillsets,
+} from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 
 const MAX_RESULTS = 25
@@ -29,8 +34,9 @@ router.post('/search', zValidator('json', z.object({ query: z.string().max(200).
   try {
     const callerSlug = c.get('callerSlug')
     const skillsets = await getTeamSkillsets()
-    // Pulls each skillset that was not refreshed lately, so the search sees what was published since.
-    await refreshAgentSkills(callerSlug, skillsets, { background: true })
+    // Pulls each skillset that was not refreshed lately, so the search sees what was published
+    // since. Only the caches: the agent's installed skills are not reconciled on its own request.
+    await pullSkillsets(skillsets, { maxAgeMs: BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS })
     const matches = matchSkills(await getDiscoverableSkills(callerSlug, skillsets), c.req.valid('json').query)
     return c.json({ skills: matches.slice(0, MAX_RESULTS), total: matches.length })
   } catch (error) {

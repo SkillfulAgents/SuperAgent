@@ -38,7 +38,7 @@ export const searchTeamSkillsTool = tool(
           : 'The team has no published skill that this agent does not already have.')
       }
       const lines = data.skills.flatMap((skill) => [
-        `- ${skill.name} v${skill.version} (skillset: ${skill.skillsetName}) - ${skill.description}`,
+        `- ${skill.name}${skill.version ? ` v${skill.version}` : ''} (skillset: ${skill.skillsetName}) - ${skill.description}`,
         `  skillset_id: ${skill.skillsetId}, skill_path: ${skill.path}`,
       ])
       const shown = data.total > data.skills.length

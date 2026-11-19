@@ -1433,6 +1433,26 @@ export async function getAgentSkillsWithStatus(
 }
 
 /**
+ * Pull each skillset's cache and nothing else: no agent's installed skills are read or changed.
+ * With `maxAgeMs`, a cache refreshed within that window is left alone. A failed pull is
+ * reported and skipped, so the other skillsets still refresh.
+ */
+export async function pullSkillsets(skillsets: SkillsetConfig[], options: { maxAgeMs?: number } = {}): Promise<void> {
+  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
+  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
+    try {
+      await refreshSkillset(toSkillsetRefFromConfig(ss), options)
+    } catch (error) {
+      console.warn(`Failed to refresh skillset ${ss.id}:`, error)
+      const msg = error instanceof Error ? error.message : String(error)
+      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
+        captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
+      }
+    }
+  })))
+}
+
+/**
  * Refresh all skillset caches and reconcile skill status. This is where
  * state-changing reconciliation lives (metadata writes, file copies, clearing
  * openPrUrl, resolving pending platform queue items). The listing read path
@@ -1445,20 +1465,7 @@ export async function refreshAgentSkills(
 ): Promise<void> {
   const configMap = new Map<string, SkillsetConfig>()
   for (const ss of skillsets) configMap.set(ss.id, ss)
-  const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
-
-  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
-  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
-    try {
-      await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
-    } catch (error) {
-      console.warn(`Failed to refresh skillset ${ss.id}:`, error)
-      const msg = error instanceof Error ? error.message : String(error)
-      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
-        captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
-      }
-    }
-  })))
+  await pullSkillsets(skillsets, { maxAgeMs: options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined })
 
   const files = agentFiles(agentSlug)
   const skillsDir = skillWorkspacePath()
@@ -1642,8 +1649,13 @@ export async function installDiscoverableSkill(
   const skill = (await getDiscoverableSkills(agentSlug, [config])).find((s) => s.path === skillPath)
   if (!skill) return null
 
+  // A link at the destination is not listed as an installed skill, and the copy would follow
+  // it out of the workspace, so anything already at that path refuses the install.
+  const directory = skillPathToDirName(skill.path)
+  if (await agentFiles(agentSlug).stat(skillWorkspacePath(directory))) return null
+
   await installSkillFromSkillset(agentSlug, toSkillsetRefFromConfig(config), skill.path, skill.name, skill.version)
-  return { name: skill.name, directory: skillPathToDirName(skill.path) }
+  return { name: skill.name, directory }
 }
 
 /**
