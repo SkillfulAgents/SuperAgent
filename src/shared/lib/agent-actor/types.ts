@@ -755,8 +755,7 @@ export interface InputOps {
   // no-op) because it is not here, not because a filter hid it.
 
   /**
-   * `AgentInputRequests.register` with `scope.agentSlug` set to this agent;
-   * the sessions' awaiting state follows.
+   * `AgentInputRequests.register` with `scope.agentSlug` set to this agent.
    * `unlessRecentlyResolved`: null when the request settled lately, so one
    * recovered from the container is not parked again after its decision.
    */

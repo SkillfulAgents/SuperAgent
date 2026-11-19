@@ -17,6 +17,8 @@ export const emailSetupSchema = z.object({
   accessLevel: emailAccessSchema.default('agent-users-and-replies'),
   allowedDomains: z.array(domain).max(50).default([]),
 }).strict().refine(v => v.accessLevel !== 'allowed-domains' || v.allowedDomains.length > 0, 'Add at least one allowed domain')
+/** What an agent may choose for an inbox it creates; `emailSetupSchema` then validates the values. */
+export const emailAgentSetupSchema = z.strictObject({ localPart: z.unknown(), displayName: z.unknown() }, 'An agent sets only localPart and displayName; the owner chooses who may email the inbox')
 export const emailIntegrationConfigSchema = emailSetupSchema.safeExtend({
   mailboxId: z.string().uuid(),
   address: z.string().email(),

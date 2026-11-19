@@ -93,8 +93,7 @@ export interface ToolCallContext {
 
 /** The fields each parked user-input tool must carry, and the payload its card shows. */
 const USER_INPUT_REQUESTS: Record<
-  // Parked by their own handlers; an integration setup ask by the host route that decides it.
-  Exclude<StreamRequestKind, 'script_run' | 'capability_review' | 'integration_setup'>,
+  Exclude<StreamRequestKind, 'script_run' | 'capability_review'>,
   { label: string; payload: (input: Record<string, unknown>) => Record<string, unknown> | string }
 > = {
   question: {
@@ -398,7 +397,7 @@ export class ToolCalls {
   /** A user-input tool parks on the user: its request opens, and the session waits. */
   private parkUserInput(toolUse: ToolUse, parentToolUseId?: string): void {
     const kind = getBlockingUserInputRequestKind(toolUse.name)
-    if (!kind || kind === 'script_run' || kind === 'capability_review' || kind === 'integration_setup') return
+    if (!kind || kind === 'script_run' || kind === 'capability_review') return
     // First delivery wins. A recovered stub does not count: the real delivery
     // must replace it with a renderable one.
     const existing = this.ctx.requests.getOpenRequest(toolUse.id)

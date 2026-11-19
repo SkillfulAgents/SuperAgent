@@ -21,10 +21,11 @@ import {
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { UndeliveredMessageError } from '@shared/lib/chat-integrations/chat-delivery'
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
-import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
 import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
-import { ownerSetupRequestInputSchema, requestOwnerSetup } from '@shared/lib/agent-integrations/owner-setup-request'
+import { requiresRelay, supportedTransports } from '@shared/lib/agent-integrations/transport'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -74,7 +75,27 @@ xAgentChat.post('/list', async (c) => {
   }
 })
 
-// POST /add — create and connect a new integration, or ask the owner to set up one only they may
+// POST /providers — every provider, with how this agent sets it up
+xAgentChat.post('/providers', async (c) => {
+  try {
+    const webhookRelay = getWebhookRelay().snapshot().available
+    const providers = await Promise.all(agentIntegrationRegistry.listDefinitions().map(async (definition) => {
+      const { provider, name } = definition
+      const setup = agentIntegrationRegistry.getProvider(provider).setup
+      const unavailable = !setup || !(await agentIntegrationRegistry.isAvailable(provider)) ? 'Not available on this host.'
+        : requiresRelay(supportedTransports(definition)) && !webhookRelay ? 'Needs a webhook relay, which this host does not have.'
+          : null
+      if (unavailable) return { provider, name, unavailable }
+      return { provider, name, guide: setup?.agentGuide ?? `Pass its fields in config: ${definition.setup.credentialFields.join(', ') || 'none'}.` }
+    }))
+    return c.json({ providers, webhookRelay })
+  } catch (error) {
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'providers' } })
+    return c.json({ error: 'Failed to list integration providers' }, 500)
+  }
+})
+
+// POST /add — create and connect a new integration
 xAgentChat.post('/add', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
@@ -83,15 +104,6 @@ xAgentChat.post('/add', async (c) => {
 
     if (!provider) {
       return c.json({ error: 'Missing required field: provider' }, 400)
-    }
-    await assertIntegrationAvailable(provider)
-    const setup = getIntegrationSetup(provider)
-    if (!setup.allowAgentCreation) {
-      // The container waits on the same tool-use id until the owner connects one or declines.
-      if (!(await requestOwnerSetup(callerSlug, ownerSetupRequestInputSchema.parse(body)))) {
-        return c.json({ error: 'Could not ask the owner to set up this integration' }, 500)
-      }
-      return c.json({ status: 'owner_setup_requested', provider }, 202)
     }
 
     // Setup done later in the creator's name (a webhook endpoint) needs a member of the org.
@@ -139,8 +151,7 @@ xAgentChat.post('/add', async (c) => {
       provider: created.provider,
       status: created.status,
       name: created.name,
-      // An installation that still needs authorization: the agent carries on with it.
-      ...(created.status !== 'active' && setup.agentNextStep ? { nextStep: setup.agentNextStep(created) } : {}),
+      ...(created.status !== 'active' ? { nextStep: agentNextStep(created) } : {}),
     }, 201)
   } catch (error) {
     const failure = setupError(error)
@@ -150,14 +161,19 @@ xAgentChat.post('/add', async (c) => {
   }
 })
 
-/** The caller's own installation of a provider it may set up, or a response saying why not. */
-async function agentSetUpIntegration(callerSlug: string, integrationId: unknown) {
-  const integration = typeof integrationId === 'string' ? await getAgentIntegration(integrationId) : null
+/** What the agent does with an installation it created that is not connected yet. */
+function agentNextStep(integration: AgentIntegrationRecord): string | undefined {
+  const setup = getIntegrationSetup(integration.provider)
+  return setup.agentNextStep?.(integration)
+    ?? (setup.authorize ? `Call authorize_agent_integration with integration_id "${integration.id}" and open the link it returns in your browser.` : undefined)
+}
+
+/** The caller's own installation and its provider's setup, or a response saying why not. */
+async function ownIntegrationSetup(callerSlug: string, integrationId: string) {
+  const integration = await getAgentIntegration(integrationId)
   if (!integration || integration.agentSlug !== callerSlug) return { error: 'Integration not found', status: 404 as const }
   await assertIntegrationAvailable(integration.provider)
-  const setup = getIntegrationSetup(integration.provider)
-  if (!setup.allowAgentCreation) return { error: 'Only the agent\'s owner can authorize this integration', status: 403 as const }
-  return { integration, setup }
+  return { integration, setup: getIntegrationSetup(integration.provider) }
 }
 
 // POST /authorize — the provider's authorization link for an installation the agent set up
@@ -165,7 +181,7 @@ const authorizeSchema = z.object({ integration_id: z.string(), config: z.record(
 xAgentChat.post('/authorize', async (c) => {
   try {
     const { integration_id, config } = authorizeSchema.parse(await c.req.json())
-    const found = await agentSetUpIntegration(getCallerSlug(c), integration_id)
+    const found = await ownIntegrationSetup(getCallerSlug(c), integration_id)
     if ('error' in found) return c.json({ error: found.error }, found.status)
     const authorization = found.setup.authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
@@ -187,7 +203,7 @@ const completeAuthorizationSchema = z.object({ integration_id: z.string(), url: 
 xAgentChat.post('/complete-authorization', async (c) => {
   try {
     const { integration_id, url } = completeAuthorizationSchema.parse(await c.req.json())
-    const found = await agentSetUpIntegration(getCallerSlug(c), integration_id)
+    const found = await ownIntegrationSetup(getCallerSlug(c), integration_id)
     if ('error' in found) return c.json({ error: found.error }, found.status)
     const redirect = new URL(url)
     const query = Object.fromEntries(redirect.searchParams)

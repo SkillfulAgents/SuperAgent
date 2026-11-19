@@ -15,8 +15,11 @@ import { exchangeLinearToken, LinearAuthorizationError, LinearClient, revokeLine
 
 export { publicLinearIntegration } from './presentation'
 export const linearSetup: IntegrationProviderSetup = {
-  // The agent creates the Linear app in its browser, as the setup form asks a person to.
-  allowAgentCreation: true,
+  agentGuide: `The agent's own Linear app: people mention it or delegate issues to it, and it gets Linear tools under its own identity.
+You create the app in your browser, as the app's setup form asks a person to. The user only logs in to Linear when a login page appears (ask with request_browser_input).
+1. add_agent_integration with \`name\` (the app name) and config {webhooks: true} when this host has a webhook relay, config {} otherwise. It returns a prefilled Linear app creation link.
+2. Open the link, keep the app private and create it. Copy its Client ID, Client secret and (with webhooks) webhook Signing secret.
+3. authorize_agent_integration with those as config {clientId, clientSecret, webhookSecret}, open the link it returns and approve: pick the workspace and the teams the agent works in.`,
   agentNextStep(record) {
     const config = parseTaskJson(linearConfigSchema, record.config)
     const webhook = !!config.relay

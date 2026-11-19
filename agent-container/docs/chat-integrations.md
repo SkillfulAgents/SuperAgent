@@ -13,25 +13,18 @@ delivery.
 1. Call `mcp__chat__list_agent_integrations` to inspect configured integrations,
    status, capabilities, and active chats.
 2. If a provider is not configured, call
-   `mcp__chat__list_available_integration_providers` to learn who sets it up and
-   which fields it needs.
-3. For Telegram, Slack, or iMessage, collect the required configuration from the
-   user, or offer to create the bot yourself in your browser (Slack). Use the
-   secret-request flow for sensitive tokens when available; never echo a token
-   back.
-4. Call `mcp__chat__add_agent_integration` with the selected provider and
-   configuration.
-   - **Linear and GitHub** are set up by you in your browser. The call creates
-     the integration and returns its next step: the prefilled Linear app to
-     create, or `authorize_agent_integration` to call. Then call
-     `mcp__chat__authorize_agent_integration` (with the Linear app's
-     credentials) and approve the link it returns in your browser. Ask the user
-     to log in with the browser hand-off when a login page appears. If the page
-     the service sends you back to does not load, pass its address to
-     `mcp__chat__complete_agent_integration_authorization`.
-   - **Email** can only be set up by the agent's owner: the call shows them a
-     setup card in the app and returns once the inbox is connected, or with an
-     error if they decline. Pass a `reason`.
+   `mcp__chat__list_available_integration_providers`. It lists every provider
+   this host supports with its setup steps and the fields it needs.
+3. Follow the provider's steps. Offer to do the setup yourself in your browser
+   (create the bot or app, copy what it gives you); the user only logs in when a
+   login page appears. For a value only the user has, use the secret-request
+   flow when available; never echo a token back.
+4. Call `mcp__chat__add_agent_integration` with the provider and its fields.
+   Some providers are connected when it returns. Others return a next step to
+   finish in your browser, ending with `mcp__chat__authorize_agent_integration`:
+   open the link it returns and approve it. If the page the service sends you
+   back to does not load, call `authorize_agent_integration` again with
+   `redirect_url` set to that page's address.
 5. List integrations again to confirm that setup succeeded.
 
 Do not use `request_connected_account` or remote-MCP discovery for this flow.
@@ -73,8 +66,8 @@ do not also send it with the tool. Use `deliver_file` to attach files to that re
 Reuse the same idempotency key and identical payload when retrying a send.
 A queued response means accepted, not delivered. If the tool schema has no
 `email` parameter, report that the agent runtime needs updating; do not try chat
-IDs as a workaround. Only the owner can create an inbox: `add_agent_integration`
-with provider `platform-email` asks them in the app.
+IDs as a workaround. To create an inbox, call `add_agent_integration` with
+provider `platform-email`.
 
 ## Resolve the Destination for Other Chat Providers
 

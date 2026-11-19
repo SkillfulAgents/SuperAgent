@@ -4,12 +4,13 @@ import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import { IMESSAGE_GATEWAY_URL, imessageSetupSchema, slackConfigFieldsSchema, slackConfigSchema, withoutHostOwnedConfig, type ChatProvider } from './config-schema'
 
 import { slackVerificationProfile } from './slack-verification'
+import { CHAT_AGENT_GUIDES } from './agent-guides'
 import { inputSchema, telegramResultSchema, slackResultSchema, tokenResultSchema, telegramTestInputSchema, slackTestInputSchema, slackSetupInputSchema } from './setup-schema'
 
 /** Both user and agent creation paths use these hooks; API code never exchanges credentials. */
 export function chatProviderSetup(provider: ChatProvider, schema: ZodType): IntegrationProviderSetup {
   return {
-    allowAgentCreation: true,
+    agentGuide: CHAT_AGENT_GUIDES[provider],
     async prepare(input) {
       let config = withoutHostOwnedConfig(provider, inputSchema.parse(input))
       if (provider === 'imessage' && config.code && !config.token) {

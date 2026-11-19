@@ -7,7 +7,6 @@ import {
   listAgentIntegrationsDef,
   addChatIntegrationDef,
   authorizeAgentIntegrationDef,
-  completeAgentIntegrationAuthorizationDef,
   sendChatMessageDef,
   type AddChatIntegrationInput,
   type AuthorizeAgentIntegrationInput,
@@ -55,7 +54,7 @@ export const listAgentIntegrationsRenderer = defineToolRenderer(listAgentIntegra
   ExpandedView: ListAgentIntegrationsExpandedView,
 })
 
-// ── add_chat_integration (historical; see add-agent-integration) ──
+// ── add_agent_integration ───────────────────────────────────
 
 function AddChatIntegrationExpandedView({ input, result, isError }: ToolRendererProps) {
   const { provider, name } = input as AddChatIntegrationInput
@@ -75,7 +74,7 @@ export const addChatIntegrationRenderer = defineToolRenderer(addChatIntegrationD
   ExpandedView: AddChatIntegrationExpandedView,
 })
 
-// ── authorize_agent_integration / complete_agent_integration_authorization ──
+// ── authorize_agent_integration ─────────────────────────────
 // Credentials stay out of the view: the input shows only which integration.
 
 function IntegrationAuthorizationExpandedView({ input, result, isError }: ToolRendererProps) {
@@ -89,11 +88,6 @@ function IntegrationAuthorizationExpandedView({ input, result, isError }: ToolRe
 }
 
 export const authorizeAgentIntegrationRenderer = defineToolRenderer(authorizeAgentIntegrationDef, {
-  icon: KeyRound,
-  ExpandedView: IntegrationAuthorizationExpandedView,
-})
-
-export const completeAgentIntegrationAuthorizationRenderer = defineToolRenderer(completeAgentIntegrationAuthorizationDef, {
   icon: KeyRound,
   ExpandedView: IntegrationAuthorizationExpandedView,
 })

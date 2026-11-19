@@ -61,8 +61,8 @@ import { listAvailableIntegrationProvidersTool } from './tools/chat/list-availab
 import { listAgentIntegrationsTool } from './tools/integrations/list-agent-integrations'
 import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
-import { makeAddAgentIntegrationTool } from './tools/chat/add-agent-integration'
-import { authorizeAgentIntegrationTool, completeAgentIntegrationAuthorizationTool } from './tools/chat/authorize-agent-integration'
+import { addAgentIntegrationTool } from './tools/chat/add-agent-integration'
+import { authorizeAgentIntegrationTool } from './tools/chat/authorize-agent-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
 import { meetingTools } from './tools/meetings/meeting-tools'
 
@@ -183,8 +183,7 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
  * @param getCallerSessionId - getter that returns the current Claude session ID
  *   at tool-invocation time (same pattern as createAgentsMcpServer). Lets the
  *   host recognize sends coming from a chat-conversation session and block the
- *   ones that would double-post into that session's own chat, and open an
- *   owner setup card in the session that asked for it.
+ *   ones that would double-post into that session's own chat.
  */
 export function createChatMcpServer(getCallerSessionId: () => string) {
   return createSdkMcpServer({
@@ -195,9 +194,8 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
       listAgentIntegrationsTool,
       listChatUsersTool,
       listChatChannelsTool,
-      makeAddAgentIntegrationTool(getCallerSessionId),
+      addAgentIntegrationTool,
       authorizeAgentIntegrationTool,
-      completeAgentIntegrationAuthorizationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
   })

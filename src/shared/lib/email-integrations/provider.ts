@@ -1,7 +1,7 @@
 import { platformConnected, emailSessionAllowed, agentUserEmails } from './policy'
 import type { IntegrationProvider } from '../agent-integrations/registry'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
-import { emailConfigSchema, emailConfigPatchSchema, parseEmailConfig } from './config-schema'
+import { emailConfigSchema, emailConfigPatchSchema, emailAgentSetupSchema, parseEmailConfig } from './config-schema'
 import { EmailGatewayError } from './gateway-client'
 import { describeEmailSetup } from './setup-preview'
 import { provisionEmail, updateEmailMailbox, disableEmailMailbox } from './setup'
@@ -26,7 +26,14 @@ export const platformEmailProvider: IntegrationProvider = {
       ])
       return { ...domain, agentUserEmails: [...members].sort() }
     },
-    async prepare(input, context) { return { config: await setupCall(() => provisionEmail(context.agentSlug, context.userId ?? null, input)) } },
+    agentGuide: `The agent's own inbox, with an address on this workspace's email domain. Not Gmail or Outlook OAuth.
+add_agent_integration with config {localPart, displayName}: the inbox name before the @, and the sender name. The inbox exists when the call returns; list_agent_integrations then shows its address and how to send.
+It accepts mail from the agent's users and replies to its own emails. Only the owner can widen that, in the integration's settings.`,
+    async prepare(input, context) {
+      // An agent names its inbox; who may write to it stays the owner's choice.
+      const setup = context.fromAgent ? emailAgentSetupSchema.parse(input) : input
+      return { config: await setupCall(() => provisionEmail(context.agentSlug, context.userId ?? null, setup)) }
+    },
   },
   configuration: {
     identityLabel: 'Inbox', identityPaths: ['$.mailboxId'],

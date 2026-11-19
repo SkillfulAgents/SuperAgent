@@ -131,9 +131,6 @@ vi.mock('fs', () => ({
 import xAgentChat from './x-agent-chat'
 import { chatDefinitions } from '@shared/lib/chat-integrations/definitions'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
-import { agentRegistry } from '@shared/lib/agent-actor'
-import { answerOwnerSetupRequests } from '@shared/lib/agent-integrations/owner-setup-request'
-import type { AgentIntegrationRecord } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
 
 const FIXED_TIME = new Date('2026-11-03T12:00:00Z')
@@ -153,18 +150,6 @@ function createIntegration(overrides: Record<string, unknown> = {}) {
     status: 'connected',
     ...overrides,
   }
-}
-
-/** A provider only the owner may set up (no allowAgentCreation). */
-function registerOwnerSetupProvider() {
-  const provider = 'test-owner-setup'
-  if (agentIntegrationRegistry.getDefinition(provider)) return
-  agentIntegrationRegistry.register({
-    definition: { provider, name: 'Owner Test', family: 'task-manager', managementAccess: 'owner', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },
-    policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
-    create: async () => { throw new Error('not needed') },
-    setup: { prepare: async () => { throw new Error('an agent must not prepare an owner-managed integration') } },
-  })
 }
 
 function immediateTimeout() {
@@ -293,7 +278,7 @@ describe('x-agent chat route', () => {
       definition: { provider: 'test-agent-setup', name: 'Test', family: 'chat', managementAccess: 'user', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },
       policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
       create: async () => { throw new Error('not needed') },
-      setup: { allowAgentCreation: true, prepare: async () => ({ config: { prepared: true }, status: 'disconnected' }) },
+      setup: { prepare: async () => ({ config: { prepared: true }, status: 'disconnected' }) },
     })
     mockCreateChatIntegration.mockResolvedValue('created-pending')
     mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-pending', provider: 'test-agent-setup', status: 'disconnected' }))
@@ -323,7 +308,7 @@ describe('x-agent chat route', () => {
         policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
         create: async () => { throw new Error('not needed') },
         setup: {
-          allowAgentCreation: true,
+          agentGuide: 'Create the app in your browser, then authorize it.',
           agentNextStep: record => `Create the app for ${record.id}`,
           prepare: async (_input, context) => ({ config: { redirectUri: context.callbackUrl }, status: 'disconnected' }),
           authorize: { inputSchema: z.object({ clientId: z.string() }).strict(), run: (...args) => run(...args) },
@@ -359,14 +344,22 @@ describe('x-agent chat route', () => {
       expect(mockPauseIntegration).toHaveBeenCalledWith('oauth-1')
     })
 
-    it('authorizes only the caller\'s own installations of providers it may set up', async () => {
+    it('authorizes only the caller\'s own installations', async () => {
       mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-2', agentSlug: 'agent-two', provider }))
       expect((await post('authorize', { integration_id: 'oauth-2' })).status).toBe(404)
-
-      registerOwnerSetupProvider()
-      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'owner-1', provider: 'test-owner-setup' }))
-      expect((await post('authorize', { integration_id: 'owner-1' })).status).toBe(403)
       expect(run).not.toHaveBeenCalled()
+    })
+
+    it('lists every provider with how the agent sets it up', async () => {
+      const response = await post('providers', {})
+
+      expect(response.status).toBe(200)
+      const { providers, webhookRelay } = await response.json() as { providers: Array<{ provider: string; guide?: string; unavailable?: string }>; webhookRelay: boolean }
+      expect(webhookRelay).toBe(false)
+      expect(providers.find(listed => listed.provider === provider)).toEqual({ provider, name: 'OAuth Test', guide: 'Create the app in your browser, then authorize it.' })
+      // Every registered provider is there: none is kept from the agent.
+      expect(providers.map(listed => listed.provider).sort()).toEqual(agentIntegrationRegistry.listDefinitions().map(definition => definition.provider).sort())
+      for (const listed of providers) expect(listed.guide ?? listed.unavailable).toBeTruthy()
     })
 
     it('completes the provider callback from the address the browser was sent to', async () => {
@@ -404,74 +397,6 @@ describe('x-agent chat route', () => {
       const other = await post('complete-authorization', { integration_id: 'oauth-1', url: `http://x/api/agent-integrations/providers/${provider}/callback?state=s2&code=c2` })
       expect(other.status).toBe(400)
       expect(mockResumeIntegration).not.toHaveBeenCalled()
-    })
-  })
-
-  describe('a provider only the owner may set up', () => {
-    const provider = 'test-owner-setup'
-    const add = (body: Record<string, unknown>) => app.request('/api/x-agent/chat/add', {
-      method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, ...body }),
-    })
-
-    beforeEach(registerOwnerSetupProvider)
-
-    it('parks the call on an owner setup card instead of creating the integration', async () => {
-      const response = await add({
-        name: 'Support bot', reason: 'Triage the support queue', toolUseId: 'tool-owner-1', sessionId: 'session-9',
-        config: { localPart: 'support', organization: 'acme', clientSecret: 'never-forwarded' },
-      })
-
-      expect(response.status).toBe(202)
-      expect(await response.json()).toEqual({ status: 'owner_setup_requested', provider })
-      expect(mockCreateChatIntegration).not.toHaveBeenCalled()
-      const request = await agentRegistry.get('agent-one').inputs.get('tool-owner-1')
-      expect(request).toMatchObject({
-        kind: 'integration_setup',
-        blocking: true,
-        scope: { agentSlug: 'agent-one', sessionId: 'session-9' },
-        payload: { provider, reason: 'Triage the support queue', prefill: { name: 'Support bot', localPart: 'support', organization: 'acme' } },
-      })
-      expect(JSON.stringify(request)).not.toContain('never-forwarded')
-      await agentRegistry.get('agent-one').inputs.resolve('tool-owner-1', 'cancelled')
-    })
-
-    it('carries only the suggestions the agent gave', async () => {
-      expect((await add({ name: 'Support bot', toolUseId: 'tool-owner-name', sessionId: 'session-9' })).status).toBe(202)
-      const request = await agentRegistry.get('agent-one').inputs.get('tool-owner-name')
-      expect(request?.payload).toEqual({ provider, prefill: { name: 'Support bot' } })
-      await agentRegistry.get('agent-one').inputs.resolve('tool-owner-name', 'cancelled')
-    })
-
-    it('needs the tool use and session the agent waits in', async () => {
-      const response = await add({ sessionId: 'session-9' })
-      expect(response.status).toBe(400)
-      expect(await response.json()).toEqual({ error: 'toolUseId is required to ask the owner' })
-    })
-
-    it('tells the agent which suggestion it got wrong', async () => {
-      const response = await add({ toolUseId: 'tool-owner-bad', sessionId: 'session-9', config: { localPart: 'x'.repeat(65) } })
-      expect(response.status).toBe(400)
-      expect((await response.json()).error).toMatch(/^Invalid localPart: /)
-      expect(await agentRegistry.get('agent-one').inputs.get('tool-owner-bad')).toBeNull()
-    })
-
-    it('answers the parked call when an integration of that provider connects', async () => {
-      const fetch = vi.fn(async (_path: string, _init?: RequestInit) => Response.json({ success: true }))
-      mockEnsureRunning.mockResolvedValue({ fetch })
-      expect((await add({ toolUseId: 'tool-owner-2', sessionId: 'session-9' })).status).toBe(202)
-      const inputs = agentRegistry.get('agent-one').inputs
-      await inputs.register({ id: 'tool-other-provider', kind: 'integration_setup', scope: { sessionId: 'session-9' }, blocking: true, payload: { provider: 'github' } })
-
-      await answerOwnerSetupRequests({ id: 'integration-9', agentSlug: 'agent-one', provider } as AgentIntegrationRecord)
-
-      expect(fetch).toHaveBeenCalledOnce()
-      const [path, init] = fetch.mock.calls[0]
-      expect(path).toBe('/inputs/tool-owner-2/resolve')
-      expect(JSON.parse(String(init?.body)).value).toContain('integration ID: integration-9')
-      expect(await inputs.get('tool-owner-2')).toBeNull()
-      expect(await inputs.get('tool-other-provider')).not.toBeNull()
-      await inputs.resolve('tool-other-provider', 'cancelled')
     })
   })
 

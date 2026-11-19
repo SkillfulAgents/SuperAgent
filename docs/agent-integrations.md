@@ -134,9 +134,8 @@ chat capabilities; MCP providers use their named server. Credentials are exclude
 Each family with agent-side operations has its own x-agent routes behind the same
 proxy token: chat under `/api/x-agent/chat`, meetings under `/api/x-agent/meetings`
 (see [meeting-integrations.md](meeting-integrations.md)). A family route may set the
-caller's installation up on first use when the provider's setup opts in with
-`allowAgentCreation`; it runs the family's `IntegrationTool`s with `source: 'agent'`
-and must refuse tools exposed to management only.
+caller's installation up on first use; it runs the family's `IntegrationTool`s
+with `source: 'agent'` and must refuse tools exposed to management only.
 
 ## Provider setup
 
@@ -150,34 +149,42 @@ callbacks use `/api/agent-integrations/providers/:provider/callback`; the shorte
 Callbacks require provider-validated, expiring one-use state instead of user cookies.
 
 Telegram token validation, Slack bot/app-token checks, and iMessage code exchange
-implement this same contract. Agent-side creation uses the same preparation hooks
-and requires explicit provider opt-in, preserving owner-only interactive setup.
-Initial authorization-required rows are inserted disconnected atomically.
+implement this same contract. Initial authorization-required rows are inserted
+disconnected atomically.
 
-The agent's `add_agent_integration` tool posts to `/api/x-agent/chat/add`. A
-provider with `allowAgentCreation` is created there, on the address the
-container calls from: the agent runs the rest of the setup in its browser, and
-the bundled browser reaches the host there. An installation that still needs
-authorization returns the provider's `agentNextStep` (Linear: the prefilled app
-creation link and what to copy back; GitHub: call authorize). The agent then
-calls `authorize_agent_integration` (`/api/x-agent/chat/authorize`, the
-provider's `authorize`) and approves the returned link in its browser. A browser
-that cannot load the host's callback page (a host or cloud browser on a
-desktop install) hands the address it was redirected to back through
-`complete_agent_integration_authorization` (`/api/x-agent/chat/complete-authorization`),
-which runs the provider's `callback` only for that provider's callback path and
-only for the caller's own installation; a further provider step (GitHub's
-install page) is returned to open next.
+### Setup by the agent
 
-For any other provider (Email) the route asks the owner instead
-(`owner-setup-request.ts`): it registers an
-`integration_setup` request under the call's tool-use id in the calling session
-and returns 202, and the container waits on that id. The card opens the
-provider's own setup form, seeded with the agent's suggestions (name, Email inbox
-name, GitHub organization; never credentials). The manager answers the call when
-an integration of that provider connects for the agent, whichever screen set it
-up; a reconnect of an existing one answers it too. Declining rejects the call
-with the reason (`POST /api/agents/:id/sessions/:sessionId/decline-integration-setup`).
+An agent sets up any provider through the same hooks, with three tools that
+know nothing about a provider (`agent-container/src/tools/chat/`):
+
+| Tool | Route under `/api/x-agent/chat` | Hook |
+| --- | --- | --- |
+| `list_available_integration_providers` | `/providers` | each provider's `setup.agentGuide` |
+| `add_agent_integration` | `/add` | `prepare`, then `agentNextStep` |
+| `authorize_agent_integration` | `/authorize`, `/complete-authorization` | `authorize`, `callback` |
+
+A new provider is set up by agents once its setup has an `agentGuide`: what to
+collect or do in the agent's browser, and the config `prepare` and `authorize`
+take (`agent-guide.test.ts` requires one). The listing marks a provider this
+host cannot run (unavailable, or it needs a webhook relay the host lacks).
+
+`/add` creates the installation as the app's own create route does, with the
+agent's first owner as its creator and links on the address the container calls
+from: the agent runs the rest of the setup in its browser, and the bundled
+browser reaches the host there. `prepare` receives `context.fromAgent`, for a
+provider that leaves a choice to the owner (Email: an agent names its inbox,
+but not who may write to it). An installation that is not connected yet comes
+back with a next step: the provider's `agentNextStep` when it needs something
+only the installation has (Linear's prefilled app creation link), else a call
+to `authorize_agent_integration` when the provider has `authorize`.
+
+`/authorize` runs the provider's `authorize` on the caller's own installation
+and returns its link, which the agent approves in its browser. A browser that
+cannot load the host's callback page (a host or cloud browser on a desktop
+install) hands the address it was redirected to back as `redirect_url`;
+`/complete-authorization` runs the provider's `callback` only for that
+provider's callback path and only for the caller's own installation, and returns
+a further provider step (GitHub's install page) to open next.
 
 Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
 credential panel, fields, feedback and actions. Providers supply their content and

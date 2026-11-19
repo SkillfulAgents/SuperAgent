@@ -12,11 +12,6 @@ export interface AuthorizeAgentIntegrationInput {
   config?: Record<string, unknown>
 }
 
-export interface CompleteAgentIntegrationAuthorizationInput {
-  integration_id?: string
-  url?: string
-}
-
 export interface SendChatMessageInput {
   integration_id?: string
   message?: string
@@ -46,25 +41,19 @@ export const listAgentIntegrationsDef = {
 } as const
 
 export const addChatIntegrationDef = {
-  displayName: 'Add Chat Integration',
+  displayName: 'Add Agent Integration',
   parseInput: (i: unknown) => asObj<AddChatIntegrationInput>(i),
   getSummary: (i: unknown) => {
     const { provider, name } = asObj<AddChatIntegrationInput>(i)
-    if (name) return `Add ${provider || 'chat'}: ${name}`
-    return provider ? `Add ${provider} integration` : 'Add chat integration'
+    if (name) return `Add ${provider || 'integration'}: ${name}`
+    return provider ? `Add ${provider} integration` : 'Add agent integration'
   },
 } as const
 
 export const authorizeAgentIntegrationDef = {
   displayName: 'Authorize Agent Integration',
   parseInput: (i: unknown) => asObj<AuthorizeAgentIntegrationInput>(i),
-  getSummary: () => 'Get the authorization link',
-} as const
-
-export const completeAgentIntegrationAuthorizationDef = {
-  displayName: 'Complete Integration Authorization',
-  parseInput: (i: unknown) => asObj<CompleteAgentIntegrationAuthorizationInput>(i),
-  getSummary: () => 'Hand the authorization back to Gamut',
+  getSummary: () => 'Authorize the integration',
 } as const
 
 export const sendChatMessageDef = {

@@ -41,7 +41,6 @@ import { PassTask, Task, taskManager, type Service, type TaskResult } from '@sha
 import { restoreStreamPayloadSchema, type RestoreStreamPayload } from './restore-stream-schema'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
-import { answerOwnerSetupRequests } from './owner-setup-request'
 import { continuationPrompt } from './continuation-prompt'
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
@@ -794,8 +793,6 @@ export class AgentIntegrationManager implements Service {
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
-    // An agent may be waiting on its owner for exactly this account.
-    background(answerOwnerSetupRequests(integration), { name: 'integration-manager.answer-owner-setup' })
 
     // Follow again the chats whose session is running now: a turn that began
     // while no connection was there to hear it (a creation accepted during
