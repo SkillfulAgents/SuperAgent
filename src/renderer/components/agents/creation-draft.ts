@@ -1,18 +1,5 @@
-import { z } from 'zod'
-import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
-import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
-
-const creationDraftSchema = z.object({
-  agent: z.object({ slug: z.string(), displaySlug: z.string() }).optional(),
-  requestId: z.string().uuid().optional(),
-  sessionRequestId: z.string().uuid().optional(),
-  identity: z.object({ name: z.string(), avatar: agentAvatarSchema }),
-  stage: z.enum(['name', 'describe', 'addons']),
-  prompt: z.string(),
-  runtimeOptions: RuntimeOptionsSchema.optional(),
-})
-export type ChosenAgentIdentity = z.infer<typeof creationDraftSchema>['identity']
-export type CreationDraft = z.infer<typeof creationDraftSchema>
+import { creationDraftSchema, type CreationDraft } from '@shared/lib/types/creation-draft'
+export type { CreationDraft, ChosenAgentIdentity } from '@shared/lib/types/creation-draft'
 
 declare module '@tanstack/history' {
   interface HistoryState {

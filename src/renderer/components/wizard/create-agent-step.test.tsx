@@ -5,8 +5,9 @@ import userEvent from '@testing-library/user-event'
 import type { CreateAgentFormProps } from '@renderer/components/agents/create-agent-form'
 import type { SignupHandoff } from '@renderer/context/nav-transient-context'
 
-const { handoff, formProps, formSubmit, create, rename, start, navigate } = vi.hoisted(() => ({
-  create: vi.fn(async ({ name }: { name: string }) => ({ name, slug: 'scout', displaySlug: 'scout-id' })),
+const { track, handoff, formProps, formSubmit, create, rename, start, navigate } = vi.hoisted(() => ({
+  track: vi.fn(),
+  create: vi.fn(async ({ name }: { name: string }) => ({ name, slug: 'scout', displaySlug: 'scout-id', replayed: false })),
   rename: vi.fn(async () => ({ slug: 'scout', displaySlug: 'scouty-id' })),
   start: vi.fn(),
   navigate: vi.fn(),
@@ -22,7 +23,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useStartAgent: () => ({ mutate: start }),
 }))
 vi.mock('@renderer/hooks/use-settings', () => ({ useWarmStartOnTypeEnabled: () => true }))
-vi.mock('@renderer/context/analytics-context', () => ({ useAnalyticsTracking: () => ({ track: vi.fn() }) }))
+vi.mock('@renderer/context/analytics-context', () => ({ useAnalyticsTracking: () => ({ track }) }))
 vi.mock('@tanstack/react-router', async (original) => ({
   ...await original<typeof import('@tanstack/react-router')>(), useNavigate: () => navigate,
 }))
@@ -71,6 +72,12 @@ async function toAddons() {
 }
 
 describe('CreateAgentStep', () => {
+  it('skips the creation event when the named agent was already created by the first request', async () => {
+    create.mockResolvedValueOnce({ name: 'Scout', slug: 'scout', displaySlug: 'scout-id', replayed: true })
+    await toAddons()
+    expect(track).not.toHaveBeenCalled()
+  })
+
   it('asks for a name first and only continues once one is typed', async () => {
     render(<Harness />)
     expect(screen.getByRole('heading', { name: 'Name your first AI teammate' })).toBeInTheDocument()

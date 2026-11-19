@@ -4,7 +4,6 @@ import { EFFORT_LEVELS, SPEED_LEVELS } from '@shared/lib/container/types'
 // Keep in sync with agent-container/src/file-hooks/agent-preferences-hook.ts
 export const agentPreferencesSchema = z.object({
   autoMemoryEnabled: z.boolean().optional(),
-  dreamSetupId: z.string().uuid().optional(),
   /** Days of inactivity after which sessions are deleted. 0 = Never. */
   autoDeleteInactiveDays: z.number().int().nonnegative().optional(),
   /** Days after which this agent's API / MCP audit rows are deleted. 0 = Never. */

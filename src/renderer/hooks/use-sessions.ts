@@ -224,7 +224,6 @@ export function useCreateSession(options: {
         body: JSON.stringify({
           message: data.message,
           requestId: data.requestId,
-          ...(data.origin && data.origin !== 'user' && { skipDreamSetup: true }),
           ...(data.name ? { name: data.name } : {}),
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
@@ -237,25 +236,27 @@ export function useCreateSession(options: {
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
-      return res.json() as Promise<ApiSession & { initialMessageUuid: string; initialMessage?: string; replayed?: boolean; credentialSource?: string }>
+      return res.json() as Promise<ApiSession & { initialMessageUuid: string; replayed?: boolean; credentialSource?: string }>
     },
     onSuccess: (created, variables) => {
-      const origin = variables.origin ?? 'user'
-      // Onboarding and todo auto-sends are neither typed nor spoken, so they stay unstamped.
-      const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
-      const stamp = {
-        origin,
-        ...(variables.surface ? { surface: variables.surface } : {}),
-        ...(variables.computerUse ? { computer_use: true } : {}),
+      if (!created.replayed) {
+        const origin = variables.origin ?? 'user'
+        // Onboarding and todo auto-sends are neither typed nor spoken, so they stay unstamped.
+        const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
+        const stamp = {
+          origin,
+          ...(variables.surface ? { surface: variables.surface } : {}),
+          ...(variables.computerUse ? { computer_use: true } : {}),
+        }
+        track('session_created', { ...stamp, ...(inputMode ? { input_mode: inputMode } : {}) })
+        // A voice-started session's first message is the entry marker, not something the person said.
+        track('message_sent', {
+          ...stamp,
+          session_id: created.id,
+          credential_source: created.credentialSource ?? 'unknown',
+          ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
+        })
       }
-      track('session_created', { ...stamp, ...(inputMode ? { input_mode: inputMode } : {}) })
-      // A voice-started session's first message is the entry marker, not something the person said.
-      track('message_sent', {
-        ...stamp,
-        session_id: created.id,
-        credential_source: created.credentialSource ?? 'unknown',
-        ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
-      })
       const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
       // Seed the caches from the response so the sidebar row and the session
       // view render immediately instead of waiting a refetch round-trip. The

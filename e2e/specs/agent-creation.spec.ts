@@ -119,7 +119,7 @@ test('an unavailable skill catalog does not prevent starting the requested job',
   await expect(page.getByTestId('message-list')).toContainText('Prepare a weekly research brief.')
 })
 
-test('Dream survives Skip and asks for its schedule only on the first job from Home', async ({ page, request }) => {
+test('Skip keeps Dream installed and sends the first Home job verbatim', async ({ page, request }) => {
   const sessions = await reachAddons(page)
   const toggle = page.getByRole('switch', { name: 'Self-Improvement' })
   await toggle.click()
@@ -130,11 +130,62 @@ test('Dream survives Skip and asks for its schedule only on the first job from H
   expect(await (await request.get(sessions)).json()).toEqual([])
   await page.reload()
   await page.getByTestId('home-message-input').fill('My first real job')
+  const posted = page.waitForRequest(r => r.url().endsWith(sessions) && r.method() === 'POST')
   await page.getByTestId('home-send-button').click()
-  await expect(page.getByTestId('message-list')).toContainText('Use the /dream skill to set up dreaming.')
-  const second = await request.post(sessions, { data: { message: 'Another job' } })
-  expect(second.status()).toBe(201)
-  expect(await second.json()).not.toHaveProperty('initialMessage')
+  expect((await posted).postDataJSON().message).toBe('My first real job')
+  const messages = page.getByTestId('message-list')
+  await expect(messages).toContainText('My first real job')
+  await expect(messages).not.toContainText('/dream')
+  const skills = await (await request.get(sessions.replace(/sessions$/, 'skills'))).json()
+  expect(skills.skills).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'dream' })]))
+})
+
+test('Start session appends the Dream instruction once to the saved wizard job', async ({ page }) => {
+  const sessions = await reachAddons(page)
+  const toggle = page.getByRole('switch', { name: 'Self-Improvement' })
+  await toggle.click()
+  await expect(toggle).toBeChecked()
+  await page.reload()
+  const sent = page.waitForRequest(r => r.url().endsWith(sessions) && r.method() === 'POST')
+  await page.getByTestId('create-agent-finish').click()
+  const message = (await sent).postDataJSON().message
+  expect(message).toMatch(/^Prepare a weekly research brief\.\n\nUse the \/dream skill/)
+  expect(message.split('/dream')).toHaveLength(2)
+  await expect(page.getByTestId('message-list')).toContainText('schedule it and run the first dream')
+})
+
+test('a restored mention can cancel the access dialog, then grant access and start the job', async ({ page, request }) => {
+  const target = await (await request.post('/api/agents', { data: { name: 'Mentions target' } })).json()
+  const sessions = await reachAddons(page)
+  const dream = page.getByRole('switch', { name: 'Self-Improvement' })
+  await dream.click()
+  await expect(dream).toBeChecked()
+  // Restore the same marker format that the composer stores for a selected agent chip.
+  await page.evaluate(({ slug }) => {
+    const key = 'gamut:new-agent:' + history.state.__TSR_key
+    const raw = sessionStorage.getItem(key)
+    if (!raw) throw new Error('Expected a saved wizard draft')
+    try {
+      const draft = JSON.parse(raw)
+      draft.prompt = `Ask [[agent:${slug}|Mentions%20target]] for an update`
+      sessionStorage.setItem(key, JSON.stringify(draft))
+    } catch (cause) {
+      throw new Error('Could not restore the saved mention draft', { cause })
+    }
+  }, target)
+  await page.reload()
+  const finish = page.getByTestId('create-agent-finish')
+  await finish.click()
+  const dialog = page.getByTestId('mention-access-dialog')
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(finish).toBeEnabled()
+  expect(await (await request.get(sessions)).json()).toEqual([])
+  await finish.click()
+  await dialog.getByRole('button', { name: 'Allow and send' }).click()
+  const message = page.getByTestId('message-list')
+  await expect(message).toContainText('Use the /dream skill')
+  await expect(message.getByTestId('agent-mention').first()).toContainText('Mentions target')
 })
 
 test('returning from templates restores the unconfirmed name, shape, and color', async ({ page }) => {
@@ -164,7 +215,7 @@ test('removing Dream before leaving the wizard clears its first-job instruction'
   await page.getByTestId('create-agent-finish').click()
   const response = await started
   expect(response.status()).toBe(201)
-  expect(await response.json()).not.toHaveProperty('initialMessage')
+  expect(response.request().postDataJSON().message).toBe('Prepare a weekly research brief.')
 })
 
 test('Finish setup completes the existing Slack webhook installation in the wizard', async ({ page }) => {

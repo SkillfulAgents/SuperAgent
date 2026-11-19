@@ -8,13 +8,14 @@ import { AgentAddonsStep } from './agent-addons-step'
 
 const dream = { name: 'dream', path: 'skills/dream/SKILL.md', version: '0.1.0', skillsetId: DEFAULT_PUBLIC_SKILLSET.id }
 
-const state = { integrations: [] as Partial<PublicAgentIntegration>[], skills: [dream], brain: true, everyAgent: false }
+const state = { integrations: [] as Partial<PublicAgentIntegration>[], skills: [dream] as typeof dream[] | undefined, catalogError: false, brain: true, everyAgent: false }
 const install = vi.fn()
 const toggle = vi.fn()
+const refetchCatalog = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.brain ? [{ slug: 'brain', teamBrain: { volumeId: 'drive' } }] : [] }) }))
 vi.mock('@renderer/hooks/use-agent-skills', () => ({
   useAgentSkills: () => ({ data: [], refetch: vi.fn() }),
-  useDiscoverableSkills: () => ({ data: state.skills, refetch: vi.fn() }),
+  useDiscoverableSkills: () => ({ data: state.skills, isError: state.catalogError, refetch: refetchCatalog }),
   useInstallSkill: () => ({ mutateAsync: install }),
   useDeleteSkill: () => ({ mutateAsync: vi.fn() }),
 }))
@@ -32,21 +33,33 @@ vi.mock('@renderer/hooks/use-agent-integrations', () => ({
 vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog', () => ({
   AgentIntegrationSetupDialog: ({ provider }: { provider: { slug: string } | null }) => provider && <div role="dialog">{provider.slug}</div>,
 }))
-const show = () => render(<AgentAddonsStep header={null} agentSlug="scout" onBusyChange={vi.fn()} />)
+const show = () => render(<AgentAddonsStep header={null} agentSlug="scout" onBusyChange={vi.fn()} onDreamChange={vi.fn()} />)
 beforeEach(() => {
   vi.clearAllMocks()
   state.integrations = []
   state.skills = [dream]
+  state.catalogError = false
   state.brain = true
   state.everyAgent = false
 })
 it('installs the public Dream skill and grants Team Brain to the confirmed agent', async () => {
   show()
   await userEvent.click(screen.getByRole('switch', { name: 'Self-Improvement' }))
-  expect(install).toHaveBeenCalledWith({ agentSlug: 'scout', skillsetId: dream.skillsetId, skillPath: dream.path, skillVersion: dream.version, skillName: dream.name, activateDream: true })
+  expect(install).toHaveBeenCalledWith({ agentSlug: 'scout', skillsetId: dream.skillsetId, skillPath: dream.path, skillVersion: dream.version, skillName: dream.name })
   await userEvent.click(screen.getByRole('switch', { name: 'Team Brain' }))
   expect(toggle).toHaveBeenCalledWith('scout', true)
 })
+it('waits for the catalog before claiming Dream is missing and lets a failed read retry', async () => {
+  state.skills = undefined
+  const view = show()
+  expect(screen.getByRole('switch', { name: 'Self-Improvement' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: 'Why Self-Improvement is unavailable' })).toBeNull()
+  state.catalogError = true
+  view.rerender(<AgentAddonsStep header={null} agentSlug="scout" onBusyChange={vi.fn()} onDreamChange={vi.fn()} />)
+  await userEvent.click(screen.getByRole('button', { name: 'Retry loading skills' }))
+  expect(refetchCatalog).toHaveBeenCalled()
+})
+
 it('explains unavailable add-ons, including a same-named skill from another set', async () => {
   state.skills = [{ ...dream, skillsetId: 'different-set' }]
   state.brain = false

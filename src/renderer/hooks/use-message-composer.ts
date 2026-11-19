@@ -36,6 +36,8 @@ interface UseMessageComposerOptions {
   /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
   draftKey?: string
   initialMessage?: string
+  /** Appended only to the outgoing text, before mention and dictation metadata. */
+  messageSuffix?: string
   /** One-shot attachment seed, used when moving a draft into a new session. */
   initialAttachments?: Attachment[]
   /** Fires on composer-mic transcript updates (before message state changes). */
@@ -323,7 +325,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     const editableContent = content
     const dictated = dictatedRef.current
-    const agentText = chipsToAgentText(content, sendContext, { silent })
+    const text = options.messageSuffix ? `${content}\n\n${options.messageSuffix}` : content
+    const agentText = chipsToAgentText(text, sendContext, { silent })
     const submittedContent = dictated ? appendDictationNote(agentText) : agentText
 
     try {

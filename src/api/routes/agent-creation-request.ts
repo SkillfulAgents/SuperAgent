@@ -1,30 +1,27 @@
-import { z } from 'zod'
-import { appState, defineNamespace } from '@shared/lib/app-state'
-import type { ApiAgent } from '@shared/lib/types/api'
+import { agentCatalog } from '@shared/lib/agent-actor'
+import { agentCreationReceiptKey, agentCreationReceiptSchema } from '@shared/lib/app-records/record-schemas'
+import { compareAndSetRecord, readRecord, serializeRecordValue } from '@shared/lib/app-records/records'
+import type { CreateAgentInput } from '@shared/lib/types/agent'
 
-// A tab can lose its POST response while the host is still creating its agent.
-// The request belongs to the signed-in user and remembers only the agent ID.
-const requests = defineNamespace({
-  name: 'flow:agent-creation',
-  consistency: 'strong',
-  schema: z.object({ slug: z.string().nullable() }),
-  expiry: { ttlMs: 24 * 60 * 60_000, onUpdate: 'reset' },
-})
+/** The receipt, catalog entry and owner commit together. A competing insert rolls back all three. */
+export async function reserveAgentCreation(userId: string, requestId: string, input: CreateAgentInput, withOwner: boolean) {
+  const key = agentCreationReceiptKey(userId, requestId)
+  const existing = await readRecord(key, agentCreationReceiptSchema)
+  if (existing) return { key, ...existing }
 
-export async function createAgentOnce(userId: string, requestId: string | undefined, create: () => Promise<ApiAgent>) {
-  if (!requestId) return { created: await create() }
-  const state = appState()
-  const key = requests.key(userId, requestId)
-  const claim = await state.insertIfAbsent(key, { slug: null })
-  if (!claim.inserted) return { existingSlug: claim.current.value.slug }
-
-  let agent: ApiAgent
+  const slug = await agentCatalog.mint()
   try {
-    agent = await create()
+    await agentCatalog.insert({ ...input, slug, createdAt: new Date() }, { receiptKey: key, ownerId: withOwner ? userId : undefined })
+    return { key, revision: 1, value: { slug, ready: false } }
   } catch (error) {
-    await state.consume(key, { revision: claim.entry.revision })
-    throw error
+    const winner = await readRecord(key, agentCreationReceiptSchema)
+    if (!winner) throw error
+    return { key, ...winner }
   }
-  await state.compareAndSet(key, claim.entry.revision, { slug: agent.slug })
-  return { created: agent }
+}
+
+/** Only the first caller to finish the workspace reports a new creation. */
+export async function completeAgentCreation(receipt: Awaited<ReturnType<typeof reserveAgentCreation>>) {
+  return compareAndSetRecord(receipt.key, receipt.revision,
+    serializeRecordValue(receipt.key, { ...receipt.value, ready: true }, agentCreationReceiptSchema))
 }

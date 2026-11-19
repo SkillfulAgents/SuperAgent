@@ -34,6 +34,7 @@ import {
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
+import { DREAM_SETUP_PROMPT } from '@shared/lib/skillset-provider/dream-skill'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent, ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
 import type { CreateAgentSurface } from '@renderer/router/search-schemas'
@@ -92,6 +93,7 @@ export interface CreateAgentFormProps {
    * by the onboarding wizard, which nothing opens.
    */
   surface?: CreateAgentSurface
+  dreamSelected?: boolean
   namedFlow?: boolean
   sessionRequestId?: string
   existingAgent?: Pick<ApiAgent, 'slug' | 'displaySlug'>
@@ -121,7 +123,7 @@ export interface CreateAgentFormProps {
   exiting?: boolean
 }
 
-export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, namedFlow, existingAgent, sessionRequestId, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, dreamSelected, namedFlow, existingAgent, sessionRequestId, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -273,6 +275,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
   const composer = useMessageComposer({
     agentSlug: existingAgent?.slug ?? '',
     initialMessage: initialPrompt,
+    messageSuffix: dreamSelected ? DREAM_SETUP_PROMPT : undefined,
     onVoiceTranscript: forfeitHandoffTemplate,
     // No agent workspace exists yet, so this host does not offer attachments.
     // These throw if a caller still reaches them.
@@ -291,7 +294,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
         // failures. Once the API has accepted the initial message, the composer
         // must clear even if the wizard's follow-up persistence fails; otherwise
         // retrying creates a duplicate agent and session.
-        const { newAgent, session, initialMessage } = await (async () => {
+        const { newAgent, session } = await (async () => {
           try {
             if (namedFlow && !existingAgent) throw new Error('Your agent is still being saved.')
             const warmSlug = namedFlow ? null : await awaitWarmStartRef.current()
@@ -307,10 +310,11 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
               // always send what the picker is showing.
               model: composerOptions.model ?? composerOptions.defaultModel,
             })
-            return { newAgent, session, initialMessage: session.initialMessage ?? content }
+            return { newAgent, session }
           } catch (error) {
-            console.error('Failed to create agent:', error)
-            toast.error('Failed to create agent', {
+            const title = existingAgent ? 'Failed to start session' : 'Failed to create agent'
+            console.error(title, error)
+            toast.error(title, {
               description: error instanceof Error ? error.message : 'Please try again.',
             })
             // Rethrow so useMessageComposer keeps the typed prompt for a genuine
@@ -319,11 +323,9 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
           }
         })()
 
-        if (!session.replayed) seedPendingSessionMessage(
-          session.id,
-          initialMessage,
-          session.initialMessageUuid,
-        )
+        if (!session.replayed) {
+          seedPendingSessionMessage(session.id, content, session.initialMessageUuid)
+        }
         if (!existingAgent) track('agent_created', { source: 'new', ...(surface ? { surface } : {}), num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
         try {
@@ -621,6 +623,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
         <div className="min-h-0" style={CREATE_STEP_BOTTOM_SPACER} aria-hidden />
       )}
 
+      {composer.chipDialog}
       <TemplateInstallDialog
         template={templateToInstall}
         onClose={() => setTemplateToInstall(null)}

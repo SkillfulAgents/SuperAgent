@@ -93,7 +93,7 @@ export function useNewSessionComposer({
           ...(computerUse ? { computerUse: true } : {}),
           ...(surface ? { surface } : {}),
         })
-        await onSessionCreated({ agentSlug, session, content: session.initialMessage ?? content })
+        await onSessionCreated({ agentSlug, session, content })
       } catch (error) {
         onError?.(error)
         throw error // useMessageComposer preserves the draft on failure.

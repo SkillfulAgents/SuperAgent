@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen } from '@testing-library/react'
+import { DREAM_SETUP_PROMPT } from '@shared/lib/skillset-provider/dream-skill'
+import { toast } from 'sonner'
 import { CreateAgentForm } from './create-agent-form'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import {
@@ -92,6 +94,7 @@ vi.mock('@renderer/hooks/use-typewriter-placeholder', () => ({
 
 const mockComposer = {
   message: '',
+  chipDialog: <div role="dialog" aria-label="Confirm mention" />,
   setMessage: vi.fn(),
   attachments: [],
   removeAttachment: vi.fn(),
@@ -104,6 +107,7 @@ const mockComposer = {
 }
 
 let capturedComposerOptions: {
+  messageSuffix?: string
   keepMessageUntilComplete?: boolean
   submitDisabled?: boolean
   onSubmit: (content: string) => Promise<void>
@@ -185,17 +189,27 @@ describe('CreateAgentForm', () => {
     expect(mockNavigate).not.toHaveBeenCalled()
   })
 
-  it('uses the server’s accepted first message for the optimistic preview', async () => {
+  it('appends Dream setup to the wizard job and shows that same text in the session', async () => {
     const agent = { slug: 'scout', displaySlug: 'scout-id' }
     const job = 'Review our customer feedback.'
-    const initialMessage = job + '\n\nRun Dream setup.'
-    mockCreateSession.mutateAsync.mockResolvedValueOnce({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid', initialMessage })
-    renderWithProviders(<CreateAgentForm namedFlow existingAgent={agent} sessionRequestId="saved-request" />)
-    await act(async () => { await capturedComposerOptions.onSubmit(job) })
+    const initialMessage = job + '\n\n' + DREAM_SETUP_PROMPT
+    renderWithProviders(<CreateAgentForm dreamSelected namedFlow existingAgent={agent} sessionRequestId="saved-request" />)
+    expect(capturedComposerOptions.messageSuffix).toBe(DREAM_SETUP_PROMPT)
+    await act(async () => { await capturedComposerOptions.onSubmit(initialMessage) })
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
-      agentSlug: agent.slug, message: job, requestId: 'saved-request',
+      agentSlug: agent.slug, message: initialMessage, requestId: 'saved-request',
     }))
     expect(peekPendingSessionSeed('session-123')).toMatchObject({ text: initialMessage })
+  })
+
+  it('mounts the confirmation dialog and reports a failed first session on an existing agent', async () => {
+    const error = vi.spyOn(toast, 'error')
+    mockCreateSession.mutateAsync.mockRejectedValueOnce(new Error('Container offline'))
+    renderWithProviders(<CreateAgentForm namedFlow existingAgent={{ slug: 'scout', displaySlug: 'scout' }} />)
+    expect(screen.getByRole('dialog', { name: 'Confirm mention' })).toBeInTheDocument()
+    await act(async () => { await expect(capturedComposerOptions.onSubmit('A job')).rejects.toThrow('Container offline') })
+    expect(error).toHaveBeenCalledWith('Failed to start session', { description: 'Container offline' })
+    error.mockRestore()
   })
 
   it('does not make a created session retryable when wizard finalization fails', async () => {

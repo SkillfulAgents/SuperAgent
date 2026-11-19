@@ -23,7 +23,7 @@ test.describe('Public Skillset Provider', () => {
 
     const publicRow = page.locator('div.flex.items-start.gap-3').filter({ hasText: 'E2E Public Skillset' })
     await expect(publicRow).toBeVisible({ timeout: 10000 })
-    await expect(publicRow.getByText('1 skill')).toBeVisible()
+    await expect(publicRow.getByText('2 skills')).toBeVisible()
     await expect(publicRow.getByText('Public', { exact: true })).toBeVisible()
   })
 

@@ -284,6 +284,30 @@ test.describe('Getting Started Wizard', () => {
     expect(settings.onboardingProgress).toBeNull()
   })
 
+  test('resumes the named agent in a fresh window and retains model choices across steps', async ({ page, request, context }) => {
+    await request.put('/api/user-settings', { data: { setupCompleted: false, onboardingProgress: { path: 'manual', stepId: 'agent' } } })
+    await appPage.goto()
+    const name = 'Resume onboarding ' + Date.now()
+    await page.getByTestId('agent-identity-name').fill(name)
+    await page.getByTestId('agent-identity-continue').click()
+    await expect.poll(async () => (await (await request.get('/api/user-settings')).json()).onboardingProgress.agentDraft?.agent?.slug).toBeTruthy()
+    await page.getByTestId('composer-options-trigger').click()
+    await page.getByTestId('model-pinned-claude-sonnet-4-6').click()
+    await page.keyboard.press('Escape')
+    await wizardPage.clickBack()
+    await wizardPage.clickBack()
+    await wizardPage.clickNext()
+    await page.getByTestId('agent-identity-continue').click()
+    await expect(page.getByTestId('composer-options-trigger')).toContainText('Sonnet')
+    const fresh = await context.newPage()
+    await fresh.goto('/')
+    await expect(fresh.getByTestId('agent-identity-name-label')).toHaveText(name)
+    await fresh.getByTestId('create-agent-skip').click()
+    await expect(fresh.getByTestId('agent-breadcrumb')).toHaveText(name)
+    const rows = await (await request.get('/api/agents')).json()
+    expect(rows.filter((agent: { name: string }) => agent.name === name)).toHaveLength(1)
+  })
+
   test('sets setupCompleted after finishing', async ({ request }) => {
     await request.put('/api/user-settings', {
       data: { setupCompleted: false },

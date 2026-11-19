@@ -4,7 +4,6 @@ import { FileHook, type FileHookReadResult, type FileHookWriteResult } from './f
 // Keep in sync with src/shared/lib/types/agent-preferences.ts
 const agentPreferencesSchema = z.object({
   autoMemoryEnabled: z.boolean().optional(),
-  dreamSetupId: z.string().uuid().optional(),
   autoDeleteInactiveDays: z.number().int().nonnegative().optional(),
   apiLogAutoDeleteDays: z.number().int().nonnegative().optional(),
   defaultModel: z.string().trim().min(1).optional(),

@@ -159,7 +159,8 @@ export function useCreateAgent() {
       })
       if (res.status === 202) throw new HttpError(202, 'Agent creation is still in progress')
       if (!res.ok) throw new HttpError(res.status, 'Failed to create agent')
-      return res.json() as Promise<ApiAgent>
+      const agent: ApiAgent = await res.json()
+      return { ...agent, replayed: res.status === 200 }
     },
     onSuccess: (agent) => {
       // Seed the per-slug cache so consumers reading useAgent(slug) right

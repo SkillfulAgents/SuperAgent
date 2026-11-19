@@ -994,6 +994,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     );
   }
 
+  private get autoMemoryEnabled(): boolean {
+    const disabled = this.customEnvVars?.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+    return disabled !== '1' && disabled?.toLowerCase() !== 'true';
+  }
+
   /**
    * Creates a new query instance with the standard configuration.
    * Used by start(), restart(), and interrupt() to avoid duplication.
@@ -1004,11 +1009,6 @@ export class ClaudeCodeProcess extends EventEmitter {
    * the ~1-3s a cold spawn costs. The handle is single-use — the SDK closes
    * over the prompt stream we hand it here — so it is cleared on claim.
    */
-  private get autoMemoryEnabled(): boolean {
-    const disabled = this.customEnvVars?.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
-    return disabled !== '1' && disabled?.toLowerCase() !== 'true';
-  }
-
   private createQuery(): Query {
     const warm = this.warmHandle;
     if (warm) {

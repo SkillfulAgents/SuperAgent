@@ -28,10 +28,11 @@ function needsSlackSetup(integration: PublicAgentIntegration) {
   return !!slack?.webhook && !slack.botTokenSaved
 }
 
-export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
+export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange }: {
   header: ReactNode
   agentSlug: string
   onBusyChange: (busy: boolean) => void
+  onDreamChange: (enabled: boolean) => void
 }) {
   const skills = useAgentSkills(agentSlug)
   const discoverable = useDiscoverableSkills(agentSlug)
@@ -51,6 +52,12 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
 
   const dream = discoverable.data?.find(s => s.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && s.path === DREAM_SKILL_PATH)
   const installed = skills.data?.find(isPublicDreamSkill)
+  useEffect(() => {
+    if (skills.data) onDreamChange(!!installed)
+  }, [skills.data, installed, onDreamChange])
+  const dreamReason = installed || dream ? undefined
+    : discoverable.isError ? 'Could not load the Gamut Public Skillset. Try again.'
+    : discoverable.data && skills.data ? 'Requires Dream in the Gamut Public Skillset.' : undefined
   const busy = changingSkill || updatePreferences.isPending || access.isChanging(agentSlug)
   useEffect(() => {
     onBusyChange(busy)
@@ -61,10 +68,11 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
     setChangingSkill(true)
     try {
       if (on && dream) {
-        await install.mutateAsync({ agentSlug, skillsetId: dream.skillsetId, skillPath: dream.path, skillName: dream.name, skillVersion: dream.version, activateDream: true })
+        await install.mutateAsync({ agentSlug, skillsetId: dream.skillsetId, skillPath: dream.path, skillName: dream.name, skillVersion: dream.version })
       } else if (!on && installed) {
         await remove.mutateAsync({ agentSlug, skillDir: installed.path })
       }
+      onDreamChange(on)
       await Promise.all([skills.refetch(), discoverable.refetch()])
     } catch (error) {
       toast.error('Could not change Self-Improvement', { description: error instanceof Error ? error.message : undefined })
@@ -81,8 +89,12 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
           <div className="space-y-5">
             <Section title="Skills">
               <Row icon={<TrendingUp />} title="Self-Improvement" description="Installs Dream to review past work and improve between sessions."
-                checked={!!installed} disabled={changingSkill} onChange={on => void toggleDream(on)}
-                reason={!installed && !dream ? 'Requires Dream in the Gamut Public Skillset.' : undefined} />
+                checked={!!installed} disabled={changingSkill || !skills.data || (!installed && !dream)} onChange={on => void toggleDream(on)}
+                reason={dreamReason} />
+              {(discoverable.isError || skills.isError) && <Button size="sm" variant="ghost" onClick={() => {
+                void skills.refetch()
+                void discoverable.refetch()
+              }}>Retry loading skills</Button>}
             </Section>
             <Section title="Knowledge & Context">
               <Row icon={<NotebookPen />} title="Memories" description="Remembers what it learns across Claude sessions."

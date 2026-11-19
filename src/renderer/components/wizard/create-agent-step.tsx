@@ -114,6 +114,7 @@ export function CreateAgentStep({
                 </div>
               )}
             namedFlow={named}
+            dreamSelected={flow.dreamSelected}
             existingAgent={flow.agent}
             sessionRequestId={flow.sessionRequestId}
             initialPrompt={flow.prompt}
@@ -135,6 +136,7 @@ export function CreateAgentStep({
           header={<IdentityHeader identity={identity} onEdit={flow.backToName} question="Want to give me any add-ons?" subtitle={ADDONS_SUBTITLE} />}
           agentSlug={flow.agent.slug}
           onBusyChange={flow.setAddonBusy}
+          onDreamChange={flow.setDreamSelected}
         />
       )}
     </>

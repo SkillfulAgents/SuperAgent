@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { creationDraftSchema } from '@shared/lib/types/creation-draft'
 import { and, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
@@ -236,6 +237,7 @@ export const userSettingsSchema = z.object({
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),
+    agentDraft: creationDraftSchema.optional(),
   }).nullish(),
 })
 

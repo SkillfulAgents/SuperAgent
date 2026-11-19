@@ -82,7 +82,6 @@ export interface SessionMetadata extends RuntimeOptions {
     requestId?: string
     userId: string
     initialMessageUuid: string
-    dreamSetupId?: string
   }
   name?: string
   starred?: boolean

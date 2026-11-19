@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUserSettings, useUpdateUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
 import {
   ChevronRight,
@@ -68,77 +68,60 @@ interface GettingStartedWizardProps {
   onClose: () => void
 }
 
-export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizardProps) {
-  const [currentStep, setCurrentStep] = useState(0)
-  const [welcomePath, setWelcomePath] = useState<'platform' | 'manual' | null>(null)
+export function GettingStartedWizard(props: GettingStartedWizardProps) {
+  const { data: settings } = useUserSettings()
+  return settings && <LoadedGettingStartedWizard {...props} initialProgress={settings.onboardingProgress} />
+}
+
+function LoadedGettingStartedWizard({ agentOnly, onClose, initialProgress }: GettingStartedWizardProps & {
+  initialProgress: UserSettingsData['onboardingProgress']
+}) {
+  const [restored] = useState(() => {
+    if (initialProgress) {
+      const index = stepsForPath(initialProgress.path).findIndex(step => step.id === initialProgress.stepId)
+      if (index >= 0) return { path: initialProgress.path, index }
+    }
+    return { path: null, index: 0 }
+  })
+  const [currentStep, setCurrentStep] = useState(restored.index)
+  const [welcomePath, setWelcomePath] = useState(restored.path)
   const [composioCanProceed, setComposioCanProceed] = useState(false)
   const [runtimeCanProceed, setRuntimeCanProceed] = useState(false)
   const [browserCanProceed, setBrowserCanProceed] = useState(true)
   const [llmCanProceed, setLlmCanProceed] = useState(false)
   const composioSaveRef = useRef<(() => Promise<void>) | null>(null)
-  // Track whether we're restoring progress to avoid a redundant persist on resume
-  const isRestoringRef = useRef(false)
-  const { data: userSettings } = useUserSettings()
-  const updateUserSettings = useUpdateUserSettings()
+  const { mutate: updateProgress, mutateAsync: saveSettings } = useUpdateUserSettings()
   const updateGlobalSettings = useUpdateSettings()
-  // The agent step's name → describe steps, here so the nav row below can
-  // carry the name step's Continue and step Back within the agent step.
-
-
   const steps = useMemo(() => stepsForPath(welcomePath), [welcomePath])
-
-  const activeStep = welcomePath ? steps[currentStep] : null
-
-  // Resume at last known step on mount, or reset to beginning.
-  const hasRestoredRef = useRef(false)
+  const activeStep = steps[currentStep]
+  const lastStep = useRef(initialProgress && initialProgress.path + '/' + initialProgress.stepId)
   useEffect(() => {
-    // Wait for settings to load before deciding where to start
-    if (!userSettings) return
-    // Only restore once per mount
-    if (hasRestoredRef.current) return
-    hasRestoredRef.current = true
-
-    const progress = userSettings.onboardingProgress
-    if (progress) {
-      const targetSteps = stepsForPath(progress.path)
-      const idx = targetSteps.findIndex(s => s.id === progress.stepId)
-      if (idx >= 0) {
-        isRestoringRef.current = true
-        setWelcomePath(progress.path)
-        setCurrentStep(idx)
-      } else {
-        setCurrentStep(0)
-        setWelcomePath(null)
-      }
-    } else {
-      setCurrentStep(0)
-      setWelcomePath(null)
-    }
-  }, [userSettings])
-
-  // Persist progress on every step change
-  useEffect(() => {
-    // Skip the persist that fires right after restoring saved progress
-    if (isRestoringRef.current) {
-      isRestoringRef.current = false
-      return
-    }
-    if (welcomePath && steps[currentStep]) {
-      updateUserSettings.mutate({
-        onboardingProgress: { path: welcomePath, stepId: steps[currentStep].id },
-      })
-    }
-  }, [currentStep, welcomePath]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!welcomePath || !activeStep) return
+    const key = welcomePath + '/' + activeStep.id
+    if (lastStep.current === key) return
+    lastStep.current = key
+    updateProgress(current => ({
+      onboardingProgress: { ...current.onboardingProgress, path: welcomePath, stepId: activeStep.id },
+    }))
+  }, [activeStep, welcomePath, updateProgress])
 
   const handleFinish = async () => {
-    await updateUserSettings.mutateAsync({ setupCompleted: true, onboardingProgress: null })
+    await saveSettings({ setupCompleted: true, onboardingProgress: null })
     if (!agentOnly) {
       await updateGlobalSettings.mutateAsync({ app: { setupCompleted: true } }).catch(() => {})
     }
     onClose()
   }
 
-  const agentFlow = useCreateAgentFlow({ onAgentCreated: handleFinish })
+  const agentFlow = useCreateAgentFlow({
+    onboardingDraft: initialProgress?.agentDraft,
+    saveOnboardingDraft: async agentDraft => {
+      await saveSettings(current => ({
+        onboardingProgress: { path: welcomePath ?? current.onboardingProgress?.path ?? 'manual', stepId: 'agent', agentDraft },
+      }))
+    },
+    onAgentCreated: handleFinish,
+  })
 
   const handleComposioNext = async () => {
     if (composioSaveRef.current) {

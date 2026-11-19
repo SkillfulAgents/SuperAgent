@@ -9,7 +9,7 @@ import { SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 const AUTO_REFRESH_DEBOUNCE_MS = 10_000
 const agentSkillAutoRefreshAt = new Map<string, number>()
 
-export function agentSkillsQuery(agentSlug: string | null) {
+function agentSkillsQuery(agentSlug: string | null) {
   return queryOptions({
     queryKey: ['agent-skills', agentSlug],
     queryFn: async (): Promise<ApiSkillWithStatus[]> => {
@@ -76,15 +76,14 @@ export function useInstallSkill() {
       skillsetId: string
       skillPath: string
       skillName: string
-      activateDream?: boolean
       skillVersion: string
     }
   >({
-    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion, activateDream }) => {
+    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion, activateDream }),
+        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion }),
       })
       if (!res.ok) {
         const data = await res.json()

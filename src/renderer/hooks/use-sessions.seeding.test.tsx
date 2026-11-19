@@ -19,8 +19,9 @@ vi.mock('@renderer/lib/api', () => ({
   apiJson: vi.fn(),
 }))
 
+const track = vi.fn()
 vi.mock('@renderer/context/analytics-context', () => ({
-  useAnalyticsTracking: () => ({ track: vi.fn() }),
+  useAnalyticsTracking: () => ({ track }),
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
@@ -82,6 +83,16 @@ describe('useCreateSession cache seeding', () => {
     // onSuccess runs — the detail entry especially must not stay pinned fresh.
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'sess-new'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-1'] })
+  })
+
+  it('restores the cache on replay without counting a second session or message', async () => {
+    const created = { ...existingSession, initialMessageUuid: 'msg-1' }
+    const { result } = renderMutation(useCreateSession)
+    for (const replayed of [false, true]) {
+      respondWith({ ...created, replayed })
+      await result.current.mutateAsync({ agentSlug: 'agent-1', message: 'hello' })
+    }
+    expect(track.mock.calls.map(([event]) => event)).toEqual(['session_created', 'message_sent'])
   })
 
   it('does not duplicate a session the list already holds', async () => {

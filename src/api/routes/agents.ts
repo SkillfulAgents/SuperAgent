@@ -29,10 +29,8 @@ import { createHash, randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
-import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
-import { DREAM_SETUP_PROMPT, DREAM_SKILL_PATH } from '@shared/lib/skillset-provider/dream-skill'
 import { startWithCreationSetup } from '@shared/lib/services/session-creation-setup'
-import { createAgentOnce } from './agent-creation-request'
+import { completeAgentCreation, reserveAgentCreation } from './agent-creation-request'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
@@ -56,6 +54,7 @@ import {
   getAgentWithListing,
   type AgentToList,
   createAgent,
+  initializeAgentWorkspace,
   getAgentWithStatus,
   getAgent,
   getAgentRecord,
@@ -1510,19 +1509,26 @@ agents.post('/', async (c) => {
     const requestId = z.string().uuid().optional().safeParse(body.requestId)
     if (!requestId.success) return c.json({ error: 'Invalid creation request ID' }, 400)
     const userId = getCurrentUserId(c)
-    const result = await createAgentOnce(userId, requestId.data, async () => {
-      const agent = await createAgent({ name: name.trim(), description: description?.trim(), avatar: avatar.data })
+    const input = { name: name.trim(), description: description?.trim(), avatar: avatar.data }
+    let agent: ApiAgent
+    if (requestId.data) {
+      const receipt = await reserveAgentCreation(userId, requestId.data, input, isAuthMode())
+      const { slug, ready } = receipt.value
+      if (!(await canUseAgent(c, slug))) return c.json({ error: 'Agent is unavailable' }, 403)
+      const record = await getAgentRecord(slug)
+      if (!record) return c.json({ error: 'Agent no longer exists' }, 404)
+      if (!ready) await initializeAgentWorkspace(record)
+      const existing = await getAgentWithStatus(record, { includeSummary: false })
+      if (!existing) return c.json({ error: 'Agent no longer exists' }, 404)
+      if (ready || !(await completeAgentCreation(receipt))) return c.json(existing)
+      agent = existing
+      if (isAuthMode()) announceAgentCreated(slug, [userId])
+    } else {
+      agent = await createAgent(input)
       await createOwnerAclOrRollback(c, agent.slug)
-      return agent
-    })
-    if (result.created) {
-      await logAuditEvent({ userId, object: 'agent', objectId: result.created.slug, action: 'created', details: { name: name.trim() } })
-      return c.json(result.created, 201)
     }
-    if (!result.existingSlug) return c.json({ status: 'creating' }, 202)
-    if (!(await canUseAgent(c, result.existingSlug))) return c.json({ error: 'Agent is unavailable' }, 403)
-    const existing = await getAgentWithStatus(result.existingSlug, { includeSummary: false })
-    return existing ? c.json(existing) : c.json({ error: 'Agent no longer exists' }, 404)
+    await logAuditEvent({ userId, object: 'agent', objectId: agent.slug, action: 'created', details: { name: agent.name } })
+    return c.json(agent, 201)
   } catch (error) {
     console.error('Failed to create agent:', error)
     return c.json({ error: 'Failed to create agent' }, 500)
@@ -2331,19 +2337,16 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // as soon as create returns, and a session whose attach or registration
     // fails is revoked rather than left running unseen. The registration
     // carries the commands the container listed.
-    let dreamMessage: string | undefined
     const { id: sessionId, initialMessageUuid, replayed } = await startWithCreationSetup(actor, {
       userId: getCurrentUserId(c),
       requestId: requestId.data,
-      pendingDream: body.skipDreamSetup === true ? undefined : launch.agentPrefs.dreamSetupId,
     }, async (initialMessageUuid, receipt) => {
       await actor.container.start()
       const availableEnvVars = await getSecretEnvVars(slug)
-      if (receipt?.dreamSetupId) dreamMessage = `${message.trim()}\n\n${DREAM_SETUP_PROMPT}`
       return actor.sessions.start({
         create: {
           availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-          initialMessage: await attributedForAgent(c, slug, dreamMessage ?? message.trim()),
+          initialMessage: await attributedForAgent(c, slug, message.trim()),
           initialMessageUuid,
           model: resolved.model,
           llmProviderId: resolved.llmProviderId,
@@ -2412,7 +2415,6 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         ...(resolved.effort ? { effort: resolved.effort } : {}),
         ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
-        ...(dreamMessage && { initialMessage: dreamMessage }),
         credentialSource: credentialSource((await actor.sessions.live(sessionId)).runtime?.provider),
       },
       201
@@ -6032,7 +6034,7 @@ agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
 agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const { skillsetId, skillPath, skillName, skillVersion, activateDream } = await c.req.json()
+    const { skillsetId, skillPath, skillName, skillVersion } = await c.req.json()
 
     if (!skillsetId || !skillPath) {
       return c.json({ error: 'skillsetId and skillPath are required' }, 400)
@@ -6050,10 +6052,6 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       skillName || skillPath,
       skillVersion || '0.0.0',
     )
-
-    if (activateDream === true && skillsetId === DEFAULT_PUBLIC_SKILLSET.id && skillPath === DREAM_SKILL_PATH) {
-      await updateAgentPreferences(agentSlug, { dreamSetupId: randomUUID() })
-    }
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillPath}`, action: 'created', details: { skillsetId, skillName: skillName || skillPath } })
     return c.json({ installed: true })
@@ -6397,7 +6395,6 @@ agents.delete('/:id/skills/:dir', AgentAdmin(), async (c) => {
     const agentSlug = getAgentId(c)
     const dir = c.req.param('dir')
     await deleteSkill(agentSlug, dir)
-    if (dir === 'dream') await updateAgentPreferences(agentSlug, { dreamSetupId: null })
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'deleted' })
     return c.body(null, 204)
