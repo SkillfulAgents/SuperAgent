@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import type { SleepingStore } from './cloudflare-container-control'
-import { createCloudflareFileOps } from './cloudflare-file-ops'
+import { AsleepUploadTooLargeError, MAX_ASLEEP_WRITE_BYTES, createCloudflareFileOps } from './cloudflare-file-ops'
+import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 
 const text = (bytes: Uint8Array | null) => (bytes ? new TextDecoder().decode(bytes) : null)
 const readStream = async (stream: ReadableStream<Uint8Array>) => text(new Uint8Array(await new Response(stream).arrayBuffer()))
@@ -403,5 +404,30 @@ describe('Cloudflare file ops while the container is asleep', () => {
 
     expect(text(container.files.get('notes.md')!)).toBe('late')
     expect(saved.files.has('notes.md')).toBe(false)
+  })
+})
+
+describe('Cloudflare file ops: a write too large for a sleeping agent', () => {
+  it('fails as an upload too large, saying to start the agent, and saves nothing', async () => {
+    const container = fakeContainer()
+    container.state.running = false
+    const saved = fakeSleeping()
+    const files = createCloudflareFileOps(container.call, saved.store)
+    const part = new Uint8Array(8 * 1024 * 1024)
+    let sent = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent > MAX_ASLEEP_WRITE_BYTES) return controller.close()
+        sent += part.byteLength
+        controller.enqueue(part)
+      },
+    })
+
+    const error = await files.write('uploads/video.mp4', body).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(UploadTooLargeError)
+    expect(error).toBeInstanceOf(AsleepUploadTooLargeError)
+    expect((error as Error).message).toMatch(/start the agent and send the file again/)
+    expect(saved.files.size).toBe(0)
   })
 })

@@ -9,6 +9,7 @@
  */
 import type { FileEntry, FileStat, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
+import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import { ASLEEP_HEADER, type ByteRange, type SleepingStore, type StoredEntry } from './cloudflare-container-control'
 
 /** Calls the container's API, or returns null when the container is not running. */
@@ -44,6 +45,14 @@ async function readAll(body: ReadableStream<Uint8Array> | Uint8Array): Promise<U
   return new Uint8Array(await new Response(body).arrayBuffer())
 }
 
+/** A file too large to save while the agent sleeps: an upload route answers it as 413, with what to do instead. */
+export class AsleepUploadTooLargeError extends UploadTooLargeError {
+  constructor(size: number, limit: number, rel: string) {
+    super(size, limit)
+    this.message = `${rel} is larger than ${limit / (1024 * 1024)} MB, the most that can be saved while the agent sleeps; start the agent and send the file again`
+  }
+}
+
 /** Reads a stream whole, and fails it once it passes `limit` bytes instead of reading on. */
 async function readUpTo(body: ReadableStream<Uint8Array>, limit: number, rel: string): Promise<Uint8Array> {
   const chunks: Uint8Array[] = []
@@ -55,7 +64,7 @@ async function readUpTo(body: ReadableStream<Uint8Array>, limit: number, rel: st
     size += value.byteLength
     if (size > limit) {
       await reader.cancel()
-      throw new Error(`${rel} is larger than ${limit / (1024 * 1024)} MB, the most that can be saved while the agent sleeps; start the agent and send the file again`)
+      throw new AsleepUploadTooLargeError(size, limit, rel)
     }
     chunks.push(value)
   }
