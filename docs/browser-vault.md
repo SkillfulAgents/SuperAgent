@@ -30,8 +30,9 @@ would make tenants of a shared host one site — `acme.okta.com` and
 `evil.okta.com`, `*.slack.com`, `*.zendesk.com`, none of them on the Public
 Suffix List — and fill one tenant's password into another's page. The
 registrable domain (`registrableDomain`) only tells which sign-in provider a
-site belongs to (`providerOf`: accounts.google.com is Google's). Usernames
-compare without case or surrounding space.
+site belongs to (`providerOf`: accounts.google.com is Google's), and which
+account a settings page on another host is for when an agent adds a sign-in
+method there (below). Usernames compare without case or surrounding space.
 
 Each sign-in step adds parts to the same account: `password`, or
 `text:<label>` for another field the site asks for (a workspace). Parts are
@@ -474,19 +475,46 @@ removing a method (their phone's app). Three ways to ask:
 
 The first two leave a standing request on the account (`signInMethods.requested`).
 The agent is asked as the user's own message in the session
-(`method-request.ts`), once per session: when the card's box is ticked, and
-when the vault next signs in with the account. Said in a tool result, the
-request reads as the tool's or the page's words, and agents rightly do not take
-those as the user's: in live runs they declined it every time. A message sent
-while the agent's turn runs fares the same: it joins the turn, and the agent
-reads it inside the next tool result (live runs: ignored as an injected
-request). So it waits for the turn to end (`sessions.waitForIdle`, up to half
-an hour) and goes as a turn of its own; a turn longer than that leaves it to
-the next sign-in.
+(`method-request.ts`), once per session, as soon as it can be without breaking
+the sign-in: when the card the box was ticked on is answered (the user's code
+goes in, or a way is picked), and when an agent next signs in with an account
+whose Logins switch is on. Not while the card is open: any message accepted
+then supersedes the session's open requests, as a typed one does, and the
+code the user is typing would go nowhere (live: the agent waited on a dead
+card). A card answered with no sign-in step (declined, the page taking a
+phone prompt by itself) leaves the ask to the end of the turn. The ask is
+queued like a message the user sends mid-turn, so the agent gets it
+with its next tool result, framed by the CLI as "the user sent a new message",
+while the browser is still signed in and the user still there: a site often
+asks for its password or a code again before it adds an app. Said in a tool result
+instead (request_login's own result, its description vouching for it), agents
+declined it in 4 of 9 live runs, as the page's words rather than the user's.
+Queued, it still arrives beside a tool result, and agents sometimes take it
+the same way ("a message inside a tool result, written as if it were from
+you"): at a code step it was acted on 7 of 7, at a page that asks how to
+verify it's you 1 of 4, and a repeat with the next step did not help (0 of
+4: "it appeared twice, both times inside tool results"). As a turn of its own
+it was acted on 8 of 9. So when the turn it joined ends with the request
+still open (no app added, none found to add), it goes again at once
+(`sessions.waitForIdle`, up to half an hour), as a turn of its own, the user most likely still there. Vouching for such
+messages in request_login's description made it worse (3 of 8). A note at
+the message's end, in words (`[Sent from the sign-in form for … on …]`,
+`[Sent again from …]`; `sign-in-method-request.ts`), has the transcript draw
+it as a note from the form ("Asked from the sign-in form", "Asked again …")
+rather than as a message the user typed; typed text cannot forge it. A note
+of data there read to agents as text posing as the user. The note neither
+starts a turn nor splits the work of the turn it joins: it folds away with
+that turn's work, behind its "Worked for …" summary.
 
 **Adding one** (`add_sign_in_method`, a host tool: `method-host.ts`). The agent
 opens the site's setup, and calls the tool with the account's username and the
-field for the confirming code (`code_field`, and `submit`). The host locates the
+field for the confirming code (`code_field`, and `submit`). The account is the
+agent's one with that username on the page's site, else the one on another
+site of its registrable domain: a site's settings may be on another host than
+its sign-in (Google's on myaccount.google.com, the account saved on
+accounts.google.com). With two such accounts the call is refused. The tool puts
+nothing saved into the page (only the code of the page's own setup), so a
+shared host's other tenant gains nothing from a wrong match. The host locates the
 field through the container (as request_login does), then has the container
 read the setup from the page (`authenticator-setup.ts`): an `otpauth://` link,
 else the QR code in view or further down the page (a CDP screenshot decoded

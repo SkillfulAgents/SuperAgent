@@ -167,6 +167,30 @@ describe('add_sign_in_method on the host', () => {
     expect(sent('/browser/login/authenticator')).toEqual([])
   })
 
+  it('finds the account on another site of its domain: Google keeps the settings on myaccount.google.com', async () => {
+    const { account } = await saveAccount({ owner: null, site: 'accounts.google.com', origin: 'https://accounts.google.com', username: 'ada@gmail.com', values: { password: 'pw' } })
+    await grantAccount({ accountId: account.id, agentSlug: 'agent-a', grantedBy: null })
+    await setSignInMethodRequest(null, account.id, true, 'card')
+    container.origin = 'https://myaccount.google.com'
+    const result = await call({ method: 'authenticator_app', username: 'Ada@gmail.com', code_field: '@e4' })
+    expect(resolution(result)).toMatchObject({ type: 'authenticator_added', site: 'accounts.google.com', username: 'ada@gmail.com' })
+    expect((await getOwnedAccount(null, account.id))?.signInMethods.authenticator).toBeDefined()
+  })
+
+  it('takes no account of another domain, nor one of two on the page\'s', async () => {
+    for (const site of ['login.example.com', 'auth.example.com', 'example.org']) {
+      const { account } = await saveAccount({ owner: null, site, origin: `https://${site}`, username: 'ada' })
+      await grantAccount({ accountId: account.id, agentSlug: 'agent-a', grantedBy: null })
+      await setSignInMethodRequest(null, account.id, true, 'card')
+    }
+    container.origin = 'https://settings.example.com'
+    const both = await call({ method: 'authenticator_app', username: 'ada', code_field: '@e4' })
+    expect(both.status === 'rejected' && both.reason).toMatch(/^"ada" is saved on (login|auth)\.example\.com and (login|auth)\.example\.com, so this page on settings\.example\.com could be the settings of either: nothing was added$/)
+    container.origin = 'https://example.net'
+    expect(await call({ method: 'authenticator_app', username: 'ada', code_field: '@e4' })).toMatchObject({ status: 'rejected', reason: expect.stringMatching(/^no saved account "ada" on example\.net/) })
+    expect(sent('/browser/login/authenticator')).toEqual([])
+  })
+
   it('keeps nothing when the code did not go into the page', async () => {
     const account = await grantedAccount()
     container.fillOutcome = 'failed'

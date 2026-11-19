@@ -5,7 +5,7 @@ import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import { fieldsWentIn, fillLoginInContainer, noteUsername } from './login-host'
 import { siteOfOrigin } from './site'
 import { freshTotpCode, parseTotpSetup } from './totp'
-import { findGrantedAccount, markSignInMethodUnavailable, saveAuthenticator, VaultConflictError } from './vault-service'
+import { findGrantedAccount, listGrantedAccountsOnDomain, markSignInMethodUnavailable, saveAuthenticator, VaultConflictError } from './vault-service'
 
 /**
  * The host's side of add_sign_in_method: an agent adds a sign-in method to a
@@ -91,7 +91,16 @@ export async function addSignInMethod(request: HostToolRequest): Promise<HostToo
   if (!site || (await isOwnOrigin(origin, []))) return refused(`the page (${origin}) is not a site the vault keeps accounts for`)
 
   // An account the agent may use, and the user's word for it.
-  const account = await findGrantedAccount(agentSlug, site, input.username)
+  // Its settings may be on another site of its domain than its sign-in
+  // (Google's on myaccount.google.com, accounts.google.com's account): one there is it.
+  let account = await findGrantedAccount(agentSlug, site, input.username)
+  if (!account) {
+    const nearby = await listGrantedAccountsOnDomain(agentSlug, site, input.username)
+    if (nearby.length > 1) {
+      return refused(`"${input.username}" is saved on ${nearby.map((saved) => saved.site).join(' and ')}, so this page on ${site} could be the settings of either: nothing was added`)
+    }
+    account = nearby[0] ?? null
+  }
   if (!account) return refused(`no saved account "${input.username}" on ${site} that you may use: sign in with request_login first (the user saves the account there)`)
   const asked = account.signInMethods.requested ? { request: true as const } : input.user_request ? { words: input.user_request } : null
   if (!asked) {
@@ -100,7 +109,7 @@ export async function addSignInMethod(request: HostToolRequest): Promise<HostToo
 
   if (input.method === 'none') {
     await markSignInMethodUnavailable({ agentSlug, accountId: account.id, reason: input.reason ?? '' })
-    return resolved({ type: 'unavailable_noted', site, username: account.username })
+    return resolved({ type: 'unavailable_noted', site: account.site, username: account.username })
   }
 
   // The setup on the page, read by the container: it comes only here.
@@ -119,18 +128,18 @@ export async function addSignInMethod(request: HostToolRequest): Promise<HostToo
     toolUseId,
     { origin },
     [code],
-    { ...(shown ? { username: shown } : {}), site, source: 'vault', saved: false, held: [] },
+    { ...(shown ? { username: shown } : {}), site: account.site, source: 'vault', saved: false, held: [] },
     { answer: false },
   )
   if (!filled.ok) return refused(filled.browserClosed ? 'the browser was closed' : filled.error)
   const report = filled.result.report
   if (!report) return refused('the browser did not say what the fill did')
-  if (!fieldsWentIn(filled.result, 1)[0]) return resolved({ type: 'authenticator_not_added', site, username: account.username, report })
+  if (!fieldsWentIn(filled.result, 1)[0]) return resolved({ type: 'authenticator_not_added', site: account.site, username: account.username, report })
   try {
     await saveAuthenticator({ agentSlug, accountId: account.id, sessionId, setup, name: input.name ?? null, asked })
   } catch (error) {
     const why = error instanceof VaultConflictError ? error.message : 'the vault could not save it'
     return refused(`its code went into the page, but the app was not saved to the vault (${why}). If the page added it, remove it in the site's settings: nobody holds its codes`)
   }
-  return resolved({ type: 'authenticator_added', site, username: account.username, issuer: setup.issuer, report })
+  return resolved({ type: 'authenticator_added', site: account.site, username: account.username, issuer: setup.issuer, report })
 }

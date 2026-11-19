@@ -204,6 +204,23 @@ export async function findGrantedAccount(agentSlug: string, site: string, userna
   return (await listGrantedAccounts(agentSlug, site)).find((account) => usernameKey(account.username) === key) ?? null
 }
 
+/**
+ * The agent's granted accounts with this username on the other sites of
+ * `site`'s registrable domain, most recently used first: the accounts whose
+ * settings a page on `site` may be (Google keeps them on myaccount.google.com,
+ * its sign-in on accounts.google.com). For adding a sign-in method, never for
+ * filling one: a fill matches the site exactly.
+ */
+export async function listGrantedAccountsOnDomain(agentSlug: string, site: string, username: string): Promise<VaultAccount[]> {
+  const domain = registrableDomain(site)
+  const granted = db
+    .select({ id: agentBrowserAccounts.accountId })
+    .from(agentBrowserAccounts)
+    .where(eq(agentBrowserAccounts.agentSlug, agentSlug))
+  const accounts = await selectAccounts(and(eq(browserAccounts.usernameKey, usernameKey(username)), inArray(browserAccounts.id, granted)), 'recent')
+  return accounts.filter((account) => account.site !== site && registrableDomain(account.site) === domain)
+}
+
 /** An account by id, whoever owns it: for a caller that already checked the agent may use it. */
 export async function getAccount(id: string): Promise<VaultAccount | null> {
   return (await selectAccounts(eq(browserAccounts.id, id)))[0] ?? null

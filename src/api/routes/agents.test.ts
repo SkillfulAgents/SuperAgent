@@ -601,7 +601,7 @@ vi.mock('@shared/lib/browser-vault/vault-service', () => ({
   MAX_USERNAME: 320,
   VaultConflictError: class VaultConflictError extends Error {},
 }))
-const methodRequest = vi.hoisted(() => ({ askForSignInMethod: vi.fn(async () => true) }))
+const methodRequest = vi.hoisted(() => ({ requestedOnCard: vi.fn(async () => {}), askForRequestedMethod: vi.fn() }))
 vi.mock('@shared/lib/browser-vault/method-request', () => methodRequest)
 const SIGN_IN_BASELINE = { browserType: 'container', scope: { site: 'github.com', origin: 'https://github.com' }, hash: 'before' } as const
 const sessionWatch = vi.hoisted(() => ({
@@ -12844,14 +12844,14 @@ describe('sign-in requests with the vault (request_login)', () => {
     vault.listOwnedAccountsOnSite.mockResolvedValue([])
   })
 
-  it('asks the agent for an authenticator app now when the user ticks the box on a code step', async () => {
+  it('records the request when the user ticks the box on a code step, for the agent to be asked once the card is answered', async () => {
     parkLogin({ login: CODE_STEP, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [] } })
     vault.listOwnedAccountsOnSite.mockResolvedValueOnce([account()])
 
     const res = await postJson(app, `${BASE}/login-request/method`, { toolUseId: 'tool-login' })
     expect(res.status).toBe(200)
     expect(vault.setSignInMethodRequest).toHaveBeenCalledWith(null, 'acc-1', true, 'card')
-    expect(methodRequest.askForSignInMethod).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-1' }), from: 'card' })
+    expect(methodRequest.requestedOnCard).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-1' }) })
     // The request is the user's own, apart from the card: it stays open.
     expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-login')).not.toBeNull()
   })
@@ -12863,7 +12863,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     const res = await postJson(app, `${BASE}/login-request/method`, { toolUseId: 'tool-login' })
     expect(res.status).toBe(409)
     expect(vault.setSignInMethodRequest).not.toHaveBeenCalled()
-    expect(methodRequest.askForSignInMethod).not.toHaveBeenCalled()
+    expect(methodRequest.requestedOnCard).not.toHaveBeenCalled()
   })
 
   it('clicks the way the user picked, through the container, as the user\'s pick for the account', async () => {

@@ -14,10 +14,9 @@ import {
   type LoginVaultPayload,
   type LoginWayResult,
 } from '@shared/lib/tools/request-login/login-request'
-import { background } from '@shared/lib/background'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { claimHeldParts, heldLoginFor, recentSignInIdentity, rememberSignInIdentity, settleHeldClaim, type HeldClaim, type HeldLoginRead } from './held-values'
-import { askForSignInMethod } from './method-request'
+import { askForRequestedMethod } from './method-request'
 import { providerName } from './providers'
 import { beginSignInStep, restoreSavedSession, sessionBaseline, watchSignIn } from './session-host'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
@@ -113,16 +112,6 @@ export function methodNotes(account: Pick<VaultAccount, 'signInMethods'> | null)
   if (!account || !authenticatorReady(account)) return {}
   const name = account.signInMethods.authenticator?.name
   return { authenticator: name ? { name } : {} }
-}
-
-/**
- * The owner asked for a sign-in method on the account: the agent signing in
- * with it is asked, as the owner's message, once per session (method-request).
- */
-export function askForRequestedMethod(agentSlug: string, sessionId: string, account: VaultAccount): void {
-  const requested = account.signInMethods.requested
-  if (!requested || requested.askedIn === sessionId) return
-  background(askForSignInMethod({ agentSlug, sessionId, account, from: requested.from }), { name: 'browser-vault.ask-for-sign-in-method' })
 }
 
 /**
@@ -257,7 +246,13 @@ export async function pickLoginWay(input: {
     const request = await actor.inputs.get(toolUseId)
     const vault = loginVaultPayloadSchema.safeParse(request?.kind === 'login' ? request.payload.vault : undefined)
     const picked = await chooseLoginWayInContainer({ agentSlug, sessionId, toolUseId, context, index, by: 'user', username: vault.success ? vault.data.username : null })
-    if (picked.ok) return { ok: true, result: picked.result }
+    if (picked.ok) {
+      // The card was answered: a request the user made on it (its box) goes to the agent now.
+      const pickedSite = siteOfOrigin(context.origin)
+      const account = vault.success && vault.data.username && pickedSite ? await findGrantedAccount(agentSlug, pickedSite, vault.data.username) : null
+      if (account) askForRequestedMethod(agentSlug, sessionId, account)
+      return { ok: true, result: picked.result }
+    }
     // The browser closed first: the agent opens the page again, and is asked anew.
     const site = siteOfOrigin(context.origin)
     if (picked.browserClosed && site && await answerLoginRequest(agentSlug, toolUseId, { type: 'browser_closed', site })) {

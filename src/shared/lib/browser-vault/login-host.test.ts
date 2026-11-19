@@ -10,6 +10,7 @@ import { agents, auditLog, user } from '@shared/lib/db/schema'
 import type { LoginContext } from '@shared/lib/tools/request-login/login-request'
 import { installTestKeyManager, uninstallKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
 import { loginFillAccountSchema } from '../../../../agent-container/src/login-schema'
+import { parseSignInMethodRequestMessage } from '@shared/lib/utils/sign-in-method-request'
 
 let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
@@ -32,13 +33,15 @@ const container = vi.hoisted(() => ({
   calls: [] as Array<{ path: string; body?: unknown }>,
   /** Messages delivered into sessions: the owner's request for a sign-in method. */
   delivered: [] as Array<{ sessionId: string; content: string }>,
+  /** The open request the host reads back (its card's vault payload). */
+  request: null as Record<string, unknown> | null,
 }))
 
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
     get: () => ({
       inputs: {
-        get: async () => null,
+        get: async () => container.request,
         enrich: async () => false,
         complete: async () => {},
         snapshot: async () => [],
@@ -51,7 +54,8 @@ vi.mock('@shared/lib/agent-actor', () => ({
       messages: {
         deliver: async (request: { sessionId: string; content: string }) => {
           container.delivered.push({ sessionId: request.sessionId, content: request.content })
-          return { status: 'sent', queued: true }
+          // A turn of its own: the ask after a turn it joined is method-request's to test.
+          return { status: 'sent', queued: false }
         },
       },
       container: {
@@ -92,7 +96,6 @@ vi.mock('@shared/lib/agent-actor', () => ({
 const { answeredWayLabel, decideLoginRequest, pickLoginWay } = await import('./login-host')
 const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, saveAuthenticator, setSignInMethodRequest, listAccountAgentSlugs } = await import('./vault-service')
 const { totpCode } = await import('./totp')
-const { backgroundSettled } = await import('@shared/lib/background')
 const { heldLoginKey, holdLoginValues, heldLoginFor, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
 const { heldSessionVersion, readAccountSession, saveAccountSession } = await import('./session-service')
 const { resetSessionWatches } = await import('./session-host')
@@ -141,6 +144,7 @@ beforeEach(async () => {
   container.fillThrows = false
   container.calls = []
   container.delivered = []
+  container.request = null
 })
 
 afterEach(async () => {
@@ -1038,5 +1042,18 @@ describe('pickLoginWay', () => {
     expect(await pickLoginWay({ agentSlug: 'agent-a', sessionId: 's-1', toolUseId: 't-1', pick: { index: 0, origin: 'https://evil.example' } }))
       .toEqual({ ok: false, status: 409, error: 'This sign-in request is for a different site' })
     expect(chosen()).toHaveLength(1)
+  })
+
+  it('asks the agent for the method requested on the card once the user picked a way, not before', async () => {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    await setSignInMethodRequest(null, account.id, true, 'card')
+    container.context = WAYS_STEP
+    container.request = { kind: 'login', payload: { vault: { mode: 'ask', username: 'octocat', accountId: account.id } } }
+    expect(container.delivered).toEqual([])
+    expect(await pickLoginWay({ agentSlug: 'agent-a', sessionId: 's-1', toolUseId: 't-1', pick: { index: 1, origin: 'https://github.com' } })).toMatchObject({ ok: true })
+    await backgroundSettled()
+    expect(container.delivered.map((message) => [message.sessionId, parseSignInMethodRequestMessage(message.content)])).toEqual([
+      ['s-1', { username: 'octocat', site: 'github.com', from: 'card' }],
+    ])
   })
 })

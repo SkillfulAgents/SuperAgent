@@ -404,7 +404,7 @@ function nextAfterWay(method: WayMethod, account: string | null, byVault: boolea
     case 'email':
       return `When the page asks for the code, ${call} and map its field with from: "${method}": the user enters it.`
     case 'phone_prompt':
-      return 'The user answers the prompt on their phone: wait for the page to move on by itself (browser_wait with 15000, repeated up to about two minutes), and if it is still pending after that, call request_browser_input.'
+      return 'The user answers the prompt on their phone: wait for the page to move on by itself (browser_wait with for: "15000", repeated up to about two minutes), and if it is still pending after that, call request_browser_input.'
     case 'passkey':
       return 'The passkey or security key is the user\'s: call request_browser_input for them to use it on the page.'
     case 'other':

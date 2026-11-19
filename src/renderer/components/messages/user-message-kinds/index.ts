@@ -2,6 +2,7 @@ import { integrationMessage } from './integration'
 import { connectionReplacementNotice } from './connection-replacement'
 import { compactCommand } from './compact'
 import { interruptMarker } from './interrupt'
+import { signInMethodRequestNotice } from './sign-in-method-request'
 import { slashCommand } from './slash-command'
 import { systemMessage } from './system'
 import { voiceModeNotice } from './voice-mode'
@@ -28,6 +29,7 @@ export const USER_MESSAGE_KINDS: readonly UserMessageKindSpec[] = [
   voiceModeNotice,
   connectionReplacementNotice,
   systemMessage,
+  signInMethodRequestNotice,
   interruptMarker,
   compactCommand,
   slashCommand,

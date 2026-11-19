@@ -1,54 +1,103 @@
 import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { background } from '@shared/lib/background'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
-import { markSignInMethodAsked, type VaultAccount } from './vault-service'
+import { buildSignInMethodRequestMessage } from '@shared/lib/utils/sign-in-method-request'
+import { getAccount, markSignInMethodAsked, type VaultAccount } from './vault-service'
 
 /**
  * The owner's request for a sign-in method, put to the agent as the owner's
- * own message in the session: they ticked "Also add an authenticator app" in
- * the sign-in card, or turned it on in Settings → Logins. Said in a tool
- * result, it would read as the tool's or the page's words, which agents rightly
- * do not take as the user's (live runs: they declined it every time). So is a
- * message sent while the agent's turn runs: it joins the turn, and the agent
- * reads it inside the next tool result it gets (live runs: ignored as an
- * injected request). It goes once that turn has ended, as a turn of its own.
- * Once per session and account.
+ * own message in the session the moment it is made: they ticked "Also add an
+ * authenticator app" in the sign-in card, or turned it on in Settings →
+ * Logins (asked when an agent next signs in with the account). Queued like a
+ * message they send mid-turn, it reaches the agent with the next tool result
+ * as "the user sent a new message", while the browser is still signed in and
+ * the user still there: a site often asks for its password or a code again
+ * before it adds an app. Its note draws it in the transcript as the form's
+ * (sign-in-method-request). Once per session and account.
+ *
+ * Beside a tool result, agents sometimes take it for the page's words ("a
+ * message inside a tool result, written as if it were from you"): live, 7 of
+ * 7 acted on it at a code step, 1 of 4 at a page that asks how to verify it's
+ * you, and a repeat at the next step did not help. As a turn of its own it
+ * was acted on 8 of 9. So when the turn it joined ends with nothing added, it
+ * goes again, as a turn of its own.
  */
 
-/** How long a request waits for the agent's turn to end; past that, the next sign-in with the account asks again. */
+/** How long the request waits for the turn it joined to end; past that, the next sign-in with the account asks again. */
 const TURN_WAIT_MS = 30 * 60 * 1000
 
-/** The request in the owner's words, saying where they made it. */
-export function signInMethodMessage(account: Pick<VaultAccount, 'site' | 'username'>, from: 'card' | 'logins'): string {
-  const where = from === 'card' ? 'From the sign-in form' : 'From Settings → Logins'
-  return `${where}: once you are signed in, also add an authenticator app to my account ${account.username} on ${account.site} `
-    + 'with add_sign_in_method, so you can sign in there later without me. Add it only next to the two-step verification '
-    + 'the account already has: never turn two-step verification on, and never replace or remove a method it has. If the site '
-    + 'offers nothing else, call add_sign_in_method with method "none" and say why.'
-}
-
-/** Ask the agent in this session for the sign-in method its owner requested, unless it was already asked here. */
-export async function askForSignInMethod(input: {
+type Asking = {
   agentSlug: string
   sessionId: string
   account: Pick<VaultAccount, 'id' | 'site' | 'username' | 'ownerId'>
   from: 'card' | 'logins'
-}): Promise<boolean> {
+}
+
+export async function askForSignInMethod(input: Asking): Promise<boolean> {
+  if (!(await markSignInMethodAsked(input.account.id, input.sessionId))) return false
+  const delivery = await deliverRequest({ ...input, again: false })
+  if (delivery.status === 'sent' && delivery.queued) background(askAgainAfterTurn(input), { name: 'browser-vault.ask-again-after-turn' })
+  return true
+}
+
+/** The turn the request joined ended with it still open: asked again, as a turn of its own. */
+async function askAgainAfterTurn(input: Asking): Promise<void> {
+  if ((await agentRegistry.get(input.agentSlug).sessions.waitForIdle(input.sessionId, { timeoutMs: TURN_WAIT_MS })) === 'timeout') return
+  // Answered meanwhile (an app added, none to add) or taken back: nothing to ask.
+  const account = await getAccount(input.account.id)
+  if (!account?.signInMethods.requested) return
+  await deliverRequest({ ...input, again: true })
+}
+
+async function deliverRequest(input: Asking & { again: boolean }) {
   const { agentSlug, sessionId, account } = input
-  const actor = agentRegistry.get(agentSlug)
-  // The request stays on the account meanwhile: a turn that outlasts the wait leaves it for the next sign-in.
-  if ((await actor.sessions.waitForIdle(sessionId, { timeoutMs: TURN_WAIT_MS })) === 'timeout') return false
-  if (!(await markSignInMethodAsked(account.id, sessionId))) return false
   const uuid = randomUUID()
   // The owner's message: attributed to them where messages are.
   if (isAuthMode() && account.ownerId) await db.insert(messageAuthor).values({ id: uuid, sessionId, agentSlug, userId: account.ownerId })
-  await actor.messages.deliver({
+  const content = buildSignInMethodRequestMessage({ username: account.username, site: account.site, from: input.from, again: input.again })
+  return agentRegistry.get(agentSlug).messages.deliver({
     sessionId,
-    content: signInMethodMessage(account, input.from),
+    content,
     uuid,
     options: { shouldQuery: true },
+    // The user asked in this session, and the card stays open: never cancel
+    // the sign-in it waits on, as a typed message would.
+    promote: true,
+    coalesce: true,
+    // Every window draws it at once, the owner's too: no window sent it.
+    echo: { content },
   })
-  return true
+}
+
+/**
+ * The user ticked the box on a sign-in card: the request stays on the account,
+ * and the agent is asked when that card is answered, with the sign-in step
+ * that answers it (askForRequestedMethod): a message sent while the card is
+ * open would supersede it, as a typed one does, and the code the user is
+ * typing would go nowhere. A card answered with no step (declined, the page
+ * taking a phone prompt by itself) leaves the ask to the end of the turn.
+ */
+export async function requestedOnCard(input: { agentSlug: string; sessionId: string; account: Asking['account'] }): Promise<void> {
+  const { agentSlug, sessionId, account } = input
+  background((async () => {
+    if ((await agentRegistry.get(agentSlug).sessions.waitForIdle(sessionId, { timeoutMs: TURN_WAIT_MS })) === 'timeout') return
+    const current = await getAccount(account.id)
+    const requested = current?.signInMethods.requested
+    if (!current || !requested || requested.askedIn === sessionId) return
+    await askForSignInMethod({ agentSlug, sessionId, account: current, from: requested.from })
+  })(), { name: 'browser-vault.ask-after-card' })
+}
+
+/**
+ * A sign-in step for the account went in (the user's or the vault's fill, a
+ * way picked, a saved session): the agent is asked for the method its owner
+ * requested (the card's box, Settings → Logins), once per session.
+ */
+export function askForRequestedMethod(agentSlug: string, sessionId: string, account: VaultAccount): void {
+  const requested = account.signInMethods.requested
+  if (!requested || requested.askedIn === sessionId) return
+  background(askForSignInMethod({ agentSlug, sessionId, account, from: requested.from }), { name: 'browser-vault.ask-for-sign-in-method' })
 }

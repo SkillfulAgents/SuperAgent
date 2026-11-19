@@ -177,15 +177,16 @@ way yourself. A code then goes in with `request_login` (kind `otp`, with
 `from` saying where the page says it comes from: the vault fills an
 `authenticator_app` code when it holds the app; a `text_message` or `email`
 code is the user's). After a prompt to the user's phone, wait for the page to
-move on by itself: `browser_wait` with 15000 reports where the page is after
+move on by itself: `browser_wait` with `for: "15000"` reports where the page is after
 each wait; repeat it for up to about two minutes. When the page's only way is
 a prompt on the user's device with nothing to click, call `request_login` with
 that one way and no ref: the user is shown it, and the call returns once the
 page moves on (or after three minutes).
 
 When the user asked you for a sign-in method on an account (their message,
-also one sent from the sign-in form or Settings → Logins), add an
-authenticator app once signed in:
+also one the app sends in their name from the sign-in form or Settings →
+Logins, "From the sign-in form: …", which may arrive while you work, beside a
+tool result), add an authenticator app once signed in:
 open the site's security settings, start adding one, and when the page shows
 the setup QR code, call `mcp__user-input__add_sign_in_method` with the
 account's username and the confirming code field's ref. It reads the setup

@@ -147,6 +147,11 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
   )
 }
 
+/** A user message the app sent in the user's name (the sign-in form's request): part of the work, not a turn of its own. */
+function foldsIntoWork(item: { type: string }): boolean {
+  return item.type === 'user' && !!classifyUserMessage(item as ApiMessage).foldsIntoWork
+}
+
 /** A transcript entry carries `sent` (trimmed) as typed, or behind the sender prefix a shared agent receives. */
 function isSentText(transcriptText: string | undefined, sent: string): boolean {
   const text = transcriptText?.trim() ?? ''
@@ -729,7 +734,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       let phaseStartIndex = actualTurnStartIndex
       for (let i = actualTurnStartIndex + 1; i < endIndex; i++) {
         const item = visibleMessages[i]
-        if (item.type !== 'user' || !item.queued) continue
+        if (item.type !== 'user' || !item.queued || foldsIntoWork(item)) continue
         finishWorkPhase(phaseStartIndex, i, false)
         phaseStartIndex = i
       }
@@ -737,7 +742,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
 
     for (let i = 0; i < visibleMessages.length; i++) {
-      if (!isTurnStartingUserMessage(visibleMessages[i])) continue
+      if (!isTurnStartingUserMessage(visibleMessages[i]) || foldsIntoWork(visibleMessages[i])) continue
       if (actualTurnStartIndex !== null) finishActualTurn(i)
       actualTurnStartIndex = i
     }
@@ -1090,7 +1095,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isFoldedWorkItem =
             (isAssistantItem && !isAnswerMessage) ||
             item.type === 'compact_boundary' ||
-            item.type === 'monitor_event'
+            item.type === 'monitor_event' ||
+            foldsIntoWork(item)
           const hideItem = collapsed && isFoldedWorkItem
           const isRevealedWorkItem = expanded && isFoldedWorkItem
 

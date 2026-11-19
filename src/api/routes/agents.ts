@@ -138,7 +138,7 @@ import {
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
 import { beginSignInStep, restoreSavedSession, sessionBaseline, watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
-import { askForSignInMethod } from '@shared/lib/browser-vault/method-request'
+import { askForRequestedMethod, requestedOnCard } from '@shared/lib/browser-vault/method-request'
 import { freshTotpCode } from '@shared/lib/browser-vault/totp'
 import { fillKeyOf, partKeyOf, TOTP_FILL_KEY } from '@shared/lib/browser-vault/vault-schemas'
 import {
@@ -4307,8 +4307,8 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
 
 // POST /api/agents/:id/sessions/:sessionId/login-request/method - "Also add an
 // authenticator app" on a step of two-step verification: the request stays on
-// the account until an agent answers it, and this session's agent is asked
-// now, as the user's own message (method-request).
+// the account until an agent answers it, and this session's agent is asked, as
+// the user's own message, once this card is answered (method-request).
 agents.post('/:id/sessions/:sessionId/login-request/method', AgentUser(), zValidator('json', requestLoginMethodBodySchema), async (c) => {
   const body = c.req.valid('json')
   const gated = await gateOpenRequestAccess(c, body.toolUseId, 'login')
@@ -4323,7 +4323,7 @@ agents.post('/:id/sessions/:sessionId/login-request/method', AgentUser(), zValid
   const account = site ? await twoStepAccount(viewer, agentSlug, body.toolUseId, read.context, site) : null
   if (!account) return c.json({ error: 'There is no saved account of yours to add an authenticator app to here' }, 409)
   await setSignInMethodRequest(viewer, account.id, true, 'card')
-  background(askForSignInMethod({ agentSlug, sessionId, account, from: 'card' }), { name: 'login-request.ask-for-sign-in-method' })
+  background(requestedOnCard({ agentSlug, sessionId, account }), { name: 'login-request.requested-on-card' })
   return c.json({ requested: true })
 })
 
@@ -4646,6 +4646,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // this account or one before it (beginSignInStep, above).
     if (wentIn.some(Boolean) && usedAccount && (!identity || usernameKey(identity) === usernameKey(usedAccount.username))) {
       watchSignIn({ agentSlug, sessionId, account: usedAccount, baseline })
+      askForRequestedMethod(agentSlug, sessionId, usedAccount)
     }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
