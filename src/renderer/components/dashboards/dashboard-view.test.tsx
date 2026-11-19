@@ -6,6 +6,7 @@ import { DashboardHeaderProvider } from '@renderer/context/dashboard-header-cont
 import { DASHBOARD_CONTEXT_MENU_TYPE } from '@shared/lib/dashboard-inspect-schema'
 import { DashboardHeaderActions } from './dashboard-header-actions'
 import { DashboardView } from './dashboard-view'
+import { DASHBOARD_WAIT_BOUND_MS } from './dashboard-view-state'
 
 const mocks = vi.hoisted(() => ({
   agentSlug: 'agent',
@@ -36,6 +37,9 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   inspect: vi.fn(),
   toastSuccess: vi.fn(),
+  track: vi.fn(),
+  // A new track function, as when analytics finishes loading after the view opened.
+  trackIdentity: 0,
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -100,6 +104,10 @@ vi.mock('@renderer/hooks/use-artifacts', () => ({
   }),
 }))
 
+vi.mock('@renderer/context/analytics-context', () => ({
+  useAnalyticsTracking: () => ({ track: mocks.trackIdentity ? (...args: unknown[]) => mocks.track(...args) : mocks.track }),
+}))
+
 vi.mock('@renderer/hooks/use-keep-alive', () => ({
   useKeepAlive: vi.fn(),
 }))
@@ -153,6 +161,8 @@ function renderDashboard(agentSlug = 'agent') {
 describe('DashboardView restart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.trackIdentity = 0
+    mocks.start.isError = false
     mocks.agentSlug = 'agent'
     mocks.agentStatus = 'running'
     mocks.refetchedAgentStatus = 'running'
@@ -250,6 +260,138 @@ describe('DashboardView restart', () => {
     mocks.canUse = canUse
     renderDashboard()
     expect(screen.getByTestId('pending-agent-reviews')).toHaveAttribute('data-read-only', readOnly)
+  })
+
+  it('reports a sleeping agent\'s open once: opened, then ready when the page answers, under the agent id', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    mocks.agentStatus = 'stopped'
+    mocks.dashboardStatus = 'stopped'
+
+    const view = renderDashboard('Agent-display')
+    expect(mocks.start.mutate).toHaveBeenCalledOnce()
+    mocks.agentStatus = 'running'
+    mocks.dashboardStatus = 'running'
+    view.rerender(<DashboardHarness agentSlug="Agent-display" />)
+    mocks.trackIdentity = 1
+    view.rerender(<DashboardHarness agentSlug="Agent-display" />)
+    expect(mocks.track.mock.calls).toEqual([['dashboard_opened', { agent_key: 'agent' }]])
+
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    expect(mocks.track.mock.calls.slice(1)).toEqual([
+      ['dashboard_ready', { agent_key: 'agent', time_to_ready_ms: expect.any(Number), wake_attempted: true, attempt: 'open' }],
+    ])
+  })
+
+  it('counts the wake as iOS does: a dashboard still starting is one, a serving or missing one is not', async () => {
+    mocks.dashboardStatus = 'starting'
+    const starting = renderDashboard()
+    mocks.dashboardStatus = 'running'
+    starting.rerender(<DashboardHarness />)
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    expect(mocks.start.mutate).not.toHaveBeenCalled()
+    expect(mocks.track).toHaveBeenLastCalledWith('dashboard_ready', expect.objectContaining({ wake_attempted: true }))
+    starting.unmount()
+
+    renderDashboard()
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    expect(mocks.track).toHaveBeenLastCalledWith('dashboard_ready', expect.objectContaining({ wake_attempted: false }))
+
+    render(<DashboardHeaderProvider><DashboardView agentSlug="agent" dashboardSlug="gone" /></DashboardHeaderProvider>)
+    expect(mocks.track).toHaveBeenLastCalledWith('dashboard_failed', expect.objectContaining({ reason_code: 'not_found', wake_attempted: false }))
+  })
+
+  it('reports a failed start once, then measures a person\'s Retry and Refresh again, each tagged with how it began', async () => {
+    mocks.agentStatus = 'stopped'
+    mocks.start.isError = true
+    const view = renderDashboard()
+    view.rerender(<DashboardHarness />)
+    expect(mocks.track.mock.calls.filter(([event]) => event === 'dashboard_failed')).toEqual([
+      ['dashboard_failed', { agent_key: 'agent', reason_code: 'start_failed', duration_ms: expect.any(Number), wake_attempted: true, attempt: 'open' }],
+    ])
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    mocks.start.isError = false
+    mocks.agentStatus = 'running'
+    // A list cached before the Retry can still say crashed: that is the open's outcome, not the retry's.
+    mocks.dashboardStatus = 'crashed'
+    view.rerender(<DashboardHarness />)
+    mocks.dashboardStatus = 'running'
+    view.rerender(<DashboardHarness />)
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    expect(mocks.track).toHaveBeenLastCalledWith('dashboard_ready', expect.objectContaining({ attempt: 'retry', wake_attempted: true }))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    expect(mocks.track).toHaveBeenLastCalledWith('dashboard_ready', expect.objectContaining({ attempt: 'refresh', wake_attempted: false }))
+    expect(mocks.track.mock.calls.filter(([event]) => event === 'dashboard_opened')).toHaveLength(1)
+  })
+
+  it('does not measure a Restart: it times the agent, not the dashboard', async () => {
+    mocks.dashboardStatus = 'crashed'
+    const view = renderDashboard()
+    mocks.track.mockClear()
+    await userEvent.click(screen.getByRole('button', { name: 'Restart agent' }))
+    mocks.agentStatus = 'stopped'
+    view.rerender(<DashboardHarness />)
+    mocks.agentStatus = 'running'
+    mocks.dashboardStatus = 'running'
+    view.rerender(<DashboardHarness />)
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    expect(mocks.track).not.toHaveBeenCalled()
+  })
+
+  it('times out an open that never settles, as when a viewer finds the agent asleep', () => {
+    vi.useFakeTimers()
+    try {
+      mocks.agentStatus = 'stopped'
+      mocks.canUse = false
+      renderDashboard()
+      act(() => { vi.advanceTimersByTime(DASHBOARD_WAIT_BOUND_MS - 1) })
+      expect(mocks.track).not.toHaveBeenCalledWith('dashboard_failed', expect.anything())
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(mocks.track).toHaveBeenLastCalledWith('dashboard_failed', {
+        agent_key: 'agent', reason_code: 'timeout', duration_ms: DASHBOARD_WAIT_BOUND_MS, wake_attempted: true, attempt: 'open',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('times only an open on screen: hidden mid-open, left before an answer, or begun in a hidden tab', async () => {
+    let visibilityState: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibilityState)
+    mocks.dashboardStatus = 'running'
+    let answer!: (res: { ok: boolean }) => void
+    mocks.apiFetch.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+
+    const hidden = renderDashboard()
+    visibilityState = 'hidden'
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => answer({ ok: true }))
+    hidden.unmount()
+
+    visibilityState = 'visible'
+    const gone = renderDashboard()
+    fireEvent.load(document.querySelector('iframe')!)
+    gone.unmount()
+    await act(async () => answer({ ok: true }))
+
+    visibilityState = 'hidden'
+    renderDashboard()
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => answer({ ok: true }))
+
+    // Each open counts; none was on screen until an outcome, so none is timed.
+    expect(mocks.track.mock.calls.map(([event]) => event)).toEqual(['dashboard_opened', 'dashboard_opened', 'dashboard_opened'])
   })
 
   it('renders the first-run dependency installation state', () => {
@@ -457,6 +599,7 @@ describe('DashboardView optimistic mount and retry', () => {
         vi.advanceTimersByTime(60_000)
       })
       expect(document.querySelector('iframe')).toBe(frame)
+      expect(mocks.track).toHaveBeenLastCalledWith('dashboard_failed', expect.objectContaining({ reason_code: 'load_failed' }))
     } finally {
       vi.useRealTimers()
     }
@@ -601,6 +744,25 @@ describe('DashboardView comments', () => {
     expect(mocks.inspect.mock.calls[1][1]).toEqual({ x: 30, y: 40 })
     const { message } = mocks.createSession.mutateAsync.mock.calls[0][0] as { message: string }
     expect(message).toContain('- Pinned at (30, 40) px in the viewport, 10% across and 20% down')
+  })
+
+  it('a Refresh while the page check is still out does not let that old check settle the new attempt', async () => {
+    const user = userEvent.setup()
+    let answerOld!: (res: { ok: boolean }) => void
+    mocks.apiFetch.mockImplementationOnce(() => new Promise((resolve) => { answerOld = resolve }))
+    renderDashboard()
+    const frame = document.querySelector('iframe')!
+    fireEvent.load(frame)
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: DASHBOARD_CONTEXT_MENU_TYPE, x: 30, y: 40 } }))
+    })
+    await user.click(await screen.findByRole('menuitem', { name: 'Refresh dashboard' }))
+    await act(async () => answerOld({ ok: true }))
+    expect(mocks.track.mock.calls.filter(([event]) => event === 'dashboard_ready')).toEqual([])
+
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+    expect(mocks.track).toHaveBeenLastCalledWith('dashboard_ready', expect.objectContaining({ attempt: 'refresh' }))
   })
 
   it('ignores a right-click posted by any window but its own frame', async () => {
