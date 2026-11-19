@@ -215,6 +215,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
 import { getCurrentUserId } from '@shared/lib/auth/config'
+import type { MessageOrigin } from '@shared/lib/container/types'
 import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
@@ -2383,6 +2384,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         name: name || 'New Session',
         metadata: receipt ? { ...initialMetadata, creationSetup: receipt } : initialMetadata,
         ...(computerUse ? { grantComputerUse: true } : {}),
+        context: appOrigin(c),
       })
     })
     if (replayed) {
@@ -2870,6 +2872,18 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
   }
 })
 
+/**
+ * Who sent an app request and where, as a message's context names them. A
+ * meeting bot relays whoever in the room spoke: its credential only names who
+ * started the meeting, so the speaker stays unnamed.
+ */
+function appOrigin(c: Context): MessageOrigin {
+  if (getMeetingParticipant(c)) return { sender: { type: 'human' }, channel: 'recall' }
+  const user = c.get('user' as never) as { name?: string } | undefined
+  const role = getAuthorizedAgentRole(c)
+  return { sender: { type: 'human', id: getCurrentUserId(c), ...(user?.name ? { name: user.name } : {}), ...(role ? { role } : {}) }, channel: 'ui' }
+}
+
 /** In an agent several people can message, name the sender for the agent, as chat integrations do. */
 async function attributedForAgent(c: Context, agentSlug: string, text: string): Promise<string> {
   // A slash command or system notice only keeps its meaning at the very start of the text.
@@ -2968,6 +2982,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         // starts a fresh turn.
         cancelAwaiting: true,
         coalesce: true,
+        context: appOrigin(c),
         ...(isAuthMode() ? { echo: { content: text, sender: toUserSender(c.get('user' as never) as UserSenderSource) } } : {}),
       })
     } catch (error) {

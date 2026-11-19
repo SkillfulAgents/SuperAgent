@@ -11,6 +11,7 @@
  * before the send loses nothing.
  */
 
+import { automatedSender } from '@shared/lib/container/types'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -103,6 +104,7 @@ export async function deliverSessionWake(
       uuid: randomUUID(),
       options: { shouldQuery: true },
       cancelAwaiting: true,
+      context: { sender: automatedSender(task.id, task.name) },
     })
 
     // Side effect landed; record the slot so a crash between here and

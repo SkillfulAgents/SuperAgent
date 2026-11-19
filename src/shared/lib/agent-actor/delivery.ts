@@ -12,6 +12,7 @@ import { background } from '@shared/lib/background'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import type { ContainerClient, ContainerSession, SendMessageOptions, SendMessageResult } from '@shared/lib/container/types'
 import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-holds'
+import { sessionOrigin } from '@shared/lib/services/session-visibility'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import { DeliveryError, StartError, type DeliveryErrorCode } from './delivery-errors'
 import type { LiveSessions } from './live/live-sessions'
@@ -129,7 +130,8 @@ export function createSessionDelivery(
         throw new DeliveryError('provider-not-attached', 'The session no longer holds the selected provider connection')
       }
 
-      if (request.coalesce && uuid && live.coalesceIfRecovering(sessionId, { uuid, text: content, ...(append ? { shouldQuery: false as const } : {}) })) {
+      const messageContext = { ...request.context, session_trigger: sessionOrigin(metadata) }
+      if (request.coalesce && uuid && live.coalesceIfRecovering(sessionId, { uuid, text: content, messageContext, ...(append ? { shouldQuery: false as const } : {}) })) {
         echo(sessionId, uuid, true, request.echo)
         return { status: 'coalesced' }
       }
@@ -149,7 +151,7 @@ export function createSessionDelivery(
       // "working" with no idle to clear it. It keeps the running turn's runtime.
       if (append) {
         echo(sessionId, uuid, false, request.echo)
-        await send(sessionId, content, uuid, { shouldQuery: false, preserveRuntime: true }, null)
+        await send(sessionId, content, uuid, { shouldQuery: false, preserveRuntime: true, messageContext }, null)
         // No stream frame follows an append: the summary is told directly.
         deps.recordSessionActivity(store, sessionId)
         return { status: 'sent', queued: false }
@@ -176,6 +178,7 @@ export function createSessionDelivery(
       echo(sessionId, uuid, mark.queued, request.echo)
       const sent = await send(sessionId, content, uuid, {
         ...options,
+        messageContext,
         ...(mark.queued ? { preserveRuntime: true } : {}),
         sessionMetadata: metadata,
         metadataUpdates: fields,
@@ -239,7 +242,8 @@ export function createSessionDelivery(
 
   const start: SessionDelivery['start'] = async (request) => {
     // The client that created the session is the one its stream listens on.
-    const creating = client().then(async (creator) => ({ creator, session: await creator.createSession(request.create) }))
+    const create = { ...request.create, messageContext: { ...request.context, session_trigger: sessionOrigin(request.metadata) } }
+    const creating = client().then(async (creator) => ({ creator, session: await creator.createSession(create) }))
     let created: { creator: ContainerClient; session: ContainerSession } | typeof LATE
     try {
       created = await beforeDeadline(creating, request.notAfter)

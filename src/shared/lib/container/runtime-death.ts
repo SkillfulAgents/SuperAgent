@@ -1,3 +1,4 @@
+import type { MessageContext } from './types'
 // Fatal kind the agent process reported just before the runtime died, if any.
 export type RuntimeFatalKind = 'oom_sigkill' | null
 
@@ -6,6 +7,8 @@ export type CoalescedUserMessage = {
   text: string
   /** False for a transcript-only append (a voice-mode notice): delivered without starting a turn. */
   shouldQuery?: false
+  /** Sent with it once recovery delivers it. */
+  messageContext?: MessageContext
 }
 
 // Reason vocabularies and prompt text are runtime-specific and live with each

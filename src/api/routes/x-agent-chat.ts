@@ -539,7 +539,8 @@ async function notifySessionOfOutboundMessage(
   // lightweight session).
   const actor = agentRegistry.get(agentSlug)
   try {
-    await actor.messages.deliver({ sessionId, content: notificationText, options: { shouldQuery: false } })
+    // The agent's own outbound message, noted in its session.
+    await actor.messages.deliver({ sessionId, content: notificationText, options: { shouldQuery: false }, context: { sender: { type: 'agent', id: agentSlug } } })
   } catch {
     await actor.messages.appendAssistant(sessionId, notificationText)
     // The direct append emits no stream frame the agent's live sessions

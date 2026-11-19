@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { ConnectionRuntimeKind } from './connection-runtime-sync'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
+import { automatedSender } from './types'
 
 export interface ConnectionReplacement {
   agentSlug: string
@@ -62,6 +63,7 @@ export async function finishConnectionReplacement(
       content: buildConnectionReplacementMessage(change),
       uuid: randomUUID(),
       options: { shouldQuery: true },
+      context: { sender: automatedSender('connection-replacement') },
     }),
   ))
   for (const result of deliveries) {

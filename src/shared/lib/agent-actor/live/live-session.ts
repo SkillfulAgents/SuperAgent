@@ -747,7 +747,7 @@ export class LiveSession {
     if (!this.isRecovering) return false
     const text = message.text.trim()
     if (!text) return true
-    const entry: CoalescedUserMessage = { uuid: message.uuid, text }
+    const entry: CoalescedUserMessage = { uuid: message.uuid, text, ...(message.messageContext ? { messageContext: message.messageContext } : {}) }
     if (message.shouldQuery === false) entry.shouldQuery = false
     this.coalescedUserMessages = [...(this.coalescedUserMessages ?? []), entry]
     return true

@@ -559,7 +559,7 @@ describe('x-agent chat route', () => {
       'session-1',
       '[SYSTEM] A message was sent to the user on your behalf via chat integration:\n[Internal context: Asked from a scheduled task]\n\nShip the update',
       undefined,
-      { shouldQuery: false, preserveRuntime: true },
+      { shouldQuery: false, preserveRuntime: true, messageContext: { sender: { type: 'agent', id: expect.any(String) }, session_trigger: expect.any(String) } },
     )
   })
 

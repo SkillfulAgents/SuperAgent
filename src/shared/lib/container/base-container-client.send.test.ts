@@ -4,6 +4,7 @@ import { MessageNotAcceptedError } from './message-dispatch-error'
 import * as settings from '../config/settings'
 import * as providerRuntime from '../llm-provider/connection-runtime'
 import type { ContainerInfo } from './types'
+import { messageContextSchema } from '../../../../agent-container/src/session-context'
 const hostToken = vi.hoisted(() => ({ reads: 0 }))
 vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => { hostToken.reads++; return 'test-host-token' } }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}), getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }), getGlobalInstructions: () => '' }))
@@ -39,10 +40,25 @@ describe('runtime handoff rejection evidence', () => {
       return Response.json({ id: 'created-session' }, { status: 201 })
     })
     vi.stubGlobal('fetch', fetch)
-    await expect(new Client().createSession({ initialMessage: 'first input', initialMessageUuid: 'delivery-id' })).resolves.toMatchObject({ id: 'created-session' })
+    const messageContext = { session_trigger: 'user' as const, channel: 'ui', sender: { type: 'human' as const, id: 'u-1' } }
+    await expect(new Client().createSession({ initialMessage: 'first input', initialMessageUuid: 'delivery-id', messageContext })).resolves.toMatchObject({ id: 'created-session' })
     expect(fetch).toHaveBeenCalledOnce()
     expect(fetch.mock.calls[0][0]).toMatch(/\/sessions$/)
-    expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toMatchObject({ initialMessage: 'first input', initialMessageUuid: 'delivery-id' })
+    // `message_context` is the key the container's routes read (agent-container/src/types.ts).
+    const sent = JSON.parse(fetch.mock.calls[0][1].body as string)
+    expect(sent).toMatchObject({ initialMessage: 'first input', initialMessageUuid: 'delivery-id', message_context: messageContext })
+    // The container keeps what its schema parses: a field renamed on one side would drop here.
+    expect(messageContextSchema.parse(sent.message_context)).toEqual(messageContext)
+  })
+
+  it('sends each message with its context under the key the container reads', async () => {
+    const fetch = vi.fn(async (_url: string, _request: RequestInit) => Response.json({ ok: true }))
+    vi.stubGlobal('fetch', fetch)
+    const messageContext = { session_trigger: 'integration' as const, channel: 'slack', sender: { type: 'human' as const, name: 'Dana', role: 'owner' as const } }
+    await new Client().sendMessage('session', 'hello', undefined, { messageContext })
+    const sent = JSON.parse(fetch.mock.calls[0][1].body as string)
+    expect(sent).toMatchObject({ message_context: messageContext })
+    expect(messageContextSchema.parse(sent.message_context)).toEqual(messageContext)
   })
   it('marks creation preflight as safe to retry before issuing HTTP', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)

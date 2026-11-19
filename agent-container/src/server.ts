@@ -9,6 +9,7 @@ import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { messageContextSchema } from './session-context';
 import { globalInstructionsSchema } from './global-instructions';
 import type { UUID } from 'crypto';
 import * as http from 'http';
@@ -317,6 +318,7 @@ app.post('/sessions/:id/messages', async (c) => {
       llmRuntime: body.llmRuntime ? connectionRuntimeSchema.parse(body.llmRuntime) : undefined,
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
+      messageContext: messageContextSchema.parse(body.message_context),
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
       globalInstructions: globalInstructionsSchema.parse(body.globalInstructions),
     });

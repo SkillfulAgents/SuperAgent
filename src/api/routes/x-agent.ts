@@ -1028,6 +1028,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             content: deliveredPrompt,
             uuid: messageUuid,
             options: { isAutomated: true },
+            context: { sender: { type: 'agent', id: callerSlug } },
           })
         } catch (sendError) {
           if (deliveryFailure(sendError)?.accepted === false) await discardUndelivered()
@@ -1144,6 +1145,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           metadata: { isAutomated: true },
         },
           name: `Invoked by ${callerName}`,
+          context: { sender: { type: 'agent', id: callerSlug } },
           metadata: { invokedByAgentSlug: callerSlug, ...(createdByUserId ? { createdByUserId } : {}) },
           notAfter: deliveryCutoff,
           attachTimeoutMs: SUBSCRIBE_TIMEOUT_MS,

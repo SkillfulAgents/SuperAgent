@@ -20,6 +20,7 @@ import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
 import { answeredWayLabel, pickLoginWay } from '@shared/lib/browser-vault/login-host'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
+import type { MessageOrigin } from '@shared/lib/container/types'
 import {
   listStartupIntegrations,
   getIntegration,
@@ -59,6 +60,12 @@ function reportError(
     extra,
     level,
   })
+}
+
+/** Who sent an integration's message and where, as its session's context holds it. */
+function integrationContext(integration: AgentIntegrationRecord, input: PreparedIntegrationInput): MessageOrigin {
+  const name = input.display?.request?.author?.name
+  return { channel: integration.provider, sender: { type: 'human', ...(name ? { name } : {}) } }
 }
 
 function breadcrumb(message: string, data?: Record<string, unknown>): void {
@@ -1377,6 +1384,7 @@ export class AgentIntegrationManager implements Service {
         content: input.text,
         uuid: attempt.id,
         ...(display ? { echo: { content: input.text, integration: display } } : {}),
+        context: integrationContext(integration, input),
       }), check)
     }
     try { await send(sessionId) }
@@ -1467,6 +1475,7 @@ export class AgentIntegrationManager implements Service {
       effort: resolved.effort,
       ...(resolved.speed ? { speed: resolved.speed } : {}),
       ...(systemPrompt ? { systemPrompt } : {}),
+      messageContext: { ...integrationContext(integration, input), session_trigger: 'integration' },
     }), check)
 
     // Retain the returned ID before any fallible registration/stream work, so

@@ -5,8 +5,8 @@ import { hostFromManagerMock } from './host-from-manager-mock'
 describe('createFakeAgentActor', () => {
   it('gives every method a mock on first access and keeps it', async () => {
     const actor = createFakeAgentActor('a')
-    await actor.messages.deliver({ sessionId: 's1', content: 'hi' })
-    expect(actor.messages.deliver).toHaveBeenCalledWith({ sessionId: 's1', content: 'hi' })
+    await actor.messages.deliver({ sessionId: 's1', content: 'hi', context: { sender: { type: 'human' } } })
+    expect(actor.messages.deliver).toHaveBeenCalledWith({ sessionId: 's1', content: 'hi', context: { sender: { type: 'human' } } })
     expect(actor.messages.deliver).toBe(actor.messages.deliver)
     expect(actor.sessions.exists).not.toHaveBeenCalled()
   })
