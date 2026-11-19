@@ -6,7 +6,18 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, newAgentSearchSchema, notificationsSearchSchema, rootSearchSchema, sessionSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import {
+  chatSearchSchema,
+  connectionsSearchSchema,
+  exploreSearchSchema,
+  homeSearchSchema,
+  newAgentSearchSchema,
+  notificationsSearchSchema,
+  rootSearchSchema,
+  sessionSearchSchema,
+  settingsSearchSchema,
+  settingsTabSchema,
+} from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 
@@ -133,6 +144,7 @@ export const teamBrainRoute = createRoute({
 export const exploreRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'explore',
+  validateSearch: lenient(exploreSearchSchema),
   component: ExploreRoute,
 })
 
@@ -142,6 +154,7 @@ export const exploreCategoryRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'explore/category/$category',
   params: { parse: (raw) => ({ category: z.string().min(1).parse(raw.category) }) },
+  validateSearch: lenient(exploreSearchSchema),
   component: ExploreCategoryRoute,
 })
 

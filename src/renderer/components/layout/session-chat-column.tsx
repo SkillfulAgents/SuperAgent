@@ -44,6 +44,7 @@ interface SessionChatColumnProps {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  pendingWakeSummary?: string
   messageTarget?: MessageTarget
 }
 
@@ -65,6 +66,7 @@ export function SessionChatColumn({
   pendingWakeAt,
   pendingWakeTaskId,
   pendingWakeNote,
+  pendingWakeSummary,
   messageTarget,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug, ['isActive', 'browserActive', 'isWaitingBackground'])
@@ -140,6 +142,7 @@ export function SessionChatColumn({
                       wakeAt={pendingWakeAt}
                       taskId={pendingWakeTaskId}
                       note={pendingWakeNote}
+                      summary={pendingWakeSummary}
                       readOnly={isViewOnly}
                     />
                   )}

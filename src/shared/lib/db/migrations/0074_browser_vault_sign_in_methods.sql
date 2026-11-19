@@ -1,0 +1,1 @@
+ALTER TABLE `browser_accounts` ADD `sign_in_methods` text DEFAULT '{}' NOT NULL;

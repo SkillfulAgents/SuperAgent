@@ -4,6 +4,7 @@ import { resetBrowserState, setBrowserState } from '../browser-state'
 import { forgetAllPreparedLogins } from '../login-requests'
 import { forgetInjectedSecrets, rememberInjectedSecret } from '../injected-secrets'
 import { createRequestLoginTool, formatLoginResolution } from './request-login'
+import { formatSignInMethodResolution } from './add-sign-in-method'
 import type { LoginFillReport } from '../login-schema'
 
 const args = {
@@ -93,7 +94,7 @@ describe('request_login tool', () => {
     await vi.waitFor(() => expect(inputManager.hasPending('login-ok')).toBe(true))
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toMatch(/\/browser\/login\/prepare$/)
-    expect(JSON.parse(String(init.body))).toEqual({ sessionId: 'session-7', toolUseId: 'login-ok', fields: args.fields, submitRef: '@e7', providers: ['google', 'apple'] })
+    expect(JSON.parse(String(init.body))).toEqual({ sessionId: 'session-7', toolUseId: 'login-ok', fields: args.fields, submitRef: '@e7', providers: ['google', 'apple'], ways: [] })
     const parked = inputManager.getAllPending().find((p) => p.toolUseId === 'login-ok')
     expect(parked).toMatchObject({ inputType: 'login', metadata: { origin: 'https://github.com', message: args.message } })
 
@@ -285,6 +286,60 @@ describe('formatLoginResolution for a saved session', () => {
   })
 })
 
+describe('formatLoginResolution for a way to verify it\'s you', () => {
+  const picked = (method: 'authenticator_app' | 'text_message' | 'phone_prompt' | 'passkey', label: string) => ({ label, method })
+
+  it('says the vault picked its app and that it fills the code, naming the account', () => {
+    const { content, isError } = formatLoginResolution({
+      type: 'way', origin: 'https://github.com', picked: picked('authenticator_app', 'Use your authenticator app'), by: 'vault', username: 'octocat', clicked: { ref: '@e4' },
+    })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toBe([
+      'The vault holds the authenticator app of octocat, so the host picked "Use your authenticator app", and @e4 was clicked.',
+      'When the page asks for the code, call request_login with username "octocat" and map its field with from: "authenticator_app": the vault fills it.',
+    ].join('\n'))
+  })
+
+  it('says what comes after the user\'s pick: their code, waiting for the phone, or handing over a passkey', () => {
+    const text = (way: ReturnType<typeof picked>) =>
+      formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: way, by: 'user', username: 'octocat', clicked: { ref: '@e5' } }).content[0].text
+    expect(text(picked('text_message', 'Get a code at •••12'))).toContain('map its field with from: "text_message": the user enters it.')
+    expect(text(picked('authenticator_app', 'Use your app'))).toContain('from: "authenticator_app": the user enters it.')
+    expect(text(picked('phone_prompt', 'Tap Yes on your phone'))).toContain('wait for the page to move on by itself')
+    expect(text(picked('passkey', 'Use your passkey'))).toContain('call request_browser_input')
+  })
+
+  it('says the browser holds the passkey the host picked, and that it answers the page by itself', () => {
+    const { content, isError } = formatLoginResolution({
+      type: 'way', origin: 'https://github.com', picked: picked('passkey', 'Use a passkey'), by: 'vault', username: 'octocat', clicked: { ref: '@e5' },
+    })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toBe([
+      'The browser holds the passkey of octocat, so the host picked "Use a passkey", and @e5 was clicked.',
+      'The browser answers the page\'s passkey prompt by itself: check whether the page shows you signed in.',
+    ].join('\n'))
+  })
+
+  it('tells the agent to click the way itself when the click failed, and what comes after', () => {
+    const { content, isError } = formatLoginResolution({
+      type: 'way', origin: 'https://github.com', picked: picked('text_message', 'Get a code at •••12'), by: 'user', clickError: 'clicking @e4 failed: covered',
+    })
+    expect(isError).toBe(true)
+    expect(content[0].text).toBe('The user picked "Get a code at •••12", but it was not clicked: Clicking @e4 failed: covered. Click the way you mapped as "Get a code at •••12" yourself. Then: When the page asks for the code, call request_login and map its field with from: "text_message": the user enters it.')
+  })
+
+  it('reports the page\'s only prompt: moved on, not within the wait, or answered from the card', () => {
+    const prompt = picked('phone_prompt', 'Check your phone')
+    expect(formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: prompt, by: 'page', moved: true }).content[0].text)
+      .toBe('The page moved on from "Check your phone": the user answered the prompt on their device.')
+    const late = formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: prompt, by: 'page', moved: false })
+    expect(late.isError).toBe(true)
+    expect(late.content[0].text).toContain('call request_browser_input')
+    expect(formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: prompt, by: 'user' }).content[0].text)
+      .toBe('The user picked "Check your phone": the user says they answered it on their device. Take a snapshot to see the page.')
+  })
+})
+
 describe('formatLoginResolution for the vault', () => {
   it('lists the saved accounts the agent may use, what each holds, and how to use one', () => {
     const { content, isError } = formatLoginResolution({
@@ -305,6 +360,29 @@ describe('formatLoginResolution for the vault', () => {
       '- hubot: no saved password or other value yet',
       '- old@example.com: holds a password (the site rejected its saved password, as reported earlier: using it asks the user)',
       'To sign in with one, call request_login again with username set to it. To ask the user for another account, call it with ask_user: true.',
+    ].join('\n'))
+  })
+
+  it('says no account is saved and the page must be mapped, for a call that mapped nothing', () => {
+    const { content, isError } = formatLoginResolution({ type: 'accounts', site: 'github.com', accounts: [] })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toContain('the user has no saved account on github.com you may use, and this call mapped no field, so the user was not asked.')
+    expect(content[0].text).toContain('Map the page\'s sign-in fields by ref and call request_login again')
+  })
+
+  it('says the account the agent named is not saved on the site, for a call that mapped nothing', () => {
+    const none = formatLoginResolution({ type: 'accounts', site: 'myaccount.google.com', accounts: [], missing: 'ada@gmail.com' }).content[0].text
+    expect(none).toContain('the user has no saved account "ada@gmail.com" on myaccount.google.com you may use, and this call mapped no field, so the user was not asked.')
+    const others = formatLoginResolution({
+      type: 'accounts',
+      site: 'github.com',
+      missing: 'octocat',
+      accounts: [{ username: 'hubot', label: null, parts: ['password'], via: null }],
+    }).content[0].text
+    expect(others).toBe([
+      'Nothing was filled: "octocat" is not a saved account on github.com you may use, and this call mapped no field, so the user was not asked. Saved accounts there you may use:',
+      '- hubot: holds a password',
+      'To sign in with one, call request_login again with username set to it. Map the page\'s sign-in fields by ref and call request_login again: the user fills them in the form. On a page that offers only buttons like "Continue with Google", list them in providers.',
     ].join('\n'))
   })
 
@@ -474,5 +552,93 @@ describe('formatLoginResolution', () => {
     }).content[0].text
     expect(text).toContain('Pressed Enter in @e3.')
     expect(text).toContain('New tab opened — you are now on tab t2 (https://example.com/welcome)')
+  })
+})
+
+describe('the vault\'s authenticator apps', () => {
+  const FILLED: LoginFillReport = {
+    type: 'filled',
+    origin: 'https://github.com',
+    outcomes: [{ ref: '@e4', kind: 'otp', label: 'Code from the authenticator app', status: 'filled' }],
+    lost: [],
+    submitted: { via: 'click', ref: '@e5' },
+  }
+
+  it('lists the app an account holds, and one the site rejected', () => {
+    const text = formatLoginResolution({
+      type: 'accounts',
+      site: 'github.com',
+      accounts: [
+        { username: 'octocat', label: null, parts: ['password'], via: null, authenticator: 'ready', authenticatorName: 'Gamut' },
+        { username: 'hubot', label: null, parts: ['password'], via: null, authenticator: 'rejected' },
+      ],
+    }).content[0].text
+    expect(text).toContain('- octocat: holds a password; the vault also holds its authenticator app (named "Gamut" on the site), so a code from the app needs no one (from: "authenticator_app")')
+    expect(text).toContain('- hubot: holds a password; the site rejected a code from its authenticator app in the vault, as reported earlier: codes ask the user')
+  })
+
+  it('tells the agent after a fill which way to verify with', () => {
+    const text = formatLoginResolution({
+      ...FILLED,
+      outcomes: [{ ref: '@e3', kind: 'password', label: 'Password', status: 'filled' }],
+      account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [], authenticator: {} },
+    }).content[0].text
+    expect(text).toContain('The vault also holds the authenticator app of this account: if the site asks how to verify, call request_login with its ways (the host picks the app), and map the code field with from: "authenticator_app" (the vault fills it).')
+    const named = formatLoginResolution({
+      ...FILLED,
+      outcomes: [{ ref: '@e3', kind: 'password', label: 'Password', status: 'filled' }],
+      account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [], authenticator: { name: 'Gamut' } },
+    }).content[0].text
+    expect(named).toContain('The vault also holds the authenticator app of this account (named "Gamut" where the site lists apps): if the site asks how to verify, call request_login with its ways')
+  })
+
+  it('tells the agent where to say a code comes from when the vault holds the app', () => {
+    const { content, isError } = formatLoginResolution({ type: 'authenticator', site: 'github.com', username: 'octocat' })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toContain('Nothing was filled: the vault holds the authenticator app of octocat on github.com, and this call did not say where the code comes from.')
+    expect(content[0].text).toContain('call request_login again with username "octocat" and that field mapped with from: "authenticator_app"')
+  })
+
+  it('says what add_sign_in_method saved and what the page did, never the key or the code', () => {
+    // As the host has it filled: the account the code is from.
+    const report = { ...FILLED, account: { username: 'octocat', site: 'github.com', source: 'vault' as const, saved: false, held: [] } }
+    const added = formatSignInMethodResolution({ type: 'authenticator_added', site: 'github.com', username: 'octocat', issuer: 'GitHub', report })
+    expect(added.isError).toBeUndefined()
+    expect(added.content[0].text).toContain('Saved an authenticator app for octocat on github.com to the vault (set up as "GitHub"), and filled its current code to confirm it.')
+    expect(added.content[0].text).toContain('Filled 1 of 1 field on https://github.com from the saved account octocat: @e4 "Code from the authenticator app" (otp).')
+    expect(added.content[0].text).toContain('Clicked @e5.')
+
+    const notAdded = formatSignInMethodResolution({
+      type: 'authenticator_not_added',
+      site: 'github.com',
+      username: 'octocat',
+      report: { ...FILLED, outcomes: [{ ...FILLED.outcomes[0], status: 'failed', problem: 'the field was disabled' }], submitted: null },
+    })
+    expect(notAdded.isError).toBe(true)
+    expect(notAdded.content[0].text).toContain('Read the authenticator app\'s setup on github.com, but its code did not go into the page, so nothing was saved.')
+
+    expect(formatSignInMethodResolution({ type: 'unavailable_noted', site: 'github.com', username: 'octocat' }).content[0].text)
+      .toBe('Noted: no sign-in method can be added to octocat on github.com. The user sees why in Settings → Logins, and agents are no longer asked to add one.')
+  })
+})
+
+describe('the vault\'s passkeys', () => {
+  it('tells the agent the browser holds the passkey: use the page\'s option, else call again', () => {
+    const { content, isError } = formatLoginResolution({ type: 'passkey', site: 'github.com', username: 'octocat', name: 'Gamut' })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toContain('Nothing was filled: the browser now holds the passkey of octocat on github.com (named "Gamut" on the site) for this sign-in.')
+    expect(content[0].text).toContain('Use the page\'s passkey option')
+    expect(content[0].text).toContain('call request_login again with username "octocat"')
+  })
+
+  it('lists the passkey an account holds', () => {
+    const text = formatLoginResolution({ type: 'accounts', site: 'github.com', accounts: [{ username: 'octocat', label: null, parts: ['password'], via: null, passkeys: 1 }] }).content[0].text
+    expect(text).toContain('- octocat: holds a password; the vault also holds a passkey for it: signing in with it holds the passkey in the browser for you')
+  })
+
+  it('says the browser records the passkey the page creates, with nothing more to call', () => {
+    const ready = formatSignInMethodResolution({ type: 'passkey_ready', site: 'github.com', username: 'octocat' })
+    expect(ready.isError).toBeUndefined()
+    expect(ready.content[0].text).toBe('The browser records the passkey a page creates for octocat on github.com for the next half hour, and the vault keeps it. Create one in the site\'s security settings now, as the page asks. Tell the user what the page says at the end, including any wait or approval it puts on a new passkey.')
   })
 })

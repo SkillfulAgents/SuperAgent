@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import {
   Activity, ArrowLeft, BadgeCheck, BarChart3, Bell, Blocks, Bolt, BookUser, Brain,
-  Compass, createLucideIcon, Cuboid, FlaskConical, KeyRound, Layers,
+  createLucideIcon, Cuboid, FlaskConical, KeyRound, Layers,
   LayoutGrid, ListTodo, LogOut, Logs, Mic, Mouse, MousePointer2, Plus,
   Route, ScrollText, Search, Settings, Shield, Smartphone, Sparkle,
   Users, Workflow, type LucideIcon, type LucideProps,
@@ -73,10 +73,6 @@ const icons = {
   brain: {
     icon: Brain,
     motion: [{ selector: 'path', keyframes: { opacity: [1, .3, 1] }, duration: 380, stagger: 45 }],
-  },
-  compass: {
-    icon: Compass,
-    motion: [turn([0, -30, 35, -10, 0], 'path')],
   },
   plus: {
     icon: Plus,

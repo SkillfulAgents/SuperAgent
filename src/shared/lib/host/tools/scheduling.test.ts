@@ -119,12 +119,14 @@ describe('schedule_resume', () => {
   it('creates a session wake and resolves the tool with the note echoed back', async () => {
     const result = await scheduleResume(request('schedule_resume', 'wake-tool-1', {
       wakeTime: 'at tomorrow 9am',
+      summary: "  Waiting on Dana's reply  ",
       note: 'Check whether Dana replied',
     }))
 
     expect(mockCreateSessionWake).toHaveBeenCalledWith({
       agentSlug: AGENT_SLUG,
       scheduleExpression: 'at tomorrow 9am',
+      summary: "Waiting on Dana's reply",
       note: 'Check whether Dana replied',
       sessionId: SESSION_ID,
       createdByUserId: undefined,
@@ -133,18 +135,19 @@ describe('schedule_resume', () => {
 
     const { value } = resolvedOf(result)
     expect(value).toContain('Check whether Dana replied')
+    expect(value).not.toContain("Waiting on Dana's reply")
     expect(value).toContain('auto-resume')
     expect(value).toContain('wake_new_id')
   })
 
-  it('normalizes a wakeTime without the "at " prefix', async () => {
+  it('normalizes a bare wakeTime and accepts older containers without a summary', async () => {
     resolvedOf(await scheduleResume(request('schedule_resume', 'wake-tool-2', {
       wakeTime: 'in 72 hours',
       note: 'Check app review status',
     })))
 
     expect(mockCreateSessionWake).toHaveBeenCalledWith(
-      expect.objectContaining({ scheduleExpression: 'at in 72 hours' })
+      expect.objectContaining({ scheduleExpression: 'at in 72 hours', summary: undefined })
     )
   })
 

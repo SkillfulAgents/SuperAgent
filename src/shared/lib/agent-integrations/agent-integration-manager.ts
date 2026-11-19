@@ -18,6 +18,7 @@ import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './regis
 import { integrationRelays } from './relay-transport'
 import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
+import { answeredWayLabel, pickLoginWay } from '@shared/lib/browser-vault/login-host'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
 import {
   listStartupIntegrations,
@@ -1742,6 +1743,20 @@ export class AgentIntegrationManager implements Service {
       return
     }
     const actor = agentRegistry.get(integration.agentSlug)
+    // A way to verify it's you (loginWaysCard): the host clicks it on the page.
+    const open = await actor.inputs.get(toolUseId)
+    if (open?.kind === 'login') {
+      const label = answeredWayLabel(response)
+      const picked = label && open.scope.sessionId
+        ? await pickLoginWay({ agentSlug: integration.agentSlug, sessionId: open.scope.sessionId, toolUseId, pick: { label } }).catch((error: unknown) => {
+            reportError(error, 'pick-login-way', { integrationId, toolUseId })
+            return null
+          })
+        : null
+      if (picked?.ok) event.onAnswered?.()
+      else await this.replyAlreadyHandled(integrationId, chatId)
+      return
+    }
     let answer = await actor.inputs.answer(toolUseId, response)
     if (answer === 'not-open' && await this.recoverOpenQuestion(integration, chatId, toolUseId)) {
       answer = await actor.inputs.answer(toolUseId, response)

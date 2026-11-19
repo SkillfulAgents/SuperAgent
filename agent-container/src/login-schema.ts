@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { LOGIN_FIELD_KINDS } from './login-form-script'
+import { CODE_SOURCES, LOGIN_FIELD_KINDS } from './login-form-script'
 
 /** `@e12` or `e12`, normalized to `@e12` (the CLI's form). */
 export const elementRefSchema = z
@@ -13,9 +13,28 @@ export const loginFieldRequestSchema = z.object({
   ref: elementRefSchema.optional(),
   kind: z.enum(LOGIN_FIELD_KINDS),
   label: z.string().trim().min(1).max(120),
-})
+  /** A code field: where the page has the code come from (an authenticator app's, the vault can make). */
+  from: z.enum(CODE_SOURCES).optional(),
+}).refine((field) => field.kind === 'otp' || field.from === undefined, { message: 'from is only for a code field (kind otp)', path: ['from'] })
 
 export const MAX_LOGIN_FIELDS = 6
+
+/**
+ * What a way to verify it's you is, as the agent classifies what the page
+ * offers ("Get a code at •••12", "Tap Yes on your phone"): the vault picks
+ * one it holds by itself, and the user picks among the rest.
+ */
+export const WAY_METHODS = ['authenticator_app', 'text_message', 'email', 'phone_prompt', 'passkey', 'other'] as const
+export type WayMethod = (typeof WAY_METHODS)[number]
+
+export const MAX_LOGIN_WAYS = 6
+
+export const loginWayRequestSchema = z.object({
+  /** Absent only for the one way of a page with nothing to click: a prompt on the user's device. */
+  ref: elementRefSchema.optional(),
+  label: z.string().trim().min(1).max(120),
+  method: z.enum(WAY_METHODS),
+})
 
 /**
  * The services a page can offer to sign in with ("Sign in with Google"), as
@@ -36,6 +55,8 @@ export const loginPrepareRequestSchema = z.object({
   fields: z.array(loginFieldRequestSchema).max(MAX_LOGIN_FIELDS),
   submitRef: elementRefSchema.nullable(),
   providers: z.array(z.enum(SIGN_IN_PROVIDER_IDS)).max(SIGN_IN_PROVIDER_IDS.length).default([]),
+  /** A page that asks how to verify it's you: its ways, in place of fields. */
+  ways: z.array(loginWayRequestSchema).max(MAX_LOGIN_WAYS).default([]),
 }).strict()
 
 /**
@@ -52,6 +73,8 @@ export const loginFillAccountSchema = z.object({
   saved: z.boolean(),
   /** Labels of fields the user filled in for a later step: the host holds them. */
   held: z.array(z.string().max(120)).max(MAX_LOGIN_FIELDS),
+  /** The vault holds an authenticator app for the account (with the name it has on the site, when it asked): its codes need no one. */
+  authenticator: z.object({ name: z.string().max(64).optional() }).strict().optional(),
 }).strict()
 export type LoginFillAccount = z.infer<typeof loginFillAccountSchema>
 
@@ -62,6 +85,8 @@ export const loginFillRequestSchema = z.object({
   expectedOrigin: z.string().min(1).max(2048),
   values: z.array(z.string().max(4096)).min(1).max(MAX_LOGIN_FIELDS),
   account: loginFillAccountSchema.optional(),
+  /** false: the host answers the parked call itself (add_sign_in_method), so the report comes back to it. */
+  answer: z.literal(false).optional(),
 }).strict()
 
 const fieldOutcomeSchema = z.object({
@@ -113,6 +138,40 @@ export const loginFillReportSchema = z.object({
 })
 export type LoginFillReport = z.infer<typeof loginFillReportSchema>
 
+/** host → server: click the way picked on a page that asks how to verify it's you. */
+export const loginChooseRequestSchema = z.object({
+  sessionId: z.string().min(1).max(1024),
+  toolUseId: z.string().min(1).max(256),
+  expectedOrigin: z.string().min(1).max(2048),
+  index: z.number().int().min(0).max(MAX_LOGIN_WAYS - 1),
+  /** The user picked it, or the vault did (it holds that way for the account). */
+  by: z.enum(['user', 'vault']),
+  /** The account being signed in, as the result names it. */
+  username: z.string().min(1).max(320).optional(),
+}).strict()
+
+/**
+ * A way to verify it's you, picked: by the user, by the vault (it holds that
+ * way for the account), or for the page's only way, the page moving on once
+ * the user answered the prompt on their device.
+ */
+export const loginWayReportSchema = z.object({
+  type: z.literal('way'),
+  origin: z.string(),
+  picked: z.object({ label: z.string(), method: z.enum(WAY_METHODS) }),
+  by: z.enum(['user', 'vault', 'page']),
+  username: z.string().optional(),
+  /** The way's ref was clicked; absent for a way with nothing to click. */
+  clicked: z.object({ ref: z.string() }).optional(),
+  /** Why the click did not happen, as an observation. */
+  clickError: z.string().optional(),
+  /** The page's only way: whether the page moved on by itself (false: not within the wait). */
+  moved: z.boolean().optional(),
+  /** The click's settle observation, or the page's URL digest once it moved on. */
+  observation: z.record(z.string(), z.unknown()).optional(),
+})
+export type LoginWayReport = z.infer<typeof loginWayReportSchema>
+
 /** The user signed in on the page themselves instead. */
 export const loginManualReportSchema = z.object({ type: z.literal('manual') })
 
@@ -126,6 +185,12 @@ const vaultAccountViewSchema = z.object({
   via: z.object({ site: z.string(), username: z.string(), name: z.string() }).nullable(),
   /** The site turned its saved password down since the user last entered it: using it asks the user. */
   rejected: z.boolean().optional(),
+  /** The vault holds an authenticator app for it ('rejected': the site turned a code from it down since). */
+  authenticator: z.enum(['ready', 'rejected']).optional(),
+  /** The name the vault's app has on the site, when the site asked for one. */
+  authenticatorName: z.string().optional(),
+  /** How many passkeys the vault holds for it. */
+  passkeys: z.number().int().min(1).optional(),
 })
 export type VaultAccountView = z.infer<typeof vaultAccountViewSchema>
 
@@ -133,9 +198,12 @@ export type VaultAccountView = z.infer<typeof vaultAccountViewSchema>
 export const loginAccountsReportSchema = z.object({
   type: z.literal('accounts'),
   site: z.string(),
-  accounts: z.array(vaultAccountViewSchema).min(1),
+  /** Empty: none, and the call mapped nothing for a form to ask. */
+  accounts: z.array(vaultAccountViewSchema),
   /** The agent named this account but mapped no field to fill. */
   named: z.boolean().optional(),
+  /** The agent named this username, not one it may use here, and mapped nothing for a form to ask. */
+  missing: z.string().max(320).optional(),
 })
 
 /** The user signs in to the site through an account on another site (Continue with Google). */
@@ -184,6 +252,29 @@ export const loginSessionReportSchema = z.object({
   observation: z.record(z.string(), z.unknown()).optional(),
 })
 
+/**
+ * The step asks for a code without saying where from, for an account whose
+ * authenticator app the vault holds: nothing was filled, and the agent is
+ * told the vault fills that app's code when the field says so.
+ */
+export const loginAuthenticatorReportSchema = z.object({
+  type: z.literal('authenticator'),
+  site: z.string(),
+  username: z.string(),
+})
+
+/**
+ * The vault holds a passkey of the account for this site: the browser holds it
+ * on the agent's tab for the rest of the sign-in, and nothing was filled.
+ */
+export const loginPasskeyReportSchema = z.object({
+  type: z.literal('passkey'),
+  site: z.string(),
+  username: z.string(),
+  /** Its name on the site, when the site asked for one. */
+  name: z.string().optional(),
+})
+
 export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginFillReportSchema,
   loginManualReportSchema,
@@ -191,5 +282,27 @@ export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginViaReportSchema,
   loginBrowserClosedReportSchema,
   loginSessionReportSchema,
+  loginAuthenticatorReportSchema,
+  loginWayReportSchema,
+  loginPasskeyReportSchema,
 ])
 export type LoginResolution = z.infer<typeof loginResolutionSchema>
+
+/**
+ * How the host answered add_sign_in_method (a refusal rejects the call instead):
+ * - authenticator_added: the app's key was read from the page and saved to
+ *   the account, and its code went into the page (the fill's report);
+ * - authenticator_not_added: the key was read, but its code did not go in,
+ *   so nothing was saved;
+ * - unavailable_noted: the agent found none to add; the user's request is
+ *   answered with why;
+ * - passkey_ready: the agent's tab records the passkey a page creates for the
+ *   next half hour, and the vault keeps it.
+ */
+export const signInMethodResolutionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('passkey_ready'), site: z.string(), username: z.string() }),
+  z.object({ type: z.literal('authenticator_added'), site: z.string(), username: z.string(), issuer: z.string().nullable(), report: loginFillReportSchema }),
+  z.object({ type: z.literal('authenticator_not_added'), site: z.string(), username: z.string(), report: loginFillReportSchema }),
+  z.object({ type: z.literal('unavailable_noted'), site: z.string(), username: z.string() }),
+])
+export type SignInMethodResolution = z.infer<typeof signInMethodResolutionSchema>

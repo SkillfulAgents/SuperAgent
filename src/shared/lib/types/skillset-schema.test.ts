@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSkillsetIndex } from './skillset-schema'
+import { InstalledSkillMetadataSchema, parseSkillsetIndex } from './skillset-schema'
 
 /**
  * `index.json` comes from a git repo anyone can add, and a parse failure is not
@@ -117,5 +117,36 @@ describe('parseSkillsetIndex', () => {
     if (!result.ok) throw new Error(result.error)
     expect(result.index.agents?.[0]).not.toHaveProperty('future_field')
     expect(result.dropped).toEqual([])
+  })
+})
+
+/**
+ * An install record sits in the agent's workspace, where the agent can rewrite it, and the host
+ * joins its `skillPath` onto the skillset cache folder.
+ */
+describe('InstalledSkillMetadataSchema', () => {
+  const record = (skillPath: string) => ({
+    skillsetId: 'team-skills',
+    skillsetUrl: 'https://github.com/TestOrg/skills',
+    skillName: 'Invoice Parser',
+    skillPath,
+    installedVersion: '1.0.0',
+    installedAt: '2026-01-01T00:00:00.000Z',
+    originalContentHash: 'abc',
+  })
+
+  it('accepts a path inside the skillset repository', () => {
+    expect(InstalledSkillMetadataSchema.safeParse(record('skills/invoice-parser/SKILL.md')).success).toBe(true)
+    expect(InstalledSkillMetadataSchema.safeParse(record('SKILL.md')).success).toBe(true)
+  })
+
+  it.each([
+    '../../agents/other-agent/workspace/private/SKILL.md',
+    'skills/../../outside/SKILL.md',
+    '/etc/SKILL.md',
+    'C:/Users/someone/SKILL.md',
+    'skills\\..\\..\\outside\\SKILL.md',
+  ])('refuses %s, which leaves the repository', (skillPath) => {
+    expect(InstalledSkillMetadataSchema.safeParse(record(skillPath)).success).toBe(false)
   })
 })

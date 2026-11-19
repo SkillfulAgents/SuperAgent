@@ -9,6 +9,8 @@
  */
 import { randomUUID } from 'crypto'
 import type { Hono } from 'hono'
+import { z } from 'zod'
+import { readAuthenticatorSetup, setupKeyForms } from './authenticator-setup'
 import { inputManager } from './input-manager'
 import { rememberInjectedSecret } from './injected-secrets'
 import {
@@ -25,8 +27,10 @@ import {
   type LoginFieldRequest,
   type LoginFillDeps,
   type PageActivity,
+  type PreparedLogin,
   type WrittenField,
 } from './login-fill'
+import { mainFrameOf, type CdpConnection } from './login-cdp'
 import { SECRET_LOGIN_FIELD_KINDS } from './login-form-script'
 import {
   beginPreparedLogin,
@@ -37,7 +41,28 @@ import {
   putPreparedLogin,
   waitForPreparedLogin,
 } from './login-requests'
-import { loginFillRequestSchema, loginPrepareRequestSchema, type LoginFillReport } from './login-schema'
+import {
+  elementRefSchema,
+  loginChooseRequestSchema,
+  loginFillRequestSchema,
+  loginPrepareRequestSchema,
+  type LoginFillReport,
+  type LoginWayReport,
+} from './login-schema'
+
+/**
+ * The parked calls a fill can be for: request_login's, or add_sign_in_method's
+ * (the host fills the code that confirms an authenticator app, and answers
+ * that call itself).
+ */
+const FILLED_CALL_TYPES = ['login', 'add_sign_in_method'] as const
+
+/** host → server: read the authenticator app's setup from the page of an add_sign_in_method call. */
+const authenticatorReadRequestSchema = z.object({
+  toolUseId: z.string().min(1).max(256),
+  /** The setup QR code, when the agent named it. */
+  qr: elementRefSchema.optional(),
+}).strict()
 
 /** How the form gets submitted, and what the page did after. */
 export interface SubmitPlan {
@@ -113,7 +138,20 @@ export interface LoginRouteDeps {
   pageSubmitWaitMs?: number
   /** The same after a one-time code, which a page may verify on its last digit, after a debounce. */
   codeSubmitWaitMs?: number
+  /**
+   * Before a passkey way is clicked: the browser's passkeys on the tab now, not
+   * in the moment after a connection of ours left it (which turns them off).
+   */
+  passkeysReady?(): Promise<void>
+  /** How long a page's only way (a prompt on the user's device) is watched for the page to move on. */
+  lonePromptWaitMs?: number
+  /** How often the page's URL is read meanwhile. */
+  lonePromptPollMs?: number
 }
+
+/** A phone prompt is good for a few minutes on most sites. */
+const LONE_PROMPT_WAIT_MS = 3 * 60_000
+const LONE_PROMPT_POLL_MS = 1000
 
 /** For the host's problem list: what was seen of a field just before the submit. */
 const LOST_PROBLEMS: Record<LoginFillReport['lost'][number]['state'], string> = {
@@ -128,6 +166,11 @@ function recordActivity(report: LoginFillReport, activity: PageActivity): void {
   else report.pageActivity = activity
 }
 
+/** A page's ways as the host and the card see them: what each is, never its ref. */
+function waysView(prepared: Pick<PreparedLogin, 'ways'>) {
+  return prepared.ways.map(({ ref, label, method }) => ({ label, method, clickable: ref !== null }))
+}
+
 /** Kinds a field may be mapped without a ref for: a value entered now, for a later step. */
 const HOLDABLE_KINDS = new Set<HeldLoginField['kind']>(['password', 'text'])
 
@@ -137,7 +180,7 @@ const HOLDABLE_KINDS = new Set<HeldLoginField['kind']>(['password', 'text'])
  */
 async function pendingLoginOpened(toolUseId: string, waitMs: number): Promise<boolean> {
   const deadline = Date.now() + waitMs
-  while (!inputManager.hasPendingOfType(toolUseId, 'login')) {
+  while (!FILLED_CALL_TYPES.some((type) => inputManager.hasPendingOfType(toolUseId, type))) {
     if (Date.now() >= deadline || !getPreparedLogin(toolUseId)) return false
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
@@ -145,8 +188,50 @@ async function pendingLoginOpened(toolUseId: string, waitMs: number): Promise<bo
 }
 
 export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
-  /** Sign-in requests being filled right now: one fill per request at a time. */
+  /** Sign-in requests being filled (or a way clicked) right now: one at a time per request. */
   const fillsInFlight = new Set<string>()
+
+  /** Answer the parked call for the page's only way, once: unless the card or a closed browser answered it first. */
+  const answerLonePrompt = async (prepared: PreparedLogin, moved: boolean): Promise<void> => {
+    if (getPreparedLogin(prepared.toolUseId) !== prepared || fillsInFlight.has(prepared.toolUseId)) return
+    const way = prepared.ways[0]
+    const digest = moved ? await deps.observeUrl() : null
+    const report: LoginWayReport = {
+      type: 'way',
+      origin: prepared.origin,
+      picked: { label: way.label, method: way.method },
+      by: 'page',
+      moved,
+      ...(digest ? { observation: { digest } } : {}),
+    }
+    if (getPreparedLogin(prepared.toolUseId) !== prepared || fillsInFlight.has(prepared.toolUseId)) return
+    inputManager.resolve(prepared.toolUseId, JSON.stringify(report))
+    forgetPreparedLogin(prepared.toolUseId)
+  }
+
+  /**
+   * The page's only way is a prompt on the user's device, with nothing to
+   * click: the page moving on (the user answered it) answers the call, and so
+   * does the wait running out. The user's card can answer it first ("Done").
+   * Watched over one connection, from the URL the page had when the way was mapped.
+   */
+  const watchLonePrompt = async (prepared: PreparedLogin): Promise<void> => {
+    if (!(await pendingLoginOpened(prepared.toolUseId, deps.pendingWaitMs ?? 3000))) return
+    const deadline = Date.now() + (deps.lonePromptWaitMs ?? LONE_PROMPT_WAIT_MS)
+    let cdp: CdpConnection | null = null
+    try {
+      cdp = await deps.fillDeps().connect()
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, deps.lonePromptPollMs ?? LONE_PROMPT_POLL_MS))
+        if (getPreparedLogin(prepared.toolUseId) !== prepared || !inputManager.hasPendingOfType(prepared.toolUseId, 'login')) return
+        const url = await mainFrameOf(cdp).then((frame) => frame.url, () => null)
+        if (url !== null && url !== prepared.url) return await answerLonePrompt(prepared, true)
+      }
+      await answerLonePrompt(prepared, false)
+    } finally {
+      cdp?.close()
+    }
+  }
 
   // POST /browser/login/prepare - request_login locates the fields it mapped
   app.post('/browser/login/prepare', async (c) => {
@@ -165,6 +250,49 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
     const sessionError = deps.validateSession(body.sessionId)
     if (sessionError) return fail(409, [sessionError])
     if (!deps.browserActive()) return fail(409, ['no browser is open'])
+    if (body.ways.length > 0) {
+      if (body.fields.length > 0 || body.submitRef) {
+        return fail(422, ['ways are mapped alone: a page that asks how to verify it\'s you gets no fields or submit button with them'])
+      }
+      const unclickable = body.ways.filter((way) => way.ref === undefined)
+      if (unclickable.length > 0 && body.ways.length > 1) {
+        return fail(422, [`${unclickable.map((way) => `"${way.label}"`).join(', ')} has no ref: only a page's one way can go without (a prompt on the user's device, with nothing to click)`])
+      }
+      const refs = body.ways.flatMap((way) => (way.ref ? [way.ref] : []))
+      const repeated = refs.find((ref, index) => refs.indexOf(ref) !== index)
+      if (repeated) return fail(422, [`${repeated} is mapped as more than one way`])
+      try {
+        const fillDeps = deps.fillDeps()
+        for (const ref of refs) {
+          if (!(await fillDeps.boxOfRef(ref))) return fail(422, [`the box of ${ref} could not be read`])
+        }
+        const page = await preparePage(fillDeps)
+        if (!page.ok) return fail(422, page.problems)
+        const prepared: PreparedLogin = {
+          toolUseId: body.toolUseId,
+          sessionId: body.sessionId,
+          origin: page.origin,
+          url: page.url,
+          topOrigin: page.topOrigin,
+          fields: [],
+          held: [],
+          providers: [],
+          ways: body.ways.map((way) => ({ ref: way.ref ?? null, label: way.label, method: way.method })),
+          submitRef: null,
+          preparedAt: Date.now(),
+        }
+        putPreparedLogin(prepared)
+        if (prepared.ways.length === 1 && prepared.ways[0].ref === null) {
+          void watchLonePrompt(prepared).catch((error) => {
+            console.error('[Browser] Watching a sign-in prompt failed:', error instanceof Error ? error.message : 'Unknown error')
+          })
+        }
+        return c.json({ origin: page.origin, url: page.url, topOrigin: page.topOrigin, fields: [], held: [], ways: waysView(prepared) })
+      } catch (error) {
+        console.error('[Browser] Sign-in preparation failed:', error instanceof Error ? error.message : 'Unknown error')
+        return fail(500, [`the page could not be read: ${error instanceof Error ? error.message : 'unknown error'}`])
+      }
+    }
     const located = body.fields.filter((field): field is LoginFieldRequest => field.ref !== undefined)
     const held: HeldLoginField[] = body.fields.filter((field) => field.ref === undefined).map(({ kind, label }) => ({ kind, label }))
     const unholdable = held.find((field) => !HOLDABLE_KINDS.has(field.kind))
@@ -194,6 +322,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
         fields: result.fields,
         held,
         providers: [...new Set(body.providers)],
+        ways: [],
         submitRef: body.submitRef,
         preparedAt: Date.now(),
       })
@@ -225,6 +354,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       fields: prepared.fields.map((field) => ({
         kind: field.kind,
         label: field.label,
+        ...(field.from ? { from: field.from } : {}),
         inputType: field.inputType,
         inputMode: field.inputMode,
         autocomplete: field.autocomplete,
@@ -232,7 +362,97 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       })),
       held: prepared.held,
       providers: prepared.providers,
+      ways: waysView(prepared),
     })
+  })
+
+  // POST /browser/login/choose - the host clicks the way picked on a page that
+  // asks how to verify it's you (or, for one with nothing to click, the user
+  // says they answered it), and answers the parked call with what was seen.
+  app.post('/browser/login/choose', async (c) => {
+    if (!deps.hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503)
+    const parsed = loginChooseRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid sign-in request' }, 400)
+    const body = parsed.data
+    const prepared = getPreparedLogin(body.toolUseId)
+    if (!prepared || !(await pendingLoginOpened(body.toolUseId, deps.pendingWaitMs ?? 3000))) {
+      return c.json({ error: 'This sign-in request is no longer open' }, 409)
+    }
+    if (prepared.origin !== body.expectedOrigin) return c.json({ error: 'This sign-in request is for a different site' }, 409)
+    const way = prepared.ways[body.index]
+    if (!way) return c.json({ error: 'The page offers no such way' }, 400)
+    if (isPreparedLoginClosed(body.toolUseId) || !deps.browserActive()) {
+      return c.json({ error: 'The browser that showed this page was closed', reason: 'browser_closed' }, 409)
+    }
+    const sessionError = deps.validateSession(prepared.sessionId)
+    if (sessionError) return c.json({ error: sessionError }, 409)
+    if (fillsInFlight.has(body.toolUseId)) return c.json({ error: 'This sign-in request is already being answered' }, 409)
+
+    fillsInFlight.add(body.toolUseId)
+    try {
+      const report: LoginWayReport = {
+        type: 'way',
+        origin: prepared.origin,
+        picked: { label: way.label, method: way.method },
+        by: body.by,
+        ...(body.username ? { username: body.username } : {}),
+      }
+      if (way.ref) {
+        // The page asks the browser for the passkey as soon as it is clicked.
+        if (way.method === 'passkey') await deps.passkeysReady?.()
+        const outcome = await deps.submit({
+          submitRef: way.ref,
+          // Nothing was written: the page has nothing of ours to react to.
+          stillCurrent: async () => null,
+          clickInPage: async () => false,
+          enterLandsInField: async () => false,
+        })
+        if (!outcome.ok) report.clickError = outcome.error
+        else {
+          if (outcome.submitted) report.clicked = { ref: way.ref }
+          report.observation = outcome.observation
+        }
+        deps.notifyBrowserAction()
+      }
+      inputManager.resolve(body.toolUseId, JSON.stringify(report))
+      forgetPreparedLogin(body.toolUseId)
+      return c.json({ success: true, clicked: report.clicked !== undefined, problems: report.clickError ? [report.clickError] : [] })
+    } catch (error) {
+      // Left open: the user can pick again or take over the browser.
+      console.error('[Browser] Choosing a way failed:', error instanceof Error ? error.message : 'Unknown error')
+      return c.json({ error: 'The way could not be clicked' }, 500)
+    } finally {
+      fillsInFlight.delete(body.toolUseId)
+    }
+  })
+
+  // POST /browser/login/authenticator - add_sign_in_method: the host reads the
+  // authenticator app's setup (an otpauth URI, or a key) from the page its call
+  // prepared. It goes only to the host, and is redacted from what the agent
+  // reads from here on.
+  app.post('/browser/login/authenticator', async (c) => {
+    if (!deps.hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503)
+    const parsed = authenticatorReadRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid authenticator setup request' }, 400)
+    const body = parsed.data
+    const prepared = getPreparedLogin(body.toolUseId)
+    // The tool parks its call as the host starts on it: wait out that gap.
+    const open = prepared !== null && await pendingLoginOpened(body.toolUseId, deps.pendingWaitMs ?? 3000)
+    if (!open || !inputManager.hasPendingOfType(body.toolUseId, 'add_sign_in_method')) {
+      return c.json({ error: 'This request is no longer open' }, 409)
+    }
+    const sessionError = deps.validateSession(prepared.sessionId)
+    if (sessionError) return c.json({ error: sessionError }, 409)
+    if (isPreparedLoginClosed(body.toolUseId) || !deps.browserActive()) return c.json({ error: 'The browser was closed' }, 409)
+    try {
+      const read = await readAuthenticatorSetup(deps.fillDeps(), { qrRef: body.qr ?? null })
+      if (!read.ok) return c.json({ error: read.problem }, 422)
+      for (const form of setupKeyForms(read.key)) rememberInjectedSecret(form)
+      return c.json({ key: read.key, source: read.source })
+    } catch (error) {
+      console.error('[Browser] Reading an authenticator setup failed:', error instanceof Error ? error.message : 'Unknown error')
+      return c.json({ error: 'the page could not be read' }, 500)
+    }
   })
 
   // POST /browser/login/fill - the host posts the user's values. Writes them,
@@ -361,7 +581,8 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       deps.notifyBrowserAction()
       // The answer goes to the agent; the fill is over either way, and a
       // failed fill is the agent's to act on (re-map, or hand over the browser).
-      inputManager.resolve(body.toolUseId, JSON.stringify(report))
+      // A host that answers the call itself gets the report instead.
+      if (body.answer !== false) inputManager.resolve(body.toolUseId, JSON.stringify(report))
       forgetPreparedLogin(body.toolUseId)
       const count = (status: string) => report.outcomes.filter((outcome) => outcome.status === status).length
       const label = (ref: string) => prepared.fields.find((field) => field.ref === ref)?.label ?? ref
@@ -378,6 +599,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
           ...report.lost.map(({ ref, state }) => `${label(ref)}: ${LOST_PROBLEMS[state]}, so nothing was clicked or pressed`),
           ...(report.submitError ? [`${report.submitError.charAt(0).toUpperCase()}${report.submitError.slice(1)}`] : []),
         ],
+        ...(body.answer === false ? { report } : {}),
       })
     } catch (error) {
       // Left open: the user can try again or take over the browser.

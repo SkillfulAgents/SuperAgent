@@ -20,7 +20,7 @@ import {
   type VaultOffer,
 } from './login-request'
 import { loginRequestKey, recallLoginValues, setLoginRequestState } from './login-request-store'
-import { AccountChooser, OtherWaysToSignIn, providerChoices, SaveForLater, SignInViaPanel, SignInWithProviders } from './login-vault-sections'
+import { AccountChooser, AddSignInMethodBox, OtherWaysToSignIn, providerChoices, SaveForLater, SignInViaPanel, SignInWithProviders } from './login-vault-sections'
 import { browserClosedState, LoginContextUnavailable, useLoginContext, useLoginRequestActions, useLoginVaultInfo } from './use-login-request'
 
 interface LoginFormProps {
@@ -175,6 +175,53 @@ function retryNote(vault: LoginVaultPayload | undefined): { text: string; agentS
   return null
 }
 
+/** The user signs in in the browser view themselves, then says so. */
+export function SignInOnPage({
+  origin,
+  error,
+  busy,
+  finishing,
+  back,
+  onBack,
+  onDone,
+}: {
+  origin: string | null
+  error?: string
+  busy: boolean
+  finishing: boolean
+  back: string
+  onBack: () => void
+  onDone: () => void
+}) {
+  return (
+    <>
+      <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-sm text-foreground">
+        <MousePointerClick className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+        <span>
+          Sign in directly in the browser view{origin ? ` on ${siteLabel(origin)}` : ''}, then click Done.
+          {' '}What you type on the page itself is not hidden from the agent.
+        </span>
+      </div>
+      {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button variant="ghost" size="xs" onClick={onBack} disabled={busy} data-testid="login-back-to-form">
+          {back}
+        </Button>
+        <Button
+          size="xs"
+          className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
+          onClick={onDone}
+          loading={finishing}
+          disabled={busy}
+          data-testid="login-manual-done"
+        >
+          Done
+        </Button>
+      </div>
+    </>
+  )
+}
+
 /** A saved account filling part of the form: the one the host left the request for, or one the user picked. */
 interface FormAccount {
   id?: string
@@ -193,7 +240,7 @@ export function LoginForm({
   const formId = useId()
   const errorId = `${formId}-error`
   const context = useLoginContext(agentSlug, sessionId, toolUseId)
-  const { state, fill, signInVia, completeManually, decline } = useLoginRequestActions({ agentSlug, sessionId, toolUseId })
+  const { state, fill, signInVia, requestMethod, completeManually, decline } = useLoginRequestActions({ agentSlug, sessionId, toolUseId })
   const [mode, setMode] = useState<'form' | 'manual' | 'via'>('form')
   // The provider picked under "Or sign in with"; null for a saved account on another site.
   const [viaProvider, setViaProvider] = useState<string | null>(null)
@@ -313,7 +360,9 @@ export function LoginForm({
 
   const fillOptions = (accountId?: string, granting = false) => ({
     ...(held.length && heldValues.some(Boolean) ? { heldValues: held.map((_, index) => heldValues[index] ?? '') } : {}),
-    ...(canSave && save ? { save: true, ...(askUsername && saveUsername.trim() ? { username: saveUsername.trim() } : {}) } : {}),
+    ...(canSave && save
+      ? { save: true, ...(askUsername && saveUsername.trim() ? { username: saveUsername.trim() } : {}) }
+      : {}),
     ...(accountId ? { accountId } : {}),
     // The notice was on screen where the user chose to save or to use a saved account.
     ...(otherMembers > 0 && ((canSave && save) || granting) ? { sharedAgentAcknowledged: true } : {}),
@@ -356,29 +405,15 @@ export function LoginForm({
   if (mode === 'manual') {
     return (
       <div ref={rootRef} className="space-y-3 pt-4" data-testid="login-manual">
-        <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-sm text-foreground">
-          <MousePointerClick className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          <span>
-            Sign in directly in the browser view{located ? ` on ${siteLabel(located.origin)}` : ''}, then click Done.
-            {' '}What you type on the page itself is not hidden from the agent.
-          </span>
-        </div>
-        {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="ghost" size="xs" onClick={() => setMode('form')} disabled={busy} data-testid="login-back-to-form">
-            Back to the form
-          </Button>
-          <Button
-            size="xs"
-            className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
-            onClick={() => void completeManually()}
-            loading={running === 'manual'}
-            disabled={busy}
-            data-testid="login-manual-done"
-          >
-            Done
-          </Button>
-        </div>
+        <SignInOnPage
+          origin={located?.origin ?? null}
+          error={error}
+          busy={busy}
+          finishing={running === 'manual'}
+          back="Back to the form"
+          onBack={() => setMode('form')}
+          onDone={() => void completeManually()}
+        />
       </div>
     )
   }
@@ -508,7 +543,9 @@ export function LoginForm({
           kind="login"
           disabled={busy}
           // "Save for later" covers a login from the password manager too: the whole login goes to the vault.
-          loginOptions={canSave && save ? { save: true, ...(otherMembers > 0 ? { sharedAgentAcknowledged: true } : {}) } : undefined}
+          loginOptions={canSave && save
+            ? { save: true, ...(otherMembers > 0 ? { sharedAgentAcknowledged: true } : {}) }
+            : undefined}
           onFilled={(body) => {
             const key = loginRequestKey(agentSlug, sessionId, toolUseId)
             // Answered in another window first: nothing was filled from here.
@@ -649,6 +686,9 @@ export function LoginForm({
           disabled={busy}
         />
       )}
+
+      {/* A code is a step of two-step verification: the moment to offer an app that makes the next one. */}
+      {codeStep && info?.addMethod && <AddSignInMethodBox addMethod={info.addMethod} onRequest={requestMethod} disabled={busy} />}
 
       {choices && choices.shown.length > 0 && (
         <SignInWithProviders

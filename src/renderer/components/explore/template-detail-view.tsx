@@ -134,9 +134,9 @@ export function TemplateDetailView({
         router.history.back()
         return
       }
-      void navigate({ to: '/explore' })
+      void navigate({ to: '/explore', search: { library: skillsetId } })
     },
-    label: 'Discover New Agents',
+    label: 'Agent Template Library',
   }
 
   if (!template) {

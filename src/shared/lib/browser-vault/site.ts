@@ -23,7 +23,8 @@ export function siteOfOrigin(origin: string): string | null {
  * The registrable domain a site is on (accounts.google.com → google.com),
  * private suffixes counted (acme.myshopify.com is its own); the site itself
  * when it has none (an IP address, localhost). For telling which sign-in
- * provider a site belongs to, never for matching accounts.
+ * provider a site belongs to, and which account a settings page on another
+ * host is for; never for filling an account.
  */
 export function registrableDomain(site: string): string {
   const hostname = site.replace(/:\d+$/, '')

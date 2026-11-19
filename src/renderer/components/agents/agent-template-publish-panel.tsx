@@ -98,7 +98,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
           <ChevronLeft className="h-4 w-4" />
         </Button>
         <p className="text-sm font-medium">
-          {publishResult ? 'Published' : step === 'form' ? 'Publish details' : 'Choose a skillset'}
+          {publishResult ? 'Published' : step === 'form' ? 'Publish details' : 'Choose a library'}
         </p>
       </div>
 
@@ -209,11 +209,11 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
         </form>
       ) : !skillsets || skillsets.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">
-          No skillsets configured. Add a skillset in Settings first.
+          No libraries configured. Add a library in Settings first.
         </p>
       ) : (
         <div className="space-y-3">
-          <div role="radiogroup" aria-label="Skillset" className="-mx-2 space-y-1">
+          <div role="radiogroup" aria-label="Library" className="-mx-2 space-y-1">
             {skillsets.map((ss) => {
               const publishable = isSkillsetPublishable(ss.publishMode)
               const isSelected = selectedId === ss.id

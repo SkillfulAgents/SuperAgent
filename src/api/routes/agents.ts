@@ -100,12 +100,14 @@ import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
 import {
+  chooseLoginWayBodySchema,
   completeLoginBodySchema,
   fillLoginBodySchema,
   fillLoginCredentialBodySchema,
   loginContextSchema,
   loginVaultPayloadSchema,
   loginViaBodySchema,
+  requestLoginMethodBodySchema,
   type LoginContext,
 } from '@shared/lib/tools/request-login/login-request'
 import {
@@ -113,9 +115,11 @@ import {
   answerLoginRequest,
   fillLoginInContainer,
   isFirstSignInPage,
+  methodNotes,
   noteUsername,
   fieldsWentIn,
   partsFrom,
+  pickLoginWay,
   readLoginContext,
   restoresHere,
   saveHeldParts,
@@ -137,7 +141,9 @@ import {
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
 import { beginSignInStep, restoreSavedSession, sessionBaseline, watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
-import { partKeyOf } from '@shared/lib/browser-vault/vault-schemas'
+import { askForRequestedMethod, requestedOnCard } from '@shared/lib/browser-vault/method-request'
+import { freshTotpCode } from '@shared/lib/browser-vault/totp'
+import { fillKeyOf, partKeyOf, TOTP_FILL_KEY } from '@shared/lib/browser-vault/vault-schemas'
 import {
   clearAccountRejected,
   findOwnedProviderAccount,
@@ -148,9 +154,10 @@ import {
   listGrantedAccountIds,
   listOwnedAccountsElsewhere,
   listOwnedAccountsOnSite,
-  readAccountValues,
+  readAccountFill,
   recordAccountUse,
   saveAccount,
+  setSignInMethodRequest,
   switchAccountToVia,
   MAX_USERNAME,
   VaultConflictError,
@@ -2193,6 +2200,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
               pendingWakeTaskId: wake.id,
               pendingWakeNote: wake.prompt,
+              pendingWakeSummary: wake.name ?? undefined,
             }
           : {}),
       }
@@ -3109,6 +3117,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
             pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),
             pendingWakeTaskId: pendingWake.id,
             pendingWakeNote: pendingWake.prompt,
+            pendingWakeSummary: pendingWake.name ?? undefined,
           }
         : {}),
     })
@@ -4305,6 +4314,7 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
       fillsHere: vaultFillsInto(account.origin, pageOrigin),
     }
   }
+  const stepAccount = await twoStepAccount(viewer, agentSlug, toolUseId, read.context, site)
   return c.json({
     site,
     otherMembers,
@@ -4318,7 +4328,50 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
     })),
     // Never the site's own: not GitHub on github.com's sign-in page.
     providers: SIGN_IN_PROVIDERS.filter((provider) => provider.site !== registrableDomain(site)),
+    addMethod: stepAccount
+      ? { accountId: stepAccount.id, username: stepAccount.username, requested: Boolean(stepAccount.signInMethods.requested) }
+      : null,
   })
+})
+
+// POST /api/agents/:id/sessions/:sessionId/login-request/method - "Also add a
+// passkey or authenticator app" on a step of two-step verification: the
+// request stays on the account until an agent answers it, and this session's
+// agent is asked, as the user's own message, once this card is answered
+// (method-request).
+agents.post('/:id/sessions/:sessionId/login-request/method', AgentUser(), zValidator('json', requestLoginMethodBodySchema), async (c) => {
+  const body = c.req.valid('json')
+  const gated = await gateOpenRequestAccess(c, body.toolUseId, 'login')
+  if (gated) return gated
+  if (getMeetingParticipant(c)) return c.json({ error: 'Forbidden' }, 403)
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  const read = await readLoginContext(agentSlug, body.toolUseId)
+  if (!read.ok) return c.json({ error: read.error }, read.status)
+  const site = siteOfOrigin(read.context.origin)
+  const viewer = getViewerUserId(c)
+  const account = site ? await twoStepAccount(viewer, agentSlug, body.toolUseId, read.context, site) : null
+  if (!account) return c.json({ error: 'There is no saved account of yours to add a passkey or authenticator app to here' }, 409)
+  await setSignInMethodRequest(viewer, account.id, true, 'card')
+  background(requestedOnCard({ agentSlug, sessionId, account }), { name: 'login-request.requested-on-card' })
+  return c.json({ requested: true })
+})
+
+// POST /api/agents/:id/sessions/:sessionId/login-way - The way the user picked
+// on a page that asks how to verify it's you: the host clicks it (for the
+// page's only way with nothing to click, the user says they answered it).
+agents.post('/:id/sessions/:sessionId/login-way', AgentUser(), zValidator('json', chooseLoginWayBodySchema), async (c) => {
+  const body = c.req.valid('json')
+  const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+  if (gated) return gated
+  const picked = await pickLoginWay({
+    agentSlug: getAgentId(c),
+    sessionId: c.req.param('sessionId'),
+    toolUseId: body.toolUseId,
+    pick: { index: body.index, origin: body.origin },
+  })
+  if (!picked.ok) return c.json({ error: picked.error }, picked.status)
+  return c.json('browserClosed' in picked ? { browserClosed: true } : picked.result)
 })
 
 /** Let the agent sign in with the account, logged when it is new. */
@@ -4338,6 +4391,26 @@ async function saveAndGrant(
   await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: result.account.id, action: result.created ? 'created' : 'updated', details: { site: input.site } })
   await grantToAgent(viewer, agentSlug, result.account.id)
   return result.account
+}
+
+/**
+ * The account a step of two-step verification is for (the ways to verify, or
+ * a code), when it is the viewer's own and the vault holds neither a passkey
+ * nor an app for it: the card offers to have the agent add one. Not one an
+ * agent found none to add for.
+ */
+async function twoStepAccount(viewer: VaultOwner, agentSlug: string, toolUseId: string, context: LoginContext, site: string): Promise<VaultAccount | null> {
+  const twoStep = context.ways.length > 0 || (context.fields.length > 0 && context.fields.every((field) => field.kind === 'otp'))
+  if (!twoStep) return null
+  const request = await agentRegistry.get(agentSlug).inputs.get(toolUseId)
+  const vault = loginVaultPayloadSchema.safeParse(request?.kind === 'login' ? request.payload.vault : undefined)
+  if (!vault.success || (!vault.data.accountId && !vault.data.username)) return null
+  const { accountId, username } = vault.data
+  const account = (await listOwnedAccountsOnSite(viewer, site))
+    .find((candidate) => (accountId ? candidate.id === accountId : usernameKey(candidate.username) === usernameKey(username ?? '')))
+  const { authenticator, passkeys, unavailable } = account?.signInMethods ?? {}
+  if (!account || account.via || authenticator || passkeys?.length || unavailable) return null
+  return account
 }
 
 // POST /api/agents/:id/sessions/:sessionId/fill-login - Write the user's values into the page
@@ -4426,7 +4499,12 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
         return c.json({ success: true, session: { restored: restored.restored, username: picked.username } })
       }
     }
-    const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
+    const accountFill = account && vaultFillsInto(account.origin, context.origin) ? await readAccountFill(account.id) : null
+    // The authenticator app's code, for a field the form left to the vault (the host covered it).
+    const code = accountFill?.totp && context.fields.some((field, index) => !body.values[index] && fillKeyOf(field) === TOTP_FILL_KEY)
+      ? await freshTotpCode(accountFill.totp)
+      : null
+    const saved: Record<string, string> = { ...(accountFill?.values ?? {}), ...(code ? { [TOTP_FILL_KEY]: code } : {}) }
     const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
     const values = body.values.map((value, index) => value || fallback[index])
     // A field the form left to the vault that it cannot fill now (what was
@@ -4489,6 +4567,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
         source: account && !body.values.some(Boolean) ? 'vault' : 'user',
         saved: saving,
         held: heldLabels,
+        ...methodNotes(account),
       })
     } catch (error) {
       // No answer: the values may be in the page, so what was held for it is used.
@@ -4582,7 +4661,16 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // password tried counts toward how often the vault fills it without the user.
     const usedAccount = savedAccount ?? account
     if (usedAccount && wentIn.some(Boolean)) {
-      await recordAccountUse({ agentSlug, accountId: usedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
+      const codeWentIn = code !== null && context.fields.some((field, index) => !body.values[index] && fillKeyOf(field) === TOTP_FILL_KEY && wentIn[index])
+      await recordAccountUse({
+        agentSlug,
+        accountId: usedAccount.id,
+        sessionId,
+        userId: viewer,
+        password: passwordWentIn,
+        by: 'user',
+        ...(codeWentIn ? { code: true as const } : {}),
+      })
     }
     // Its session, as the sign-in leaves it: saved to that account, and only
     // when it is the one that signed in. The user may have typed another, or
@@ -4590,6 +4678,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // this account or one before it (beginSignInStep, above).
     if (wentIn.some(Boolean) && usedAccount && (!identity || usernameKey(identity) === usernameKey(usedAccount.username))) {
       watchSignIn({ agentSlug, sessionId, account: usedAccount, baseline })
+      askForRequestedMethod(agentSlug, sessionId, usedAccount)
     }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
+import { buildSignInMethodRequestMessage } from '@shared/lib/utils/sign-in-method-request'
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { MessageList } from './message-list'
@@ -604,6 +605,54 @@ describe('MessageList', () => {
       'fade-in-0',
       'slide-in-from-top-2',
     )
+  })
+
+  it('folds the sign-in form\'s request into the work, queued or a turn of its own, rather than splitting it', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Open my mail and let me sign in' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Signing in.' },
+        createdAt: new Date('2025-01-01T00:00:05Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createUserMessage({
+        content: { text: buildSignInMethodRequestMessage({ username: 'octocat', site: 'github.com', from: 'card' }) },
+        queued: true,
+        createdAt: new Date('2025-01-01T00:00:06Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Signed in; that request came in a tool result.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+      }),
+      createUserMessage({
+        content: { text: buildSignInMethodRequestMessage({ username: 'octocat', site: 'github.com', from: 'card', again: true }) },
+        createdAt: new Date('2025-01-01T00:00:11Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Adding the passkey.' },
+        createdAt: new Date('2025-01-01T00:00:15Z'),
+        toolCalls: [createToolCall({ name: 'Read' })],
+      }),
+      createAssistantMessage({
+        content: { text: 'Added a passkey.' },
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    // One turn, one summary: the requests fold away with the work.
+    expect(screen.getAllByTestId('turn-summary')).toHaveLength(1)
+    expect(screen.getByTestId('turn-summary')).toHaveTextContent('Worked for 20s')
+    expect(screen.getByText('Added a passkey.')).toBeInTheDocument()
+    expect(screen.queryByTestId('sign-in-method-request-notice')).not.toBeInTheDocument()
+    expect(screen.queryByText('Signed in; that request came in a tool result.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('turn-summary'))
+    expect(screen.getAllByTestId('sign-in-method-request-notice')).toHaveLength(2)
   })
 
   it('splits completed work around queued steering messages', () => {

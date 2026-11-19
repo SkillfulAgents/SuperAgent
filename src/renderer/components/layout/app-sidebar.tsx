@@ -53,7 +53,7 @@ import {
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
 import { useAgents, useListedAgents, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSessions, useRecentSessions, useSessionTotal, recentSessionsQueryOptions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { useSessions, useRecentSessions, useNotableSessions, useSessionTotal, recentSessionsQueryOptions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { RECENT_SESSIONS_LIMIT } from '@renderer/lib/agent-cache'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
@@ -460,16 +460,37 @@ function SessionsSkeleton() {
   )
 }
 
+const AGENT_SUBTITLE_CLASS = 'block truncate text-[11px] leading-tight text-muted-foreground/60'
+
 // Only this label subscribes to the clock; the expensive agent row stays memoized.
-// The row's second line: when the agent last ran. A sleeping agent keeps it;
-// its avatar shows the sleep (agentAvatarState).
 function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
   useMinuteClock()
   return (
-    <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
+    <span className={AGENT_SUBTITLE_CLASS}>
       {formatLastRun(date) ?? 'Never active'}
     </span>
   )
+}
+
+function isSessionWorking(session: ApiSession) {
+  return session.isActive && !session.isAwaitingInput
+}
+
+function AgentWorkingLine({ notableSessionsSlug, sessions, isWorking, fallback }: {
+  notableSessionsSlug: string | null
+  sessions: ApiSession[] | undefined
+  isWorking: boolean
+  fallback: React.ReactNode
+}) {
+  // A collapsed row has no session list, and an older running session may be
+  // outside the expanded row's recent slice. The notable list prioritizes live sessions.
+  const { data: notableSessions } = useNotableSessions(notableSessionsSlug)
+  const names = (notableSessions ?? sessions)?.filter(isSessionWorking).slice(0, 2).map(session => session.name)
+  if (names?.length) {
+    const label = `Working on ${names.join(' and ')}`
+    return <span className={AGENT_SUBTITLE_CLASS} title={label}>{label}</span>
+  }
+  return isWorking ? <span className={AGENT_SUBTITLE_CLASS}>Working…</span> : <>{fallback}</>
 }
 
 // The agent row's notification dot, pinned to the avatar's bottom-right like a
@@ -604,6 +625,15 @@ const AgentMenuItemInner = React.forwardRef<
   const avatarState = agentAvatarState(agent, sessions)
   const badgeKind = agentBadgeKind(agent, sessions, isOpen)
   const avatarCutout = badgeKind ? AVATAR_BADGE_CUTOUT[badgeKind] : null
+  const preview = badgeKind && agent.notificationPreview
+  const fallbackSubtitle = preview ? (
+    <span className={AGENT_SUBTITLE_CLASS} data-testid={`agent-notification-preview-${agent.slug}`}>
+      {preview}
+    </span>
+  ) : <AgentLastRun date={agent.lastActivityAt} />
+  const showWorkingLine = !(badgeKind === 'awaiting' && preview)
+    && (agent.hasActiveSessions || sessions?.some(isSessionWorking))
+  const hasCompleteSessionList = allSessions !== undefined || (recentSessions !== undefined && !recentIsCut)
 
   // Use pre-aggregated counts to determine if the chevron should show.
   // Also show when isOpen (agent selected) since sessions may have been
@@ -687,17 +717,18 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-item focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                {/* The orb is decorative; its state still needs a text equivalent. */}
-                <span className="sr-only">, {avatarState === 'needs-input' ? 'needs input' : avatarState === 'done' ? 'unread notifications' : avatarState}. </span>
-                {/* While the avatar carries a badge, the second line says what
-                    that notification says instead of when the agent last ran. */}
-                {badgeKind && agent.notificationPreview ? (
-                  <span className="block truncate text-[11px] leading-tight text-muted-foreground/60" data-testid={`agent-notification-preview-${agent.slug}`}>
-                    {agent.notificationPreview}
-                  </span>
-                ) : (
-                  <AgentLastRun date={agent.lastActivityAt} />
+                {/* The orb is decorative; describe its state if the working line doesn't say it. */}
+                {avatarState === 'working' && showWorkingLine ? ' ' : (
+                  <span className="sr-only">, {avatarState === 'needs-input' ? 'needs input' : avatarState === 'done' ? 'unread notifications' : avatarState}. </span>
                 )}
+                {showWorkingLine ? (
+                  <AgentWorkingLine
+                    notableSessionsSlug={hasCompleteSessionList ? null : agent.slug}
+                    sessions={sessions}
+                    isWorking={avatarState === 'working'}
+                    fallback={fallbackSubtitle}
+                  />
+                ) : fallbackSubtitle}
               </AppLink>
               {/* The faces sit flush right, over the empty trailing slot (its
                   16px plus the 6px gap); when the row's controls or ⌘-hint show,
@@ -1896,8 +1927,8 @@ export function AppSidebar() {
                       data-testid="marketplace-button"
                     >
                       <AppLink to="/explore">
-                        <AnimatedNavIcon name="compass" className="h-4 w-4" />
-                        <span>Discover New Agents</span>
+                        <AnimatedNavIcon name="layers" className="h-4 w-4" />
+                        <span>Agent Template Library</span>
                       </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

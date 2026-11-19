@@ -52,6 +52,13 @@ export const connectionsSearchSchema = z
     message: 'a connection subview requires detail',
   })
 
+// The library the Agent Template Library page and its category pages browse.
+// URL-driven so back navigation from a template, the category "See all" hop and
+// reloads all keep the same library; absent or unknown = the first one.
+export const exploreSearchSchema = z.object({
+  library: z.string().min(1).optional().catch(undefined),
+})
+
 // Deep-link-through-login target.
 export const rootSearchSchema = z.object({
   redirect: internalPath.optional(),
