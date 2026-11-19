@@ -27,11 +27,6 @@ const removed = (error) => {
 }
 
 /**
- * Files, symlinks, and folders with nothing in them (a folder with something in it comes back with
- * its contents). `previous` is the last scan by path, so unchanged files are not hashed again.
- * Returns the entries and this scan by path, for the next call.
- */
-/**
  * True when a file is the one a last look hashed. Size and mtime alone miss a file replaced by one
  * of the same size whose mtime was kept (an atomic save, `touch -r`); a replace or a write always
  * changes the inode or ctime.
@@ -45,23 +40,27 @@ export function seen(stat, hash) {
   return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino, hash, mode: stat.mode & 0o777 }
 }
 
+/**
+ * Files, symlinks and every folder, each folder with its mode: a restore makes a folder's parents
+ * with the default mode, so a folder's own mode is kept only by its own entry. `previous` is the
+ * last scan by path, so unchanged files are not hashed again. Returns the entries and this scan by
+ * path, for the next call.
+ */
 export async function scan(root, excluded, previous) {
   const files = []
   const links = []
-  const emptyDirs = []
+  const dirs = []
   const walk = async (rel) => {
     const entries = await fs.promises.readdir(path.join(root, rel), { withFileTypes: true }).catch(removed)
     if (!entries) return
-    let kept = 0
+    if (rel) dirs.push(rel)
     for (const entry of entries) {
       const child = rel ? `${rel}/${entry.name}` : entry.name
       if (!rel && excluded.has(entry.name)) continue
-      kept++
       if (entry.isSymbolicLink()) links.push(child)
       else if (entry.isDirectory()) await walk(child)
       else if (entry.isFile()) files.push(child)
     }
-    if (rel && kept === 0) emptyDirs.push(rel)
   }
   await walk('')
   const scanned = new Map()
@@ -79,7 +78,7 @@ export async function scan(root, excluded, previous) {
     const target = await fs.promises.readlink(path.join(root, rel)).catch(removed)
     if (target !== null) out.push({ path: rel, hash: '', size: 0, mode: 0o777, kind: 'symlink', target })
   }
-  for (const rel of emptyDirs) {
+  for (const rel of dirs) {
     const stat = await fs.promises.stat(path.join(root, rel)).catch(removed)
     if (stat) out.push({ path: rel, hash: '', size: 0, mode: stat.mode & 0o777, mtimeMs: Math.round(stat.mtimeMs), kind: 'dir' })
   }

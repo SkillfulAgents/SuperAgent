@@ -48,6 +48,8 @@ export function createWorkspaceService({ workspace: WORKSPACE, store: STORE, lau
       const kind = entry.kind ?? 'file'
       if (kind === 'dir') {
         await fs.promises.mkdir(abs, { recursive: true, mode: entry.mode })
+        // A folder made earlier as a file's parent has the default mode, which mkdir leaves as it is.
+        await fs.promises.chmod(abs, entry.mode)
         return
       }
       await fs.promises.mkdir(path.dirname(abs), { recursive: true })

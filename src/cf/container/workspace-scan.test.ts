@@ -24,10 +24,19 @@ async function workspace(): Promise<string> {
 }
 
 describe('scan', () => {
-  it('lists files, symlinks and empty folders, without the excluded top-level folders', async () => {
+  it('lists files, symlinks and folders, without the excluded top-level folders', async () => {
     const { entries } = await scan(await workspace(), new Set(['.bun-cache']), new Map())
 
-    expect((entries as Entry[]).map(({ path, kind }) => `${kind} ${path}`).sort()).toEqual(['dir drafts', 'file reports/q3.csv', 'symlink latest.csv'])
+    expect((entries as Entry[]).map(({ path, kind }) => `${kind} ${path}`).sort()).toEqual(['dir drafts', 'dir reports', 'file reports/q3.csv', 'symlink latest.csv'])
+  })
+
+  it('keeps the mode of a folder that has files in it', async () => {
+    const dir = await workspace()
+    await chmod(join(dir, 'reports'), 0o700)
+
+    const { entries } = await scan(dir, new Set(), new Map())
+
+    expect((entries as Array<Entry & { mode: number }>).find((entry) => entry.path === 'reports')).toMatchObject({ kind: 'dir', mode: 0o700 })
   })
 
   it('fails when a folder cannot be read, instead of listing it as empty', async () => {
