@@ -37,7 +37,7 @@ vi.mock('../agent-actor', async () => {
   container: { start: runtime.start }, inputs: { cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
     attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
-    live: async (id: string) => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: runtime.subscribed(id), openRequests: [], runtime: null }) },
+    live: async (id: string) => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: runtime.subscribed(id), openRequests: [], runtime: null, actingMessageUuid: null }) },
   messages: { findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
     subscribe: runtime.subscribe,
     // The actor's delivery: the echo with its queued flag, then the message.

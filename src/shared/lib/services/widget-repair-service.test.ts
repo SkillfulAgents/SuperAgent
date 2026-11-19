@@ -109,7 +109,7 @@ describe('openWidgetRepairSession', () => {
       effort: 'medium',
     })
     expect(mocks.subscribe).toHaveBeenCalled()
-    expect(mocks.markActive).toHaveBeenCalledWith(AGENT, 'session-new')
+    expect(mocks.markActive).toHaveBeenCalledWith(AGENT, 'session-new', undefined)
     expect(mocks.publishGlobal).toHaveBeenCalledWith({
       type: 'session_updated',
       agentSlug: AGENT,

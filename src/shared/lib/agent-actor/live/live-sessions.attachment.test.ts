@@ -471,6 +471,144 @@ describe('LiveSessions', () => {
         vi.mocked(getSessionMetadata).mockResolvedValue(null)
       }
     })
+
+    describe('the message the session acts on', () => {
+      const dana = 'message-from-dana'
+      const ben = 'message-from-ben'
+      const acting = () => sessions().actingMessageUuid(SESSION_ID)
+      const lifecycle = (uuid: string, state: string) =>
+        mockClient.emit({ type: 'command_lifecycle', command_uuid: uuid, state })
+      const settle = () => {
+        mockClient.emit({ type: 'result', subtype: 'success', is_error: false, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+        mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      }
+
+      it('is the send that started the turn until the runtime starts a queued one', () => {
+        expect(acting()).toBeNull()
+        sessions().markSending(SESSION_ID, dana)
+        expect(acting()).toBe(dana)
+
+        expect(sessions().markSending(SESSION_ID, ben).queued).toBe(true)
+        lifecycle(ben, 'queued')
+        expect(acting()).toBe(dana)
+        lifecycle(ben, 'started')
+        expect(acting()).toBe(ben)
+      })
+
+      it('takes a queued message whose start frame was missed once it completes', () => {
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben)
+        lifecycle(ben, 'completed')
+        expect(acting()).toBe(ben)
+      })
+
+      it('ignores a start for a message this host did not send, or one the runtime discarded', () => {
+        sessions().markSending(SESSION_ID, dana)
+        lifecycle('message-never-sent', 'started')
+        expect(acting()).toBe(dana)
+
+        sessions().markSending(SESSION_ID, ben)
+        lifecycle(ben, 'discarded')
+        lifecycle(ben, 'started')
+        expect(acting()).toBe(dana)
+      })
+
+      it('is not a message that did not go', () => {
+        sessions().markSending(SESSION_ID, dana).rollback()
+        expect(acting()).toBeNull()
+
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben).rollback()
+        lifecycle(ben, 'started')
+        expect(acting()).toBe(dana)
+      })
+
+      it('is not a starting send that did not go after the runtime started a turn of its own', () => {
+        const mark = sessions().markSending(SESSION_ID, dana)
+        mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+        mark.rollback()
+        expect(sessions().isActive(SESSION_ID)).toBe(true)
+        expect(acting()).toBeNull()
+      })
+
+      it('waits for the start of a send the runtime queued after all', () => {
+        sessions().markSending(SESSION_ID, dana)
+        lifecycle(dana, 'queued')
+        expect(acting()).toBeNull()
+        lifecycle(dana, 'started')
+        expect(acting()).toBe(dana)
+      })
+
+      it('is none once the session settles, and for a turn the runtime starts itself', () => {
+        sessions().markSending(SESSION_ID, dana)
+        settle()
+        expect(sessions().isActive(SESSION_ID)).toBe(false)
+        expect(acting()).toBeNull()
+
+        // A background task's wake: no send started this turn.
+        mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+        expect(sessions().isActive(SESSION_ID)).toBe(true)
+        expect(acting()).toBeNull()
+        // A replayed start of the settled turn's message does not bring it back.
+        lifecycle(dana, 'started')
+        expect(acting()).toBeNull()
+      })
+
+      it('is not a queued message that went with its lost runtime', async () => {
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben)
+        sessions().markAllInactive()
+
+        await sessions().subscribe(SESSION_ID, mockClient, SESSION_ID)
+        mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+        lifecycle(ben, 'started')
+        expect(acting()).toBeNull()
+      })
+
+      it('takes a message held while the runtime recovers once the runtime starts it', () => {
+        sessions().markSending(SESSION_ID, dana)
+        expect(sessions().claimMidTurnForRecovery()).toEqual([SESSION_ID])
+        expect(sessions().coalesceIfRecovering(SESSION_ID, { uuid: ben, text: 'also releases' })).toBe(true)
+        expect(acting()).toBe(dana)
+        lifecycle(ben, 'started')
+        expect(acting()).toBe(ben)
+      })
+
+      it('ignores a replayed queued or started frame for a message that already started', () => {
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben)
+        sessions().markSending(SESSION_ID, 'message-from-carol')
+        lifecycle(ben, 'started')
+        lifecycle(ben, 'queued')
+        lifecycle(dana, 'started')
+        expect(acting()).toBe(ben)
+      })
+
+      it('is none for a turn started without a message after the session settled', () => {
+        sessions().markSending(SESSION_ID, dana)
+        settle()
+        sessions().markActive(SESSION_ID)
+        expect(acting()).toBeNull()
+      })
+
+      it('carries over a reattach of the stream', async () => {
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben)
+        sessions().detach(SESSION_ID)
+        await sessions().subscribe(SESSION_ID, mockClient, SESSION_ID)
+        expect(acting()).toBe(dana)
+        lifecycle(ben, 'started')
+        expect(acting()).toBe(ben)
+      })
+
+      it('is the first message of a started session once its stream attaches', async () => {
+        // As `sessions.start` does: the create started the turn, then the stream attaches.
+        sessions().markActive('started-session', dana)
+        await sessions().subscribe('started-session', createStreamClient(), 'started-session')
+        expect(sessions().actingMessageUuid('started-session')).toBe(dana)
+        sessions().unsubscribe('started-session')
+      })
+    })
   })
 
   // ============================================================================

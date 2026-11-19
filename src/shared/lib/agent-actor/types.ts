@@ -549,6 +549,8 @@ export interface SessionLiveState {
   openRequests: PendingUserInputRequest[]
   /** What `recordRuntime` last recorded for it. */
   runtime: SessionModelRuntime | null
+  /** The uuid of the message the session acts on (`LiveSession.actingMessageUuid`). Null while idle or unknown. */
+  actingMessageUuid: string | null
 }
 
 /** A tool call the transcript shows with no result (`sessions.reconcileTranscript`). */
