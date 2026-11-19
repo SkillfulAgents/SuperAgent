@@ -1196,15 +1196,8 @@ export async function updateSkillFromSkillset(
 ): Promise<{ updated: boolean }> {
   sanitizeDirName(skillDirName)
 
-  const metaContent = await readWorkspaceText(agentFiles(agentSlug), getSkillMetadataPath(skillDirName))
-  if (!metaContent) {
-    return { updated: false }
-  }
-
-  let meta: InstalledSkillMetadata
-  try {
-    meta = JSON.parse(metaContent)
-  } catch {
+  const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
+  if (!meta) {
     return { updated: false }
   }
 
