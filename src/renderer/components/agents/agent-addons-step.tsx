@@ -14,6 +14,7 @@ import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrat
 import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
 import type { IntegrationSetupProvider } from '@renderer/components/agent-integrations/setup-types'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
+import { isPublicDreamSkill } from '@renderer/lib/dream-skill'
 
 export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
   header: ReactNode
@@ -35,7 +36,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
   const [changingSkill, setChangingSkill] = useState(false)
 
   const dream = discoverable.data?.find(s => s.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && s.path === 'skills/dream/SKILL.md')
-  const installed = skills.data?.find(s => s.status.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && s.name.toLowerCase() === 'dream')
+  const installed = skills.data?.find(isPublicDreamSkill)
   const busy = changingSkill || updatePreferences.isPending || access.isChanging(agentSlug)
   useEffect(() => {
     onBusyChange(busy)
@@ -75,7 +76,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
                 onChange={autoMemoryEnabled => updatePreferences.mutate({ autoMemoryEnabled })} />
               <Row icon={<Brain />} title="Team Brain" description="Reads the shared drive and can message Team Brain."
                 checked={access.everyAgent || access.isOn(agentSlug)} disabled={access.isChanging(agentSlug) || !access.ready}
-                reason={!brain ? 'Set up Team Brain in this workspace first.' : access.everyAgent ? 'This workspace shares Team Brain with every agent.' : undefined}
+                reason={!brain ? 'Set up Team Brain in this workspace first.' : access.everyAgent ? 'Team Brain is enabled by default for all agents in this workspace.' : undefined}
                 onChange={on => access.toggle(agentSlug, on)} />
             </Section>
             <Section title="Channels">
@@ -122,14 +123,27 @@ function Row({ title, description, icon, checked, onChange, disabled, reason }: 
   onChange: (on: boolean) => void; disabled?: boolean; reason?: string
 }) {
   const id = useId()
+  const [showReason, setShowReason] = useState(false)
+  const inactive = !!reason || disabled
   const row = <label htmlFor={id}
-    className={`flex items-center gap-3 px-4 py-3 ${reason || disabled ? 'opacity-50' : 'cursor-pointer'}`}>
+    className={`flex items-center gap-3 px-4 py-3 ${inactive ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
     <Icon>{icon}</Icon>
     <span className="min-w-0 flex-1">
       <span className="block text-sm font-medium">{title}</span>
       <span className="block text-xs text-muted-foreground">{description}</span>
     </span>
-    <Switch id={id} aria-label={title} checked={checked} onCheckedChange={reason ? undefined : onChange} aria-disabled={!!reason || disabled} disabled={!reason && disabled} />
+    {reason && checked && <span aria-hidden className="text-sm font-medium">On</span>}
+    <Switch id={id} aria-label={title} checked={checked} onCheckedChange={onChange} disabled={inactive}
+      className="disabled:pointer-events-none disabled:opacity-100" />
   </label>
-  return reason ? <Tooltip><TooltipTrigger asChild>{row}</TooltipTrigger><TooltipContent>{reason}</TooltipContent></Tooltip> : row
+  if (!reason) return row
+  return <div className="relative">
+    {row}
+    <Tooltip open={showReason} onOpenChange={setShowReason}>
+      <TooltipTrigger type="button" aria-label={`Why ${title} is ${checked ? 'on' : 'unavailable'}`}
+        onClick={event => { event.preventDefault(); setShowReason(true) }}
+        className="absolute inset-0 cursor-help rounded-item outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" />
+      <TooltipContent>{reason}</TooltipContent>
+    </Tooltip>
+  </div>
 }

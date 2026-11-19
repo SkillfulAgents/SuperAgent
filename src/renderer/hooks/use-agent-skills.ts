@@ -2,19 +2,17 @@ import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { downloadBlob } from '@renderer/lib/download'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { queryOptions, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillWithStatus, ApiDiscoverableSkill } from '@shared/lib/types/api'
 import { SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 
 const AUTO_REFRESH_DEBOUNCE_MS = 10_000
 const agentSkillAutoRefreshAt = new Map<string, number>()
 
-export function useAgentSkills(agentSlug: string | null) {
-  const queryClient = useQueryClient()
-
-  const query = useQuery<ApiSkillWithStatus[]>({
+export function agentSkillsQuery(agentSlug: string | null) {
+  return queryOptions({
     queryKey: ['agent-skills', agentSlug],
-    queryFn: async () => {
+    queryFn: async (): Promise<ApiSkillWithStatus[]> => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/skills`)
       if (!res.ok) throw new Error('Failed to fetch skills')
       const data = await res.json()
@@ -22,6 +20,11 @@ export function useAgentSkills(agentSlug: string | null) {
     },
     enabled: !!agentSlug,
   })
+}
+
+export function useAgentSkills(agentSlug: string | null) {
+  const queryClient = useQueryClient()
+  const query = useQuery(agentSkillsQuery(agentSlug))
 
   const lastSlugRef = useRef<string | null>(null)
   useEffect(() => {

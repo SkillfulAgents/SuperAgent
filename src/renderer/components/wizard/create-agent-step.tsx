@@ -237,7 +237,7 @@ export function CreateAgentChrome({ children, footer, onClose, 'data-testid': te
             {children}
           </div>
         </div>
-        <div className={`flex items-center gap-2 pb-10 w-full mx-auto ${AGENT_STEP_MAX_WIDTH}`}>
+        <div className={`flex items-center gap-2 pb-10 max-sm:py-6 w-full mx-auto ${AGENT_STEP_MAX_WIDTH}`}>
           {footer}
         </div>
       </div>

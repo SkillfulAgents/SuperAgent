@@ -6,7 +6,7 @@ import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-p
 import { AgentAddonsStep } from './agent-addons-step'
 
 const dream = { name: 'dream', path: 'skills/dream/SKILL.md', version: '0.1.0', skillsetId: DEFAULT_PUBLIC_SKILLSET.id }
-const state = { skills: [dream], brain: true }
+const state = { skills: [dream], brain: true, everyAgent: false }
 const install = vi.fn()
 const toggle = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.brain ? [{ slug: 'brain', teamBrain: { volumeId: 'drive' } }] : [] }) }))
@@ -21,7 +21,7 @@ vi.mock('@renderer/hooks/use-agent-preferences', () => ({
   useUpdateAgentPreferences: () => ({ mutate: vi.fn() }),
 }))
 vi.mock('@renderer/hooks/use-team-brain-access', () => ({
-  useTeamBrainAccess: () => ({ isOn: () => false, isChanging: () => false, ready: true, everyAgent: false, toggle }),
+  useTeamBrainAccess: () => ({ isOn: () => false, isChanging: () => false, ready: true, everyAgent: state.everyAgent, toggle }),
 }))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrations: () => ({ data: [] }),
@@ -35,6 +35,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   state.skills = [dream]
   state.brain = true
+  state.everyAgent = false
 })
 it('installs the public Dream skill and grants Team Brain to the confirmed agent', async () => {
   show()
@@ -49,19 +50,35 @@ it('explains unavailable add-ons, including a same-named skill from another set'
   show()
   const skill = screen.getByRole('switch', { name: 'Self-Improvement' })
   const brain = screen.getByRole('switch', { name: 'Team Brain' })
-  expect(skill).toHaveAttribute('aria-disabled', 'true')
-  expect(brain).toHaveAttribute('aria-disabled', 'true')
+  expect(skill).toBeDisabled()
+  expect(brain).toBeDisabled()
   const user = userEvent.setup()
   await user.tab()
-  expect(skill).toHaveFocus()
+  expect(screen.getByRole('button', { name: 'Why Self-Improvement is unavailable' })).toHaveFocus()
   expect(await screen.findByRole('tooltip')).toHaveTextContent('Gamut Public Skillset')
   await user.tab()
   await user.tab()
-  expect(brain).toHaveFocus()
+  expect(screen.getByRole('button', { name: 'Why Team Brain is unavailable' })).toHaveFocus()
   await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('Set up Team Brain'))
-  await userEvent.click(skill)
+  await user.click(screen.getByText('Self-Improvement'))
   expect(install).not.toHaveBeenCalled()
   expect(screen.queryByText('Proactivity')).toBeNull()
+})
+it('shows Team Brain as locked on when the workspace enables it for every agent', async () => {
+  state.everyAgent = true
+  show()
+  const brain = screen.getByRole('switch', { name: 'Team Brain' })
+  expect(brain).toBeChecked()
+  expect(brain).toBeDisabled()
+  expect(screen.getByText('On')).toBeVisible()
+  const user = userEvent.setup()
+  const explanation = screen.getByRole('button', { name: 'Why Team Brain is on' })
+  await user.hover(explanation)
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Team Brain is enabled by default for all agents in this workspace.')
+  await user.click(explanation)
+  await user.keyboard(' ')
+  expect(brain).toBeChecked()
+  expect(toggle).not.toHaveBeenCalled()
 })
 it.each([['Inbox', 'platform-email'], ['Slack', 'slack']])('opens the existing %s setup', async (label, provider) => {
   show()

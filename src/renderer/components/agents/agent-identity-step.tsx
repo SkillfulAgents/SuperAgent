@@ -97,7 +97,7 @@ export function AgentIdentityStep({ title, value, onChange, onContinue, onChoose
         </div>
 
         {onChooseSource && (
-          <div className="flex flex-wrap gap-3">
+          <div className="grid gap-3 max-sm:[&>button]:min-h-11 sm:flex sm:flex-wrap">
             <OptionCard title="Browse Templates" icon={<Shapes className="h-4 w-4" />} onClick={() => onChooseSource(false)} />
             <OptionCard title="Import an Agent" icon={<ArrowDownToLine className="h-4 w-4" />} onClick={() => onChooseSource(true)} />
           </div>

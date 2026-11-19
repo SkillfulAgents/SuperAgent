@@ -234,7 +234,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
         </div>
 
         {/* Navigation buttons — hidden on welcome page */}
-        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? AGENT_STEP_MAX_WIDTH : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
+        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? `${AGENT_STEP_MAX_WIDTH} max-sm:py-6` : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
           {!welcomePath ? (
             <div />
           ) : (

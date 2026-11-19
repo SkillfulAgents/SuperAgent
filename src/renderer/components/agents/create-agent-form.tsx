@@ -13,6 +13,9 @@ import { useCreateAgent, useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useCreateAgentForPrompt } from '@renderer/hooks/use-create-agent-for-prompt'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
+import { agentSkillsQuery } from '@renderer/hooks/use-agent-skills'
+import { DREAM_SETUP_PROMPT, isPublicDreamSkill } from '@renderer/lib/dream-skill'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { seedPendingSessionMessage } from '@renderer/context/pending-session-seed'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
@@ -147,6 +150,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
   const createAgentForPrompt = useCreateAgentForPrompt()
   const deleteAgent = useDeleteAgent()
   const createSession = useCreateSession()
+  const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
@@ -290,22 +294,24 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
         // failures. Once the API has accepted the initial message, the composer
         // must clear even if the wizard's follow-up persistence fails; otherwise
         // retrying creates a duplicate agent and session.
-        const { newAgent, session } = await (async () => {
+        const { newAgent, session, initialMessage } = await (async () => {
           try {
             if (namedFlow && !existingAgent) throw new Error('Your agent is still being saved.')
             const warmSlug = namedFlow ? null : await awaitWarmStartRef.current()
             const newAgent = existingAgent ?? await createAgentForPrompt(content, warmSlug)
             if (warmSlug) warmConsumedRef.current = true
+            const installedSkills = existingAgent ? await queryClient.fetchQuery(agentSkillsQuery(existingAgent.slug)) : []
+            const initialMessage = installedSkills.some(isPublicDreamSkill) ? `${content}\n\n${DREAM_SETUP_PROMPT}` : content
             const session = await createSession.mutateAsync({
               agentSlug: newAgent.slug,
-              message: content,
+              message: initialMessage,
               ...composerOptions.toRuntimeOptions(),
               // An untouched model is omitted from the runtime options, but a brand
               // new agent has no stored default for the server to resolve against —
               // always send what the picker is showing.
               model: composerOptions.model ?? composerOptions.defaultModel,
             })
-            return { newAgent, session }
+            return { newAgent, session, initialMessage }
           } catch (error) {
             console.error('Failed to create agent:', error)
             toast.error('Failed to create agent', {
@@ -319,7 +325,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
 
         seedPendingSessionMessage(
           session.id,
-          content,
+          initialMessage,
           session.initialMessageUuid,
         )
         if (!existingAgent) track('agent_created', { source: 'new', ...(surface ? { surface } : {}), num_skills_added_at_creation: 0 })
@@ -335,7 +341,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgentForPrompt, namedFlow, existingAgent, createSession, navigate, track, surface, onAgentCreated, composerOptions]),
+    }, [createAgentForPrompt, namedFlow, existingAgent, queryClient, createSession, navigate, track, surface, onAgentCreated, composerOptions]),
   })
 
   useEffect(() => { onPromptChange?.(composer.message) }, [composer.message, onPromptChange])
