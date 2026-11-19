@@ -809,6 +809,35 @@ describe('SavedWorkspace reading a link while its agent sleeps', () => {
   })
 })
 
+describe('AgentDurableObject agent name', () => {
+  const kv = () => {
+    const values = new Map<string, unknown>()
+    return { get: (key: string) => values.get(key), put: (key: string, value: unknown) => void values.set(key, value), delete: (key: string) => values.delete(key) }
+  }
+  const objectWith = (id: { name?: string; toString(): string }, store: ReturnType<typeof kv>) => {
+    const object = Object.create(AgentDurableObject.prototype) as Record<string, unknown>
+    Object.assign(object, { ctx: { id, storage: { kv: store } } })
+    return object as unknown as { agentSlug(): string; agentName(): string }
+  }
+
+  it('keeps the name it was first reached by, for a later instance reached by id', () => {
+    const store = kv()
+    const named = { name: 'sales', toString: () => '92fe3b64fead0000' }
+    // What the constructor does for an instance reached by name.
+    if (named.name) store.put('agent-name', named.name)
+    expect(objectWith(named, store).agentSlug()).toBe('sales')
+
+    const byId = { toString: () => '92fe3b64fead0000' }
+    expect(objectWith(byId, store).agentSlug()).toBe('sales')
+  })
+
+  it('refuses to act for an agent when it was only ever reached by id', () => {
+    const byId = { toString: () => '92fe3b64fead0000' }
+    expect(() => objectWith(byId, kv()).agentSlug()).toThrow(/reached by id/)
+    expect(objectWith(byId, kv()).agentName()).toBe('92fe3b64')
+  })
+})
+
 // The shared contract over the real file ops, object and saved workspace of a sleeping agent.
 describeFileOpsContract('Cloudflare file ops while the agent sleeps', () => {
   const { object } = runningAgent(false)

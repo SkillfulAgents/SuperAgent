@@ -51,6 +51,8 @@ const STATE_TRIES = 3
 const STATE_RETRY_MS = 200
 // The runtime stops the container once this object has been quiet this long; SuperAgent's own idle check sleeps the agent sooner.
 const INACTIVITY_TIMEOUT_MS = 30 * 60_000
+// The agent's slug, kept in storage: an instance reached by id (a container's call) has no name of its own.
+const AGENT_NAME_KEY = 'agent-name'
 // A sleeping agent as its actor reports it: a stopped container, and nothing running or waiting.
 const ASLEEP_LIVE: AgentLiveSummary = {
   container: { status: 'stopped', port: null, healthWarnings: [], stale: false, idleSince: null },
@@ -174,6 +176,7 @@ export class AgentDurableObject extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, nearStorage(env))
     this.workspace = new SavedWorkspace(ctx.storage, env.WORKSPACES, ctx.id.toString())
+    if (ctx.id.name && ctx.storage.kv.get(AGENT_NAME_KEY) !== ctx.id.name) ctx.storage.kv.put(AGENT_NAME_KEY, ctx.id.name)
     // Held bytes a stopped object left behind go to R2 now.
     if (this.workspace.hasHeldBytes()) this.settleLater([])
     // The container outlives this object's memory: a restarted object routes its calls and watches it again.
@@ -189,7 +192,7 @@ export class AgentDurableObject extends DurableObject<Env> {
 
   /** SuperAgent's idle check for this agent (checkIdle in boot.ts): sleeps it if idle, else schedules the next check. */
   async checkIdle(): Promise<void> {
-    const slug = this.agentName()
+    const slug = this.agentSlug()
     let next: number | null
     try {
       next = await runAsAgentObject(slug, this, async () => {
@@ -232,7 +235,7 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   private runActorCall(path: string, args: unknown[], actingUserId?: string): Promise<ActorOutcome> {
-    const slug = this.agentName()
+    const slug = this.agentSlug()
     if (path === 'listing' && this.asleepAndNotBooted()) {
       return this.sleepingListing(slug).then((value) => ({ value }), (error: unknown) => {
         console.error(`[AgentDurableObject ${slug}] listing the sleeping agent without its actor failed:`, error)
@@ -305,7 +308,7 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   private async syncStatusNow(): Promise<void> {
-    const slug = this.agentName()
+    const slug = this.agentSlug()
     try {
       await runAsAgentObject(slug, this, async () => {
         const app = await import('../boot')
@@ -747,8 +750,20 @@ export class AgentDurableObject extends DurableObject<Env> {
     return turn
   }
 
+  /**
+   * The agent this object runs. A call by id (idFromString: the container's calls) carries no name,
+   * so the name the object was first reached by is kept. Without it the object refuses rather than
+   * act as some other agent.
+   */
+  private agentSlug(): string {
+    const name = this.ctx.id.name ?? this.ctx.storage.kv.get<string>(AGENT_NAME_KEY)
+    if (!name) throw new Error(`Agent object ${this.ctx.id.toString().slice(0, 12)} was reached by id before it was ever reached by its agent's name`)
+    return name
+  }
+
+  /** For logs only: the agent, or the object's id when no name is known. */
   private agentName(): string {
-    return this.ctx.id.name ?? this.ctx.id.toString().slice(0, 8)
+    return this.ctx.id.name ?? this.ctx.storage?.kv.get<string>(AGENT_NAME_KEY) ?? this.ctx.id.toString().slice(0, 8)
   }
 }
 
