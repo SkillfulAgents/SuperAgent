@@ -1,13 +1,45 @@
-import { and, asc, eq, inArray, isNotNull, min } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, min, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
-import { messageAuthor } from '@shared/lib/db/schema'
-import { getUserSummaries } from '@shared/lib/services/user-profile-service'
+import { messageAuthor, user } from '@shared/lib/db/schema'
+import { toUserProfile, userProfileFields } from '@shared/lib/services/user-profile-service'
 
-/** Session ids per statement at most, on a driver with SQLite's own bound-parameter limit. */
-const MAX_SESSION_IDS_PER_STATEMENT = 500
+/**
+ * The most session ids sent with the statement: a bounded list (`?limit=`, at
+ * most SESSIONS_LIST_MAX_LIMIT) fits. A longer one is the agent's whole session
+ * list, which is not sent at all: the agent's rows are read and matched here.
+ */
+const MAX_SESSION_IDS_IN_STATEMENT = 100
 
-export type SessionParticipant = Awaited<ReturnType<typeof getUserSummaries>> extends Map<string, infer P> ? P : never
+export type SessionParticipant = ReturnType<typeof toUserProfile>
+
+/** Exported for tests of the statement's shape. */
+export function sessionParticipantsQuery(agentSlug: string, ids: ReadonlySet<string>) {
+  // One statement and at most two bound parameters however many sessions there
+  // are (Cloudflare D1 allows 100 per statement): the ids travel as one JSON
+  // array read with `json_each`, as in message-author-annotation-service.ts.
+  const named = ids.size <= MAX_SESSION_IDS_IN_STATEMENT
+  // Grouped before the join, so a user is looked up once per session they
+  // wrote in, not once per message.
+  const wrote = db
+    .select({
+      sessionId: messageAuthor.sessionId,
+      userId: messageAuthor.userId,
+      firstAt: min(messageAuthor.createdAt).as('first_at'),
+    })
+    .from(messageAuthor)
+    .where(and(
+      eq(messageAuthor.agentSlug, agentSlug),
+      named ? inArray(messageAuthor.sessionId, sql`(select value from json_each(${JSON.stringify([...ids])}))`) : undefined,
+      isNotNull(messageAuthor.userId),
+    ))
+    .groupBy(messageAuthor.sessionId, messageAuthor.userId)
+    .as('wrote')
+  return db
+    .select({ sessionId: wrote.sessionId, ...userProfileFields() })
+    .from(wrote)
+    .innerJoin(user, eq(user.id, wrote.userId))
+    .orderBy(asc(wrote.firstAt), asc(wrote.userId))
+}
 
 /**
  * The people who wrote in each session, in the order they first did. Read from
@@ -19,35 +51,20 @@ export async function getSessionParticipants(
   agentSlug: string,
   sessionIds: readonly string[],
 ): Promise<Map<string, SessionParticipant[]>> {
-  const ids = [...new Set(sessionIds)]
-  const rows: { sessionId: string; userId: string }[] = []
-  // The agent's slug is the one other parameter.
-  const perStatement = Math.min(MAX_SESSION_IDS_PER_STATEMENT, maxBoundParameters() - 1)
-  for (let i = 0; i < ids.length; i += perStatement) {
-    const chunk = ids.slice(i, i + perStatement)
-    const firstAt = min(messageAuthor.createdAt)
-    const found = await db
-      .select({ sessionId: messageAuthor.sessionId, userId: messageAuthor.userId, firstAt })
-      .from(messageAuthor)
-      .where(and(
-        eq(messageAuthor.agentSlug, agentSlug),
-        inArray(messageAuthor.sessionId, chunk),
-        isNotNull(messageAuthor.userId),
-      ))
-      .groupBy(messageAuthor.sessionId, messageAuthor.userId)
-      .orderBy(asc(firstAt), asc(messageAuthor.userId))
-      .all()
-    for (const row of found) if (row.userId) rows.push({ sessionId: row.sessionId, userId: row.userId })
-  }
+  const ids = new Set(sessionIds)
+  if (ids.size === 0) return new Map()
+  const rows = await sessionParticipantsQuery(agentSlug, ids).all()
 
-  const profiles = await getUserSummaries(rows.map(row => row.userId))
   const bySession = new Map<string, SessionParticipant[]>()
+  const profiles = new Map<string, SessionParticipant>()
   for (const row of rows) {
-    const profile = profiles.get(row.userId)
-    if (!profile) continue
-    const list = bySession.get(row.sessionId)
+    const { sessionId } = row
+    if (!ids.has(sessionId)) continue
+    let profile = profiles.get(row.id)
+    if (!profile) profiles.set(row.id, profile = toUserProfile(row))
+    const list = bySession.get(sessionId)
     if (list) list.push(profile)
-    else bySession.set(row.sessionId, [profile])
+    else bySession.set(sessionId, [profile])
   }
   return bySession
 }
