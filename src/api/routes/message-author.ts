@@ -1,34 +1,14 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 
-type AuthorRow = Pick<typeof messageAuthor.$inferInsert, 'id' | 'sessionId' | 'agentSlug' | 'userId' | 'integrationId' | 'display'>
+type AuthorRow = Pick<typeof messageAuthor.$inferInsert, 'id' | 'sessionId' | 'agentSlug' | 'userId' | 'authorAgentSlug' | 'billedUserId'>
 
 /**
- * Record who authored a user message: a person (auth mode) or an integration
- * (its card rides along). Best-effort: a stale userId
- * whose user row is gone throws on the FK; the session stays usable and only
- * the sender badge is lost.
+ * Record a person or calling agent before delivery. A failed write leaves
+ * the message usable without a sender badge.
  */
 export async function insertMessageAuthorBestEffort(params: AuthorRow): Promise<boolean> {
-  return insertOne(params)
-}
-
-export async function insertMessageAuthorsBestEffort(rows: AuthorRow[]): Promise<boolean> {
-  if (rows.length === 0) return true
-  try {
-    await db.insert(messageAuthor).values(rows)
-    return true
-  } catch {
-    let any = false
-    for (const row of rows) {
-      if (await insertOne(row)) any = true
-    }
-    return any
-  }
-}
-
-async function insertOne(params: AuthorRow): Promise<boolean> {
   try {
     await db.insert(messageAuthor).values(params)
     return true
@@ -44,9 +24,11 @@ async function insertOne(params: AuthorRow): Promise<boolean> {
 }
 
 /** Remove the attribution of a message that never reached the agent. Best-effort. */
-export async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
+export async function deleteMessageAuthorBestEffort(agentSlug: string, sessionId: string, messageUuid: string): Promise<void> {
   try {
-    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
+    await db.delete(messageAuthor).where(and(
+      eq(messageAuthor.agentSlug, agentSlug), eq(messageAuthor.sessionId, sessionId), eq(messageAuthor.id, messageUuid),
+    ))
   } catch (error) {
     console.warn('failed to remove the attribution of an undelivered message', {
       messageUuid,

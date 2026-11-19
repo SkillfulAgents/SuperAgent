@@ -81,6 +81,7 @@ import {
   listAvailableChatProvidersDef,
   listAgentIntegrationsDef,
   addChatIntegrationDef,
+  authorizeAgentIntegrationDef,
   sendChatMessageDef,
 } from './chat-tools/definition'
 
@@ -163,12 +164,15 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__agents__download_agent_file': downloadAgentFileDef,
 
   // MCP tools - chat integrations
-  'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
+  'mcp__chat__list_available_integration_providers': listAvailableChatProvidersDef,
   'mcp__chat__list_agent_integrations': listAgentIntegrationsDef,
-  // Historical transcripts retain the original tool name.
+  'mcp__chat__add_agent_integration': addChatIntegrationDef,
+  'mcp__chat__authorize_agent_integration': authorizeAgentIntegrationDef,
+  'mcp__chat__send_chat_message': sendChatMessageDef,
+  // Historical transcripts retain the original tool names.
+  'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
   'mcp__chat__list_chat_integrations': listAgentIntegrationsDef,
   'mcp__chat__add_chat_integration': addChatIntegrationDef,
-  'mcp__chat__send_chat_message': sendChatMessageDef,
 }
 
 export function getToolDefinition(toolName: string): ToolDefinition | undefined {

@@ -395,6 +395,7 @@ const mockDbSelectFrom = vi.fn()
 const mockDbInsertValues = vi.fn()
 const mockDbDeleteWhere = vi.fn()
 const mockDbUpdateSet = vi.fn()
+const mockDbRun = vi.fn()
 
 const mockDbOnConflictDoUpdate = vi.fn()
 const mockDbOnConflictDoNothing = vi.fn()
@@ -402,6 +403,7 @@ const mockDbInsertTable = vi.fn()
 
 vi.mock('@shared/lib/db', () => ({
   db: {
+    run: (...args: unknown[]) => mockDbRun(...args),
     select: (...args: unknown[]) => ({ from: (...fargs: unknown[]) => mockDbSelectFrom(...args, ...fargs) }),
     insert: (...iargs: unknown[]) => {
       mockDbInsertTable(...iargs)
@@ -435,7 +437,8 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpToolPolicies: { mcpId: 'mcp_id', toolName: 'tool_name' },
 }))
 
-vi.mock('drizzle-orm', () => ({
+vi.mock('drizzle-orm', async (importOriginal) => ({
+  sql: (await importOriginal<typeof import('drizzle-orm')>()).sql,
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
   inArray: (col: string, vals: string[]) => ({ col, vals }),
@@ -467,7 +470,6 @@ const mockInsertAuthor = vi.fn().mockResolvedValue(true)
 const mockDeleteAuthor = vi.fn().mockResolvedValue(undefined)
 vi.mock('./message-author', () => ({
   insertMessageAuthorBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
-  insertMessageAuthorsBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
   deleteMessageAuthorBestEffort: (...a: unknown[]) => mockDeleteAuthor(...a),
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
@@ -4861,7 +4863,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       // Nothing it wrote is left: another member's connection is refused in
       // the delivery's turn, and the attribution row goes with it.
       const recorded = mockDbInsertValues.mock.calls.map(([row]) => (row as { id: string }).id)
-      expect(mockDeleteAuthor.mock.calls.map(([id]) => id)).toEqual(recorded)
+      expect(mockDeleteAuthor.mock.calls).toEqual(recorded.map(id => ['test-agent', 'sess-1', id]))
     } finally {
       lookup.mockRestore()
     }
@@ -11347,11 +11349,9 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
       yield { type: 'user', uuid: 'new-u1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' } }
       yield { type: 'assistant', uuid: 'new-a1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-a1' } }
     })
-    mockDbSelectFrom.mockReturnValue({ where: () => Promise.resolve([{ id: 'old-u1', userId: 'user-9' }]) })
     const res = await fork()
     expect(res.status).toBe(201)
-    expect(mockInsertAuthor).toHaveBeenCalledWith([{ id: 'new-u1', sessionId: 'fork-1', agentSlug: 'test-agent', userId: 'user-9' }])
-    expect(mockInsertAuthor).toHaveBeenCalledTimes(1)
+    expect(mockDbRun).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -299,6 +299,12 @@ export interface JsonlFileHistoryEntry {
  */
 export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
 
+/** The CLI persists a mid-turn user prompt as a queued command attachment. */
+export function isQueuedUserPrompt(entry: JsonlEntry): entry is JsonlAttachmentEntry & { attachment: { prompt: string | ContentBlock[] } } {
+  return entry.type === 'attachment' && entry.attachment?.type === 'queued_command' &&
+    entry.attachment.commandMode === 'prompt' && !entry.attachment.isMeta && entry.attachment.prompt !== undefined
+}
+
 // ============================================================================
 // Session activity (working-indicator projection)
 // ============================================================================

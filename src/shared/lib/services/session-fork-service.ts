@@ -8,14 +8,13 @@
  * import graph.
  */
 
-import { and, eq, inArray } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { AgentActor } from '@shared/lib/agent-actor'
 import { ContainerNotFoundError } from '@shared/lib/container/types'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
-import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { SessionForkFailedError } from '@shared/lib/agent-runtime-errors/session-fork-failed/session-fork-failed-error'
 
@@ -132,11 +131,9 @@ export async function forkSession(
 }
 
 /**
- * The SDK fork remaps every user message uuid and stamps `forkedFrom.messageUuid`
- * (the old uuid) on each line. Author rows — people (auth mode) and integrations
- * (every mode) — are keyed by uuid, so re-key the source's rows onto the fork's
- * user messages. A message queued mid-turn keeps its uuid in the fork, and a
- * uuid keys one row, so a forked queued integration message shows as text.
+ * Copy only this recipient's source rows. A queued prompt can keep its ID in
+ * both sessions. An integration delivery ID is globally unique for retries,
+ * so a queued integration card stays with its original delivery.
  */
 async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string, opts: { authors: boolean }): Promise<void> {
   const slug = actor.slug
@@ -144,15 +141,13 @@ async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: s
   const pairs = await actor.messages.forkedUserUuids(newId)
   if (pairs.length === 0) return
 
-  const rows = await db
-    .select({ id: messageAuthor.id, userId: messageAuthor.userId, integrationId: messageAuthor.integrationId, display: messageAuthor.display })
-    .from(messageAuthor)
-    .where(and(eq(messageAuthor.sessionId, sourceId), inArray(messageAuthor.id, pairs.map((p) => p.oldUuid))))
-  const byOld = new Map(rows.map((r) => [r.id, r]))
-  await insertMessageAuthorsBestEffort(
-    pairs.flatMap(({ newUuid, oldUuid }) => {
-      const row = byOld.get(oldUuid)
-      return row ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId: row.userId, integrationId: row.integrationId, display: row.display }] : []
-    }),
-  )
+  await db.run(sql`
+    INSERT INTO ${messageAuthor} (agent_slug, session_id, id, user_id, author_agent_slug, billed_user_id, integration_id, display, created_at)
+    SELECT source.agent_slug, ${newId}, json_extract(pair.value, '$.newUuid'),
+           source.user_id, source.author_agent_slug, source.billed_user_id, source.integration_id, source.display, source.created_at
+    FROM json_each(${JSON.stringify(pairs)}) AS pair
+    JOIN ${messageAuthor} AS source ON source.id = json_extract(pair.value, '$.oldUuid')
+    WHERE source.agent_slug = ${slug} AND source.session_id = ${sourceId}
+    ON CONFLICT DO NOTHING
+  `)
 }

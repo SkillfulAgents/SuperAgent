@@ -9,7 +9,7 @@ import { recallConfigSchema } from './config'
  * (the x-agent meetings route does, when asked to join a call).
  */
 export const recallSetup: IntegrationProviderSetup = {
-  allowAgentCreation: true,
+  agentGuide: 'Nothing to set up: joining a meeting with join_meeting creates this integration when the agent has none.',
   async prepare(input) {
     return { config: recallConfigSchema.parse(input ?? {}) }
   },

@@ -1006,7 +1006,9 @@ describe('/invoke', () => {
       expect.objectContaining({
         id: createArgs.initialMessageUuid,
         agentSlug: TARGET_SLUG,
-        userId: OTHER_USER_ID,
+        userId: null,
+        authorAgentSlug: CALLER_SLUG,
+        billedUserId: OTHER_USER_ID,
       }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
@@ -1040,7 +1042,7 @@ describe('/invoke', () => {
       .from(schema.messageAuthor)
       .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
     expect(targetAuthors).toEqual([
-      expect.objectContaining({ userId: OTHER_USER_ID }),
+      expect.objectContaining({ userId: null, billedUserId: OTHER_USER_ID }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
       expect.objectContaining({ slug: TARGET_SLUG }),
@@ -1067,7 +1069,7 @@ describe('/invoke', () => {
       .from(schema.messageAuthor)
       .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
     expect(targetAuthors).toEqual([
-      expect.objectContaining({ userId: OWNER_USER_ID }),
+      expect.objectContaining({ userId: null, billedUserId: OWNER_USER_ID }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
       expect.objectContaining({ slug: TARGET_SLUG }),
@@ -1108,7 +1110,10 @@ describe('/invoke', () => {
     )
   })
 
-  it('attributes a continued target-session message to the shared-session sender', async () => {
+  it.each([
+    ['human message', { userId: OTHER_USER_ID }],
+    ['incoming agent call', { authorAgentSlug: 'another-agent', billedUserId: OTHER_USER_ID }],
+  ] as const)('carries the payer of a %s into a continued target session', async (_source, author) => {
     authModeEnabled = true
     reviewDecisions.push('allow')
     const callerSessionId = 'shared-caller-session'
@@ -1117,7 +1122,7 @@ describe('/invoke', () => {
       id: 'other-message',
       sessionId: callerSessionId,
       agentSlug: CALLER_SLUG,
-      userId: OTHER_USER_ID,
+      ...author,
       createdAt: new Date(),
     })
 
@@ -1146,7 +1151,9 @@ describe('/invoke', () => {
       expect.objectContaining({
         id: sentMessageUuid,
         agentSlug: TARGET_SLUG,
-        userId: OTHER_USER_ID,
+        userId: null,
+        authorAgentSlug: CALLER_SLUG,
+        billedUserId: OTHER_USER_ID,
       }),
     ])
   })
