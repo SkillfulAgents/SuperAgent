@@ -34,7 +34,7 @@ export function useAddMount() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; restart?: boolean; name?: string; visibility?: 'public' | 'private' } & (
+    mutationFn: async (data: { agentSlug: string; restart?: boolean; name?: string; visibility?: 'public' | 'private'; onlyNew?: boolean } & (
       { hostPath: string; volumeId?: never; type?: never; config?: never }
       | { volumeId: string; readOnly?: boolean; hostPath?: never; type?: never; config?: never }
       | (VolumeSource & { volumeId?: never; hostPath?: never })
@@ -47,11 +47,11 @@ export function useAddMount() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data.volumeId
           ? { volumeId: data.volumeId, readOnly: data.readOnly, restart: data.restart }
-          : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, restart: data.restart }),
+          : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, onlyNew: data.onlyNew, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add drive'))
-      // The route adds the attached definition's id and name to the mount's summary.
-      return res.json() as Promise<VolumeSummary & { volumeId: string; volumeName: string }>
+      // The route adds the attached definition's id and name to the mount's summary, and `unchanged` when the agent already had the source's drive.
+      return res.json() as Promise<VolumeSummary & { volumeId: string; volumeName: string; unchanged?: true }>
     },
     onSuccess: () => {
       // Bare prefix (not keyed on agentSlug): the agent-home Volumes card keys on the

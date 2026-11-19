@@ -6861,15 +6861,17 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       restart = input.restart
       mount = 'volumeId' in input
         ? await attachMount(agentSlug, input.volumeId, volumeViewer(c), { readOnly: input.readOnly })
-        : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
+        : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility, onlyNew: input.onlyNew })
     } catch (err) {
       if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
       if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid drive configuration' }, 400)
       throw err
     }
-    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId, volumeName: mount.volumeName }
+    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId, volumeName: mount.volumeName, ...('unchanged' in mount ? { unchanged: true } : {}) }
 
     await afterMountChange(agentSlug, restart)
+    // A source the agent already had adds no attachment, so no audit row.
+    if ('unchanged' in mount) return c.json(summary, 200)
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath, readOnly: mount.readOnly } })
     return c.json(summary, 201)

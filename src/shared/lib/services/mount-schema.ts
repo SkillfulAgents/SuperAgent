@@ -32,7 +32,8 @@ export const updateVolumeSchema = z.object({
 
 export const addMountSchema = z.union([
   z.object({ volumeId: z.string().min(1), readOnly: z.boolean().optional(), restart: z.boolean().optional() }).strict(),
-  createVolumeSchema.extend({ restart: z.boolean().optional() }),
+  // `onlyNew`: a source that already has a drive is refused (Team Brain set-up makes its own).
+  createVolumeSchema.extend({ restart: z.boolean().optional(), onlyNew: z.boolean().optional() }),
 ])
 
 export const updateMountSchema = z.object({ readOnly: z.boolean() }).strict()

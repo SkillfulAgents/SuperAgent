@@ -242,7 +242,9 @@ describe('Dropbox availability and UI health', () => {
 
   it('coalesces and caches settings health across definitions, expires it, and never caches account authorization', async () => {
     await create()
-    await create()
+    // A second drive on the same folder, as saved before a source's drive was reused.
+    const [first] = await handle.db.select().from(volumeDefinitions).all()
+    await handle.db.insert(volumeDefinitions).values({ ...first, id: 'same-folder' }).run()
     const list = () => app.request('/api/volume-definitions', { headers: { 'Test-User': 'alice' } })
     forward.mockClear()
     vi.useFakeTimers()

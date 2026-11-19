@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { LocalMountableVolume } from './local-mountable-volume'
 import { PlatformMountableVolume } from './platform-mountable-volume'
-import { browseVolumeFolders, createVolumeFolder, instantiateVolume, prepareVolume } from './volume-factory'
+import { browseVolumeFolders, createVolumeFolder, instantiateVolume, prepareVolume, sourceKey } from './volume-factory'
 
 describe('instantiateVolume', () => {
   it('loads a saved Gamut drive by its id, a definition saved with its location included', () => {
@@ -17,6 +17,30 @@ describe('instantiateVolume', () => {
     expect(volume?.mountPath).toBe('/mounts/notes')
     expect(volume?.hostPath).toBe('/tmp/notes')
     expect(instantiateVolume({ id: 'v2', name: 'notes', type: 'local', config: { folder: '/tmp/notes' } })).toBeNull()
+  })
+})
+
+describe('sourceKey', () => {
+  const github = { accountId: 'a1', repoId: 7, owner: 'o', repo: 'r', branch: 'main', path: 'docs' }
+  const folder = { accountId: 'a1', folderId: 'f1', folderName: 'Docs', driveName: 'My Drive' }
+  const bucket = { endpoint: 'https://s3.example.com/', region: 'us-east-1', bucket: 'team', prefix: 'docs', forcePathStyle: true, credentials: { sealed: 'A'.repeat(48) } }
+  const platform = 'vol_00000000-0000-0000-0000-000000000001'
+  it.each([
+    ['github', github, { ...github, owner: 'renamed' }, { ...github, accountId: 'a2' }],
+    ['github', github, { ...github, repo: 'renamed' }, { ...github, branch: 'dev' }],
+    ['dropbox', { accountId: 'a1', path: '/Team' }, { accountId: 'a1', path: '/team' }, { accountId: 'a2', path: '/Team' }],
+    ['googledrive', folder, { ...folder, folderName: 'Renamed' }, { ...folder, accountId: 'a2' }],
+    ['s3', bucket, { ...bucket, endpoint: 'https://s3.example.com', credentials: { sealed: 'B'.repeat(48) } }, { ...bucket, prefix: 'other' }],
+    ['local', { path: '/tmp/notes' }, { path: '/tmp/notes', bookmark: 'b' }, { path: '/tmp/other' }],
+    ['platform', { volumeId: platform }, { volumeId: platform, bucket: 'gamut' }, { volumeId: platform.replace(/1$/, '2') }],
+  ] as const)('%s: same files through the same account match, other files or another account do not', (type, config, same, other) => {
+    const key = sourceKey({ type, config })
+    expect(key).not.toBeNull()
+    expect(sourceKey({ type, config: same })).toBe(key)
+    expect(sourceKey({ type, config: other })).not.toBe(key)
+  })
+  it('has no key for a config that is not the type’s', () => {
+    expect(sourceKey({ type: 'local', config: { folder: '/tmp/notes' } })).toBeNull()
   })
 })
 
