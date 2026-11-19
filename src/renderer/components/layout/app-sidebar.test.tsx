@@ -90,6 +90,7 @@ vi.mock('@renderer/hooks/use-agent-members', () => ({
 }))
 
 const mockUseSessions = vi.fn()
+const mockUseNotableSessions = vi.fn()
 // `mockUseSessions` is the server's list for an agent. The row reads its first
 // rows and their count; `fullListReads` records who asked for every session.
 const fullListReads: string[] = []
@@ -106,6 +107,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
     const result = mockUseSessions(slug)
     return { ...result, data: result.data?.slice(0, RECENT_LIMIT) }
   },
+  useNotableSessions: (slug: string | null) => slug ? mockUseNotableSessions(slug) : { data: undefined },
   useSessionTotal: (slug: string | null) => (slug && mockServerReportsTotal ? mockUseSessions(slug).data?.length : undefined),
   recentSessionsQueryOptions: (_queryClient: unknown, slug: string) => ({
     queryKey: ['sessions', slug, 'recent', RECENT_LIMIT],
@@ -503,6 +505,7 @@ beforeEach(() => {
     data: slug === 'test-agent' ? [makeSession()] : [],
     isLoading: false,
   }))
+  mockUseNotableSessions.mockReturnValue({ data: undefined })
   mockUserContext.isAuthMode = false
   mockUserContext.user = null
   mockUserContext.agentMemberCount.mockReturnValue(1)
@@ -1146,7 +1149,7 @@ describe('AppSidebar — agent row indicator', () => {
       error: null,
     })
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('agent-item-test-agent')).toHaveAccessibleName(new RegExp(`\\b${label}\\b`))
+    expect(screen.getByTestId('agent-item-test-agent')).toHaveAccessibleName(new RegExp(`\\b${label}\\b`, 'i'))
   })
 
   it('falls back to agent-level flags when sessions data is not yet loaded', () => {
@@ -1194,6 +1197,46 @@ describe('AppSidebar — agent row indicator', () => {
     const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
     expect(within(agentRow).queryByTestId('agent-status-running')).not.toBeInTheDocument()
     expect(screen.queryByTestId('agent-avatar-badge-test-agent')).not.toBeInTheDocument()
+  })
+
+  it('names the active session in a collapsed row and restores last activity when it finishes', () => {
+    const lastActivityAt = new Date(Date.now() - 5 * 60 * 1000)
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true, lastActivityAt })],
+    })
+    mockUseNotableSessions.mockReturnValue({ data: [makeSession({ name: 'Prediction Market Research', isActive: true })] })
+
+    const { rerender } = renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    expect(row).toHaveTextContent('Working on Prediction Market Research')
+    expect(row).not.toHaveTextContent('Last active')
+    expect(screen.queryByTestId('session-item-session-1')).not.toBeInTheDocument()
+    expect(mockUseNotableSessions).toHaveBeenCalledWith('test-agent')
+
+    mockUseAgents.mockReturnValue({ data: [makeAgent({ lastActivityAt })] })
+    rerender(<AppSidebar />)
+    expect(row).toHaveTextContent('Last active')
+  })
+
+  it('names two working sessions outside the recent slice and skips a session awaiting input', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true, sessionCount: 10 })],
+    })
+    const working = [
+      makeSession({ id: 'build', name: 'Build Dashboard', isActive: true }),
+      makeSession({ id: 'review', name: 'Review Pricing', isActive: true }),
+      makeSession({ id: 'draft', name: 'Draft Report', isActive: true }),
+    ]
+    const waiting = makeSession({ id: 'waiting', name: 'Needs Review', isActive: true, isAwaitingInput: true })
+    const recent = Array.from({ length: RECENT_LIMIT }, (_, i) => makeSession({ id: `recent-${i}` }))
+    mockUseSessions.mockReturnValue({ data: [...recent, waiting, ...working], isLoading: false })
+    mockUseNotableSessions.mockReturnValue({ data: [waiting, ...working] })
+    mockRouteParams = { slug: 'test-agent' }
+
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    expect(within(row).getByTitle('Working on Build Dashboard and Review Pricing')).toBeVisible()
+    expect(fullListReads).toEqual([])
   })
 
   it('shows awaiting on the expanded agent row when a session awaits input (top-nav parity)', () => {
