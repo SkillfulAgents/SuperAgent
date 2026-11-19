@@ -28,6 +28,12 @@ function manageableVolumes(viewer: VolumeViewer) {
   ) ?? sql`0`
 }
 
+/** Refuses a drive the viewer can't manage before any work for it. Its write still checks, with the change. */
+export async function assertManageableVolume(id: string, viewer: VolumeViewer): Promise<void> {
+  const row = await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))).get()
+  if (!row) throw new VolumeError('Drive not found', 404)
+}
+
 /** Bad/future configurations are kept in SQLite; they cannot become usable mounts. */
 export function storedDefinition(row: Pick<VolumeRow, 'id' | 'name' | 'type' | 'config'>): StoredVolume | null {
   const type = z.enum(VOLUME_TYPES).safeParse(row.type)
@@ -195,16 +201,13 @@ export async function openVolumeDefinition(id: string, viewer: VolumeViewer) {
 
 /**
  * Takes a drive off every agent but `keep` and clears its global access. Checks no viewer: the caller authorizes first.
- * Returns the agents it came off, read just before the delete, so a drive added in between is removed but not listed.
  */
-export async function releaseVolume(id: string, keep: string): Promise<string[]> {
+export async function releaseVolume(id: string, keep: string): Promise<void> {
   const where = and(eq(agentVolumes.volumeId, id), ne(agentVolumes.agentSlug, keep))
-  const attached = await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(where).all()
   await batch([
     db.delete(agentVolumes).where(where),
     db.update(volumeDefinitions).set({ globalAccess: null, updatedAt: new Date() }).where(eq(volumeDefinitions.id, id)),
   ])
-  return attached.map((row) => row.agentSlug)
 }
 
 export async function listVolumeAttachments(id: string, viewer: VolumeViewer) {

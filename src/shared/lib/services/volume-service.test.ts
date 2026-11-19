@@ -76,11 +76,11 @@ describe('volume ownership', () => {
     await attachMount('brain', id, alice)
     await attachMount('agent', id, alice)
     await attachMount('reader', id, alice)
-    expect((await releaseVolume(id, 'brain')).sort()).toEqual(['agent', 'reader'])
+    await releaseVolume(id, 'brain')
     expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, attachmentCount: 1, globalAccess: null }])
     const shared = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     await updateVolumeDefinition(shared, { global: 'read' }, admin)
-    expect(await releaseVolume(shared, 'brain')).toEqual([])
+    await releaseVolume(shared, 'brain')
     expect((await listVolumeDefinitions(admin)).find((d) => d.id === shared)).toMatchObject({ globalAccess: null })
   })
   it('deletes a global drive that no agent has as its own', async () => {
