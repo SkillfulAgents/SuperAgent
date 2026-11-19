@@ -32,9 +32,11 @@ export function d1(binding: D1Binding): DatabaseDriver {
 }
 
 /**
- * Applies the migrations the database has not seen as one batch. Same journal table and rule as
- * drizzle's migrator, so a database it migrated continues here: a migration is pending when it is
- * newer than the newest journal row.
+ * Applies the migrations the database has not seen, one batch each: a batch is a transaction, so a
+ * migration and its journal row land together, and D1 gives a batch 30 seconds, so one slow
+ * migration cannot take the others past it. A failed one stops the run with the earlier ones kept,
+ * and the next run starts at it. Same journal table and rule as drizzle's migrator, so a database
+ * it migrated continues here: a migration is pending when it is newer than the newest journal row.
  */
 export async function migrateD1(binding: D1Binding, migrations: readonly MigrationMeta[]): Promise<void> {
   const table = `"${MIGRATIONS_TABLE.replaceAll('"', '""')}"`
@@ -42,17 +44,16 @@ export async function migrateD1(binding: D1Binding, migrations: readonly Migrati
   const [last] = await binding.prepare(`SELECT created_at FROM ${table} ORDER BY created_at DESC LIMIT 1`).raw()
   const lastMillis = last ? Number(last[0]) : -Infinity
 
-  const statements: string[] = []
-  for (const migration of migrations) {
-    if (migration.folderMillis <= lastMillis) continue
+  const pending = migrations.filter((migration) => migration.folderMillis > lastMillis)
+  for (const migration of pending) {
     if (!/^[0-9a-f]+$/.test(migration.hash) || !Number.isInteger(migration.folderMillis)) {
       throw new Error(`Malformed migration journal entry ${migration.hash}`)
     }
-    for (const statement of migration.sql) {
-      if (statement.trim()) statements.push(statement)
-    }
+  }
+  for (const migration of pending) {
+    const statements = migration.sql.filter((statement) => statement.trim())
     // Inlined, not bound: the batch runs plain statements.
     statements.push(`INSERT INTO ${table} ("hash", "created_at") VALUES ('${migration.hash}', ${migration.folderMillis})`)
+    await binding.batch(statements.map((statement) => binding.prepare(statement)))
   }
-  if (statements.length > 0) await binding.batch(statements.map((statement) => binding.prepare(statement)))
 }

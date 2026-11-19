@@ -95,13 +95,13 @@ afterEach(async () => {
 })
 
 describe('the D1 driver', () => {
-  it('brings a new database to the bundled schema in one batch', async () => {
+  it('brings a new database to the bundled schema, one batch per migration', async () => {
     const { sqlite, binding } = memoryD1()
     const batch = vi.spyOn(binding, 'batch')
 
     await migrateD1(binding, migrationBundle)
 
-    expect(batch).toHaveBeenCalledTimes(1)
+    expect(batch).toHaveBeenCalledTimes(migrationBundle.length)
     expect(journalRows(sqlite)).toEqual({ n: migrationBundle.length })
   })
 
@@ -127,7 +127,7 @@ describe('the D1 driver', () => {
     expect(journalRows(sqlite)).toEqual({ n: migrationBundle.length })
   })
 
-  it('applies none of the pending migrations when one of them fails', async () => {
+  it('keeps the migrations before one that fails, and starts at the failed one next time', async () => {
     const { sqlite, binding } = memoryD1()
     const migrations: MigrationMeta[] = [
       { sql: ['CREATE TABLE first_table (id INTEGER PRIMARY KEY)'], folderMillis: 1, hash: 'aa', bps: true },
@@ -136,8 +136,14 @@ describe('the D1 driver', () => {
 
     await expect(migrateD1(binding, migrations)).rejects.toThrow()
 
-    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'first_table'").all()).toEqual([])
-    expect(journalRows(sqlite)).toEqual({ n: 0 })
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'first_table'").all()).toEqual([{ name: 'first_table' }])
+    expect(journalRows(sqlite)).toEqual({ n: 1 })
+
+    const batch = vi.spyOn(binding, 'batch')
+    migrations[1] = { ...migrations[1], sql: ['CREATE TABLE second_table (id INTEGER PRIMARY KEY)'] }
+    await migrateD1(binding, migrations)
+    expect(batch).toHaveBeenCalledTimes(1)
+    expect(journalRows(sqlite)).toEqual({ n: 2 })
   })
 })
 
