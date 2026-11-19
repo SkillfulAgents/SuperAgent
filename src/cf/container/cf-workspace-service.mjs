@@ -8,7 +8,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
-import { hashFile, inPool, scan, watchTree } from './workspace-scan.mjs'
+import { hashFile, inPool, scan, seen, unchanged, watchTree } from './workspace-scan.mjs'
 
 // Top-level folders that are rebuilt, not kept.
 const EXCLUDED = new Set(['.bun-cache'])
@@ -106,7 +106,7 @@ export function createWorkspaceService({ workspace: WORKSPACE, store: STORE, lau
         }
         const hash = await hashFile(abs).catch(() => null)
         if (hash && (await put(rel, hash).catch(() => 'changed')) === 'ok') {
-          scanned.set(rel, { size: stat.size, mtimeMs: stat.mtimeMs, hash, mode: stat.mode & 0o777 })
+          scanned.set(rel, seen(stat, hash))
           result.changed.push({ path: rel, hash, size: stat.size, mode: stat.mode & 0o777, mtimeMs: Math.round(stat.mtimeMs), kind: 'file' })
           return
         }
@@ -142,9 +142,9 @@ export function createWorkspaceService({ workspace: WORKSPACE, store: STORE, lau
     }
     if (!stat.isFile()) return { entries: [], removed: [] }
     const known = scanned.get(rel)
-    const hash = known && known.size === stat.size && known.mtimeMs === stat.mtimeMs ? known.hash : await hashFile(abs).catch(gone)
+    const hash = unchanged(known, stat) ? known.hash : await hashFile(abs).catch(gone)
     if (!hash) return null
-    scanned.set(rel, { size: stat.size, mtimeMs: stat.mtimeMs, hash, mode: stat.mode & 0o777 })
+    scanned.set(rel, seen(stat, hash))
     return { entries: [{ path: rel, hash, size: stat.size, mode: stat.mode & 0o777, mtimeMs: Math.round(stat.mtimeMs), kind: 'file' }], removed: [] }
   }
 

@@ -31,6 +31,20 @@ const removed = (error) => {
  * its contents). `previous` is the last scan by path, so unchanged files are not hashed again.
  * Returns the entries and this scan by path, for the next call.
  */
+/**
+ * True when a file is the one a last look hashed. Size and mtime alone miss a file replaced by one
+ * of the same size whose mtime was kept (an atomic save, `touch -r`); a replace or a write always
+ * changes the inode or ctime.
+ */
+export function unchanged(known, stat) {
+  return !!known && known.size === stat.size && known.mtimeMs === stat.mtimeMs && known.ctimeMs === stat.ctimeMs && known.ino === stat.ino
+}
+
+/** What a look remembers about a file it hashed. */
+export function seen(stat, hash) {
+  return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino, hash, mode: stat.mode & 0o777 }
+}
+
 export async function scan(root, excluded, previous) {
   const files = []
   const links = []
@@ -57,8 +71,8 @@ export async function scan(root, excluded, previous) {
     if (!stat) return
     const known = previous.get(rel)
     // A file that changes after it is hashed is caught at upload.
-    const hash = known && known.size === stat.size && known.mtimeMs === stat.mtimeMs ? known.hash : await hashFile(abs).catch(removed)
-    if (hash) scanned.set(rel, { size: stat.size, mtimeMs: stat.mtimeMs, hash, mode: stat.mode & 0o777 })
+    const hash = unchanged(known, stat) ? known.hash : await hashFile(abs).catch(removed)
+    if (hash) scanned.set(rel, seen(stat, hash))
   })
   const out = [...scanned].map(([rel, f]) => ({ path: rel, hash: f.hash, size: f.size, mode: f.mode, mtimeMs: Math.round(f.mtimeMs), kind: 'file' }))
   for (const rel of links) {

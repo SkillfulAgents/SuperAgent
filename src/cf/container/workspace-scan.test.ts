@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { chmod, mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scan, watchTree } from './workspace-scan.mjs'
@@ -35,6 +35,25 @@ describe('scan', () => {
     await chmod(join(dir, 'reports'), 0o000)
 
     await expect(scan(dir, new Set(), new Map())).rejects.toMatchObject({ code: 'EACCES' })
+  })
+
+  it('hashes again a file replaced by one of the same size and mtime', async () => {
+    const dir = await workspace()
+    const file = join(dir, 'notes.txt')
+    const at = new Date('2026-11-19T22:35:00Z')
+    await writeFile(file, 'v1-A\n')
+    await utimes(file, at, at)
+    const first = await scan(dir, new Set(), new Map())
+    const before = await stat(file)
+    await writeFile(join(dir, '.notes.tmp'), 'v2-B\n')
+    await utimes(join(dir, '.notes.tmp'), at, at)
+    await rename(join(dir, '.notes.tmp'), file)
+
+    const second = await scan(dir, new Set(), first.scanned)
+
+    const hashOf = (result: { entries: unknown[] }) => (result.entries as { path: string; hash: string }[]).find((entry) => entry.path === 'notes.txt')!.hash
+    expect((await stat(file)).mtimeMs).toBe(before.mtimeMs)
+    expect(hashOf(second)).not.toBe(hashOf(first))
   })
 })
 
