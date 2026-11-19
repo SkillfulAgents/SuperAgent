@@ -23,6 +23,7 @@ import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-c
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import {
   DASHBOARD_WAIT_BOUND_MS,
+  isDashboardUnavailable,
   resolveDashboardViewState,
   type DashboardViewState,
 } from './dashboard-view-state'
@@ -58,6 +59,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   // document may be a held request that timed out into an error body, so it
   // must be refetched once the dashboard actually reports running.
   const [frameLoadedEarly, setFrameLoadedEarly] = useState(false)
+  // The last check of the loaded page found the dashboard not being served.
+  const [frameUnavailable, setFrameUnavailable] = useState(false)
   const frameErrorRetriesRef = useRef(0)
   const frameRetryTimerRef = useRef<number | null>(null)
   // Monotonic token so a probe finishing after a navigation/remount is ignored.
@@ -116,6 +119,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     canStart,
     startFailed: startAgent.isError,
     waitElapsedMs,
+    frameLoad: !frameUnavailable ? 'ok' : frameLoading ? 'retrying' : 'failed',
   })
 
   const nextPollFast = 'pollFast' in viewState && viewState.pollFast
@@ -395,6 +399,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     frameErrorRetriesRef.current = 0
     frameProbeSeqRef.current++
     setFrameLoadedEarly(false)
+    setFrameUnavailable(false)
     setFrameAttempt(0)
   }, [iframeSrc])
 
@@ -433,18 +438,20 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   // Browsers fire 'load' even for a failed iframe navigation (they render an
   // error document), and iframes get no 'error' event for it — the load event
   // alone cannot confirm the dashboard actually answered. Probe the same URL
-  // right after each load while the dashboard reports running: a healthy
-  // response means the loaded document was real; a failure schedules a retry.
+  // right after each load while the dashboard reports running: an answer of
+  // the dashboard's own means the loaded document was real; none schedules a
+  // retry, and the view covers the document until a check passes.
   const verifyFrameDocument = useCallback(async () => {
     const seq = ++frameProbeSeqRef.current
     let ok = false
     try {
       const res = await apiFetch(dashboardPath, { method: 'HEAD', cache: 'no-store' })
-      ok = res.ok
+      ok = !isDashboardUnavailable(res.status)
     } catch {
       ok = false
     }
     if (seq !== frameProbeSeqRef.current) return
+    setFrameUnavailable(!ok)
     if (ok) {
       setFrameLoading(false)
       frameErrorRetriesRef.current = 0
@@ -464,6 +471,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             restartErrorMessage={restartError ?? undefined}
             onRetry={handleStartAgent}
             onRestart={handleRestartAgent}
+            onRefresh={handleRefreshClick}
             retryPending={startAgent.isPending}
             restartPending={actionPending}
             canStart={canStart}
@@ -532,7 +540,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             closing={commentState.closing}
           />
         )}
-        {!dashboardRunning && (
+        {viewState.kind !== 'ready' && (
           <div className="absolute inset-0 z-10 bg-background flex flex-col items-center justify-center p-8 text-muted-foreground">
             <DashboardStatusBody
               viewState={viewState}
@@ -540,6 +548,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
               restartErrorMessage={restartError ?? undefined}
               onRetry={handleStartAgent}
               onRestart={handleRestartAgent}
+              onRefresh={handleRefreshClick}
               retryPending={startAgent.isPending}
               restartPending={actionPending}
               canStart={canStart}
@@ -557,6 +566,7 @@ function DashboardStatusBody({
   restartErrorMessage,
   onRetry,
   onRestart,
+  onRefresh,
   retryPending,
   restartPending,
   canStart,
@@ -566,6 +576,7 @@ function DashboardStatusBody({
   restartErrorMessage?: string
   onRetry: () => void
   onRestart: () => void
+  onRefresh: () => void
   retryPending: boolean
   restartPending: boolean
   canStart: boolean
@@ -590,6 +601,12 @@ function DashboardStatusBody({
       {showRetry && (
         <Button onClick={onRetry} disabled={retryPending}>
           <Play className="mr-2 h-4 w-4" />
+          Retry
+        </Button>
+      )}
+      {viewState.kind === 'load-failed' && (
+        <Button onClick={onRefresh}>
+          <RefreshCw className="mr-2 h-4 w-4" />
           Retry
         </Button>
       )}

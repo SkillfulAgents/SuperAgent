@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   DASHBOARD_WAIT_BOUND_MS,
+  isDashboardUnavailable,
   resolveDashboardViewState,
   type DashboardViewStateInput,
 } from './dashboard-view-state'
@@ -13,9 +14,20 @@ function input(overrides: Partial<DashboardViewStateInput> = {}): DashboardViewS
     canStart: true,
     startFailed: false,
     waitElapsedMs: 0,
+    frameLoad: 'ok',
     ...overrides,
   }
 }
+
+describe('isDashboardUnavailable', () => {
+  it.each([502, 503, 504])('reads a %i as a proxy with no dashboard behind it', (status) => {
+    expect(isDashboardUnavailable(status)).toBe(true)
+  })
+
+  it.each([200, 304, 404, 405, 500])('reads a %i as the dashboard\'s own answer', (status) => {
+    expect(isDashboardUnavailable(status)).toBe(false)
+  })
+})
 
 describe('resolveDashboardViewState', () => {
   describe('regression: transient startup must not look terminal', () => {
@@ -63,6 +75,30 @@ describe('resolveDashboardViewState', () => {
     expect(
       resolveDashboardViewState(input({ dashboard: { status: 'running' } })),
     ).toEqual({ kind: 'ready' })
+  })
+
+  it('waits with a spinner while a running dashboard\'s page is loaded again', () => {
+    expect(
+      resolveDashboardViewState(input({ dashboard: { status: 'running' }, frameLoad: 'retrying' })),
+    ).toEqual({
+      kind: 'waiting',
+      message: 'Waiting for dashboard…',
+      showSpinner: true,
+      slow: false,
+      pollFast: false,
+    })
+  })
+
+  it('ends in a failed load when a running dashboard\'s page is not served', () => {
+    expect(
+      resolveDashboardViewState(input({ dashboard: { status: 'running' }, frameLoad: 'failed' })),
+    ).toEqual({ kind: 'load-failed', message: 'Dashboard failed to load.' })
+  })
+
+  it('reports the dashboard\'s own state over a failed load', () => {
+    expect(
+      resolveDashboardViewState(input({ dashboard: { status: 'crashed' }, frameLoad: 'failed' })),
+    ).toEqual({ kind: 'crashed', message: 'Dashboard crashed.' })
   })
 
   it('treats starting the same as queued: one wait label', () => {

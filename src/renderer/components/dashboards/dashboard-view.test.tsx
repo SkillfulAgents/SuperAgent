@@ -178,7 +178,7 @@ describe('DashboardView restart', () => {
         status: mocks.refetchedAgentStatus,
       },
     }))
-    mocks.apiFetch.mockResolvedValue({ ok: true })
+    mocks.apiFetch.mockResolvedValue({ status: 200 })
   })
 
   afterEach(() => {
@@ -369,26 +369,26 @@ describe('DashboardView restart', () => {
     let visibilityState: DocumentVisibilityState = 'visible'
     vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibilityState)
     mocks.dashboardStatus = 'running'
-    let answer!: (res: { ok: boolean }) => void
+    let answer!: (res: { status: number }) => void
     mocks.apiFetch.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
 
     const hidden = renderDashboard()
     visibilityState = 'hidden'
     act(() => document.dispatchEvent(new Event('visibilitychange')))
     fireEvent.load(document.querySelector('iframe')!)
-    await act(async () => answer({ ok: true }))
+    await act(async () => answer({ status: 200 }))
     hidden.unmount()
 
     visibilityState = 'visible'
     const gone = renderDashboard()
     fireEvent.load(document.querySelector('iframe')!)
     gone.unmount()
-    await act(async () => answer({ ok: true }))
+    await act(async () => answer({ status: 200 }))
 
     visibilityState = 'hidden'
     renderDashboard()
     fireEvent.load(document.querySelector('iframe')!)
-    await act(async () => answer({ ok: true }))
+    await act(async () => answer({ status: 200 }))
 
     // Each open counts; none was on screen until an outcome, so none is timed.
     expect(mocks.track.mock.calls.map(([event]) => event)).toEqual(['dashboard_opened', 'dashboard_opened', 'dashboard_opened'])
@@ -492,7 +492,7 @@ describe('DashboardView optimistic mount and retry', () => {
     mocks.dashboardDescription = ''
     mocks.dashboardStartupPhase = 'starting-server'
     mocks.dashboardFirstRun = undefined
-    mocks.apiFetch.mockResolvedValue({ ok: true })
+    mocks.apiFetch.mockResolvedValue({ status: 200 })
   })
 
   it('mounts the iframe behind the status overlay while the server is starting', () => {
@@ -604,6 +604,59 @@ describe('DashboardView optimistic mount and retry', () => {
       vi.useRealTimers()
     }
   })
+
+  it.each([404, 405])('accepts a document whose server answers the probe itself with %i', async (status) => {
+    mocks.dashboardStatus = 'running'
+    mocks.apiFetch.mockResolvedValue({ status })
+    renderDashboard()
+    const frame = document.querySelector('iframe')!
+
+    fireEvent.load(frame)
+    await act(async () => {})
+
+    expect(document.querySelector('iframe')).toBe(frame)
+    expect(screen.getByRole('button', { name: 'Refresh dashboard' })).not.toBeDisabled()
+    expect(screen.queryByText('Waiting for dashboard…')).toBeNull()
+    expect(mocks.track).toHaveBeenLastCalledWith('dashboard_ready', expect.objectContaining({ attempt: 'open' }))
+  })
+
+  it('covers a document that is not served, then offers a retry that a person starts', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.dashboardStatus = 'running'
+      mocks.apiFetch.mockResolvedValue({ status: 502 })
+      renderDashboard()
+
+      // The first failed probe covers the document while the view loads it again.
+      fireEvent.load(document.querySelector('iframe')!)
+      await act(async () => {})
+      expect(screen.getByText('Waiting for dashboard…')).toBeInTheDocument()
+
+      for (const delay of [1_000, 2_000, 4_000]) {
+        act(() => {
+          vi.advanceTimersByTime(delay)
+        })
+        fireEvent.load(document.querySelector('iframe')!)
+        await act(async () => {})
+      }
+      expect(screen.getByText('Dashboard failed to load.')).toBeInTheDocument()
+
+      mocks.apiFetch.mockResolvedValue({ status: 200 })
+      const failed = document.querySelector('iframe')!
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      const fresh = document.querySelector('iframe')!
+      expect(fresh).not.toBe(failed)
+      expect(screen.getByText('Waiting for dashboard…')).toBeInTheDocument()
+
+      fireEvent.load(fresh)
+      await act(async () => {})
+      expect(screen.queryByText('Waiting for dashboard…')).toBeNull()
+      expect(screen.queryByText('Dashboard failed to load.')).toBeNull()
+      expect(mocks.track).toHaveBeenLastCalledWith('dashboard_ready', expect.objectContaining({ attempt: 'refresh' }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('DashboardView comments', () => {
@@ -615,7 +668,7 @@ describe('DashboardView comments', () => {
     mocks.dashboardStatus = 'running'
     mocks.dashboardStartupPhase = undefined
     mocks.canUse = true
-    mocks.apiFetch.mockResolvedValue({ ok: true })
+    mocks.apiFetch.mockResolvedValue({ status: 200 })
     mocks.inspect.mockResolvedValue(null)
     mocks.createSession.mutateAsync.mockResolvedValue({ id: 'session-1' })
   })
@@ -748,7 +801,7 @@ describe('DashboardView comments', () => {
 
   it('a Refresh while the page check is still out does not let that old check settle the new attempt', async () => {
     const user = userEvent.setup()
-    let answerOld!: (res: { ok: boolean }) => void
+    let answerOld!: (res: { status: number }) => void
     mocks.apiFetch.mockImplementationOnce(() => new Promise((resolve) => { answerOld = resolve }))
     renderDashboard()
     const frame = document.querySelector('iframe')!
@@ -757,7 +810,7 @@ describe('DashboardView comments', () => {
       window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: DASHBOARD_CONTEXT_MENU_TYPE, x: 30, y: 40 } }))
     })
     await user.click(await screen.findByRole('menuitem', { name: 'Refresh dashboard' }))
-    await act(async () => answerOld({ ok: true }))
+    await act(async () => answerOld({ status: 200 }))
     expect(mocks.track.mock.calls.filter(([event]) => event === 'dashboard_ready')).toEqual([])
 
     fireEvent.load(document.querySelector('iframe')!)
