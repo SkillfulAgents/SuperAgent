@@ -18,6 +18,8 @@ const NEW_FILE_MODE = 0o644
 const NEW_FOLDER_MODE = 0o755
 // R2 deletes at most 1,000 keys per call.
 const DELETE_BATCH = 1000
+// Links followed in a row before a path counts as not found, as a filesystem gives up on a loop.
+const MAX_LINK_HOPS = 8
 
 // A type, not an interface: SQL row types must be assignable to Record<string, SqlStorageValue>.
 export type WorkspaceFile = {
@@ -68,10 +70,12 @@ export class SavedWorkspace {
     return this.sql.exec('SELECT 1 FROM workspace_held LIMIT 1').toArray().length > 0
   }
 
-  /** A file, a folder's children, or null when neither exists. */
+  /** A file, a folder's children, or null when neither exists. A link to a file reads as that file, at the link's path. */
   entry(rel: string): StoredEntry | StoredEntry[] | null {
+    const linked = this.linkedFile(rel)
+    if (linked) return { ...linked.entry, name: rel.slice(rel.lastIndexOf('/') + 1), path: rel }
     const sql = this.sql
-    // Symlinks are restored on wake but not shown while asleep.
+    // Links are not listed while asleep; one is read through to its file (linkedFile).
     type Row = { path: string; size: number; mtime: number; kind: string }
     const file = sql.exec<Row>("SELECT path, size, mtime, kind FROM workspace_file WHERE path = ? AND kind != 'symlink'", rel).toArray()[0]
     if (file?.kind === 'file') return fileEntry(file)
@@ -93,7 +97,8 @@ export class SavedWorkspace {
 
   // Streamed, not read whole: a large file would not fit in the object's memory.
   async read(rel: string, range?: ByteRange): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null> {
-    const row = this.sql.exec<{ hash: string; size: number }>("SELECT hash, size FROM workspace_file WHERE path = ? AND kind = 'file'", rel).toArray()[0]
+    const path = this.linkedFile(rel)?.path ?? rel
+    const row = this.sql.exec<{ hash: string; size: number }>("SELECT hash, size FROM workspace_file WHERE path = ? AND kind = 'file'", path).toArray()[0]
     if (!row) return null
     // A range that starts at or past the end reads nothing, and one that ends past it stops at the end, as a file read does.
     if (range && range.start >= row.size) return { size: row.size, stream: new ReadableStream({ start: (controller) => controller.close() }) }
@@ -106,6 +111,25 @@ export class SavedWorkspace {
     }
     const object = await this.bucket.get(this.blobKey(row.hash), r2Range ? { range: r2Range } : undefined)
     return object ? { size: row.size, stream: object.body } : null
+  }
+
+  /**
+   * The file a link at `rel` leads to, following links in a row, when it ends at a file inside the
+   * workspace. Null for anything else: no link there, a link out of the workspace, to a folder, or a loop.
+   */
+  private linkedFile(rel: string): { path: string; entry: StoredEntry } | null {
+    let path = rel
+    for (let hop = 0; hop < MAX_LINK_HOPS; hop++) {
+      type Row = { path: string; size: number; mtime: number; kind: string; target: string | null }
+      const row = this.sql.exec<Row>('SELECT path, size, mtime, kind, target FROM workspace_file WHERE path = ?', path).toArray()[0]
+      if (!row) return null
+      if (row.kind === 'file') return path === rel ? null : { path, entry: fileEntry(row) }
+      if (row.kind !== 'symlink' || !row.target) return null
+      const next = linkTarget(path, row.target)
+      if (next === null) return null
+      path = next
+    }
+    return null
   }
 
   /** Writes one file. Returns the hashes it replaced, for the caller to settle. */
@@ -353,6 +377,22 @@ export function isWorkspaceFile(value: unknown): value is WorkspaceFile {
   if (file.mtimeMs !== undefined && typeof file.mtimeMs !== 'number') return false
   if (kind === 'symlink') return typeof file.target === 'string' && file.target !== '' && !file.target.includes('\0')
   return kind === 'file' ? isHash(file.hash) : file.hash === ''
+}
+
+/** Where a link at `rel` points, as a workspace path, or null when it points outside the workspace. */
+export function linkTarget(rel: string, target: string): string | null {
+  let rest = target
+  if (rest === '/workspace' || rest.startsWith('/workspace/')) rest = rest.slice('/workspace/'.length)
+  else if (rest.startsWith('/')) return null
+  const parts = target.startsWith('/') ? [] : rel.split('/').slice(0, -1)
+  for (const part of rest.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      if (parts.length === 0) return null
+      parts.pop()
+    } else parts.push(part)
+  }
+  return parts.length ? parts.join('/') : null
 }
 
 function fileEntry(row: { path: string; size: number; mtime: number }): StoredEntry {

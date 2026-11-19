@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cloudflare-agent'
-import { SavedWorkspace, workspaceBlobKey } from '../lib/saved-workspace'
+import { SavedWorkspace, linkTarget, workspaceBlobKey } from '../lib/saved-workspace'
 import type { Env } from '../index'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -674,5 +674,42 @@ describe('AgentDurableObject writing a file while its agent sleeps', () => {
     await (agent.object as unknown as { restoreWorkspace(): Promise<void> }).restoreWorkspace()
 
     expect(restored).toEqual([expect.objectContaining({ path: 'AGENTS.md', mtimeMs: Date.UTC(2026, 9, 22, 12) })])
+  })
+})
+
+describe('SavedWorkspace reading a link while its agent sleeps', () => {
+  const linked = async () => {
+    const store = storage()
+    const bucket = { put: async () => {}, get: async () => null, head: async () => null, delete: async () => {} }
+    const workspace = new SavedWorkspace(store as never, bucket as never, OBJECT)
+    await workspace.write('reports/q3.csv', new TextEncoder().encode('region,revenue\nwest,120\n'))
+    const link = (path: string, target: string) =>
+      store.sql.exec("INSERT INTO workspace_file (path, hash, size, mode, mtime, kind, target) VALUES (?, '', 0, 511, 0, 'symlink', ?)", path, target)
+    link('latest.csv', 'reports/q3.csv')
+    link('reports/again.csv', '../latest.csv')
+    link('outside.csv', '../../etc/passwd')
+    link('loop-a', 'loop-b')
+    link('loop-b', 'loop-a')
+    return workspace
+  }
+
+  it('reads a relative link to a file, and a link to that link, as the file at the link path', async () => {
+    const workspace = await linked()
+    expect(workspace.entry('latest.csv')).toMatchObject({ name: 'latest.csv', path: 'latest.csv', type: 'file', size: 24 })
+    const read = await workspace.read('reports/again.csv')
+    expect(await new Response(read!.stream).text()).toBe('region,revenue\nwest,120\n')
+  })
+
+  it('finds nothing at a link out of the workspace or in a loop', async () => {
+    const workspace = await linked()
+    expect(workspace.entry('outside.csv')).toBeNull()
+    expect(await workspace.read('loop-a')).toBeNull()
+  })
+
+  it('resolves a link target against the link folder, inside the workspace only', () => {
+    expect(linkTarget('a/b/link', '../c.txt')).toBe('a/c.txt')
+    expect(linkTarget('link', '/workspace/a.txt')).toBe('a.txt')
+    expect(linkTarget('link', '/etc/passwd')).toBeNull()
+    expect(linkTarget('a/link', '../../x')).toBeNull()
   })
 })
