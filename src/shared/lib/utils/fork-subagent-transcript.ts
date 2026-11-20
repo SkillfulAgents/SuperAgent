@@ -28,6 +28,27 @@ function isForkDirective(entry: JsonlEntry): boolean {
  * A later SendMessage run appends ordinary entries after these. Any other
  * subagent's transcript is returned as is.
  */
+/** {@link subagentOwnEntries} for a reader that sees the rows one at a time, in file order. */
+export class ForkOwnRows {
+  private inherited = false
+  /** The fork's directive was read: no row before it is the fork's own. */
+  ownStart = false
+
+  /** `restart`: the directive, so the rows kept before it were inherited too. */
+  classify(entry: JsonlEntry): 'keep' | 'skip' | 'restart' {
+    if ((entry as { type: string }).type === 'fork-context-ref') {
+      this.inherited = true
+      return 'skip'
+    }
+    if (isForkDirective(entry)) {
+      this.inherited = false
+      this.ownStart = true
+      return 'restart'
+    }
+    return this.inherited ? 'skip' : 'keep'
+  }
+}
+
 export function subagentOwnEntries(entries: JsonlEntry[]): JsonlEntry[] {
   const directive = entries.findIndex(isForkDirective)
   if (directive !== -1) return entries.slice(directive + 1)

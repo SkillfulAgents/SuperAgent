@@ -1,5 +1,6 @@
 import { AgentMarkdown, COMPACT_AGENT_TEXT } from './agent-markdown'
 import { ToolCallItem } from './tool-call-item'
+import type { ToolResultMediaContext } from '@renderer/lib/parse-tool-result'
 import type { ApiMessage, ApiMessageOrBoundary, ApiToolCall } from '@shared/lib/types/api'
 
 /**
@@ -51,10 +52,13 @@ export function TranscriptItems({
   items,
   agentSlug,
   isSessionActive,
+  media,
 }: {
   items: FlatItem[]
   agentSlug: string
   isSessionActive?: boolean
+  /** Whose transcript the items are from: lets the images in their tool results load. */
+  media?: ToolResultMediaContext
 }) {
   return (
     <>
@@ -67,6 +71,8 @@ export function TranscriptItems({
             toolCall={item.toolCall}
             messageCreatedAt={item.messageCreatedAt}
             agentSlug={agentSlug}
+            sessionId={media?.sessionId}
+            subagent={media?.subagent}
             isSessionActive={isSessionActive}
           />
         )

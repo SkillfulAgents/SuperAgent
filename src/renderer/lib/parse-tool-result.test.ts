@@ -191,6 +191,14 @@ describe('parseToolResult', () => {
       ])
     })
 
+    it("builds a subagent's or a workflow agent's media URL from its context", () => {
+      const block = [{ type: 'media_ref', id: 'abc', bytes: 40960 }]
+      expect(parseToolResult(block, { ...ctx, subagent: { subagentId: 'sub-1' } }).images[0]!.src)
+        .toBe('/api/agents/a1/sessions/s1/subagent/sub-1/media/abc')
+      expect(parseToolResult(block, { ...ctx, subagent: { subagentId: 'w1', workflowRunId: 'wf_run-1' } }).images[0]!.src)
+        .toBe('/api/agents/a1/sessions/s1/workflows/wf_run-1/agents/w1/media/abc')
+    })
+
     it('carries intrinsic dimensions through so the layout can reserve the box', () => {
       const result = parseToolResult(
         [{ type: 'media_ref', id: 'abc', bytes: 40960, width: 919, height: 1998 }],

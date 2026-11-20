@@ -387,6 +387,10 @@ function WorkflowAgentRow({
   const messages = useWorkflowAgentMessages(sessionId, agentSlug, runId, expanded ? agent.agentId : null, {
     isRunning,
   })
+  const media = useMemo(
+    () => ({ agentSlug, sessionId, subagent: { subagentId: agent.agentId, workflowRunId: runId } }),
+    [agentSlug, sessionId, agent.agentId, runId],
+  )
 
   return (
     <div className="border border-border/70 rounded-card overflow-hidden">
@@ -460,7 +464,7 @@ function WorkflowAgentRow({
               </span>
             </div>
           )}
-          <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} />
+          <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} media={media} />
         </div>
       )}
     </div>

@@ -16,7 +16,8 @@ import { isQueuedUserPrompt, type JsonlEntry } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
 import { chunksOf, isAbsentFile, readJsonl, streamJsonl, streamLines } from './jsonl-files'
 import { sessionDirPath, sessionFilePath, transcriptPath, type SessionStore } from './session-store'
-import type { FileEntry, MediaBlob, SubagentRef } from './types'
+import type { TranscriptFile } from '@shared/lib/services/session-service'
+import type { FileEntry, MediaBlob, SubagentRef, SubagentTranscriptRef } from './types'
 import { WorkspaceFileError, joinWorkspacePath } from './workspace-path'
 
 const SUBAGENT_ID = /^[\w-]+$/
@@ -82,13 +83,31 @@ export async function listSubagents(
   )
 }
 
-export async function readSubagentTranscript(store: SessionStore, sessionId: string, subagentId: string): Promise<JsonlEntry[]> {
-  if (!SUBAGENT_ID.test(subagentId)) throw new WorkspaceFileError('invalid-path')
-  const jsonlPath = await reallyInsideWorkspace(
+/** The transcript of a subagent, or of one agent of a workflow run, after its id and real-location checks. */
+export async function subagentTranscriptFile(
+  store: SessionStore,
+  sessionId: string,
+  { subagentId, workflowRunId }: SubagentTranscriptRef,
+): Promise<TranscriptFile> {
+  if (!SUBAGENT_ID.test(subagentId) || (workflowRunId !== undefined && !WORKFLOW_RUN_ID.test(workflowRunId))) {
+    throw new WorkspaceFileError('invalid-path')
+  }
+  const name = `agent-${subagentId}.jsonl`
+  const path = await reallyInsideWorkspace(
     store,
-    sessionFilePath(store, sessionId, 'subagents', `agent-${subagentId}.jsonl`),
+    workflowRunId === undefined
+      ? sessionFilePath(store, sessionId, 'subagents', name)
+      : sessionFilePath(store, sessionId, 'subagents', 'workflows', workflowRunId, name),
   )
-  return readJsonl<JsonlEntry>(store.files, jsonlPath)
+  const label = workflowRunId === undefined
+    ? `subagent ${subagentId} of session ${sessionId}`
+    : `workflow agent ${subagentId} of run ${workflowRunId} in session ${sessionId}`
+  return { path, label, subagent: true }
+}
+
+export async function readSubagentTranscript(store: SessionStore, sessionId: string, subagentId: string): Promise<JsonlEntry[]> {
+  const { path } = await subagentTranscriptFile(store, sessionId, { subagentId })
+  return readJsonl<JsonlEntry>(store.files, path)
 }
 
 export async function readWorkflowTree(store: SessionStore, sessionId: string, runId: string): Promise<WorkflowTree | null> {
@@ -300,8 +319,15 @@ export async function openRawLog(store: SessionStore, sessionId: string): Promis
   return { size, stream: Readable.toWeb(source) as ReadableStream<Uint8Array> }
 }
 
-export async function openMedia(store: SessionStore, sessionId: string, ref: MediaRef, signal?: AbortSignal): Promise<MediaBlob | undefined> {
-  const blob = await openMediaBlob(store.files, transcriptPath(store, sessionId), ref, signal)
+export async function openMedia(
+  store: SessionStore,
+  sessionId: string,
+  ref: MediaRef,
+  signal?: AbortSignal,
+  subagent?: SubagentTranscriptRef,
+): Promise<MediaBlob | undefined> {
+  const jsonlPath = subagent ? (await subagentTranscriptFile(store, sessionId, subagent)).path : transcriptPath(store, sessionId)
+  const blob = await openMediaBlob(store.files, jsonlPath, ref, signal)
   if (!blob) return undefined
   return { stream: Readable.toWeb(blob.stream) as ReadableStream<Uint8Array>, mimeType: blob.mimeType, bytes: blob.bytes }
 }

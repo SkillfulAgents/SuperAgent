@@ -1,10 +1,9 @@
 import { memo, useMemo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Loader2, ChevronRight, ChevronDown } from 'lucide-react'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
-import { useMessages } from '@renderer/hooks/use-messages'
+import { messagesQueryFn, subagentMessagesUrl, useMessages, type MessagesPage } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useQueries, type UseQueryResult } from '@tanstack/react-query'
-import { apiFetch } from '@renderer/lib/api'
+import { useQueries, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { getToolRenderer } from '@shared/lib/tools/renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { cn } from '@shared/lib/utils/cn'
@@ -35,8 +34,8 @@ interface BrowserActivityLogProps {
 // Only each transcript's data, so the result keeps its identity until a
 // transcript's content changes: without `combine`, useQueries returns a new
 // array on every render and a fetch starting or ending re-renders the log.
-function subagentTranscripts(results: UseQueryResult<ApiMessageOrBoundary[]>[]) {
-  return results.map((result) => result.data)
+function subagentTranscripts(results: UseQueryResult<MessagesPage>[]) {
+  return results.map((result) => result.data?.messages)
 }
 
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
@@ -63,19 +62,18 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
     return ids
   }, [messages])
 
-  // Fetch messages for ALL subagents in parallel
+  // The trailing page of every subagent's transcript, in parallel: the same
+  // cache entries the subagent cards read, refreshed with deltas.
+  const queryClient = useQueryClient()
   const transcripts = useQueries({
-    queries: subagentIds.map((subId) => ({
-      queryKey: ['subagent-messages', sessionId, agentSlug, subId],
-      queryFn: async () => {
-        const res = await apiFetch(
-          `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subId}/messages`
-        )
-        if (!res.ok) throw new Error('Failed to fetch subagent messages')
-        return res.json() as Promise<ApiMessageOrBoundary[]>
-      },
-      refetchInterval: false as const,
-    })),
+    queries: subagentIds.map((subId) => {
+      const queryKey = ['subagent-messages', sessionId, agentSlug, subId]
+      return {
+        queryKey,
+        queryFn: messagesQueryFn(queryClient, queryKey, subagentMessagesUrl(agentSlug, sessionId, subId)),
+        refetchInterval: false as const,
+      }
+    }),
     combine: subagentTranscripts,
   })
 

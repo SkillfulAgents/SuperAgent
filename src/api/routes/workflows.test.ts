@@ -121,6 +121,29 @@ describe('workflow agent-messages route', () => {
     }
   })
 
+  it('serves the same items as a trailing page, and a delta after the first one', async () => {
+    const url = `/api/agents/my-agent/sessions/${SID}/workflows/${RUN}/agents/ae6ffae379942dd19/messages`
+    const whole = await (await get(url)).json()
+
+    const res = await get(`${url}?limit=300&media=ref`)
+    expect(res.status).toBe(200)
+    const page = await res.json()
+    expect(page.messages.map((item: { id: string }) => item.id)).toEqual(whole.map((item: { id: string }) => item.id))
+    expect(page.nextCursor).toBeNull()
+
+    const delta = await (await get(`${url}?after=${page.messages[0].id}&media=ref`)).json()
+    expect(delta.resync).toBeUndefined()
+    expect(delta.messages.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('serves an empty page for a valid-but-missing agent id', async () => {
+    const res = await get(
+      `/api/agents/my-agent/sessions/${SID}/workflows/${RUN}/agents/doesnotexist/messages?limit=300`
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ messages: [], nextCursor: null })
+  })
+
   it('returns [] for a valid-but-missing agent id (no 500)', async () => {
     const res = await get(
       `/api/agents/my-agent/sessions/${SID}/workflows/${RUN}/agents/doesnotexist/messages`

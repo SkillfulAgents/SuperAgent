@@ -9,7 +9,8 @@ import type { ApiMessage } from '@shared/lib/types/api'
 const mockMessages: ApiMessage[] = []
 const mockSubagentMessages: Record<string, ApiMessage[]> = {}
 
-vi.mock('@renderer/hooks/use-messages', () => ({
+vi.mock('@renderer/hooks/use-messages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-messages')>()),
   useMessages: () => ({ data: mockMessages }),
 }))
 
@@ -27,7 +28,7 @@ const mockApiFetch = vi.fn((url: string) => {
   const msgs = subId ? mockSubagentMessages[subId] ?? [] : []
   return Promise.resolve({
     ok: true,
-    json: () => Promise.resolve(msgs),
+    json: () => Promise.resolve({ messages: msgs, nextCursor: null }),
   })
 })
 
@@ -162,10 +163,12 @@ describe('BrowserActivityLog', () => {
     // Wait for queries to fire
     await vi.waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
-        expect.stringContaining('subagent/sub-1/messages')
+        expect.stringContaining('subagent/sub-1/messages'),
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
       )
       expect(mockApiFetch).toHaveBeenCalledWith(
-        expect.stringContaining('subagent/sub-2/messages')
+        expect.stringContaining('subagent/sub-2/messages'),
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
       )
     })
   })

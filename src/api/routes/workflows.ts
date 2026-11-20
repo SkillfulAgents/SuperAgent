@@ -3,6 +3,7 @@ import { AgentRead } from '../middleware/auth'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { streamJsonArrayResponse } from '../stream-json-array'
+import { mediaResponse, messagesListRequest, pagedMessagesResponse } from '../messages-response'
 
 /**
  * Read-only routes backing the per-agent workflow drawer (SUP-308). A dynamic
@@ -53,6 +54,15 @@ workflowRoutes.get(
         return c.json({ error: 'Invalid workflow run or agent id' }, 400)
       }
 
+      const paging = messagesListRequest(c)
+      if (paging) {
+        if (!paging.success) return c.json({ error: 'Invalid pagination' }, 400)
+        return await pagedMessagesResponse(c, agentRegistry.get(agentSlug), sessionId, paging.data, async () => {}, {
+          subagentId: workflowAgentId,
+          workflowRunId: runId,
+        })
+      }
+
       const entries = (await agentRegistry
         .get(agentSlug)
         .sessions.workflowAgentTranscript(sessionId, runId, workflowAgentId)) as any[]
@@ -68,8 +78,25 @@ workflowRoutes.get(
       if (error instanceof WorkspaceFileError) {
         return c.json({ error: 'Invalid workflow run or agent id' }, 400)
       }
+      if (c.req.raw.signal.aborted) return new Response(null, { status: 499 })
       console.error('Failed to fetch workflow agent messages:', error)
       return c.json({ error: 'Failed to fetch workflow agent messages' }, 500)
     }
   }
 )
+
+// Bytes of one image a workflow agent's `media=ref` page addressed.
+workflowRoutes.get('/:id/sessions/:sessionId/workflows/:runId/agents/:agentId/media/:ref', AgentRead(), async (c) => {
+  try {
+    const actor = agentRegistry.get(c.req.param('id'))
+    return await mediaResponse(c, actor, c.req.param('sessionId'), {
+      subagentId: c.req.param('agentId'),
+      workflowRunId: c.req.param('runId'),
+    })
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return c.json({ error: 'Workflow agent transcript not found' }, 404)
+    if (c.req.raw.signal.aborted) return new Response(null, { status: 499 })
+    console.error('Failed to fetch workflow agent media:', error)
+    return c.json({ error: 'Failed to fetch media' }, 500)
+  }
+})

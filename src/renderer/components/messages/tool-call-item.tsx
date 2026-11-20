@@ -8,6 +8,7 @@ import {
   parseToolResult,
   type ParsedToolResultDocument,
   type ParsedToolResultImage,
+  type ToolResultMediaContext,
 } from '@renderer/lib/parse-tool-result'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
@@ -25,6 +26,8 @@ interface ToolCallItemProps {
    * against this session — the result itself is not trusted to say where its
    * images live (see parse-tool-result). */
   sessionId?: string
+  /** The subagent transcript inside `sessionId` this result belongs to. */
+  subagent?: ToolResultMediaContext['subagent']
   isSessionActive?: boolean
 }
 
@@ -269,7 +272,7 @@ function ToolResultDocument({ document }: { document: ParsedToolResultDocument }
   )
 }
 
-function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
+function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, subagent, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = useMemo(() => getToolRenderer(toolCall.name, toolCall.input), [toolCall.name, toolCall.input])
@@ -288,8 +291,8 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
 
   // Parse result into text + images
   const parsed = useMemo(
-    () => parseToolResult(toolCall.result, agentSlug && sessionId ? { agentSlug, sessionId } : undefined),
-    [toolCall.result, agentSlug, sessionId]
+    () => parseToolResult(toolCall.result, agentSlug && sessionId ? { agentSlug, sessionId, subagent } : undefined),
+    [toolCall.result, agentSlug, sessionId, subagent]
   )
   const resultStr = parsed.text
   const resultImages = parsed.images

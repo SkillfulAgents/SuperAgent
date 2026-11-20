@@ -44,8 +44,8 @@ import {
   injectDashboardRuntime,
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
-import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes } from '@shared/lib/messages-page'
 import { streamJsonArrayResponse } from '../stream-json-array'
+import { mediaResponse, messagesListRequest, pagedMessagesResponse } from '../messages-response'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
@@ -71,7 +71,6 @@ import {
   WorkspaceFileError,
   joinWorkspacePath,
   normalizeWorkspacePath,
-  decodeMediaRef,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
   deliveryFailure,
@@ -2433,26 +2432,6 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   }
 })
 
-const messagesListQuerySchema = z
-  .object({
-    limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
-    cursor: z.string().min(1).max(200).optional(),
-    after: z.string().min(1).max(200).optional(),
-    // Opt-in: images ship as refs to the media endpoint instead of inline
-    // base64. Absent means inline, so clients that predate the media endpoint
-    // (and the unpaginated path below) are unaffected.
-    media: z.literal('ref').optional(),
-    // Opt-in `max_bytes`: a soft budget on the raw transcript bytes behind a
-    // backward page, clamped by clampMessagesPageBytes. Absent means the
-    // reader's default, so clients that predate it are unaffected. Validated
-    // on every paginated request, honored on backward pages only: a forward
-    // delta is already bounded by the live turn.
-    maxBytes: z.coerce.number().int().min(1).optional(),
-  })
-  // Backward paging and the forward delta are different protocols; a request
-  // mixing them has no coherent meaning.
-  .refine((q) => !(q.cursor && q.after), { message: 'cursor and after are mutually exclusive' })
-
 // Presentation is derived fresh per response (not persisted), so provider copy
 // changes apply to history retroactively.
 async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
@@ -2531,19 +2510,6 @@ async function annotateAndRecoverMessages(
   ])
 }
 
-// Buffers, not strings: Readable.toWeb hands chunks straight to the web
-// ReadableStream, whose byte consumers reject non-Uint8Array chunks.
-function* messagesPageJsonChunks(page: {
-  messages: TransformedItem[]
-  nextCursor: string | null
-}): Generator<Buffer> {
-  yield Buffer.from('{"messages":[')
-  for (let i = 0; i < page.messages.length; i++) {
-    yield Buffer.from((i === 0 ? '' : ',') + JSON.stringify(page.messages[i]))
-  }
-  yield Buffer.from(`],"nextCursor":${JSON.stringify(page.nextCursor)}}`)
-}
-
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
@@ -2551,21 +2517,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const sessionId = c.req.param('sessionId')
     const actor = agentRegistry.get(agentSlug)
 
-    const rawLimit = c.req.query('limit')
-    const rawCursor = c.req.query('cursor')
-    const rawAfter = c.req.query('after')
-    const rawMedia = c.req.query('media')
-    const rawMaxBytes = c.req.query('max_bytes')
-    // `media` and `max_bytes` select the paginated branch too: they are only
-    // honored there, so leaving them out would silently serve the full
-    // transcript to a client that asked for refs or for a bounded response —
-    // and skip validating the value at all.
-    const paginated =
-      rawLimit !== undefined ||
-      rawCursor !== undefined ||
-      rawAfter !== undefined ||
-      rawMedia !== undefined ||
-      rawMaxBytes !== undefined
+    const paging = messagesListRequest(c)
 
     if (!(await actor.sessions.exists(sessionId))) {
       // A live session whose first turn has not persisted anything yet: the
@@ -2576,7 +2528,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       // keeps showing the running turn and picks the lines up as they land.
       // (sessionIsKnown keeps the containment guarantee for the id.)
       if ((await actor.sessions.live(sessionId)).isActive && (await actor.sessions.isKnown(sessionId))) {
-        return paginated ? c.json({ messages: [], nextCursor: null }) : c.json([])
+        return paging ? c.json({ messages: [], nextCursor: null }) : c.json([])
       }
       // No JSONL transcript on disk — e.g. it was deleted by the CLI's
       // retention cleanup while the metadata entry lingers in the nav. Signal
@@ -2585,62 +2537,11 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
-    if (paginated) {
-      const parsed = messagesListQuerySchema.safeParse({
-        ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
-        ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
-        ...(rawAfter !== undefined ? { after: rawAfter } : {}),
-        ...(rawMedia !== undefined ? { media: rawMedia } : {}),
-        ...(rawMaxBytes !== undefined ? { maxBytes: rawMaxBytes } : {}),
-      })
-      if (!parsed.success) {
-        return c.json({ error: 'Invalid pagination' }, 400)
-      }
-      // The renderer aborts superseded refetches; honor that server-side too.
-      // The signal threads down to the tail reader so an abandoned request
-      // stops paying for transcript reads (multi-second on network volumes)
-      // instead of running the full read/parse/serialize pipeline to
-      // completion for a client that hung up.
-      if (parsed.data.after !== undefined) {
-        // Forward delta: upserted items at-or-after the anchor (a live-session
-        // refetch only cares about lines appended since the last read). The
-        // window is bounded by the active turn near EOF, so this stays a few
-        // KB while the full trailing page is multi-MB on long sessions.
-        const delta = await actor.messages.delta(sessionId, {
-          after: parsed.data.after,
-          signal: c.req.raw.signal,
-          media: parsed.data.media,
-        })
-        c.req.raw.signal.throwIfAborted()
-        await annotateAndRecoverMessages(delta.messages, agentSlug, sessionId)
-        c.req.raw.signal.throwIfAborted()
-        return c.json({
-          messages: delta.messages,
-          anchor: delta.anchor,
-          ...(delta.resync ? { resync: true as const } : {}),
-        })
-      }
-      // Without `max_bytes` no budget is passed and the reader's default
-      // applies — the same call as before the parameter existed.
-      const byteBudget = clampMessagesPageBytes(parsed.data.maxBytes)
-      const page = await actor.messages.page(sessionId, {
-        limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
-        cursor: parsed.data.cursor,
-        signal: c.req.raw.signal,
-        media: parsed.data.media,
-        ...(byteBudget !== undefined ? { byteBudget } : {}),
-      })
-      c.req.raw.signal.throwIfAborted()
-      await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
-      c.req.raw.signal.throwIfAborted()
-      // Serialize item-by-item instead of one JSON.stringify of the whole
-      // envelope: pages hold multi-MB tool results, and a monolithic response
-      // string was one of the transients that made concurrent page fetches
-      // OOM the process. Readable.from pulls lazily, so writes see real
-      // backpressure from the socket.
-      return c.body(Readable.toWeb(Readable.from(messagesPageJsonChunks(page))) as ReadableStream, 200, {
-        'Content-Type': 'application/json',
-      })
+    if (paging) {
+      if (!paging.success) return c.json({ error: 'Invalid pagination' }, 400)
+      return await pagedMessagesResponse(c, actor, sessionId, paging.data, (items) =>
+        annotateAndRecoverMessages(items, agentSlug, sessionId),
+      )
     }
 
     const messages = await actor.messages.withCompact(sessionId)
@@ -2708,25 +2609,7 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
-    const ref = decodeMediaRef(c.req.param('ref'))
-    if (!ref) return c.json({ error: 'Invalid media reference' }, 400)
-
-    const blob = await actor.messages.media(sessionId, ref, c.req.raw.signal)
-    // Deletion and retention rewrite transcripts in place, so a ref the client
-    // still holds can address bytes that have moved or gone. Gone for good —
-    // the client shows a placeholder rather than retrying.
-    if (!blob) return c.json({ error: 'Media no longer available' }, 410)
-
-    return c.body(blob.stream, 200, {
-      'Content-Type': blob.mimeType,
-      'Content-Length': String(blob.bytes),
-      // A ref names an immutable byte span: any edit to the transcript
-      // invalidates it rather than changing what it points at.
-      'Cache-Control': 'private, max-age=31536000, immutable',
-      // The type comes from a magic-number sniff, never from the ref — keep
-      // the browser from second-guessing it.
-      'X-Content-Type-Options': 'nosniff',
-    })
+    return await mediaResponse(c, actor, sessionId)
   } catch (error) {
     if (c.req.raw.signal.aborted) {
       return new Response(null, { status: 499 })
@@ -2782,13 +2665,32 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const subagentId = c.req.param('agentId')
+    const actor = agentRegistry.get(agentSlug)
 
     // sessionId and subagentId are unvalidated URL segments; the actor keeps
     // the read inside this agent's own sessions directory and refuses an id
     // that cannot name a transcript. Either refusal is "no such transcript".
+    const paging = messagesListRequest(c)
+    if (paging) {
+      if (!paging.success) return c.json({ error: 'Invalid pagination' }, 400)
+      try {
+        return await pagedMessagesResponse(
+          c,
+          actor,
+          sessionId,
+          paging.data,
+          (items) => attachProviderErrorPresentations(items, agentSlug, sessionId),
+          { subagentId },
+        )
+      } catch (error) {
+        if (error instanceof WorkspaceFileError) return c.json({ error: 'Subagent transcript not found' }, 404)
+        throw error
+      }
+    }
+
     let entries: JsonlEntry[]
     try {
-      entries = await agentRegistry.get(agentSlug).sessions.subagentTranscript(sessionId, subagentId)
+      entries = await actor.sessions.subagentTranscript(sessionId, subagentId)
     } catch (error) {
       if (error instanceof WorkspaceFileError) {
         return c.json({ error: 'Subagent transcript not found' }, 404)
@@ -2808,8 +2710,24 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       tags: { component: 'agents', operation: 'stream-subagent-messages' },
     })
   } catch (error) {
+    if (c.req.raw.signal.aborted) return new Response(null, { status: 499 })
     console.error('Failed to fetch subagent messages:', error)
     return c.json({ error: 'Failed to fetch subagent messages' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/subagent/:agentId/media/:ref - Bytes
+// of one image a subagent's `media=ref` page addressed. The read checks the
+// transcript's real location, as the subagent messages route does.
+agents.get('/:id/sessions/:sessionId/subagent/:agentId/media/:ref', AgentRead(), async (c) => {
+  try {
+    const actor = agentRegistry.get(getAgentId(c))
+    return await mediaResponse(c, actor, c.req.param('sessionId'), { subagentId: c.req.param('agentId') })
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return c.json({ error: 'Subagent transcript not found' }, 404)
+    if (c.req.raw.signal.aborted) return new Response(null, { status: 499 })
+    console.error('Failed to fetch subagent media:', error)
+    return c.json({ error: 'Failed to fetch media' }, 500)
   }
 })
 

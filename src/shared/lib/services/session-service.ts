@@ -43,6 +43,7 @@ import {
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { ForkOwnRows } from '@shared/lib/utils/fork-subagent-transcript'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
 import { background } from '@shared/lib/background'
 import {
@@ -849,7 +850,8 @@ async function readTransformedTail(
   signal?: AbortSignal,
   /** True replaces inline base64 images with refs (see session-media); the
    * default keeps them inline, which is what pre-`media=ref` clients expect. */
-  media?: boolean
+  media?: boolean,
+  forkRows?: ForkOwnRows
 ): Promise<{
   transformed: TransformedItem[]
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
@@ -865,6 +867,9 @@ async function readTransformedTail(
     const parsed = parseJsonlLine<JsonlEntry>(line)
     if (!parsed) continue
     const normalized = normalizeQueuedCommandEntry(parsed)
+    const own = forkRows?.classify(normalized) ?? 'keep'
+    if (own === 'restart') entries.length = 0
+    if (own !== 'keep') continue
     if (
       isMessageOrSystemDisplayEntry(normalized) &&
       !('isMeta' in normalized && normalized.isMeta)
@@ -875,7 +880,7 @@ async function readTransformedTail(
       entries.push(normalized)
     }
   }
-  return { transformed: transformMessages(entries), entries, reachedStart }
+  return { transformed: transformMessages(entries), entries, reachedStart: reachedStart || !!forkRows?.ownStart }
 }
 
 /** tool_use ids of tool_result blocks recorded after the anchor entry — new
@@ -1346,7 +1351,8 @@ async function readEntriesRange(
   endOffset: number | undefined,
   signal?: AbortSignal,
   media?: boolean,
-  chunkBytes?: number
+  chunkBytes?: number,
+  forkRows?: ForkOwnRows
 ): Promise<{
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   /** Line-start offset per uuid, oldest occurrence (the transform's dedupe
@@ -1373,6 +1379,12 @@ async function readEntriesRange(
     const parsed = parseJsonlLine<JsonlEntry>(line)
     if (!parsed) continue
     const normalized = normalizeQueuedCommandEntry(parsed)
+    const own = forkRows?.classify(normalized) ?? 'keep'
+    if (own === 'restart') {
+      entries.length = 0
+      rowOffsets.clear()
+    }
+    if (own !== 'keep') continue
     if (
       isMessageOrSystemDisplayEntry(normalized) &&
       !('isMeta' in normalized && normalized.isMeta)
@@ -1400,19 +1412,43 @@ async function readEntriesRange(
  * sets the request's memory footprint. Pages truncated by the byte budget are
  * valid short pages: nextCursor points at their first item and the client's
  * scroll-up paging walks the rest. */
+export interface MessagesPageOptions {
+  limit: number
+  cursor?: string
+  signal?: AbortSignal
+  byteBudget?: number
+  /** `'ref'` replaces inline base64 images with media refs (see session-media). */
+  media?: 'ref'
+}
+
+/** A transcript the page and delta readers read: a session's own, or one inside it. */
+export interface TranscriptFile {
+  path: string
+  /** Names the transcript in log lines. */
+  label: string
+  /** A subagent's transcript: when the subagent is a fork, it opens with rows it inherited. */
+  subagent?: boolean
+}
+
+function sessionTranscriptFile(store: SessionStore, sessionId: string): TranscriptFile {
+  return { path: transcriptPath(store, sessionId), label: `session ${sessionId}` }
+}
+
 export async function getSessionMessagesPage(
   store: SessionStore,
   sessionId: string,
-  opts: {
-    limit: number
-    cursor?: string
-    signal?: AbortSignal
-    byteBudget?: number
-    /** `'ref'` replaces inline base64 images with media refs (see session-media). */
-    media?: 'ref'
-  }
+  opts: MessagesPageOptions
 ): Promise<SessionMessagesPage> {
-  const jsonlPath = transcriptPath(store, sessionId)
+  return getTranscriptMessagesPage(store, sessionTranscriptFile(store, sessionId), opts)
+}
+
+export async function getTranscriptMessagesPage(
+  store: SessionStore,
+  file: TranscriptFile,
+  opts: MessagesPageOptions
+): Promise<SessionMessagesPage> {
+  const jsonlPath = file.path
+  const forkRows = () => (file.subagent ? new ForkOwnRows() : undefined)
   const { limit, signal } = opts
   const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
   // `uuid:offset` seeks to the row; a bare uuid scans from EOF as before.
@@ -1428,6 +1464,7 @@ export async function getSessionMessagesPage(
   let scan: PageWindowScan
   let entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   let rowOffsets: Map<string, number>
+  let windowRows: ForkOwnRows | undefined
   try {
     scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, cursorOffset, byteBudget, signal })
     signal?.throwIfAborted()
@@ -1437,7 +1474,7 @@ export async function getSessionMessagesPage(
       // ends pagination if it is gone.
       console.warn(
         `getSessionMessagesPage: cursor offset ${cursorOffset} for ${cursor} is stale ` +
-        `in session ${sessionId}; falling back to the id scan`
+        `in ${file.label}; falling back to the id scan`
       )
       cursorOffset = undefined
       scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal })
@@ -1450,11 +1487,12 @@ export async function getSessionMessagesPage(
       if (!scan.reachedStart) {
         console.warn(
           `getSessionMessagesPage: cursor ${cursor} not found within ` +
-          `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
+          `${MAX_TAIL_LINES} tail lines of ${file.label}; ending pagination`
         )
       }
       return { messages: [], nextCursor: null }
     }
+    windowRows = forkRows()
     ;({ entries, rowOffsets } = await readEntriesRange(
       store,
       jsonlPath,
@@ -1462,7 +1500,8 @@ export async function getSessionMessagesPage(
       scan.endOffset,
       signal,
       opts.media === 'ref',
-      readChunkFor(scan.readBytes)
+      readChunkFor(scan.readBytes),
+      windowRows
     ))
   } catch (error) {
     if (isAbsentFile(error)) {
@@ -1472,7 +1511,7 @@ export async function getSessionMessagesPage(
   }
   signal?.throwIfAborted()
   let transformed = transformMessages(entries)
-  let reachedStart = scan.reachedStart
+  let reachedStart = scan.reachedStart || !!windowRows?.ownStart
   let dropHead = scan.dropHead && !reachedStart
 
   if (cursor) {
@@ -1505,12 +1544,13 @@ export async function getSessionMessagesPage(
       // and the copy is served rather than skipped.
       console.warn(
         `getSessionMessagesPage: cursor ${cursor} is a replayed row of a merged ` +
-        `response in session ${sessionId}; paging from its newest copy`
+        `response in ${file.label}; paging from its newest copy`
       )
       try {
         scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal, anchor: 'shallowest' })
         signal?.throwIfAborted()
         if (!scan.found) return { messages: [], nextCursor: null }
+        windowRows = forkRows()
         ;({ entries, rowOffsets } = await readEntriesRange(
           store,
           jsonlPath,
@@ -1518,7 +1558,8 @@ export async function getSessionMessagesPage(
           scan.endOffset,
           signal,
           opts.media === 'ref',
-          readChunkFor(scan.readBytes)
+          readChunkFor(scan.readBytes),
+          windowRows
         ))
       } catch (error) {
         if (isAbsentFile(error)) return { messages: [], nextCursor: null }
@@ -1526,7 +1567,7 @@ export async function getSessionMessagesPage(
       }
       signal?.throwIfAborted()
       transformed = transformMessages(entries)
-      reachedStart = scan.reachedStart
+      reachedStart = scan.reachedStart || !!windowRows?.ownStart
       dropHead = scan.dropHead && !reachedStart
       idx = transformed.findIndex((item) => item.id === cursor)
       // The copy renders as the phantom when its original lies outside this
@@ -1557,7 +1598,7 @@ export async function getSessionMessagesPage(
       // page.
       console.warn(
         `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
-        `read for session ${sessionId}; ending pagination`
+        `read for ${file.label}; ending pagination`
       )
       return { messages: [], nextCursor: null }
     }
@@ -1567,7 +1608,7 @@ export async function getSessionMessagesPage(
     // Sequential walks end here when a cap truncates the page to empty.
     if (messages.length === 0 && !reachedStart) {
       console.warn(
-        `getSessionMessagesPage: pagination for session ${sessionId} hit a ` +
+        `getSessionMessagesPage: pagination for ${file.label} hit a ` +
         `scan cap below cursor ${cursor}; deeper history is unreachable`
       )
     }
@@ -1579,7 +1620,7 @@ export async function getSessionMessagesPage(
   const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
   if (messages.length === 0 && !reachedStart) {
     console.warn(
-      `getSessionMessagesPage: window for session ${sessionId} hit the byte ` +
+      `getSessionMessagesPage: window for ${file.label} hit the byte ` +
       `hard cap before a complete display item; serving an empty page`
     )
   }
@@ -1612,12 +1653,26 @@ const DELTA_MAX_TAIL_LINES = 10_000
  * tail window that cuts an assistant message mid-merge gives the partial item
  * a different id, so an anchor inside a cut group misses and forces growth —
  * anchors always resolve against complete items. */
+export interface MessagesDeltaOptions {
+  after: string
+  signal?: AbortSignal
+  media?: 'ref'
+}
+
 export async function getSessionMessagesDelta(
   store: SessionStore,
   sessionId: string,
-  opts: { after: string; signal?: AbortSignal; media?: 'ref' }
+  opts: MessagesDeltaOptions
 ): Promise<SessionMessagesDelta> {
-  const jsonlPath = transcriptPath(store, sessionId)
+  return getTranscriptMessagesDelta(store, sessionTranscriptFile(store, sessionId), opts)
+}
+
+export async function getTranscriptMessagesDelta(
+  store: SessionStore,
+  file: TranscriptFile,
+  opts: MessagesDeltaOptions
+): Promise<SessionMessagesDelta> {
+  const jsonlPath = file.path
   if (!(await transcriptExists(store, jsonlPath))) {
     return { messages: [], anchor: null, resync: true }
   }
@@ -1631,7 +1686,8 @@ export async function getSessionMessagesDelta(
       jsonlPath,
       maxLines,
       signal,
-      opts.media === 'ref'
+      opts.media === 'ref',
+      file.subagent ? new ForkOwnRows() : undefined
     )
     const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
 

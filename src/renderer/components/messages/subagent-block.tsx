@@ -90,8 +90,17 @@ export function SubAgentBlock({
   const isRunning = status === 'running'
   const [expanded, setExpanded] = useState(isRunning)
 
-  // Fetch subagent messages — poll while running so concurrent background agents stay updated
-  const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId)
+  // The trailing page of the subagent's transcript; stream events refresh it with deltas.
+  const {
+    data: subMessages,
+    fetchOlder,
+    hasOlder,
+    isFetchingOlder,
+  } = useSubagentMessages(sessionId, agentSlug, subagentId)
+  const media = useMemo(
+    () => (subagentId ? { agentSlug, sessionId, subagent: { subagentId } } : undefined),
+    [agentSlug, sessionId, subagentId],
+  )
 
   // The parent selects this block's original or resumed run. A SendMessage
   // run has a different tool id but still streams into the same Agent block.
@@ -169,7 +178,12 @@ export function SubAgentBlock({
   const DEFAULT_VISIBLE = 6
   const [showAll, setShowAll] = useState(false)
   const totalItems = flatItems.length
-  const hasMore = totalItems > DEFAULT_VISIBLE
+  const hasMore = totalItems > DEFAULT_VISIBLE || hasOlder
+
+  // "Show all" walks the older pages until the transcript's start.
+  useEffect(() => {
+    if (showAll && hasOlder && !isFetchingOlder) void fetchOlder()
+  }, [showAll, hasOlder, isFetchingOlder, fetchOlder])
   const visibleItems = showAll || !hasMore
     ? flatItems
     : flatItems.slice(totalItems - DEFAULT_VISIBLE)
@@ -232,11 +246,11 @@ export function SubAgentBlock({
                 onClick={() => setShowAll(true)}
                 className="text-xs text-foreground hover:text-foreground/70 font-medium transition-colors py-1"
               >
-                Show all ({totalItems} items)
+                Show all ({totalItems}{hasOlder ? '+' : ''} items)
               </button>
             )}
 
-            <TranscriptItems items={visibleItems} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+            <TranscriptItems items={visibleItems} agentSlug={agentSlug} isSessionActive={isSessionActive} media={media} />
 
             {/* Streaming text from subagent (not yet persisted) */}
             {subagentStreamingMessage && !isStreamingMessagePersisted && (

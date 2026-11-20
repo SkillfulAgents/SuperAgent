@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { flattenAssistantMessages, TranscriptItems } from '@renderer/components/messages/agent-transcript'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
+import type { ToolResultMediaContext } from '@renderer/lib/parse-tool-result'
 
 /**
  * Renders one workflow subagent's transcript at the same fidelity as a regular
@@ -13,10 +14,12 @@ export function WorkflowAgentTranscript({
   messages,
   agentSlug,
   isRunning,
+  media,
 }: {
   messages: ApiMessageOrBoundary[] | undefined
   agentSlug: string
   isRunning: boolean
+  media?: ToolResultMediaContext
 }) {
   const flatItems = useMemo(() => flattenAssistantMessages(messages), [messages])
 
@@ -32,7 +35,7 @@ export function WorkflowAgentTranscript({
     <div className="space-y-3">
       {/* While the agent runs, an in-flight tool (no result yet) must show the running
           spinner — without isSessionActive it renders as the "cancelled" icon. */}
-      <TranscriptItems items={flatItems} agentSlug={agentSlug} isSessionActive={isRunning} />
+      <TranscriptItems items={flatItems} agentSlug={agentSlug} isSessionActive={isRunning} media={media} />
     </div>
   )
 }

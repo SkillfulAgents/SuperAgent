@@ -661,7 +661,7 @@ describe('sibling queryFns abort wiring', () => {
     renderHook(() => useSubagentMessages('s1', 'agent-1', 'sub-1'), { wrapper })
 
     await waitFor(() => expect(inflight).toHaveLength(1))
-    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/subagent/sub-1/messages')
+    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/subagent/sub-1/messages?limit=300&media=ref')
     expect(inflight[0].init?.signal).toBeInstanceOf(AbortSignal)
   })
 
@@ -679,7 +679,7 @@ describe('sibling queryFns abort wiring', () => {
     renderHook(() => useWorkflowAgentMessages('s1', 'agent-1', 'run-1', 'agent-3'), { wrapper })
 
     await waitFor(() => expect(inflight).toHaveLength(1))
-    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/workflows/run-1/agents/agent-3/messages')
+    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/workflows/run-1/agents/agent-3/messages?limit=300&media=ref')
     expect(inflight[0].init?.signal).toBeInstanceOf(AbortSignal)
   })
 })

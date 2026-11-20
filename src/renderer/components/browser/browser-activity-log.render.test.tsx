@@ -61,16 +61,12 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (url: string) => {
     fetched.push(url)
     const subagent = url.match(/subagent\/([^/]+)\/messages/)
-    let body: unknown
-    if (subagent) {
-      body = clone(server.subagents[subagent[1]] ?? [])
-    } else {
-      const after = new URL(url, 'http://test').searchParams.get('after')
-      const from = after ? server.messages.findIndex((m) => m.id === after) : -1
-      body = server.deltas && after && from >= 0
-        ? { messages: clone(server.messages.slice(from)), anchor: after }
-        : { messages: clone(server.messages), nextCursor: null }
-    }
+    const messages = subagent ? server.subagents[subagent[1]] ?? [] : server.messages
+    const after = new URL(url, 'http://test').searchParams.get('after')
+    const from = after ? messages.findIndex((m) => m.id === after) : -1
+    const body = server.deltas && after && from >= 0
+      ? { messages: clone(messages.slice(from)), anchor: after }
+      : { messages: clone(messages), nextCursor: null }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
   },
 }))
@@ -355,8 +351,8 @@ describe('BrowserActivityLog renders', () => {
     ]
     expect(rowLabels().map((label) => label?.replace('tool', ''))).toEqual(expected)
     expect(fetched.filter((url) => url.includes('/subagent/')).sort()).toEqual([
-      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-1/messages`,
-      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-2/messages`,
+      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-1/messages?limit=300&media=ref`,
+      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-2/messages?limit=300&media=ref`,
     ])
   })
 
