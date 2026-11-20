@@ -4716,6 +4716,16 @@ describe('folder upload — POST /:id/upload-folder', () => {
     expect(res.status).toBe(400)
   })
 
+  it('refuses a path on a web deployment, whose machine is not the person’s computer', async () => {
+    declareServerCapabilities(runtimeCapabilities({ os: 'linux', distribution: 'deployment' }))
+
+    const res = await postJson(app, '/api/agents/test-agent/upload-folder', { sourcePath: '/etc' })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Copying a folder by its path is not available on this machine' })
+    expect(mockFsStat).not.toHaveBeenCalled()
+  })
+
   it('returns 400 when source is not a directory', async () => {
     mockFsStat.mockResolvedValue({ isDirectory: () => false })
 
