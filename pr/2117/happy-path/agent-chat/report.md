@@ -1,8 +1,9 @@
 [TEST_PASS]
-[REASON] Opened agent QA-20261120-183748-aq0k, confirmed it was idle, sent "Hello! What is 2+2?", and verified the reply contains "4".
-[STEP] Step 1: navigated to http://localhost:47891 — the Gamut app loaded with the sidebar listing QA-20261120-183748-aq0k (idle).
-[STEP] Step 2: clicked QA-20261120-183748-aq0k in the sidebar — its agent page opened at /agents/qa-20261120-183748-aq0k-7a1z0toru3 with a composer for a new session.
-[STEP] Step 3: verified status — the header status indicator reads "idle", which is an accepted state.
-[STEP] Step 4: typed "Hello! What is 2+2?" into the composer and clicked Send — the view navigated to a new session ("Simple Arithmetic Question Check") with my message in the message list.
-[STEP] Step 5: waited for a response — the assistant reply "2 + 2 = 4." was already present on the first check, so no wait was needed.
-[STEP] Step 6: verified the response mentions "4" — it does ("2 + 2 = 4."). Took a viewport screenshot showing the user message and the reply; the header returned to "idle".
+[REASON] Sent "Hello! What is 2+2?" to the idle agent QA-20261120-191746-vyzk and confirmed the reply contains 4.
+[STEP] Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing agents, including QA-20261120-191746-vyzk (Idle).
+[STEP] Clicked QA-20261120-191746-vyzk in the sidebar — the agent page opened at /agents/qa-20261120-191746-vyzk-td02lj1ial with the header showing "idle".
+[STEP] Verified agent status — status indicator reads "idle", so the precondition of running or idle is met.
+[STEP] Typed "Hello! What is 2+2?" into the message box and confirmed the text appeared in the input before sending.
+[STEP] Clicked the Send button — the app navigated to a new session "Basic Arithmetic Question", the user message appeared in the list, and the activity indicator showed "Working...".
+[STEP] Waited for the "Working..." indicator to disappear — it cleared within the 90-second wait, well inside the 3-minute limit, and the agent returned to "idle".
+[STEP] Verified the response and took a screenshot — the assistant replied "2 + 2 = 4.", which contains the expected 4. No bugs were found.

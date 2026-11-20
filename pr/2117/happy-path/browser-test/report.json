@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Sent the \"Open a browser and go to https://example.com\" prompt to agent QA-20261120-183749-wgkq and confirmed the reply names the page title \"Example Domain\".",
+  "reason": "Ran the 5-step agent browser check: open agent QA-20261120-191747-oqbx, ask it for the page title of https://example.com, and verify \"Example Domain\" comes back.",
   "steps": [
-    "Navigated to http://localhost:47891 — Gamut home loaded with the \"Your Agents\" sidebar listing QA-20261120-183749-wgkq and QA-20261120-183748-aq0k (screenshot: step1-navigate-home.png).",
-    "Clicked QA-20261120-183749-wgkq in the sidebar — agent page opened at /agents/qa-20261120-183749-wgkq-m0kuzzlfxi, status \"idle\", with an empty message box.",
-    "Typed the message into the message box and pressed Enter — Enter did not send. The text stayed in the box with an extra empty line, and I then clicked the Send button. The message posted and a new session \"Check Example.com Page Title\" started with status \"working\" (screenshot: step3-message-sent.png). The placeholder reads \"Press cmd+enter to send\", so Enter inserting a newline appears to be intended behaviour, not a bug.",
-    "Waited up to 180 seconds for \"Example Domain\" to appear — it appeared well within the limit. The turn showed \"Worked for 5s · 3 tool calls · 163,070 tokens\", and the agent went back to \"idle\".",
-    "Verified the response text: \"The title of https://example.com is \"Example Domain\". I've closed the browser.\" — the expected string is present. Took a screenshot showing the response (screenshot: step5-response-verified.png)."
+    "Step 1: Navigated to http://localhost:47891 — the Gamut app loaded (page title \"Gamut\") and the sidebar listed QA-20261120-191747-oqbx under Your Agents.",
+    "Step 2: Clicked the QA-20261120-191747-oqbx entry in the sidebar — the agent page opened at /agents/qa-20261120-191747-oqbx-fwogoegxpj with status \"idle\".",
+    "Step 3: Typed \"Open a browser and go to https://example.com. Tell me the page title.\" into the message box and sent it — the message appeared in the chat and the session switched to \"Working...\" under the title \"Browser Page Title Check\".",
+    "Step 4: Waited 60 seconds, then checked again — the agent had finished (\"Worked for 4s · 3 tool calls · 163,071 tokens\") and the status returned to \"idle\", within the 3-minute limit.",
+    "Step 5: The agent's reply reads: \"The page title at https://example.com is \"Example Domain\". I've closed the browser.\" — this matches the expected text. A viewport screenshot of the chat was taken, showing that reply."
   ],
   "bugs": [],
-  "durationMs": 74482,
-  "sessionId": "eded1c4d-d970-4eaf-9c84-021f29f7b926",
+  "durationMs": 66335,
+  "sessionId": "605f0549-6d8d-4965-82dc-f9b0c68a0a39",
   "cost": {
-    "inputTokens": 8206,
-    "outputTokens": 5802,
-    "cacheCreationTokens": 45582,
-    "cacheReadTokens": 622472,
+    "inputTokens": 7816,
+    "outputTokens": 4436,
+    "cacheCreationTokens": 65186,
+    "cacheReadTokens": 635401,
     "model": "claude-haiku-5-5",
-    "totalCostUsd": 0.156441
+    "totalCostUsd": 0.175019
   }
 }
