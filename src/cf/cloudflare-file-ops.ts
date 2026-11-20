@@ -35,6 +35,13 @@ const CHUNK_BYTES = 64 * 1024
 const encodePath = (rel: string) => rel.split('/').map(encodeURIComponent).join('/')
 const toBytes = (bytes: Uint8Array | string) => (typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes)
 
+/** The workspace path of a file to write: the root is a folder, never a file. */
+function filePath(path: string): string {
+  const rel = normalizeWorkspacePath(path)
+  if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
+  return rel
+}
+
 async function failed(response: Response, rel: string): Promise<never> {
   if (response.status === 404) throw new WorkspaceFileError('not-found')
   if (response.status === 403) throw new WorkspaceFileError('outside-workspace')
@@ -233,13 +240,13 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
     },
 
     async putDoc(path, bytes) {
-      await upload(normalizeWorkspacePath(path), toBytes(bytes))
+      await upload(filePath(path), toBytes(bytes))
     },
 
     // A stream goes to a running container as it arrives, so a large upload is never whole in
     // memory. Asleep, the saved workspace hashes the whole file, so it is read first.
     async write(path, body) {
-      const rel = normalizeWorkspacePath(path)
+      const rel = filePath(path)
       if (body instanceof Uint8Array) {
         await upload(rel, body)
         return { size: body.byteLength }
@@ -300,7 +307,7 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
     // end of the file, and the saved workspace takes one append at a time. A line is never lost to
     // another writer of the same file.
     async append(path, bytes) {
-      const rel = normalizeWorkspacePath(path)
+      const rel = filePath(path)
       if ((await sleeping.appendToFile(rel, toBytes(bytes))) === 'not-a-file') throw new WorkspaceFileError('not-a-file')
     },
 
