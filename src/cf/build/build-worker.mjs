@@ -4,8 +4,9 @@
 // stays ESM so wrangler sees the Durable Object classes it exports.
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { transformSync as stripTypes } from 'esbuild'
+import { buildSync, transformSync as stripTypes } from 'esbuild'
 import { transformSync } from '@babel/core'
 
 const root = fileURLToPath(new URL('../../..', import.meta.url))
@@ -39,6 +40,27 @@ function emit(from) {
   fs.writeFileSync(to.replace(/\.tsx?$/, '.js'), code)
 }
 
+// Wrangler resolves packages by their browser entries. The S3 client's browser build cannot run on a Worker
+// (its XML parser needs DOMParser, and it cannot read a Node response body), and its Node build breaks once
+// its own packages resolve to their browser entries. So its Node build is bundled here as one module, and
+// wrangler.jsonc puts that module in the package's place.
+function bundleNodeBuild(name, outfile) {
+  const names = Object.keys(createRequire(entry)(name)).filter(key => key !== 'default' && key !== '__esModule')
+  const options = {
+    stdin: { contents: `export { ${names.join(', ')} } from '${name}'`, resolveDir: root },
+    bundle: true, format: 'esm', platform: 'node', target: 'es2022', logLevel: 'warning', write: false,
+  }
+  // The bundle loads Node's own modules with `require`, which a Worker has only for files it bundled as
+  // CommonJS. They are imported up front instead, and this `require` hands them out.
+  const required = [...new Set([...buildSync(options).outputFiles[0].text.matchAll(/__require\("([^"]+)"\)/g)].map(match => match[1]))]
+  const banner = [
+    ...required.map((id, i) => `import * as node${i} from '${id.startsWith('node:') ? id : `node:${id}`}'`),
+    `const nodeModules = { ${required.map((id, i) => `'${id}': node${i}.default ?? node${i}`).join(', ')} }`,
+    "const require = id => { if (id in nodeModules) return nodeModules[id]; throw new Error(`No Node module ${id} in this bundle`) }",
+  ].join('\n')
+  buildSync({ ...options, write: true, outfile, banner: { js: banner } })
+}
+
 function walk(dir) {
   for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
     const from = path.join(dir, item.name)
@@ -50,6 +72,7 @@ function walk(dir) {
 fs.rmSync(out, { recursive: true, force: true })
 for (const dir of sources) walk(path.join(root, dir))
 fs.writeFileSync(workersModule, "export * from 'cloudflare:workers'\n")
+bundleNodeBuild('@aws-sdk/client-s3', path.join(out, 'vendor/aws-sdk-client-s3.mjs'))
 // Cloudflare serves the hashed bundles and the icons itself, without the Worker (`run_worker_first`
 // in wrangler.jsonc), so how long a browser keeps them is set here, by the rule of index.ts.
 const assets = path.join(root, 'dist/renderer')

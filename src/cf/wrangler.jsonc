@@ -16,6 +16,7 @@
   "minify": true,
   // What Workers lacks, bundled in place of the package (build/shims/).
   "alias": {
+    "@aws-sdk/client-s3": "../../dist/cf-worker/vendor/aws-sdk-client-s3.mjs",
     "ws": "./build/shims/ws.ts",
     "express": "./build/shims/node-only.ts",
     "raw-body": "./build/shims/node-only.ts",
