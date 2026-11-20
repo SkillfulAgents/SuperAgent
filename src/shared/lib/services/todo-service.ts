@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, notExists, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
+import { chunksWithinBoundParameters } from '@shared/lib/db/bound-parameters'
 import { todos, type TodoRow } from '@shared/lib/db/schema'
 import {
   TODO_TRANSITIONS,
@@ -313,7 +314,8 @@ export function unlinkSessionStatements(agentSlug: string, sessionIds?: string[]
 /** Lets go of sessions that were deleted. */
 export async function unlinkTodosFromSessions(agentSlug: string, sessionIds: string[]): Promise<void> {
   if (sessionIds.length === 0) return
-  await batch(unlinkSessionStatements(agentSlug, sessionIds))
+  // The wider statement binds six parameters besides the ids.
+  await batch(chunksWithinBoundParameters(sessionIds, 6).flatMap((ids) => unlinkSessionStatements(agentSlug, ids)))
 }
 
 /**

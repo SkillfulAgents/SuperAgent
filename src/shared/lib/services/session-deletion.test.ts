@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setMaxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
 
 const database = perTestDatabase()
@@ -19,11 +20,11 @@ vi.mock('./scheduled-task-service', () => ({
     cancelled.push([slug, id])
   },
 }))
-vi.mock('./todo-service', () => ({ unlinkTodosFromSessions: async () => {} }))
 
-import { messageAuthor, notifications } from '@shared/lib/db/schema'
+import { messageAuthor, notifications, sessionUnreadMarks, todos } from '@shared/lib/db/schema'
 import { createNotification } from './notification-service'
-import { deleteSessionAndRecords } from './session-deletion'
+import { deleteSessionAndRecords, deleteSessionRecords } from './session-deletion'
+import { markSessionUnread } from './session-unread-service'
 
 const authors = async () =>
   (await database.db.select().from(messageAuthor).all()).map((row) => `${row.agentSlug}/${row.sessionId}`).sort()
@@ -67,5 +68,49 @@ describe('deleteSessionAndRecords', () => {
     expect(await authors()).toHaveLength(3)
     expect(await notified()).toHaveLength(3)
     expect(cancelled).toEqual([])
+  })
+})
+
+describe('deleteSessionRecords on a driver that binds at most 100 parameters a statement', () => {
+  afterEach(() => setMaxBoundParameters(undefined))
+
+  /** How many parameters each statement run on the test database binds. */
+  function countBoundParameters(): number[] {
+    const counts: number[] = []
+    const session = (database.db as unknown as { session: Record<string, (query: { params: unknown[] }, ...rest: unknown[]) => unknown> }).session
+    for (const method of ['prepareQuery', 'prepareOneTimeQuery']) {
+      const original = session[method].bind(session)
+      vi.spyOn(session, method).mockImplementation((query, ...rest) => {
+        counts.push(query.params.length)
+        return original(query, ...rest)
+      })
+    }
+    return counts
+  }
+
+  it('removes the records of more than 100 sessions of one agent', async () => {
+    setMaxBoundParameters(100)
+    const sessionIds = Array.from({ length: 250 }, (_, i) => `retention-${i}`)
+    for (const sessionId of sessionIds) {
+      await database.db.insert(messageAuthor).values({
+        id: `agent-${sessionId}`, agentSlug: 'agent', sessionId, integrationId: 'slack', display: '{}',
+      }).run()
+      await createNotification({ type: 'session_complete', agentSlug: 'agent', sessionId, title: 't', body: 'b' })
+      await markSessionUnread('agent', sessionId, 'user-reader')
+      await database.db.insert(todos).values({
+        id: `todo-${sessionId}`, userId: 'user-reader', title: 'Write the report', agentSlug: 'agent', sessionId, status: 'active', position: 1, createdAt: new Date(), updatedAt: new Date(),
+      }).run()
+    }
+    const counts = countBoundParameters()
+
+    await deleteSessionRecords('agent', sessionIds)
+
+    expect(Math.max(...counts)).toBeLessThanOrEqual(100)
+    expect(await authors()).toEqual(['agent/s1', 'agent/s2', 'other/s1'])
+    expect(await notified()).toEqual(['agent/s1', 'agent/s2', 'other/s1'])
+    expect(await database.db.select().from(sessionUnreadMarks).all()).toEqual([])
+    const unlinked = await database.db.select().from(todos).all()
+    expect(unlinked).toHaveLength(250)
+    expect(unlinked.every((todo) => todo.sessionId === null && todo.status === 'draft')).toBe(true)
   })
 })

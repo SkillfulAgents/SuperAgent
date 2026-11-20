@@ -17,3 +17,11 @@ export function maxBoundParameters(): number {
 export function setMaxBoundParameters(value: number | undefined): void {
   limit = value ?? SQLITE_MAX_BOUND_PARAMETERS
 }
+
+/** `values` in parts small enough for one statement that binds `otherParameters` more besides them. */
+export function chunksWithinBoundParameters<T>(values: readonly T[], otherParameters: number): T[][] {
+  const size = maxBoundParameters() - otherParameters
+  const out: T[][] = []
+  for (let i = 0; i < values.length; i += size) out.push(values.slice(i, i + size))
+  return out
+}
