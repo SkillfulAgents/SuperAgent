@@ -312,8 +312,17 @@ describe('schedule_task', () => {
     const result = await scheduleTask(request('schedule_task', 'tool-sched-bad-choice', {
       scheduleType: 'cron', scheduleExpression: '0 9 * * 1-5', prompt: 'Review', model: 'gpt-astra', connection: 42,
     }))
-    expect(reasonOf(result)).toContain('must be non-empty text')
+    expect(reasonOf(result)).toContain('must be text')
     expect(mockCreateScheduledTask).not.toHaveBeenCalled()
+  })
+
+  it('treats a blank model and connection as left out, as main treats a blank model', async () => {
+    await scheduleTask(request('schedule_task', 'tool-sched-blank', {
+      scheduleType: 'cron', scheduleExpression: '0 9 * * 1-5', prompt: 'Review', model: '', connection: '  ',
+    }))
+    const saved = mockCreateScheduledTask.mock.calls[0][0] as { model?: string; llmProviderId?: string }
+    expect(saved.model).toBeUndefined()
+    expect(saved.llmProviderId).toBeUndefined()
   })
 
   it('rejects (no false success) when persistence throws', async () => {

@@ -21,8 +21,8 @@ export async function sessionOwnerOf(agentSlug: string, sessionId: string): Prom
   return (await agentRegistry.get(agentSlug).sessions.metadata(sessionId))?.createdByUserId ?? undefined
 }
 
-// The shape create_webhook_endpoint's schema gives these fields, for every tool.
-const modelChoiceSchema = z.object({ model: z.string().trim().min(1).nullish(), connection: z.string().trim().min(1).nullish() })
+// Text or nothing, as the runtime options schema takes `model`: blank counts as left out.
+const modelChoiceSchema = z.object({ model: z.string().nullish(), connection: z.string().nullish() })
 
 /** The model and account an automation tool names, checked as the session's creator, who the run is attributed to; throws on a refused choice. */
 export async function agentModelChoice(
@@ -31,8 +31,8 @@ export async function agentModelChoice(
   choice: { model?: unknown; connection?: unknown },
 ): Promise<{ model?: string; llmProviderId?: string }> {
   const parsed = modelChoiceSchema.safeParse({ model: choice.model, connection: choice.connection })
-  if (!parsed.success) throw new Error('model and connection must be non-empty text.')
-  const picked = { model: parsed.data.model ?? undefined, connection: parsed.data.connection ?? undefined }
+  if (!parsed.success) throw new Error('model and connection must be text.')
+  const picked = { model: parsed.data.model?.trim() || undefined, connection: parsed.data.connection?.trim() || undefined }
   if (!picked.model && !picked.connection) return {}
   return bindAgentModelChoice(picked, await readAgentPreferences(agentSlug), await sessionOwnerOf(agentSlug, sessionId))
 }
