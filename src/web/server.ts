@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
 import { mountWebBuild } from './web-build'
+import { mountCompression } from './compression'
 import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { installServerKeyManager } from '@shared/lib/keys/install-server-key-manager'
@@ -14,6 +15,10 @@ import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
 
 const app = new Hono()
+
+// Ahead of everything it wraps: JSON and the web build's text assets go out
+// gzipped when the client accepts it.
+mountCompression(app)
 
 // Mount API routes
 app.route('/', api)
