@@ -3,7 +3,6 @@ import type { Context, Hono } from 'hono'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
-import { markStaticFile } from './compression'
 
 // Cache policy for the static web build. Vite emits content-hashed JS/CSS into
 // `/assets/*`, so the filename itself changes whenever the bytes change — those
@@ -53,11 +52,7 @@ export function mountWebBuild(app: Hono, root: string): void {
     '/*',
     serveStatic({
       root,
-      onFound: (filePath, c) => {
-        c.header('Cache-Control', staticCacheControl(filePath))
-        // A no-op unless the server compresses (see compression.ts).
-        markStaticFile(c, filePath)
-      },
+      onFound: (filePath, c) => c.header('Cache-Control', staticCacheControl(filePath)),
     }),
   )
   // SPA fallback: any unmatched route serves the HTML entry.

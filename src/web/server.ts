@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
 import { mountWebBuild } from './web-build'
-import { compressResponses } from './compression'
+import { mountCompression } from './compression'
 import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { installServerKeyManager } from '@shared/lib/keys/install-server-key-manager'
@@ -17,9 +17,8 @@ import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
 const app = new Hono()
 
 // Ahead of everything it wraps: JSON and the web build's text assets go out
-// encoded when the client accepts it. Here only, not in the API app, which the
-// desktop app also serves over loopback and Cloudflare serves behind its edge.
-app.use('*', compressResponses())
+// gzipped when the client accepts it.
+mountCompression(app)
 
 // Mount API routes
 app.route('/', api)
