@@ -7,6 +7,11 @@ import { deleteConnection, getConnection, resolveExecutionSelection, saveConnect
 import { syncAllOllamaCatalogs, syncCatalogsFromStatus } from './ollama-catalog-sync'
 import { ollamaModelDefinition } from './ollama-catalog'
 import type { InstalledModel } from './server-status-schema'
+import { backgroundSettled } from '../background'
+import { taskManager } from '../background-work'
+import type { LocalTaskManager } from '../background-work/local-task-manager'
+import { OLLAMA_CATALOG_SYNC_TASK } from './ollama-pull'
+import { OLLAMA_CATALOG_SYNC_INTERVAL_MS, OllamaCatalogService } from './ollama-service'
 import { globalFeed } from '../notifications/global-feed'
 
 const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null }))
@@ -155,5 +160,102 @@ describe('Ollama catalog sync', () => {
 
   it('costs nothing in the app\'s own usage numbers', async () => {
     await expect(calculateCost('qwen3.8:latest', 13006, 94, 0, 6011)).resolves.toBe(0)
+  })
+})
+
+const STATEMENT_METHODS = new Set(['select', 'selectDistinct', 'insert', 'update', 'delete', 'get', 'all', 'run'])
+
+/** How many statements `work` starts on the database, the settings read among them. */
+async function statementsDuring(work: () => Promise<unknown>): Promise<number> {
+  const real = state.db!
+  let count = 0
+  state.db = new Proxy(real, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop, target)
+      if (typeof value !== 'function') return value
+      return (...args: unknown[]) => {
+        if (STATEMENT_METHODS.has(String(prop))) count += 1
+        return (value as (...args: unknown[]) => unknown).apply(target, args)
+      }
+    },
+  })
+  try {
+    await work()
+  } finally {
+    state.db = real
+  }
+  return count
+}
+
+describe('what a pass reads', () => {
+  it('is one statement and no request when there is no Ollama connection', async () => {
+    await saveConnection({ name: 'Key', provider: 'anthropic', userId: null, config: { apiKeys: { anthropicApiKey: 'k' } } }, viewer)
+    const fetchMock = serveTags(['a:latest'])
+    let connections: number | undefined
+    expect(await statementsDuring(async () => { connections = await syncAllOllamaCatalogs() })).toBe(1)
+    expect(connections).toBe(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('is one statement when no server answers', async () => {
+    await save()
+    await save('http://192.168.1.20:11434')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    expect(await statementsDuring(syncAllOllamaCatalogs)).toBe(1)
+  })
+
+  it('is the same for one connection as for several, on one server or on many', async () => {
+    serveTags(['a:latest'])
+    await save()
+    await syncAllOllamaCatalogs()
+    const one = await statementsDuring(syncAllOllamaCatalogs)
+
+    const more = [await save(), await save('http://192.168.1.20:11434'), await save('http://192.168.1.21:11434')]
+    expect(await syncAllOllamaCatalogs()).toBe(4)
+    for (const id of more) expect(await idsOf(id)).toEqual(['a:latest'])
+    const several = await statementsDuring(syncAllOllamaCatalogs)
+
+    // The connections to find the servers, then the rows and the settings to
+    // write from. Nothing changed on these passes, so nothing is written.
+    expect(one).toBe(3)
+    expect(several).toBe(3)
+  })
+
+  it('reads the settings once per pass, however many connections it writes', async () => {
+    const records = await import('../app-records/records')
+    const { SETTINGS_RECORD_KEY } = await import('../app-records/record-schemas')
+    const ids = [await save(), await save(), await save('http://192.168.1.20:11434')]
+    serveTags(['a:latest'])
+    const reads = vi.spyOn(records, 'readStoredRecord')
+    // One write per connection here, on top of the three reads.
+    expect(await statementsDuring(syncAllOllamaCatalogs)).toBe(3 + ids.length)
+    expect(reads.mock.calls.filter(([key]) => key === SETTINGS_RECORD_KEY)).toHaveLength(1)
+    reads.mockRestore()
+    for (const id of ids) expect(await idsOf(id)).toEqual(['a:latest'])
+  })
+})
+
+describe('saving an Ollama connection', () => {
+  const scheduled = () => (taskManager() as LocalTaskManager).scheduled()
+  const registerService = () => {
+    for (const task of new OllamaCatalogService().tasks) taskManager().register(task)
+  }
+
+  it('asks for a pass, which lists the server\'s models and keeps the passes going', async () => {
+    registerService()
+    serveTags(['a:latest'])
+    expect(scheduled()).toEqual([])
+    const id = await save()
+    await vi.waitFor(async () => expect(await idsOf(id)).toEqual(['a:latest']))
+    await vi.waitFor(() => expect(scheduled()).toMatchObject([{ id: OLLAMA_CATALOG_SYNC_TASK, running: false }]))
+    expect(scheduled()[0].nextRunAt).toBeGreaterThan(Date.now() + OLLAMA_CATALOG_SYNC_INTERVAL_MS - 5_000)
+    await taskManager().cancel(OLLAMA_CATALOG_SYNC_TASK)
+  })
+
+  it('of another provider asks for nothing', async () => {
+    registerService()
+    await saveConnection({ name: 'Key', provider: 'anthropic', userId: null, config: { apiKeys: { anthropicApiKey: 'k' } } }, viewer)
+    await backgroundSettled()
+    expect(scheduled()).toEqual([])
   })
 })
