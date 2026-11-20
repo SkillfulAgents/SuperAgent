@@ -90,3 +90,28 @@ it('refuses to create a folder outside the workspace', async () => {
   expect([400, 403]).toContain(response.status)
   expect(fs.existsSync(path.join(root, '../outside'))).toBe(false)
 })
+it('keeps the mode an upload asks for, and a rewrite without one keeps it', async () => {
+  const upload = (body: string, query = '') => app.request(`/files/bin/tool/upload${query}`, { method: 'POST', body })
+  expect((await upload('#!/bin/sh\n', '?mode=0755')).status).toBe(200)
+  expect(await (await app.request('/files/bin/tool')).json()).toMatchObject({ type: 'file', mode: 0o755 })
+  expect((await upload('#!/bin/sh\necho hi\n')).status).toBe(200)
+  expect(await (await app.request('/files/bin/tool')).json()).toMatchObject({ size: 18, mode: 0o755 })
+  expect((await upload('x', '?mode=rwx')).status).toBe(400)
+})
+it('refuses a write over a folder or through a file with 409 and a code, not 500', async () => {
+  await fs.promises.mkdir(path.join(root, 'notes'))
+  await fs.promises.writeFile(path.join(root, 'report.txt'), 'report')
+  const cases: Array<[string, string]> = [
+    ['/files/notes/upload', 'not-a-file'],
+    ['/files/report.txt/child/upload', 'not-a-directory'],
+    ['/files/report.txt/child/leaf/upload', 'not-a-directory'],
+    ['/files/report.txt/child/mkdir', 'not-a-directory'],
+    ['/files/report.txt/mkdir', 'not-a-directory'],
+  ]
+  for (const [url, code] of cases) {
+    const response = await app.request(url, { method: 'POST', body: 'x' })
+    expect([url, response.status]).toEqual([url, 409])
+    expect(await response.json()).toMatchObject({ code })
+  }
+  expect(await fs.promises.readFile(path.join(root, 'report.txt'), 'utf8')).toBe('report')
+})
