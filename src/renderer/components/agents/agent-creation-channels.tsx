@@ -20,7 +20,7 @@ const moreChannels = integrationSetupProviders.filter(provider => !featured.incl
  */
 const CHANNEL_GRID_CLASS = 'grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2'
 /** A channel tile: the add-ons cards' border and fill, one per channel. */
-const CHANNEL_TILE_CLASS = 'flex items-start gap-2.5 rounded-card border bg-card/50 py-3 pl-3 pr-2.5'
+const CHANNEL_TILE_CLASS = 'flex flex-col gap-2 rounded-card border bg-card/50 p-3'
 
 export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
   const providers = useAvailableAgentIntegrationProviders()
@@ -53,32 +53,32 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
         reason = provider.unavailableReason ?? `${title} is unavailable in this workspace.`
       }
     }
-    // A tile, laid out in a line so it stays short: the service's icon, its
-    // name over what it does (wrapping, never cut), and its action. The
-    // action is an icon whose words are in its
-    // tooltip and accessible name: + to set up, a clock once saved for
-    // later, an arrow for a connection left halfway, a check when done.
+    // A tile: a row of the service's mark, its name and its action, then
+    // what it does underneath (wrapping, never cut). The action is an icon
+    // whose words are in its tooltip and accessible name: + to set up, a
+    // clock once saved for later, an arrow for a connection left halfway, a
+    // check when done.
     const icon = configured ? <Check aria-hidden /> : later ? <Clock3 aria-hidden /> : setupTarget.integrationId ? <ArrowRight aria-hidden /> : <Plus aria-hidden />
     return <div key={provider.slug} className={CHANNEL_TILE_CLASS}>
-      {/* The mark on a soft grey square, Agent Home's size (28px, a 16px
-          mark), with no border or shadow: the fill is its edge. Black marks
-          (GitHub, Linear) invert in dark mode, as everywhere on grey. */}
-      <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground" aria-hidden>
-        <ServiceIcon slug={provider.slug} fallback="mcp" className={cn('size-4', provider.iconClassName)} />
-      </span>
-      {/* The name at the top, the description sitting on the tile's bottom
-          edge: with every tile one height, the spare room of a one-line
-          description falls between the two instead of below. */}
-      <div className="flex min-w-0 flex-1 flex-col gap-1 self-stretch">
-        <p className="text-sm font-normal">{title}</p>
-        <p className="mt-auto text-xs text-muted-foreground">{provider.description}</p>
+      {/* The mark, the name centred on it, and the action, in one row. */}
+      <div className="flex items-center gap-2.5">
+        {/* A soft grey square, Agent Home's size (28px, a 16px mark), with
+            no border or shadow: the fill is its edge. Black marks (GitHub,
+            Linear) invert in dark mode, as everywhere on grey. */}
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground" aria-hidden>
+          <ServiceIcon slug={provider.slug} fallback="mcp" className={cn('size-4', provider.iconClassName)} />
+        </span>
+        <p className="min-w-0 flex-1 truncate text-sm font-normal">{title}</p>
+        <ChannelAction action={action} title={title} reason={reason} onSetup={() => setTarget(setupTarget)} iconOnly icon={icon}
+          quiet={configured || later}
+          {...later && {
+            label: `Set up ${title}, saved for later`,
+            hint: 'Saved for later as a reminder. Click to set it up now.',
+          }} />
       </div>
-      <ChannelAction action={action} title={title} reason={reason} onSetup={() => setTarget(setupTarget)} iconOnly icon={icon}
-        quiet={configured || later}
-        {...later && {
-          label: `Set up ${title}, saved for later`,
-          hint: 'Saved for later as a reminder. Click to set it up now.',
-        }} />
+      {/* What it does, the tile's full width, on its bottom edge: with every
+          tile one height, a one-line description's spare room sits above it. */}
+      <p className="mt-auto text-xs text-muted-foreground">{provider.description}</p>
     </div>
   }
 
