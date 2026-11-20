@@ -4,12 +4,14 @@
  * index in the app database, and the transcripts directory the CLI uses with
  * the workspace mounted at `/workspace`.
  */
+import { randomUUID } from 'node:crypto'
 import { captureException } from '@shared/lib/error-reporting'
 import { ingestSessionMetadataFile } from '@shared/lib/services/session-metadata-file'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { createLocalConfigOps } from './local-config-ops'
 import { createDbSessionIndexStorage } from './db-session-index-storage'
 import { createLocalFileOps } from './local-file-ops'
+import { storeSessionActivityAt } from './session-activity-wakeup'
 import { SessionIndex, type SessionIndexStorage } from './session-index'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from './session-store'
 import type { AgentSlug } from './types'
@@ -41,6 +43,8 @@ export function createLocalSessionStore(
   // deployments change the data directory in-process, and what was learned
   // from a directory must follow the directory, not the slug.
   const key = () => deps.getAgentWorkspaceDir(slug)
+  // This index's wakeup, apart from one a second store of the agent sets.
+  const indexId = `${slug}:${randomUUID()}`
   const store: SessionStore = {
     slug,
     files,
@@ -61,6 +65,7 @@ export function createLocalSessionStore(
         console.warn(`Could not take in the session metadata file of agent ${slug}:`, error)
         captureException(error, { tags: { area: 'session-index', op: 'ingest-when-present' }, extra: { agentSlug: slug } })
       }),
+      storeActivityLater: (atMs) => storeSessionActivityAt(indexId, atMs, () => store.index.storeRecordedActivity()),
     }),
     onActivity: hooks.onActivity,
     get key() {

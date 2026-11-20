@@ -108,4 +108,13 @@ export abstract class TaskManager {
   abstract start(): Promise<void>
   /** Stops dispatch. It is not cancelling: domain schedules stay as they are, for the next start to rebuild. */
   abstract stop(): Promise<void>
+  /**
+   * Whether a job scheduled now would be run. False once dispatch has
+   * stopped: `at()` then takes the schedule and drops it, so work that must
+   * not be lost is done by its owner instead of scheduled. A backend that
+   * always runs what it takes keeps this answer.
+   */
+  accepts(): boolean {
+    return true
+  }
 }

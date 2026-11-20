@@ -11,6 +11,10 @@ import { LiveSessions } from './live/live-sessions'
 import type { AgentState } from './agent-state'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
 import type { SessionStore } from './session-store'
+import type { SessionIndexStorage } from './session-index'
+import { backgroundSettled } from '@shared/lib/background'
+import { taskManager } from '@shared/lib/background-work'
+import { createInMemorySessionIndexStorage } from './testing/in-memory-session-index-storage'
 import { createRecordingHostPort } from './testing/recording-host-port'
 
 // The singleton registry wires the real container host. These tests build
@@ -286,6 +290,60 @@ describe('createAgentRegistry', () => {
     expect(fake.containerHost.clearRuntimes).toHaveBeenCalledTimes(1)
     expect(registry.get('a')).not.toBe(a)
     expect(registry.get('b')).not.toBe(b)
+  })
+
+  it('evictAll stores the session activity its agents recorded and had not stored yet', async () => {
+    const touched: Array<[string, Map<string, number>]> = []
+    const sessionIndexStorage = (slug: string): SessionIndexStorage => {
+      const storage = createInMemorySessionIndexStorage()
+      return { ...storage, touch: async (activity) => { touched.push([slug, new Map(activity)]); return storage.touch(activity) } }
+    }
+    const registry = createAgentRegistry({ ...fake.deps, sessionIndexStorage } as LocalActorDeps)
+    fake.recordSessionActivity.mockImplementation((store: SessionStore, sessionId: string, at: number) => store.index.recordActivity(sessionId, at))
+    // The session's first write is stored as it is recorded; the next waits for the index's wakeup.
+    await registry.get('a').sessions.recordActivity('s1', 1234)
+    await backgroundSettled()
+    await registry.get('a').sessions.recordActivity('s1', 2345)
+    registry.get('b')
+    await backgroundSettled()
+    expect(touched).toEqual([['a', new Map([['s1', 1234]])]])
+
+    // Shutdown stops dispatch before it releases the agents, and the wakeup goes with it.
+    await taskManager().stop()
+    await registry.evictAll()
+
+    expect(touched).toEqual([['a', new Map([['s1', 1234]])], ['a', new Map([['s1', 2345]])]])
+  })
+
+  it('evictAll releases every agent even when one\'s recorded activity cannot be stored', async () => {
+    let closed = false
+    const sessionIndexStorage = (): SessionIndexStorage => {
+      const storage = createInMemorySessionIndexStorage()
+      return {
+        ...storage,
+        touch: async (activity) => {
+          if (closed) throw new Error('database closed')
+          return storage.touch(activity)
+        },
+      }
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const registry = createAgentRegistry({ ...fake.deps, sessionIndexStorage } as LocalActorDeps)
+    fake.recordSessionActivity.mockImplementation((store: SessionStore, sessionId: string, at: number) => store.index.recordActivity(sessionId, at))
+    const a = registry.get('a')
+    // The first write is stored as it is recorded; the second is what the release finds.
+    await a.sessions.recordActivity('s1', 1234)
+    await backgroundSettled()
+    await a.sessions.recordActivity('s1', 2345)
+    await backgroundSettled()
+    closed = true
+    await taskManager().stop()
+
+    await expect(registry.evictAll()).resolves.toBeUndefined()
+
+    expect(fake.containerHost.clearRuntimes).toHaveBeenCalledTimes(1)
+    expect(registry.get('a')).not.toBe(a)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recorded session activity of a'), expect.any(Error))
   })
 
   describe('passthroughs reach this agent\'s runtime and keep the client inside', () => {

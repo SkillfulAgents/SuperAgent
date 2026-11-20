@@ -124,10 +124,20 @@ export function createAgentRegistry(
       // way: one whose container is starting is kept, so the start still
       // lands somewhere the host knows. At shutdown the containers are
       // stopped (and their runtimes cleared) first: see startup.ts.
-      for (const actor of handles.values()) actor.dispose()
+      const released = [...handles.values()]
+      for (const actor of released) actor.dispose()
       handles.clear()
       states.clear()
       deps.containerHost.clearRuntimes()
+      // Activity an index recorded and has not stored yet is stored before
+      // this settles: its wakeup does not come once dispatch has stopped,
+      // and nothing reads the index again. After the release, which callers
+      // rely on having happened by the time this returns its promise.
+      await Promise.all(released.map((actor) =>
+        actor.store.index.storeRecordedActivity().catch((error: unknown) => {
+          console.warn(`[AgentRegistry] Could not store the recorded session activity of ${actor.slug}:`, error)
+        }),
+      ))
     },
   }
 }

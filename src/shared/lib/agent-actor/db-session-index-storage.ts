@@ -5,11 +5,12 @@
  *
  * No statement here needs a transaction or a batch, so the storage also runs
  * on the handle a data migration is given, before the app's own is published.
+ * On the app's handle, activity on several sessions is stored as one batch.
  */
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import type { AppDatabase } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { agentSessions } from '@shared/lib/db/schema'
 import { sessionMetadataSchema } from '@shared/lib/services/session-metadata-schema'
@@ -142,20 +143,25 @@ export function createDbSessionIndexStorage(slug: AgentSlug, given?: SessionInde
     },
 
     touch: async (activity) => {
-      const leftAlone: string[] = []
-      for (const [sessionId, activityAtMs] of activity) {
-        const result = await database()
-          .update(agentSessions)
-          .set({
-            transcriptMtimeMs: sql`max(${agentSessions.transcriptMtimeMs}, ${activityAtMs})`,
-            // A write proves the transcript is not empty.
-            transcriptSize: sql`max(${agentSessions.transcriptSize}, 1)`,
-          })
-          .where(and(at(sessionId), isNotNull(agentSessions.transcriptMtimeMs)))
-          .run()
-        if (changesOf(result) === 0) leftAlone.push(sessionId)
+      const sessionIds = [...activity.keys()]
+      const statements = sessionIds.map((sessionId) => database()
+        .update(agentSessions)
+        .set({
+          transcriptMtimeMs: sql`max(${agentSessions.transcriptMtimeMs}, ${activity.get(sessionId)!})`,
+          // A write proves the transcript is not empty.
+          transcriptSize: sql`max(${agentSessions.transcriptSize}, 1)`,
+        })
+        .where(and(at(sessionId), isNotNull(agentSessions.transcriptMtimeMs))))
+      let results: unknown[]
+      if (given || statements.length === 1) {
+        // One at a time on a handle that is not the app's, which is all `batch()` reaches.
+        results = []
+        for (const statement of statements) results.push(await statement.run())
+      } else {
+        // Several sessions of the agent were written to: one round trip for all of them.
+        results = await batch(statements)
       }
-      return leftAlone
+      return sessionIds.filter((_, i) => changesOf(results[i]) === 0)
     },
 
     delete: async (sessionIds) => {

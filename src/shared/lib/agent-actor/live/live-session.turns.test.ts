@@ -367,6 +367,39 @@ describe('session summary activity', () => {
     expect(mockRecordSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, 1_754_600_000_000)
   })
 
+  it('has the index store what is recorded when a turn\'s result arrives, and not for the frames before it', async () => {
+    const storeRecorded = vi.spyOn(live.store(AGENT_SLUG).index, 'storeRecordedActivity')
+    const at = (content: Record<string, unknown>) =>
+      deliver(mockClient, { type: 'message', content, timestamp: new Date('2026-08-07T18:00:00.000Z'), sessionId: SESSION_ID })
+
+    sessions().markActive(SESSION_ID)
+    at({ type: 'assistant', message: { role: 'assistant', content: 'working' } })
+    at({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } })
+    expect(storeRecorded).not.toHaveBeenCalled()
+
+    at({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
+    expect(storeRecorded).toHaveBeenCalledTimes(1)
+
+    // A replayed result is not a write that just happened.
+    at({ type: 'result', subtype: 'success', replayed: true })
+    expect(storeRecorded).toHaveBeenCalledTimes(1)
+    await flushNotifications()
+  })
+
+  it('has the index store what is recorded when a turn ends in an error result', () => {
+    const storeRecorded = vi.spyOn(live.store(AGENT_SLUG).index, 'storeRecordedActivity')
+
+    sessions().markActive(SESSION_ID)
+    deliver(mockClient, {
+      type: 'message',
+      content: { type: 'result', subtype: 'error_during_execution', errors: ['boom'] },
+      timestamp: new Date('2026-08-07T18:00:00.000Z'),
+      sessionId: SESSION_ID,
+    })
+
+    expect(storeRecorded).toHaveBeenCalledTimes(1)
+  })
+
   it('does not attribute a sidechain transcript frame to the parent session', () => {
     deliver(mockClient, {
       type: 'message',
