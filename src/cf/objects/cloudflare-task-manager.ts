@@ -350,6 +350,13 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     await this.prepareOrg()
     const app = await import('../boot')
     await app.boot(this.env)
+    // A replaced instance in this isolate shut the services down for good, so here this one would
+    // start none. It starts over instead, which can bring it up in another isolate.
+    if (app.backgroundServicesShutDown()) {
+      const error = new Error('The background services of this isolate were shut down by a replaced instance')
+      captureException(error, { tags: { component: 'task-manager', operation: 'start-services' } })
+      this.ctx.abort(error.message)
+    }
     await app.startBackgroundServices()
     this.liveCheck = setInterval(() => this.checkLive(app.stopBackgroundServices), CHECK_EVERY_MS)
   }

@@ -15,6 +15,7 @@ const app = vi.hoisted(() => {
     startBackgroundServices: vi.fn(async () => {}),
     serveInObject: vi.fn(async (request: Request) => new Response(new URL(request.url).pathname)),
     stopBackgroundServices: vi.fn(async () => {}),
+    backgroundServicesShutDown: vi.fn(() => false),
     backgroundTasks: () => state.manager,
   }
 })
@@ -449,6 +450,20 @@ describe('TaskManagerDurableObject after a deploy', () => {
     sql.refuse = false
     await after(object, 60_000)
     expect(task.runs).toEqual([])
+  })
+
+  it('starts over instead of running without services when a replaced instance shut them down in its isolate', async () => {
+    const { object } = testObject()
+    managerFor(object)
+    const abort = vi.fn((reason: string) => {
+      throw new Error(reason)
+    })
+    Object.assign((object as unknown as { ctx: object }).ctx, { abort })
+    app.backgroundServicesShutDown.mockReturnValueOnce(true)
+
+    await expect(object.wake()).rejects.toThrow('shut down by a replaced instance')
+    expect(abort).toHaveBeenCalledOnce()
+    expect(app.startBackgroundServices).not.toHaveBeenCalled()
   })
 
   it("lets the rest of the isolate go on scheduling after a replaced instance stopped its services", async () => {

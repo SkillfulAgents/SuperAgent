@@ -92,8 +92,16 @@ export function startBackgroundServices(): Promise<void> {
   return initializeServices()
 }
 
+let servicesShutDown = false
+
 export function stopBackgroundServices(): Promise<void> {
+  servicesShutDown = true
   return shutdownServices()
+}
+
+/** True once this isolate's services were shut down: they never start again in it (startup.ts). */
+export function backgroundServicesShutDown(): boolean {
+  return servicesShutDown
 }
 
 /** Error reporting, before the database: a failed migration or open is the first thing a boot can fail on. */
