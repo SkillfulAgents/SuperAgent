@@ -15,7 +15,7 @@ import { cloneElement, forwardRef, isValidElement, type ReactElement } from 'rea
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
-import { AppSidebar, showLessCrossesBottom } from './app-sidebar'
+import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { APP_VERSION } from '@shared/lib/config/version'
@@ -2268,12 +2268,4 @@ describe('AppSidebar — drag orchestration', () => {
           : id.replace('agent-folder-', 'folder:')
       )
   }
-})
-
-describe('showLessCrossesBottom', () => {
-  it('pins only while the list runs past the bottom with its toggle row below it', () => {
-    expect(showLessCrossesBottom(100, 900, 600)).toBe(true)
-    expect(showLessCrossesBottom(100, 580, 600)).toBe(false)
-    expect(showLessCrossesBottom(620, 900, 600)).toBe(false)
-  })
 })

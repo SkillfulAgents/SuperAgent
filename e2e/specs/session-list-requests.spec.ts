@@ -41,41 +41,16 @@ test.describe('Session list requests', () => {
     expect(listReads.length).toBeGreaterThan(0)
     expect(listReads.filter((search) => !new URLSearchParams(search).has('limit'))).toEqual([])
 
-    await showAll.click()
+    await showAll.press('Enter')
     await expect(rows).toHaveCount(7)
     expect(listReads.some((search) => !new URLSearchParams(search).has('limit'))).toBe(true)
-  })
-
-  test('"Show less" waits under the sidebar list while the open list runs past its foot', async ({ page, request }, testInfo) => {
-    test.setTimeout(90_000)
-    const agent = await createAgent(request, uniqueName(testInfo, 'Pinned Toggle'))
-    for (let i = 0; i < 7; i += 1) {
-      const session = await createSession(request, agent, `Message ${i} ${uniqueName(testInfo, 'pinned')}`)
-      await waitForSessionIdle(request, agent, session)
-    }
-    await page.setViewportSize({ width: 1280, height: 320 })
-    await page.goto(`/agents/${agent.slug}`)
-    await page.getByRole('button', { name: 'Show all (7)', exact: true }).click()
-
-    const scroller = page.locator('[data-testid="agent-list-scroll"]')
-    const pinned = page.locator('[data-show-less-slot] button')
-    const scrollListToTop = () => page.locator('[data-testid^="session-item-"]').first()
-      .evaluate((el) => el.closest('ul')?.scrollIntoView({ block: 'start' }))
-    // Agents sort newest first, so other tests' agents can sit above this one.
-    await scrollListToTop()
-    await expect(pinned).toHaveText('Show less')
-    await expect(pinned).toBeInViewport()
-    await expect(scroller).toHaveCSS('mask-image', /linear-gradient/)
-    await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight })
-    await expect(pinned).toHaveCount(0)
-    await expect(scroller).toHaveCSS('mask-image', 'none')
-    const inList = page.getByRole('button', { name: 'Show less', exact: true })
-    await expect(inList.locator('xpath=ancestor::li[1]')).toHaveCSS('opacity', '1')
-
-    // Collapsing from the pinned copy returns the list to five rows.
-    await scrollListToTop()
-    await pinned.click()
-    await expect(page.getByRole('button', { name: 'Show all (7)', exact: true })).toBeVisible()
+    const showLess = page.getByRole('button', { name: 'Show less', exact: true })
+    await expect(showLess).toBeFocused()
+    const overlay = page.locator('[data-sidebar="menu-sub"] > li').filter({ has: showLess })
+    await expect(overlay).toHaveCSS('position', 'sticky')
+    expect(await overlay.evaluate(row => getComputedStyle(row, '::before').backgroundImage)).toContain('linear-gradient')
+    await page.keyboard.press('Space')
+    await expect(rows).toHaveCount(5)
   })
 
   test('the agent home reads the full list for the row, and leaving it keeps the newest rows', async ({ page, request }, testInfo) => {
