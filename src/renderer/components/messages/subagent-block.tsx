@@ -96,6 +96,7 @@ export function SubAgentBlock({
     fetchOlder,
     hasOlder,
     isFetchingOlder,
+    olderFailed,
   } = useSubagentMessages(sessionId, agentSlug, subagentId)
   const media = useMemo(
     () => (subagentId ? { agentSlug, sessionId, subagent: { subagentId } } : undefined),
@@ -180,10 +181,11 @@ export function SubAgentBlock({
   const totalItems = flatItems.length
   const hasMore = totalItems > DEFAULT_VISIBLE || hasOlder
 
-  // "Show all" walks the older pages until the transcript's start.
+  // "Show all" walks the older pages until the transcript's start. A failed
+  // page stops the walk, and "Show all" comes back to retry it.
   useEffect(() => {
-    if (showAll && hasOlder && !isFetchingOlder) void fetchOlder()
-  }, [showAll, hasOlder, isFetchingOlder, fetchOlder])
+    if (showAll && hasOlder && !isFetchingOlder && !olderFailed) void fetchOlder()
+  }, [showAll, hasOlder, isFetchingOlder, olderFailed, fetchOlder])
   const visibleItems = showAll || !hasMore
     ? flatItems
     : flatItems.slice(totalItems - DEFAULT_VISIBLE)
@@ -241,9 +243,9 @@ export function SubAgentBlock({
             )}
 
             {/* Show all button */}
-            {hasMore && !showAll && (
+            {hasMore && (!showAll || olderFailed) && (
               <button
-                onClick={() => setShowAll(true)}
+                onClick={() => (showAll ? void fetchOlder() : setShowAll(true))}
                 className="text-xs text-foreground hover:text-foreground/70 font-medium transition-colors py-1"
               >
                 Show all ({totalItems}{hasOlder ? '+' : ''} items)

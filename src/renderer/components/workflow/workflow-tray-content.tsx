@@ -464,6 +464,16 @@ function WorkflowAgentRow({
               </span>
             </div>
           )}
+          {messages.hasOlder && (
+            <button
+              type="button"
+              onClick={() => void messages.fetchOlder()}
+              disabled={messages.isFetchingOlder}
+              className="text-xs text-foreground hover:text-foreground/70 font-medium transition-colors py-1 disabled:opacity-50"
+            >
+              Show earlier messages
+            </button>
+          )}
           <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} media={media} />
         </div>
       )}

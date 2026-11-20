@@ -17,9 +17,11 @@ const RUN = 'wf_818f758a-c17'
 
 // Auth is a passthrough; the fixture is the agent's workspace and its
 // transcripts directory at once, so the routes read genuine on-disk workflow
-// artifacts through the agent's file operations.
+// artifacts through the agent's file operations. getAgentId reads what the
+// resolver in app() stashed, as ResolveAgent does.
 vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  getAgentId: (c: { get: (key: string) => string }) => c.get('agentId'),
 }))
 vi.mock('@shared/lib/agent-actor/session-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/agent-actor/session-store')>()),
@@ -30,14 +32,20 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/lib/utils/file-storage')>()
   return {
     ...actual,
-    getAgentWorkspaceDir: () => workspaceRoot.value,
+    // Only the canonical id has the fixture: a display slug opens nothing.
+    getAgentWorkspaceDir: (slug: string) => (slug === 'my-agent' ? workspaceRoot.value : path.join(workspaceRoot.value, 'missing', slug)),
   }
 })
 
 import { workflowRoutes } from './workflows'
 
+// The display slug `research-bot` names the agent `my-agent`.
 function app() {
   const a = new Hono()
+  a.use('/api/agents/:id/*', async (c, next) => {
+    c.set('agentId' as never, (c.req.param('id') === 'research-bot' ? 'my-agent' : c.req.param('id')) as never)
+    await next()
+  })
   a.route('/api/agents', workflowRoutes)
   return a
 }
@@ -134,6 +142,16 @@ describe('workflow agent-messages route', () => {
     const delta = await (await get(`${url}?after=${page.messages[0].id}&media=ref`)).json()
     expect(delta.resync).toBeUndefined()
     expect(delta.messages.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('reads the transcript of the agent a display slug resolves to', async () => {
+    const route = `sessions/${SID}/workflows/${RUN}/agents/ae6ffae379942dd19/messages?limit=300&media=ref`
+    const canonical = await (await get(`/api/agents/my-agent/${route}`)).json()
+    expect(canonical.messages.length).toBeGreaterThan(0)
+
+    const res = await get(`/api/agents/research-bot/${route}`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(canonical)
   })
 
   it('serves an empty page for a valid-but-missing agent id', async () => {

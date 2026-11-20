@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { AgentRead } from '../middleware/auth'
+import { AgentRead, getAgentId } from '../middleware/auth'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { streamJsonArrayResponse } from '../stream-json-array'
@@ -17,7 +17,7 @@ export const workflowRoutes = new Hono()
 // Per-agent tree for a dynamic-workflow run (phases + agent status/label/result).
 workflowRoutes.get('/:id/sessions/:sessionId/workflows/:runId/tree', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const runId = c.req.param('runId')
     // runId indexes into the filesystem; allow only the `wf_...` shape (blocks traversal).
@@ -45,7 +45,7 @@ workflowRoutes.get(
   AgentRead(),
   async (c) => {
     try {
-      const agentSlug = c.req.param('id')
+      const agentSlug = getAgentId(c)
       const sessionId = c.req.param('sessionId')
       const runId = c.req.param('runId')
       const workflowAgentId = c.req.param('agentId')
@@ -88,7 +88,7 @@ workflowRoutes.get(
 // Bytes of one image a workflow agent's `media=ref` page addressed.
 workflowRoutes.get('/:id/sessions/:sessionId/workflows/:runId/agents/:agentId/media/:ref', AgentRead(), async (c) => {
   try {
-    const actor = agentRegistry.get(c.req.param('id'))
+    const actor = agentRegistry.get(getAgentId(c))
     return await mediaResponse(c, actor, c.req.param('sessionId'), {
       subagentId: c.req.param('agentId'),
       workflowRunId: c.req.param('runId'),

@@ -851,13 +851,14 @@ async function readTransformedTail(
   /** True replaces inline base64 images with refs (see session-media); the
    * default keeps them inline, which is what pre-`media=ref` clients expect. */
   media?: boolean,
-  forkRows?: ForkOwnRows
+  forkRows?: ForkOwnRows,
+  maxBytes?: number
 ): Promise<{
   transformed: TransformedItem[]
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   reachedStart: boolean
 }> {
-  const { lines, offsets, reachedStart } = await readTailLines(store.files, jsonlPath, maxLines, signal)
+  const { lines, offsets, reachedStart } = await readTailLines(store.files, jsonlPath, maxLines, signal, maxBytes)
   // An abort landing on the last chunk read still saves the parse/transform
   // below — on large transcripts that is seconds of synchronous work.
   signal?.throwIfAborted()
@@ -1642,6 +1643,11 @@ const DELTA_INITIAL_TAIL_LINES = 128
 // client already holds); a miss deeper than this is drift, answered with
 // resync rather than an unbounded scan.
 const DELTA_MAX_TAIL_LINES = 10_000
+// The same bounds in bytes: 128 rows of screenshots are megabytes. A miss
+// within a page's byte budget is answered with resync, and the client reads a
+// bounded page instead.
+const DELTA_INITIAL_TAIL_BYTES = 256 * 1024
+const DELTA_MAX_TAIL_BYTES = MESSAGES_PAGE_BYTE_BUDGET
 
 /** Forward delta: transformed display items at-or-after the `after` anchor, as
  * upserts (full current versions — new lines can mutate items the client
@@ -1679,6 +1685,11 @@ export async function getTranscriptMessagesDelta(
 
   const { after, signal } = opts
   let maxLines = DELTA_INITIAL_TAIL_LINES
+  let maxBytes = DELTA_INITIAL_TAIL_BYTES
+  const grow = () => {
+    maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+    maxBytes = Math.min(DELTA_MAX_TAIL_BYTES, maxBytes * 2)
+  }
 
   for (let attempt = 0; attempt < 32; attempt++) {
     const { transformed, entries, reachedStart } = await readTransformedTail(
@@ -1687,14 +1698,15 @@ export async function getTranscriptMessagesDelta(
       maxLines,
       signal,
       opts.media === 'ref',
-      file.subagent ? new ForkOwnRows() : undefined
+      file.subagent ? new ForkOwnRows() : undefined,
+      maxBytes
     )
-    const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
+    const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES && maxBytes < DELTA_MAX_TAIL_BYTES
 
     const idx = transformed.findIndex((item) => item.id === after)
     if (idx === -1) {
       if (canGrow) {
-        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        grow()
         continue
       }
       return { messages: [], anchor: null, resync: true }
@@ -1725,7 +1737,7 @@ export async function getTranscriptMessagesDelta(
           for (const toolCall of item.toolCalls) windowToolIds.add(toolCall.id)
         }
         if ([...lateResultIds].some((id) => !windowToolIds.has(id))) {
-          maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+          grow()
           continue
         }
       }
@@ -1742,7 +1754,7 @@ export async function getTranscriptMessagesDelta(
     // serve it; grow until the window has context before the response.
     if (start === 0 && !reachedStart) {
       if (canGrow) {
-        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        grow()
         continue
       }
       return { messages: [], anchor: null, resync: true }

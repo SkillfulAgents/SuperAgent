@@ -14,11 +14,12 @@ vi.mock('@renderer/components/messages/tool-call-item', () => ({
   StatusIndicator: ({ status }: { status: string }) => <span>{status}</span>,
 }))
 vi.mock('./workflow-agent-transcript', () => ({ WorkflowAgentTranscript: () => null }))
+let expandedAgentId: string | null = null
 vi.mock('@renderer/context/workflow-context', () => ({
   useWorkflow: () => ({
     openWorkflows: [{ runId: 'wf_test', name: 'deep-research' }],
     selectedRunId: 'wf_test',
-    expandedAgentId: null,
+    expandedAgentId,
     selectWorkflow: vi.fn(),
     setExpandedAgent: vi.fn(),
   }),
@@ -33,15 +34,17 @@ const emptyTree: WorkflowTree = {
   expectedAgents: 0, totals: { toolCount: 0, tokens: 0, durationMs: null },
 }
 let queryClient: QueryClient
-let requests: Array<{ resolve: (tree: WorkflowTree) => void; fail: () => void }>
+let requests: Array<{ url: string; resolve: (body: unknown) => void; fail: () => void }>
 
 beforeEach(() => {
   vi.useFakeTimers()
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   requests = []
-  apiFetch.mockReset().mockImplementation((_url: string, init?: RequestInit) => new Promise((resolve, reject) => {
+  expandedAgentId = null
+  apiFetch.mockReset().mockImplementation((url: string, init?: RequestInit) => new Promise((resolve, reject) => {
     requests.push({
-      resolve: (tree) => resolve({ ok: true, json: async () => tree }),
+      url,
+      resolve: (body) => resolve({ ok: true, json: async () => body }),
       fail: () => resolve({ ok: false, status: 500 }),
     })
     init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
@@ -193,5 +196,22 @@ describe('workflow preview with slow or unavailable disk reconstruction', () => 
     expect(screen.getByText('Final evidence')).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
     expect(requests).toHaveLength(2)
+  })
+})
+
+describe('workflow agent transcript paging', () => {
+  it('loads the older page of an expanded agent when the server returns a cursor', async () => {
+    startAgent()
+    liveRun = { ...liveRun, completedAt: Date.now(), agents: { a1: { ...liveRun.agents.a1, status: 'done' } } }
+    expandedAgentId = 'a1'
+    render(tray())
+    requests.find((r) => r.url.endsWith('/tree'))!.resolve(emptyTree)
+    const page = requests.find((r) => r.url.includes('/agents/a1/messages'))!
+    expect(page.url).toContain('limit=300')
+    page.resolve({ messages: [], nextCursor: 'older-1' })
+    await flush()
+
+    await act(async () => { screen.getByText('Show earlier messages').click() })
+    expect(requests.at(-1)!.url).toContain('cursor=older-1')
   })
 })

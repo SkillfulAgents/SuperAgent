@@ -683,3 +683,61 @@ describe('sibling queryFns abort wiring', () => {
     expect(inflight[0].init?.signal).toBeInstanceOf(AbortSignal)
   })
 })
+
+describe('subagent transcript pages', () => {
+  const item = (id: string, type: 'user' | 'assistant') => ({
+    id,
+    type,
+    content: { text: id },
+    toolCalls: [],
+    createdAt: '2026-01-01T00:00:00Z',
+  })
+
+  it('reads a bare transcript array from an older server as a page, on first load and on refetch', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useSubagentMessages('s1', 'agent-1', 'sub-1'), { wrapper })
+
+    await waitFor(() => expect(inflight).toHaveLength(1))
+    inflight[0].resolve([item('u1', 'user'), item('a1', 'assistant')])
+    await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1']))
+    expect(result.current.hasOlder).toBe(false)
+
+    act(() => {
+      void wrapper.queryClient.invalidateQueries({ queryKey: ['subagent-messages', 's1'] })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].resolve([item('u1', 'user'), item('a1', 'assistant'), item('u2', 'user')])
+
+    await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u2']))
+    expect(result.current.error).toBeNull()
+  })
+
+  it('reports a failed older page in the render that ends the fetch', async () => {
+    const wrapper = createWrapper()
+    const seen: Array<{ isFetchingOlder: boolean; olderFailed: boolean }> = []
+    const { result } = renderHook(() => {
+      const transcript = useSubagentMessages('s1', 'agent-1', 'sub-1')
+      seen.push({ isFetchingOlder: transcript.isFetchingOlder, olderFailed: transcript.olderFailed })
+      return transcript
+    }, { wrapper })
+
+    await waitFor(() => expect(inflight).toHaveLength(1))
+    inflight[0].resolve({ messages: [item('u2', 'user')], nextCursor: 'u2' })
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+
+    let more: boolean | undefined
+    act(() => {
+      void result.current.fetchOlder().then((value) => { more = value })
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toContain('cursor=u2')
+    await act(async () => { inflight[1].fail() })
+
+    await waitFor(() => expect(more).toBe(false))
+    expect(result.current.olderFailed).toBe(true)
+    expect(result.current.hasOlder).toBe(true)
+    // No render saw the fetch over without the failure.
+    const ended = seen.findIndex((s, i) => i > 0 && seen[i - 1].isFetchingOlder && !s.isFetchingOlder)
+    expect(seen[ended].olderFailed).toBe(true)
+  })
+})

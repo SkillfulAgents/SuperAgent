@@ -1,9 +1,8 @@
-import { memo, useMemo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useMemo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Loader2, ChevronRight, ChevronDown } from 'lucide-react'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
-import { messagesQueryFn, subagentMessagesUrl, useMessages, type MessagesPage } from '@renderer/hooks/use-messages'
+import { useMessages, useSubagentMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useQueries, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { getToolRenderer } from '@shared/lib/tools/renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { cn } from '@shared/lib/utils/cn'
@@ -31,12 +30,16 @@ interface BrowserActivityLogProps {
   agentSlug: string
 }
 
-// Only each transcript's data, so the result keeps its identity until a
-// transcript's content changes: without `combine`, useQueries returns a new
-// array on every render and a fetch starting or ending re-renders the log.
-function subagentTranscripts(results: UseQueryResult<MessagesPage>[]) {
-  return results.map((result) => result.data?.messages)
+/** What one subagent's transcript gives the log: its loaded messages, and its older pages. */
+interface SubagentTranscript {
+  messages: ApiMessageOrBoundary[] | undefined
+  hasOlder: boolean
+  fetchOlder: () => Promise<boolean>
 }
+
+type SubagentTranscripts = Readonly<Record<string, SubagentTranscript>>
+
+const NO_SUBAGENT_TRANSCRIPTS: SubagentTranscripts = {}
 
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
   const { data: messages } = useMessages(sessionId, agentSlug)
@@ -48,34 +51,35 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
   // Collect ALL subagent IDs from the session messages
   const subagentIds = useMemo(() => {
     if (!messages) return []
-    const ids: string[] = []
+    const ids = new Set<string>()
     for (const msg of messages) {
       if (msg.type !== 'assistant') continue
       const apiMsg = msg as ApiMessage
       if (!apiMsg.toolCalls) continue
       for (const tc of apiMsg.toolCalls) {
         if ((tc.name === 'Task' || tc.name === 'Agent') && tc.subagent?.agentId) {
-          ids.push(tc.subagent.agentId)
+          ids.add(tc.subagent.agentId)
         }
       }
     }
-    return ids
+    return [...ids]
   }, [messages])
 
-  // The trailing page of every subagent's transcript, in parallel: the same
-  // cache entries the subagent cards read, refreshed with deltas.
-  const queryClient = useQueryClient()
-  const transcripts = useQueries({
-    queries: subagentIds.map((subId) => {
-      const queryKey = ['subagent-messages', sessionId, agentSlug, subId]
-      return {
-        queryKey,
-        queryFn: messagesQueryFn(queryClient, queryKey, subagentMessagesUrl(agentSlug, sessionId, subId)),
-        refetchInterval: false as const,
-      }
-    }),
-    combine: subagentTranscripts,
-  })
+  // Reported by one SubagentTranscriptWatcher per subagent: the same
+  // transcripts the subagent cards read, refreshed with deltas.
+  const [subagentTranscripts, setSubagentTranscripts] = useState(NO_SUBAGENT_TRANSCRIPTS)
+  const reportSubagentTranscript = useCallback((subagentId: string, transcript: SubagentTranscript | undefined) => {
+    setSubagentTranscripts((current) => {
+      const next = { ...current }
+      if (transcript) next[subagentId] = transcript
+      else delete next[subagentId]
+      return next
+    })
+  }, [])
+  const transcripts = useMemo(
+    () => subagentIds.map((subId) => subagentTranscripts[subId]?.messages),
+    [subagentIds, subagentTranscripts],
+  )
 
   // Extract browser tool calls from all sources, deduplicated and in message order
   const flatItems = useMemo(() => {
@@ -107,6 +111,14 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
     return items.slice(-MAX_ENTRIES)
   }, [messages, transcripts])
 
+  // Earlier activity can still fit under the cap only while the log is short of it.
+  const olderTranscripts = flatItems.length < MAX_ENTRIES
+    ? subagentIds.map((subId) => subagentTranscripts[subId]).filter((transcript) => transcript?.hasOlder)
+    : []
+  const showEarlier = () => {
+    for (const transcript of olderTranscripts) void transcript?.fetchOlder()
+  }
+
   // Streaming browser tool (from active subagent or main agent)
   const streamingBrowserTool = useMemo(() => {
     for (const tool of streamingBrowserTools) {
@@ -127,13 +139,31 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
   return (
     <>
       <StreamingBrowserToolsWatcher sessionId={sessionId} agentSlug={agentSlug} onChange={setStreamingBrowserTools} />
-      {flatItems.length === 0 && !streamingBrowserTool ? (
+      {subagentIds.map((subId) => (
+        <SubagentTranscriptWatcher
+          key={subId}
+          sessionId={sessionId}
+          agentSlug={agentSlug}
+          subagentId={subId}
+          onChange={reportSubagentTranscript}
+        />
+      ))}
+      {flatItems.length === 0 && !streamingBrowserTool && olderTranscripts.length === 0 ? (
         <div className="flex-1 min-h-0 flex items-center justify-center px-4 py-4">
           <span className="text-xs text-muted-foreground">No browser activity yet</span>
         </div>
       ) : (
         <ScrollArea className="flex-1 min-h-0">
           <div className="px-4 py-2 space-y-2.5">
+            {olderTranscripts.length > 0 && (
+              <button
+                type="button"
+                onClick={showEarlier}
+                className="text-xs text-foreground hover:text-foreground/70 font-medium transition-colors py-1"
+              >
+                Show earlier activity
+              </button>
+            )}
             {flatItems.map((item) => (
               <CompactToolCall key={item.key} toolCall={item.toolCall} />
             ))}
@@ -181,6 +211,38 @@ function StreamingBrowserToolsWatcher({ sessionId, agentSlug, onChange }: Browse
     reported.current = tools
     onChange(tools.length > 0 ? tools : NO_STREAMING_TOOLS)
   }, [streamingToolUses, activeSubagents, onChange])
+
+  return null
+}
+
+function sameMessages(a: ApiMessageOrBoundary[] | undefined, b: ApiMessageOrBoundary[] | undefined): boolean {
+  return a === b || (!!a && !!b && a.length === b.length && a.every((message, i) => message === b[i]))
+}
+
+/**
+ * Renders nothing. Reports one subagent's transcript to the log, only when
+ * its messages or older pages change: a refetch that brings nothing new keeps
+ * every message's identity, and does not re-render the log.
+ */
+function SubagentTranscriptWatcher({ sessionId, agentSlug, subagentId, onChange }: BrowserActivityLogProps & {
+  subagentId: string
+  onChange: (subagentId: string, transcript: SubagentTranscript | undefined) => void
+}) {
+  const { data, hasOlder, fetchOlder } = useSubagentMessages(sessionId, agentSlug, subagentId)
+  const reported = useRef<SubagentTranscript | undefined>(undefined)
+  // fetchOlder changes with every page; the log calls it only on a click.
+  const latestFetchOlder = useRef(fetchOlder)
+  const stableFetchOlder = useCallback(() => latestFetchOlder.current(), [])
+
+  useLayoutEffect(() => {
+    latestFetchOlder.current = fetchOlder
+    const last = reported.current
+    if (last && sameMessages(last.messages, data) && last.hasOlder === hasOlder) return
+    reported.current = { messages: data, hasOlder, fetchOlder: stableFetchOlder }
+    onChange(subagentId, reported.current)
+  }, [data, hasOlder, fetchOlder, stableFetchOlder, subagentId, onChange])
+
+  useLayoutEffect(() => () => onChange(subagentId, undefined), [subagentId, onChange])
 
   return null
 }

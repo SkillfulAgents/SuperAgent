@@ -81,7 +81,12 @@ async function fetchMessagesPage(
   const res = await apiFetch(`${url}?${params.toString()}`, { signal: opts.signal })
   if (res.status === 404) throw new TranscriptNotFoundError()
   if (!res.ok) throw new Error('Failed to fetch messages')
-  return res.json() as Promise<MessagesPage>
+  return asMessagesPage<MessagesPage>(await res.json())
+}
+
+// Servers that predate paging on a route answer with the whole transcript as an array.
+function asMessagesPage<T>(body: T | ApiMessageOrBoundary[]): T | MessagesPage {
+  return Array.isArray(body) ? { messages: body, nextCursor: null } : body
 }
 
 // `limit` rides along so a server that predates the delta protocol (rolling
@@ -99,7 +104,7 @@ async function fetchMessagesDelta(
   const res = await apiFetch(`${url}?${params.toString()}`, { signal: opts.signal })
   if (res.status === 404) throw new TranscriptNotFoundError()
   if (!res.ok) throw new Error('Failed to fetch messages')
-  return res.json() as Promise<MessagesDelta | MessagesPage>
+  return asMessagesPage<MessagesDelta | MessagesPage>(await res.json())
 }
 
 function isDeltaResponse(body: MessagesDelta | MessagesPage): body is MessagesDelta {
@@ -213,6 +218,9 @@ function useTranscriptMessages({ queryKey, url, refetchInterval, deleted = NONE_
   const [older, setOlder] = useState<ApiMessageOrBoundary[]>([])
   const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined)
   const [isFetchingOlder, setIsFetchingOlder] = useState(false)
+  // The last older-page request failed; set in the same render that ends it,
+  // so a caller that walks pages stops before it asks again.
+  const [olderFailed, setOlderFailed] = useState(false)
   const prevLatestRef = useRef<ApiMessageOrBoundary[]>(EMPTY_MESSAGES)
   const lastResyncRef = useRef<number | undefined>(undefined)
   // Bumped whenever older-history state is reset (session switch, resync).
@@ -234,6 +242,7 @@ function useTranscriptMessages({ queryKey, url, refetchInterval, deleted = NONE_
     pagedCursorsRef.current = new Set()
     setOlder([])
     setOlderCursor(undefined)
+    setOlderFailed(false)
     prevLatestRef.current = EMPTY_MESSAGES
     lastResyncRef.current = undefined
   }, [url])
@@ -255,6 +264,7 @@ function useTranscriptMessages({ queryKey, url, refetchInterval, deleted = NONE_
     prevLatestRef.current = EMPTY_MESSAGES
     setOlder([])
     setOlderCursor(undefined)
+    setOlderFailed(false)
   }, [resyncedAt])
 
   useLayoutEffect(() => {
@@ -302,6 +312,7 @@ function useTranscriptMessages({ queryKey, url, refetchInterval, deleted = NONE_
     const controller = new AbortController()
     olderAbortRef.current = controller
     setIsFetchingOlder(true)
+    setOlderFailed(false)
     try {
       // Items already on screen, in the older buffer or the trailing page. A
       // page made only of these is skipped and the walk goes on in the same
@@ -350,6 +361,7 @@ function useTranscriptMessages({ queryKey, url, refetchInterval, deleted = NONE_
     } catch (error) {
       // Rejection caused by our own generation reset (abort) — not an error.
       if (gen !== olderGenRef.current) return false
+      setOlderFailed(true)
       console.warn('Failed to fetch older messages:', error)
       if (!(error instanceof TranscriptNotFoundError)) {
         captureRendererException(error, { tags: { area: 'messages', op: 'fetch-older' } })
@@ -367,6 +379,7 @@ function useTranscriptMessages({ queryKey, url, refetchInterval, deleted = NONE_
     fetchOlder,
     hasOlder,
     isFetchingOlder,
+    olderFailed,
   }
 }
 
