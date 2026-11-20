@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Sent the browser-task prompt to agent QA-20261120-215501-24yz and confirmed the reply reports the page title \"Example Domain\".",
+  "steps": [
+    "Navigated to http://localhost:47891 — Gamut home loaded with the \"QA-20261120-215501-24yz\" agent listed in the sidebar (screenshot step1-home.png).",
+    "Clicked the QA-20261120-215501-24yz agent in the sidebar — agent page opened with an empty message input and status \"idle\".",
+    "Typed \"Open a browser and go to https://example.com. Tell me the page title.\" and pressed Enter — text stayed in the input and was not sent. The placeholder reads \"Press cmd+enter to send\", so this may be by design rather than a bug. I then clicked the Send button, and the session \"Browser Page Title Check\" started with status \"working\" and a ToolSearch / Open Browser tool card (screenshots step3-message-typed.png, step3-message-sent.png).",
+    "Waited up to 3 minutes for \"Example Domain\" — the wait returned after the agent finished in about 4 seconds (\"Worked for 4s · 3 tool calls\").",
+    "Verified the response and took a screenshot — the agent replied: \"The page title at https://example.com is \"Example Domain\". I've closed the browser.\" The status returned to \"idle\" (screenshot step5-response.png)."
+  ],
+  "bugs": [],
+  "durationMs": 77158,
+  "sessionId": "256725b0-4e97-4f65-9676-92a3f3533d3c",
+  "cost": {
+    "inputTokens": 8531,
+    "outputTokens": 7998,
+    "cacheCreationTokens": 76981,
+    "cacheReadTokens": 847593,
+    "model": "claude-haiku-5-5",
+    "totalCostUsd": 0.229507
+  }
+}
