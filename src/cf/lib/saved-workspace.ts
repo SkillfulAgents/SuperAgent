@@ -18,6 +18,8 @@ const HELD_MAX_BYTES = 256 * 1024
 const NEW_FILE_MODE = 0o644
 const NEW_FOLDER_MODE = 0o755
 // R2 deletes at most 1,000 keys per call.
+// The part size of a streamed write: R2 takes parts of one size, at least 5 MiB, but the last.
+const STREAM_PART_BYTES = 8 * 1024 * 1024
 const DELETE_BATCH = 1000
 // Links followed in a row before a path counts as not found, as a filesystem gives up on a loop.
 const MAX_LINK_HOPS = 8
@@ -135,12 +137,8 @@ export class SavedWorkspace {
 
   /** Writes one file, with `mode` or else the mode it had. Returns the hashes it replaced, for the caller to settle. */
   async write(rel: string, bytes: Uint8Array, mode?: number): Promise<string[]> {
-    // As the agent's disk would refuse it: the saved workspace cannot hold a file and a folder at one path.
-    const parent = this.nonFolderParent(rel)
-    if (parent) throw new WorkspaceFileError('not-a-directory', `Cannot write ${rel}: ${parent} is not a folder`)
+    this.refuseWrite(rel)
     const sql = this.sql
-    const isFolder = sql.exec("SELECT 1 FROM workspace_file WHERE (path = ? AND kind = 'dir') OR (path >= ? AND path < ?) LIMIT 1", rel, ...under(rel)).toArray().length > 0
-    if (isFolder) throw new WorkspaceFileError('not-a-file', `Cannot write ${rel}: it is a folder`)
     const hash = hex(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>))
     this.markPending([hash])
     // An R2 write takes about half a second. A small file is kept in the object's own storage,
@@ -149,6 +147,68 @@ export class SavedWorkspace {
     else await this.bucket.put(this.blobKey(hash), bytes)
     const previous = sql.exec<{ mode: number }>('SELECT mode FROM workspace_file WHERE path = ?', rel).toArray()[0]
     return this.record([{ path: rel, hash, size: bytes.byteLength, mode: mode ?? previous?.mode ?? NEW_FILE_MODE, mtimeMs: Date.now(), kind: 'file' }])
+  }
+
+  /**
+   * Writes one file from a stream, never holding it whole: into R2 under a key of its own while
+   * it is hashed, then under its hash. The bytes go through this isolate twice. Returns the
+   * hashes it replaced, for the caller to settle.
+   */
+  async writeStream(rel: string, body: ReadableStream<Uint8Array>, mode?: number): Promise<string[]> {
+    this.refuseWrite(rel)
+    const incoming = `agents/${this.objectId}/incoming/${crypto.randomUUID()}`
+    const { hash, size } = await this.uploadHashed(incoming, body)
+    try {
+      this.markPending([hash])
+      const stored = await this.bucket.get(incoming)
+      if (!stored) throw new Error(`The bytes of ${rel} are missing from R2`)
+      await this.bucket.put(this.blobKey(hash), stored.body.pipeThrough(new FixedLengthStream(size)))
+      const previous = this.sql.exec<{ mode: number }>('SELECT mode FROM workspace_file WHERE path = ?', rel).toArray()[0]
+      return this.record([{ path: rel, hash, size, mode: mode ?? previous?.mode ?? NEW_FILE_MODE, mtimeMs: Date.now(), kind: 'file' }])
+    } finally {
+      await this.bucket.delete(incoming)
+    }
+  }
+
+  /** Streams `body` into R2 at `key` in parts of one size, hashing it on the way. */
+  private async uploadHashed(key: string, body: ReadableStream<Uint8Array>): Promise<{ hash: string; size: number }> {
+    const digest = new crypto.DigestStream('SHA-256')
+    const hashing = digest.getWriter()
+    const upload = await this.bucket.createMultipartUpload(key)
+    const parts: Awaited<ReturnType<typeof upload.uploadPart>>[] = []
+    let buffer = new Uint8Array(STREAM_PART_BYTES)
+    let filled = 0
+    let size = 0
+    const send = async (bytes: Uint8Array) => {
+      parts.push(await upload.uploadPart(parts.length + 1, bytes))
+    }
+    try {
+      const reader = body.getReader()
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.byteLength
+        await hashing.write(value)
+        for (let offset = 0; offset < value.byteLength;) {
+          const taken = Math.min(STREAM_PART_BYTES - filled, value.byteLength - offset)
+          buffer.set(value.subarray(offset, offset + taken), filled)
+          filled += taken
+          offset += taken
+          if (filled === STREAM_PART_BYTES) {
+            await send(buffer)
+            buffer = new Uint8Array(STREAM_PART_BYTES)
+            filled = 0
+          }
+        }
+      }
+      if (filled > 0 || parts.length === 0) await send(buffer.subarray(0, filled))
+      await hashing.close()
+      await upload.complete(parts)
+    } catch (error) {
+      await upload.abort().catch(() => {})
+      throw error
+    }
+    return { hash: hex(await digest.digest), size }
   }
 
   /** Adds bytes to the end of a file, or makes it. Returns the hashes it replaced, for the caller to settle. */
@@ -308,6 +368,14 @@ export class SavedWorkspace {
     this.storage.transactionSync(() => {
       for (const table of ['workspace_file', 'workspace_meta', 'workspace_pending', 'workspace_held']) sql.exec(`DELETE FROM ${table}`)
     })
+  }
+
+  /** As the agent's disk would refuse it: the saved workspace cannot hold a file and a folder at one path. */
+  private refuseWrite(rel: string): void {
+    const parent = this.nonFolderParent(rel)
+    if (parent) throw new WorkspaceFileError('not-a-directory', `Cannot write ${rel}: ${parent} is not a folder`)
+    const isFolder = this.sql.exec("SELECT 1 FROM workspace_file WHERE (path = ? AND kind = 'dir') OR (path >= ? AND path < ?) LIMIT 1", rel, ...under(rel)).toArray().length > 0
+    if (isFolder) throw new WorkspaceFileError('not-a-file', `Cannot write ${rel}: it is a folder`)
   }
 
   /** The nearest folder above `rel` that the saved workspace holds as a file or a link; null when there is none. */

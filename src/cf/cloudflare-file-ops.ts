@@ -9,19 +9,17 @@
  */
 import type { FileEntry, FileStat, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
-import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import { ASLEEP_HEADER, type ByteRange, type SleepingStore, type StoredEntry, type StoredRefusal } from './cloudflare-container-control'
 
 /** Calls the container's API, or returns null when the container is not running. */
 export type ContainerFetch = (path: string, init?: RequestInit) => Promise<Response | null>
 
 /**
- * The largest file written whole while the agent sleeps. The saved workspace hashes a file before
- * it stores it, so it is read whole: its chunks and then their joined copy, twice its size at the
- * peak. An isolate has 128 MB for the app, every object it hosts and this, and going over resets
- * every object in it, so the file is kept well under a quarter of that.
+ * The largest file written whole while the agent sleeps; a larger one streams into the saved
+ * workspace. Read whole, a file is its chunks and then their joined copy, twice its size at the
+ * peak, and an isolate has 128 MB for the app and every object it hosts.
  */
-export const MAX_ASLEEP_WRITE_BYTES = 16 * 1024 * 1024
+export const MAX_WHOLE_ASLEEP_WRITE_BYTES = 16 * 1024 * 1024
 
 /**
  * A file up to this size is read once when it is opened: its reader pages through it with many
@@ -67,36 +65,41 @@ async function readAll(body: ReadableStream<Uint8Array> | Uint8Array): Promise<U
   return new Uint8Array(await new Response(body).arrayBuffer())
 }
 
-/** A file too large to save while the agent sleeps: an upload route answers it as 413, with what to do instead. */
-export class AsleepUploadTooLargeError extends UploadTooLargeError {
-  constructor(size: number, limit: number, rel: string) {
-    super(size, limit)
-    this.message = `${rel} is larger than ${limit / (1024 * 1024)} MB, the most that can be saved while the agent sleeps; start the agent and send the file again`
-  }
-}
-
-/** Reads a stream whole, and fails it once it passes `limit` bytes instead of reading on. */
-async function readUpTo(body: ReadableStream<Uint8Array>, limit: number, rel: string): Promise<Uint8Array> {
+/**
+ * The stream whole when it ends within `limit` bytes; otherwise a stream of the same bytes, the
+ * ones already read first. Only `limit` bytes are held.
+ */
+async function readHead(body: ReadableStream<Uint8Array>, limit: number): Promise<{ whole: Uint8Array; stream?: undefined } | { whole?: undefined; stream: ReadableStream<Uint8Array> }> {
+  const reader = body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
-  const reader = body.getReader()
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
+    chunks.push(value)
     size += value.byteLength
     if (size > limit) {
-      await reader.cancel()
-      throw new AsleepUploadTooLargeError(size, limit, rel)
+      return {
+        stream: new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            const next = chunks.shift()
+            if (next) return controller.enqueue(next)
+            const { done: ended, value: more } = await reader.read()
+            if (ended) controller.close()
+            else controller.enqueue(more)
+          },
+          cancel: (reason) => reader.cancel(reason),
+        }),
+      }
     }
-    chunks.push(value)
   }
-  const bytes = new Uint8Array(size)
+  const whole = new Uint8Array(size)
   let offset = 0
   for (const chunk of chunks) {
-    bytes.set(chunk, offset)
+    whole.set(chunk, offset)
     offset += chunk.byteLength
   }
-  return bytes
+  return { whole }
 }
 
 function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
@@ -286,9 +289,18 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
       }
       // The container went to sleep after taking (part of) the stream: it cannot be sent again.
       if (response) throw new Error(`The container stopped while ${rel} was being sent; try the upload again`)
-      const bytes = await readUpTo(counted, MAX_ASLEEP_WRITE_BYTES, rel)
-      await upload(rel, bytes, options?.mode)
-      return { size: bytes.byteLength }
+      const head = await readHead(counted, MAX_WHOLE_ASLEEP_WRITE_BYTES)
+      if (head.whole) {
+        await upload(rel, head.whole, options?.mode)
+        return { size: head.whole.byteLength }
+      }
+      const rest = head.stream
+      await change(
+        rel,
+        () => awake(`/files/${encodePath(rel)}/upload${modeQuery(options?.mode)}`, { method: 'POST', body: rest }),
+        () => sleeping.writeStream(rel, rest, options?.mode),
+      )
+      return { size }
     },
 
     async delete(path, options) {

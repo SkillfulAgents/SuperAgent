@@ -37,6 +37,8 @@ export interface SleepingStore {
   read(path: string, range?: ByteRange): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** False when the container started meanwhile: the write has to go to the container. A refusal when a folder is in the way. */
   write(path: string, bytes: Uint8Array, mode?: number): Promise<boolean | StoredRefusal>
+  /** As write, for a file too large to hold whole; false leaves the stream unread. */
+  writeStream(path: string, body: ReadableStream<Uint8Array>, mode?: number): Promise<boolean | StoredRefusal>
   /** Removes a file or a directory with everything under it; false as for write. */
   remove(path: string): Promise<boolean>
   /** Keeps an empty directory, unless something is already there; false and a refusal as for write. */
@@ -54,6 +56,7 @@ export function sleepingStore(agents: AgentObjects, agentId: string): SleepingSt
     entry: (path) => agent().storedEntry(path),
     read: (path, range) => agent().storedRead(path, range),
     write: (path, bytes, mode) => agent().storedWrite(path, bytes, mode),
+    writeStream: (path, body, mode) => agent().storedWriteStream(path, body, mode),
     remove: (path) => agent().storedRemove(path),
     mkdir: (path) => agent().storedMkdir(path),
     appendToFile: (path, bytes) => agent().appendToFile(path, bytes),

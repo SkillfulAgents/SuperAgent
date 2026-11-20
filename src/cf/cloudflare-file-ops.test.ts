@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import type { SleepingStore } from './cloudflare-container-control'
-import { AsleepUploadTooLargeError, MAX_ASLEEP_WRITE_BYTES, createCloudflareFileOps } from './cloudflare-file-ops'
-import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
+import { MAX_WHOLE_ASLEEP_WRITE_BYTES, createCloudflareFileOps } from './cloudflare-file-ops'
 
 const text = (bytes: Uint8Array | null) => (bytes ? new TextDecoder().decode(bytes) : null)
 const readStream = async (stream: ReadableStream<Uint8Array>) => text(new Uint8Array(await new Response(stream).arrayBuffer()))
@@ -74,6 +73,8 @@ function fakeContainer(initial: Record<string, string> = {}) {
 
 /** The saved workspace (AgentDurableObject's file list in R2), in memory. */
 function fakeSleeping(initial: Record<string, string> = {}) {
+  /** The paths written as a stream, not whole. */
+  const streamed: string[] = []
   const files = new Map(Object.entries(initial).map(([path, body]) => [path, new TextEncoder().encode(body)]))
   const state = { runningOnNextChange: false }
   const folders: string[] = []
@@ -109,6 +110,12 @@ function fakeSleeping(initial: Record<string, string> = {}) {
       files.set(path, new Uint8Array(bytes))
       return true
     },
+    async writeStream(path, body) {
+      if (refused()) return false
+      files.set(path, new Uint8Array(await new Response(body).arrayBuffer()))
+      streamed.push(path)
+      return true
+    },
     async remove(path) {
       if (refused()) return false
       for (const file of [...files.keys()]) if (file === path || file.startsWith(`${path}/`)) files.delete(file)
@@ -129,7 +136,7 @@ function fakeSleeping(initial: Record<string, string> = {}) {
       return 'done'
     },
   }
-  return { store, files, folders, state }
+  return { store, files, folders, state, streamed }
 }
 
 /** For tests of a running container: the saved workspace must not be touched. */
@@ -137,6 +144,7 @@ const unused: SleepingStore = {
   entry: () => Promise.reject(new Error('saved workspace used while awake')),
   read: () => Promise.reject(new Error('saved workspace used while awake')),
   write: () => Promise.reject(new Error('saved workspace used while awake')),
+  writeStream: () => Promise.reject(new Error('saved workspace used while awake')),
   remove: () => Promise.reject(new Error('saved workspace used while awake')),
   mkdir: () => Promise.reject(new Error('saved workspace used while awake')),
   appendToFile: () => Promise.reject(new Error('saved workspace used while awake')),
@@ -352,7 +360,7 @@ describe('Cloudflare file ops while the container is asleep', () => {
     expect(container.calls).toEqual([])
   })
 
-  it('makes a folder in the saved workspace, and refuses a stream larger than a sleeping agent can take', async () => {
+  it('makes a folder in the saved workspace, and streams a write larger than a whole one into it', async () => {
     const container = fakeContainer()
     container.state.running = false
     const sleeping = fakeSleeping()
@@ -369,8 +377,8 @@ describe('Cloudflare file ops while the container is asleep', () => {
         else controller.close()
       },
     })
-    await expect(files.write('uploads/video.mp4', large)).rejects.toThrow('uploads/video.mp4 is larger than 16 MB')
-    expect(sleeping.files.has('uploads/video.mp4')).toBe(false)
+    expect(await files.write('uploads/video.mp4', large)).toEqual({ size: 80 * 1024 * 1024 })
+    expect(sleeping.streamed).toEqual(['uploads/video.mp4'])
   })
 
   it('appends to the saved workspace while the agent sleeps, and refuses a folder', async () => {
@@ -431,27 +439,38 @@ describe('Cloudflare file ops while the container is asleep', () => {
   })
 })
 
-describe('Cloudflare file ops: a write too large for a sleeping agent', () => {
-  it('fails as an upload too large, saying to start the agent, and saves nothing', async () => {
+describe('Cloudflare file ops: a large write to a sleeping agent', () => {
+  it('streams a file larger than a whole write into the saved workspace, every byte in order', async () => {
     const container = fakeContainer()
     container.state.running = false
     const saved = fakeSleeping()
     const files = createCloudflareFileOps(container.call, saved.store)
-    const part = new Uint8Array(8 * 1024 * 1024)
-    let sent = 0
+    const parts = [0, 1, 2].map((i) => new Uint8Array(8 * 1024 * 1024).fill(65 + i))
+    let next = 0
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
-        if (sent > MAX_ASLEEP_WRITE_BYTES) return controller.close()
-        sent += part.byteLength
-        controller.enqueue(part)
+        if (next === parts.length) return controller.close()
+        controller.enqueue(parts[next++])
       },
     })
 
-    const error = await files.write('uploads/video.mp4', body).catch((caught: unknown) => caught)
+    expect(await files.write('uploads/video.mp4', body)).toEqual({ size: 24 * 1024 * 1024 })
 
-    expect(error).toBeInstanceOf(UploadTooLargeError)
-    expect(error).toBeInstanceOf(AsleepUploadTooLargeError)
-    expect((error as Error).message).toMatch(/start the agent and send the file again/)
-    expect(saved.files.size).toBe(0)
+    expect(saved.streamed).toEqual(['uploads/video.mp4'])
+    const stored = saved.files.get('uploads/video.mp4')!
+    expect(stored.byteLength).toBe(24 * 1024 * 1024)
+    expect([stored[0], stored[8 * 1024 * 1024], stored[24 * 1024 * 1024 - 1]]).toEqual([65, 66, 67])
+  })
+
+  it('writes a file within the limit whole, as before', async () => {
+    const container = fakeContainer()
+    container.state.running = false
+    const saved = fakeSleeping()
+    const files = createCloudflareFileOps(container.call, saved.store)
+
+    await files.write('notes.md', new Response(new Uint8Array(MAX_WHOLE_ASLEEP_WRITE_BYTES).fill(66)).body!)
+
+    expect(saved.streamed).toEqual([])
+    expect(saved.files.get('notes.md')!.byteLength).toBe(MAX_WHOLE_ASLEEP_WRITE_BYTES)
   })
 })

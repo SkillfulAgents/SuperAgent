@@ -23,6 +23,22 @@ export function memoryR2Bucket(pageSize = 1000): R2Bucket & { keys(): string[] }
       objects.set(key, await bytesOf(value))
       return {}
     },
+    async createMultipartUpload(key) {
+      const parts = new Map<number, Uint8Array>()
+      return {
+        async uploadPart(partNumber, value) {
+          parts.set(partNumber, await bytesOf(value instanceof ArrayBuffer ? value : value.slice()))
+          return { partNumber, etag: `part-${partNumber}` }
+        },
+        async complete(done) {
+          objects.set(key, await bytesOf(new Blob(done.map((part) => parts.get(part.partNumber)! as Uint8Array<ArrayBuffer>)).stream()))
+          return {}
+        },
+        async abort() {
+          parts.clear()
+        },
+      }
+    },
     async delete(keys) {
       for (const key of [keys].flat()) objects.delete(key)
     },

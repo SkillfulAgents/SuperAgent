@@ -298,6 +298,11 @@ export class AgentDurableObject extends DurableObject<Env> {
     return refusedAs(this.storeChange(async () => this.settleLater(await this.workspace.write(rel, bytes, mode))))
   }
 
+  /** As storedWrite, for a file too large to hold whole: its bytes stream into R2. False leaves the stream unread. */
+  storedWriteStream(rel: string, body: ReadableStream<Uint8Array>, mode?: number): Promise<boolean | StoredRefusal> {
+    return refusedAs(this.storeChange(async () => this.settleLater(await this.workspace.writeStream(rel, body, mode))))
+  }
+
   /**
    * Adds bytes to the end of a file, or makes it, wherever the agent's files are now. While the agent
    * runs, the container's cf-workspace-server does one write at the end of the file, so the bytes

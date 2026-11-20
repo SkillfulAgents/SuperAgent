@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cloudflare-agent'
 import { SavedWorkspace, linkTarget, workspaceBlobKey } from '../lib/saved-workspace'
 import type { Env } from '../index'
@@ -727,4 +727,102 @@ describeFileOpsContract('Cloudflare file ops while the agent sleeps', () => {
     files: createCloudflareFileOps(async () => null, sleepingStore(agents, 'sales agent')),
     dispose: () => clearTimeout((object as unknown as { settleTimer?: ReturnType<typeof setTimeout> }).settleTimer),
   }
+})
+
+describe('SavedWorkspace writing a large file from a stream', () => {
+  /** R2 in memory with multipart uploads; parts must be one size but the last, as R2 asks. */
+  function multipartBucket() {
+    const objects = new Map<string, Uint8Array>()
+    const join = (chunks: Uint8Array[]) => {
+      const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0))
+      let at = 0
+      for (const c of chunks) {
+        out.set(c, at)
+        at += c.byteLength
+      }
+      return out
+    }
+    const bucket = {
+      objects,
+      createMultipartUpload: async (key: string) => {
+        const parts = new Map<number, Uint8Array>()
+        return {
+          uploadPart: async (n: number, bytes: Uint8Array) => {
+            parts.set(n, bytes.slice())
+            return { partNumber: n, etag: `etag-${n}` }
+          },
+          complete: async (done: Array<{ partNumber: number }>) => {
+            const sizes = done.slice(0, -1).map((p) => parts.get(p.partNumber)!.byteLength)
+            if (new Set(sizes).size > 1) throw new Error('parts must be one size')
+            objects.set(key, join(done.map((p) => parts.get(p.partNumber)!)))
+          },
+          abort: async () => {},
+        }
+      },
+      get: async (key: string) => (objects.has(key) ? { body: new Response(objects.get(key)! as Uint8Array<ArrayBuffer>).body! } : null),
+      put: async (key: string, body: ReadableStream<Uint8Array> | Uint8Array) => {
+        objects.set(key, body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer()))
+      },
+      delete: async (keys: string | string[]) => {
+        for (const key of [keys].flat()) objects.delete(key)
+      },
+    }
+    return bucket
+  }
+
+  const nodeCrypto = globalThis.crypto
+  afterAll(() => void vi.stubGlobal('crypto', nodeCrypto))
+  beforeAll(() => {
+    // Workers' DigestStream, which Node lacks: a writable that hashes what it is given.
+    vi.stubGlobal('crypto', {
+      randomUUID: () => nodeCrypto.randomUUID(),
+      subtle: nodeCrypto.subtle,
+      getRandomValues: <T extends ArrayBufferView>(array: T) => nodeCrypto.getRandomValues(array),
+      DigestStream: class extends WritableStream<Uint8Array> {
+        readonly digest: Promise<ArrayBuffer>
+        constructor() {
+          const chunks: Uint8Array[] = []
+          let done: () => void = () => {}
+          const closed = new Promise<void>((resolve) => { done = resolve })
+          super({ write: (chunk) => void chunks.push(chunk.slice()), close: () => done() })
+          this.digest = closed.then(() => nodeCrypto.subtle.digest('SHA-256', new Uint8Array(Buffer.concat(chunks))))
+        }
+      },
+    })
+  })
+
+  it('stores the file under its hash, in parts of one size, and leaves nothing else in R2', async () => {
+    const store = storage()
+    const bucket = multipartBucket()
+    const workspace = new SavedWorkspace(store as never, bucket as never, OBJECT)
+    const bytes = new Uint8Array(20 * 1024 * 1024 + 123)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251
+    let at = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (at >= bytes.length) return controller.close()
+        const size = Math.min(3 * 1024 * 1024 + 7, bytes.length - at)
+        controller.enqueue(bytes.slice(at, at + size))
+        at += size
+      },
+    })
+
+    await workspace.writeStream('data/export.bin', body, 0o600)
+
+    const hash = Buffer.from(await nodeCrypto.subtle.digest('SHA-256', bytes)).toString('hex')
+    expect([...bucket.objects.keys()]).toEqual([workspaceBlobKey(OBJECT, hash)])
+    expect(Buffer.compare(Buffer.from(bucket.objects.get(workspaceBlobKey(OBJECT, hash))!), Buffer.from(bytes))).toBe(0)
+    expect(store.sql.exec('SELECT path, hash, size, mode FROM workspace_file').toArray()).toEqual([{ path: 'data/export.bin', hash, size: bytes.length, mode: 0o600 }])
+  })
+
+  it('refuses a stream over a folder before it reads it', async () => {
+    const store = storage()
+    const workspace = new SavedWorkspace(store as never, multipartBucket() as never, OBJECT)
+    workspace.mkdir('data')
+    let pulled = false
+    // No buffer: the stream is pulled only when something reads it.
+    const body = new ReadableStream<Uint8Array>({ pull: () => void (pulled = true) }, { highWaterMark: 0 })
+    await expect(workspace.writeStream('data', body)).rejects.toMatchObject({ code: 'not-a-file' })
+    expect(pulled).toBe(false)
+  })
 })

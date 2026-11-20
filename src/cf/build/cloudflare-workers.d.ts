@@ -139,7 +139,19 @@ declare module 'cloudflare:workers' {
     cursor?: string
   }
 
+  export interface R2UploadedPart {
+    partNumber: number
+    etag: string
+  }
+
+  export interface R2MultipartUpload {
+    uploadPart(partNumber: number, value: ArrayBuffer | Uint8Array): Promise<R2UploadedPart>
+    complete(parts: R2UploadedPart[]): Promise<unknown>
+    abort(): Promise<void>
+  }
+
   export interface R2Bucket {
+    createMultipartUpload(key: string): Promise<R2MultipartUpload>
     get(key: string, options?: { range?: { offset?: number; length?: number } }): Promise<R2ObjectBody | null>
     head(key: string): Promise<unknown | null>
     put(key: string, value: ReadableStream<Uint8Array> | ArrayBuffer | Uint8Array | string, options?: { sha256?: string }): Promise<unknown>
@@ -169,4 +181,13 @@ declare const WebSocketPair: {
 /** A pass-through stream that tells R2 its length, so R2 can store a stream it has not seen whole. */
 declare class FixedLengthStream extends TransformStream<Uint8Array, Uint8Array> {
   constructor(length: number)
+}
+
+/** A writable that hashes what is written to it; `digest` settles once it is closed. */
+interface DigestStream extends WritableStream<Uint8Array> {
+  readonly digest: Promise<ArrayBuffer>
+}
+
+interface Crypto {
+  DigestStream: new (algorithm: 'SHA-256') => DigestStream
 }
