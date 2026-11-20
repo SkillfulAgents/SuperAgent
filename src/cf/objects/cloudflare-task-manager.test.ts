@@ -719,3 +719,14 @@ describe('migrating the database', () => {
     expect(app.prepareOrg).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('webhookRelayAvailableInTaskManager when the read fails', () => {
+  it('counts a failed read of the relay status as unavailable, so the container still starts', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const env = {
+      TASK_MANAGER: { getByName: () => ({ webhookRelayAvailable: async () => { throw new Error('internal error; reference = abc') } }) },
+    } as unknown as Env
+
+    expect(await webhookRelayAvailableInTaskManager(env)).toBe(false)
+  })
+})

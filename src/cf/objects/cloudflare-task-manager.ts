@@ -152,12 +152,22 @@ export async function runHostToolInTaskManager(env: Pick<Env, 'TASK_MANAGER' | '
   return env.TASK_MANAGER.getByName(OBJECT_NAME).runHostTool(request)
 }
 
-/** Whether webhooks can be received, as the relay in the task manager object sees it. An agent's container start reads it for its webhook tools. */
+/**
+ * Whether webhooks can be received, as the relay in the task manager object sees it. An agent's
+ * container start reads it for its webhook tools. A failed read (the object restarting after a
+ * deploy) counts as unavailable: the agent starts without webhook tools rather than not at all.
+ */
 export async function webhookRelayAvailableInTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<boolean> {
-  const own = servingTaskManager()
-  if (own) return own.webhookRelayAvailable()
-  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
-  return env.TASK_MANAGER.getByName(OBJECT_NAME).webhookRelayAvailable()
+  try {
+    const own = servingTaskManager()
+    if (own) return await own.webhookRelayAvailable()
+    await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+    return await env.TASK_MANAGER.getByName(OBJECT_NAME).webhookRelayAvailable()
+  } catch (error) {
+    console.warn('[task-manager] reading the webhook relay status failed; the agent starts without webhook tools:', error)
+    captureException(error, { level: 'warning', tags: { component: 'task-manager', operation: 'webhook-relay-status' } })
+    return false
+  }
 }
 
 /**
