@@ -14,7 +14,8 @@
  * image. A running container keeps its image until it stops; the next start uses the new one.
  */
 import { DurableObject, type Container, type DurableObjectState, type WorkerWebSocket } from 'cloudflare:workers'
-import { ASLEEP_HEADER, type ByteRange, type StoredEntry } from '../cloudflare-container-control'
+import { ASLEEP_HEADER, type ByteRange, type StoredEntry, type StoredRefusal } from '../cloudflare-container-control'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { needsLiveConnections, serveInTaskManager } from './cloudflare-task-manager'
 import { captureException } from '@shared/lib/error-reporting'
 import { containerSnapshotFrom, snapshotStartCommand, type ContainerSnapshot } from '../lib/container-snapshot'
@@ -293,8 +294,8 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   /** False when the agent is running: the write has to go to its container. */
-  storedWrite(rel: string, bytes: Uint8Array): Promise<boolean> {
-    return this.storeChange(async () => this.settleLater(await this.workspace.write(rel, bytes)))
+  storedWrite(rel: string, bytes: Uint8Array): Promise<boolean | StoredRefusal> {
+    return refusedAs(this.storeChange(async () => this.settleLater(await this.workspace.write(rel, bytes))))
   }
 
   /**
@@ -303,7 +304,7 @@ export class AgentDurableObject extends DurableObject<Env> {
    * land whole next to what the agent's own process appends (a session's transcript). While it
    * sleeps, each append takes a turn of the saved workspace, so two made at the same time both land.
    */
-  async appendToFile(rel: string, bytes: Uint8Array): Promise<'done' | 'not-a-file'> {
+  async appendToFile(rel: string, bytes: Uint8Array): Promise<'done' | StoredRefusal> {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (await this.agentRunning()) {
         const request = new Request(`http://container/append?path=${encodeURIComponent(rel)}`, { method: 'POST', body: bytes as Uint8Array<ArrayBuffer> })
@@ -315,14 +316,16 @@ export class AgentDurableObject extends DurableObject<Env> {
       }
       if (Array.isArray(this.workspace.entry(rel))) return 'not-a-file'
       // False: the agent started meanwhile, so the bytes go to its container.
-      if (await this.storeChange(async () => this.settleLater(await this.workspace.append(rel, bytes)))) return 'done'
+      const appended = await refusedAs(this.storeChange(async () => this.settleLater(await this.workspace.append(rel, bytes))))
+      if (appended === true) return 'done'
+      if (appended) return appended
     }
     throw new Error(`The container of agent ${this.agentName()} kept starting and stopping`)
   }
 
   /** Keeps an empty folder, unless something is already at the path or under it. False when the agent is running. */
-  storedMkdir(rel: string): Promise<boolean> {
-    return this.storeChange(async () => this.workspace.mkdir(rel))
+  storedMkdir(rel: string): Promise<boolean | StoredRefusal> {
+    return refusedAs(this.storeChange(async () => this.workspace.mkdir(rel)))
   }
 
   /** Removes a file, or a folder with everything under it. False when the agent is running. */
@@ -581,5 +584,15 @@ export class AgentDurableObject extends DurableObject<Env> {
 
   private agentName(): string {
     return this.ctx.id.name ?? this.ctx.id.toString().slice(0, 8)
+  }
+}
+
+/** A change the saved workspace refused, as its code (StoredRefusal); any other failure is thrown on. */
+async function refusedAs(change: Promise<boolean>): Promise<boolean | StoredRefusal> {
+  try {
+    return await change
+  } catch (error) {
+    if (error instanceof WorkspaceFileError && (error.code === 'not-a-file' || error.code === 'not-a-directory')) return error.code
+    throw error
   }
 }

@@ -652,9 +652,11 @@ describe('AgentDurableObject writing a file while its agent sleeps', () => {
     const bytes = new TextEncoder().encode('Q3')
     await agent.object.storedWrite('reports/q3.md', bytes)
 
-    await expect(agent.object.storedWrite('reports', bytes)).rejects.toThrow('it is a folder')
-    await expect(agent.object.storedWrite('reports/q3.md/notes.md', bytes)).rejects.toThrow('reports/q3.md is not a folder')
-    await expect(agent.object.storedMkdir('reports/q3.md/attachments')).rejects.toThrow('reports/q3.md is not a folder')
+    // As codes: an error thrown in the object reaches its caller without its class.
+    expect(await agent.object.storedWrite('reports', bytes)).toBe('not-a-file')
+    expect(await agent.object.storedWrite('reports/q3.md/notes.md', bytes)).toBe('not-a-directory')
+    expect(await agent.object.storedMkdir('reports/q3.md/attachments')).toBe('not-a-directory')
+    expect(await agent.object.appendToFile('reports/q3.md/log.txt', bytes)).toBe('not-a-directory')
 
     expect(agent.saved().map((row) => (row as { path: string }).path)).toEqual(['reports/q3.md'])
   })

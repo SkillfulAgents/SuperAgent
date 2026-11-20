@@ -9,6 +9,7 @@
  * may happen: one at a time, and only while the agent's container does not hold the files.
  */
 import type { DurableObjectStorage, R2Bucket } from 'cloudflare:workers'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import type { ByteRange, StoredEntry } from '../cloudflare-container-control'
 
 /** A file up to this size written while the agent sleeps is answered from the object's storage before it is in R2. */
@@ -136,10 +137,10 @@ export class SavedWorkspace {
   async write(rel: string, bytes: Uint8Array): Promise<string[]> {
     // As the agent's disk would refuse it: the saved workspace cannot hold a file and a folder at one path.
     const parent = this.nonFolderParent(rel)
-    if (parent) throw new Error(`Cannot write ${rel}: ${parent} is not a folder`)
+    if (parent) throw new WorkspaceFileError('not-a-directory', `Cannot write ${rel}: ${parent} is not a folder`)
     const sql = this.sql
     const isFolder = sql.exec("SELECT 1 FROM workspace_file WHERE (path = ? AND kind = 'dir') OR (path >= ? AND path < ?) LIMIT 1", rel, ...under(rel)).toArray().length > 0
-    if (isFolder) throw new Error(`Cannot write ${rel}: it is a folder`)
+    if (isFolder) throw new WorkspaceFileError('not-a-file', `Cannot write ${rel}: it is a folder`)
     const hash = hex(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>))
     this.markPending([hash])
     // An R2 write takes about half a second. A small file is kept in the object's own storage,
@@ -163,7 +164,7 @@ export class SavedWorkspace {
   /** Keeps an empty folder, unless something is already at the path or under it. */
   mkdir(rel: string): void {
     const parent = this.nonFolderParent(rel)
-    if (parent) throw new Error(`Cannot make the folder ${rel}: ${parent} is not a folder`)
+    if (parent) throw new WorkspaceFileError('not-a-directory', `Cannot make the folder ${rel}: ${parent} is not a folder`)
     const taken = this.sql.exec('SELECT 1 FROM workspace_file WHERE path = ? OR (path >= ? AND path < ?) LIMIT 1', rel, ...under(rel)).toArray().length > 0
     if (!taken) this.record([{ path: rel, hash: '', size: 0, mode: NEW_FOLDER_MODE, mtimeMs: Date.now(), kind: 'dir' }])
   }

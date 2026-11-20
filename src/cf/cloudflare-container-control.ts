@@ -20,6 +20,12 @@ export const ASLEEP_HEADER = 'X-Agent-Asleep'
 /** A saved file or folder, in the shape of the container's file API. */
 export type StoredEntry = { name: string; path: string; type: 'file' | 'directory'; size?: number; modifiedAt?: string }
 
+/**
+ * A change the saved workspace refuses as the agent's disk would, by its WorkspaceFileError code:
+ * an error thrown in the agent's object reaches the caller without its class.
+ */
+export type StoredRefusal = 'not-a-file' | 'not-a-directory'
+
 /** Bytes `start` to `end`, both included; no `end` reads to the end of the file. */
 export type ByteRange = { start: number; end?: number }
 
@@ -29,17 +35,17 @@ export interface SleepingStore {
   entry(path: string): Promise<StoredEntry | StoredEntry[] | null>
   /** A file's bytes, or the range asked for, streamed from R2; `size` is the whole file's. */
   read(path: string, range?: ByteRange): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
-  /** False when the container started meanwhile: the write has to go to the container. */
-  write(path: string, bytes: Uint8Array): Promise<boolean>
+  /** False when the container started meanwhile: the write has to go to the container. A refusal when a folder is in the way. */
+  write(path: string, bytes: Uint8Array): Promise<boolean | StoredRefusal>
   /** Removes a file or a directory with everything under it; false as for write. */
   remove(path: string): Promise<boolean>
-  /** Keeps an empty directory, unless something is already there; false as for write. */
-  mkdir(path: string): Promise<boolean>
+  /** Keeps an empty directory, unless something is already there; false and a refusal as for write. */
+  mkdir(path: string): Promise<boolean | StoredRefusal>
   /**
    * Adds bytes to the end of a file, or makes it, wherever the agent's files are now: in its container
    * while the agent runs, in the saved workspace while it sleeps. Appends take turns, so none is lost.
    */
-  appendToFile(path: string, bytes: Uint8Array): Promise<'done' | 'not-a-file'>
+  appendToFile(path: string, bytes: Uint8Array): Promise<'done' | StoredRefusal>
 }
 
 export function sleepingStore(agents: AgentObjects, agentId: string): SleepingStore {

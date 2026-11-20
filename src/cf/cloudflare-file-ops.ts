@@ -10,7 +10,7 @@
 import type { FileEntry, FileStat, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
-import { ASLEEP_HEADER, type ByteRange, type SleepingStore, type StoredEntry } from './cloudflare-container-control'
+import { ASLEEP_HEADER, type ByteRange, type SleepingStore, type StoredEntry, type StoredRefusal } from './cloudflare-container-control'
 
 /** Calls the container's API, or returns null when the container is not running. */
 export type ContainerFetch = (path: string, init?: RequestInit) => Promise<Response | null>
@@ -181,7 +181,7 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
   }
 
   // Asleep, the change goes to the saved workspace; if the container started meanwhile, to it.
-  const change = async (rel: string, inContainer: () => Promise<Response | null>, asleep: () => Promise<boolean>, missingIsOk = false) => {
+  const change = async (rel: string, inContainer: () => Promise<Response | null>, asleep: () => Promise<boolean | StoredRefusal>, missingIsOk = false) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await inContainer()
       if (response) {
@@ -189,7 +189,9 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
         if (!response.ok) await failed(response, rel)
         return
       }
-      if (await asleep()) return
+      const stored = await asleep()
+      if (typeof stored === 'string') throw new WorkspaceFileError(stored)
+      if (stored) return
     }
     throw new Error(`The container for ${rel || '/'} kept starting and stopping`)
   }
@@ -308,7 +310,8 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
     // another writer of the same file.
     async append(path, bytes) {
       const rel = filePath(path)
-      if ((await sleeping.appendToFile(rel, toBytes(bytes))) === 'not-a-file') throw new WorkspaceFileError('not-a-file')
+      const appended = await sleeping.appendToFile(rel, toBytes(bytes))
+    if (appended !== 'done') throw new WorkspaceFileError(appended)
     },
 
     async open(path): Promise<OpenFile> {
