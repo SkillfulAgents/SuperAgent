@@ -43,6 +43,7 @@ import {
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { TaskReferences, startsVisibleTurnRow } from './session-page-floor'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
 import { background } from '@shared/lib/background'
 import {
@@ -1145,8 +1146,10 @@ async function scanMessagesPageWindow(
   let endOffset: number | undefined
   let linesScanned = 0
   let displayCount = 0
-  // Counted user items that were not queued mid-turn: the rows a turn starts at.
+  // Counted user items that open a turn the message list draws.
   let turnStarts = 0
+  let taskRefs = new TaskReferences()
+  let createCountedAt = -1
   let windowBytes = 0
   let startOffset = 0
   let anchorOffset: number | undefined
@@ -1202,6 +1205,8 @@ async function scanMessagesPageWindow(
         }
         displayCount = 0
         turnStarts = 0
+        taskRefs = new TaskReferences()
+        createCountedAt = -1
         windowBytes = 0
         deepestCountedIsGroup = true
         openGroupId = null
@@ -1279,14 +1284,13 @@ async function scanMessagesPageWindow(
         if (isBoundary) boundaryCountedSinceAnchor = true
         displayCount++
         deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
-        if (
-          msgEntry?.type === 'user' &&
-          !msgEntry.isQueuedCommand &&
-          !isTaskNotificationMessage(msgEntry)
-        ) {
-          turnStarts++
-        }
+        if (msgEntry !== undefined && startsVisibleTurnRow(msgEntry)) turnStarts++
       }
+    }
+    if (softBudget !== undefined && msgEntry !== undefined && taskRefs.see(msgEntry)) {
+      // A create the page needs is the newest item counted so far. The head
+      // item can be sacrificed, so one more must be counted below it.
+      createCountedAt = displayCount
     }
     // Merge-group span tracking. An assistant group's older entries can lie
     // below queued/system/filtered rows interleaved inside its turn, so a
@@ -1310,11 +1314,14 @@ async function scanMessagesPageWindow(
       softBudget !== undefined &&
       windowBytes >= softBudget.bytes &&
       turnStarts >= softBudget.minTurns &&
+      !taskRefs.open &&
+      displayCount > createCountedAt &&
       displayCount >= 2 &&
       !groupOpen
     ) {
       // The soft budget stops like the budget below, and only on a window
-      // that already holds its turns.
+      // that already holds its turns and the create of every task it updates
+      // (see session-page-floor.ts).
       mode = 'extending'
     } else if (windowBytes >= byteBudget && displayCount >= 2 && !groupOpen) {
       // The budget stop waits for two items: one sacrificial head plus at

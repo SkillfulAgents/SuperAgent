@@ -775,6 +775,34 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     rememberPosition()
   }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, capturePrepend, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
 
+  // Older pages load from the scroll handler above, and a list that does not
+  // overflow never scrolls: a page that renders shorter than the viewport
+  // (rows the list hides or folds, a few heavy turns on a tall window) would
+  // leave the history above it out of reach, or the chat blank. While there
+  // is history and no overflow, fetch it. One walk per state of the list: a
+  // walk that fails or adds nothing is not repeated until the messages
+  // change (the poll hands over a new list within seconds), so neither an
+  // offline client nor an unhelpful cursor can make this spin. The identity
+  // of `messages` is all that is read of it.
+  const fillRef = useRef<{ list: unknown; stopped: boolean }>({ list: undefined, stopped: false })
+  useEffect(() => {
+    const el = scrollRef.current
+    // clientHeight 0: not laid out (hidden, or no layout engine).
+    if (!el || el.clientHeight === 0) return
+    if (hiddenCount > 0 || !hasOlder || isFetchingOlder || !fetchOlder) return
+    if (el.scrollHeight > el.clientHeight + 1) return
+    const fill = fillRef.current
+    if (fill.list !== messages) {
+      fill.list = messages
+      fill.stopped = false
+    }
+    if (fill.stopped) return
+    const list = messages
+    void fetchOlder(capturePrepend).then((more) => {
+      if (!more && fillRef.current.list === list) fillRef.current.stopped = true
+    })
+  }, [messages, hiddenCount, hasOlder, isFetchingOlder, fetchOlder, capturePrepend])
+
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
   // Deps are [windowSize] ONLY: when a prepend lands the anchor effect grows

@@ -18,15 +18,17 @@ export const MESSAGES_PAGE_MAX_BYTES = 4 * 1024 * 1024
 /**
  * Renderer first-page request (`soft_bytes` + `min_turns`): the page may stop
  * at this many raw transcript bytes, but only once it holds this many whole
- * turns (a turn starts at a user message that was not queued mid-turn). Until
- * then it is budgeted exactly as a request that sent neither, so the page is
- * always a suffix of the default one and never shorter than these turns
- * unless the default page is.
+ * turns the message list draws (a turn starts at a message a person sent:
+ * not one queued mid-turn, and not one the list hides or folds, see
+ * `startsVisibleTurn`), and the `TaskCreate` of every `TaskUpdate` in it.
+ * Until then it is budgeted exactly as a request that sent neither, so the
+ * page is always a suffix of the default one and never shorter than these
+ * turns unless the default page is.
  *
  * Turns, not items: the message list folds a completed turn's work into one
- * row, so a page of many items can still render as a few rows, and a list
- * shorter than its viewport cannot scroll up to load the history above it.
- * Ten turns are at least twenty rows.
+ * row, so a page of many items can still render as a few rows. Ten turns are
+ * at least twenty rows. What a page still fails to fill, the list fills by
+ * loading older pages itself (the fill effect in use-message-list-scroll.ts).
  *
  * Not `max_bytes`: a server that predates these parameters ignores them and
  * serves its default page, where it would honor `max_bytes` with no floor.

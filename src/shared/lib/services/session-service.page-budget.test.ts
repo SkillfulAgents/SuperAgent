@@ -27,6 +27,8 @@ import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-s
 import { prng } from '@shared/lib/agent-actor/testing/prng'
 import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { cursorId } from './testing/page-cursor'
+import { deriveTaskList } from '@shared/lib/utils/derive-task-list'
+import { startsVisibleTurn } from '@shared/lib/utils/visible-turn-start'
 
 const KiB = 1024
 const MiB = 1024 * KiB
@@ -344,6 +346,128 @@ describe('a soft budget with a turn floor', () => {
     expect(only.messages.map((m) => m.id)).toEqual(['u-big', 'a-big', 'f-big'])
     expect(only.nextCursor).toBeNull()
   }, WALK_TIMEOUT_MS)
+
+  // The turns the floor counts are the ones the message list draws. A user
+  // row the list hides (a `[SYSTEM]` notice) or folds must not stand in for
+  // one: ten notices after a large result made a page with nothing to show.
+  describe('counts only turns the message list draws', () => {
+    const visibleStarts = (items: TransformedItem[]) =>
+      items.filter((m) => m.type === 'user' && !m.queued && startsVisibleTurn(m.content.text)).length
+    const stamp = (n: number) => new Date(Date.UTC(2026, 0, 4, 0, 0, n)).toISOString()
+    const user = (uuid: string, n: number, content: string) =>
+      ({ type: 'user', uuid, timestamp: stamp(n), sessionId: SESSION, parentUuid: null, message: { role: 'user', content } })
+
+    function bigTurn(n: number): object[] {
+      return [
+        user('u-big', n, 'read the dump'),
+        { type: 'assistant', uuid: 'a-big', timestamp: stamp(n + 1), sessionId: SESSION, parentUuid: 'u-big', message: { id: 'msg-big', role: 'assistant', content: [{ type: 'tool_use', id: 't-big', name: 'Read', input: { file_path: '/w/dump' } }] } },
+        { type: 'user', uuid: 'r-big', timestamp: stamp(n + 2), sessionId: SESSION, parentUuid: 'a-big', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't-big', content: payload(1.2 * MiB, 7) }] } },
+        { type: 'assistant', uuid: 'f-big', timestamp: stamp(n + 3), sessionId: SESSION, parentUuid: 'r-big', message: { id: 'fin-big', role: 'assistant', content: [{ type: 'text', text: 'read it' }] } },
+      ]
+    }
+
+    it.each([
+      ['system notices', (i: number) => `[SYSTEM] Slack: message ${i} arrived in #general`],
+      ['stop markers', () => '[Request interrupted by user]'],
+      ['local command output', (i: number) => `<local-command-stdout>ran ${i}</local-command-stdout>`],
+      ['/compact commands', () => '/compact'],
+    ])('ten %s after a large result do not make the page', async (name, text) => {
+      const session = `soft-hidden-${name.replace(/\W+/g, '-')}`
+      const rows = [...buildTranscript(20), ...bigTurn(0)]
+      for (let i = 0; i < 10; i++) rows.push(user(`hidden-${i}`, 10 + i, text(i)))
+      await writeTranscript(session, rows)
+      const whole = await fullTransform(session)
+
+      const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, session)
+      expect(page.messages).toEqual(whole.slice(whole.length - page.messages.length))
+      // The big turn's question and nine before it, all of them bubbles.
+      expect(visibleStarts(page.messages)).toBe(10)
+      expect(page.messages[0]).toMatchObject({ type: 'user', id: 'u-11' })
+      expect(page.messages.length).toBeLessThan(whole.length)
+    }, WALK_TIMEOUT_MS)
+
+    it('does not count a message queued mid-turn or a monitor notification', async () => {
+      const rows = [...buildTranscript(20), ...bigTurn(0)]
+      for (let i = 0; i < 10; i++) {
+        rows.push({ type: 'attachment', uuid: `q-raw-${i}`, timestamp: stamp(10 + i), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: `steer ${i}`, source_uuid: `q-${i}` } })
+      }
+      await writeTranscript('soft-hidden-queued', rows)
+      const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, 'soft-hidden-queued')
+      expect(visibleStarts(page.messages)).toBe(10)
+      expect(page.messages[0]).toMatchObject({ type: 'user', id: 'u-11' })
+    }, WALK_TIMEOUT_MS)
+  })
+
+  // The activity card builds its task list from the page: a TaskUpdate names
+  // a task by the id its TaskCreate's result reported. A page that holds the
+  // update and not the create dropped a task the default page showed.
+  describe('holds the TaskCreate of every TaskUpdate in the page', () => {
+    const stamp = (n: number) => new Date(Date.UTC(2026, 0, 5, 0, 0, n)).toISOString()
+    let n = 0
+    const call = (uuid: string, id: string, name: string, input: object) =>
+      ({ type: 'assistant', uuid, timestamp: stamp(n++), sessionId: SESSION, parentUuid: null, message: { id: `msg-${uuid}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
+    const result = (uuid: string, id: string, content: string) =>
+      ({ type: 'user', uuid, timestamp: stamp(n++), sessionId: SESSION, parentUuid: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
+    const ask = (uuid: string, content: string) =>
+      ({ type: 'user', uuid, timestamp: stamp(n++), sessionId: SESSION, parentUuid: null, message: { role: 'user', content } })
+
+    /** A planning turn that creates two tasks, `between` ~50 KiB turns, then a turn that updates `taskId`. */
+    function taskTranscript(between: number, taskId: string | null): object[] {
+      return [
+        ask('u-plan', 'plan the migration'),
+        call('c-1', 'tc-1', 'TaskCreate', { subject: 'Export the data', activeForm: 'Exporting the data' }),
+        result('cr-1', 'tc-1', 'Task #1 created successfully: Export the data'),
+        call('c-2', 'tc-2', 'TaskCreate', { subject: 'Import the data', activeForm: 'Importing the data' }),
+        result('cr-2', 'tc-2', 'Task #2 created successfully: Import the data'),
+        ...buildTranscript(between),
+        ask('u-go', 'start'),
+        ...(taskId === null ? [] : [
+          call('up-1', 'tu-1', 'TaskUpdate', { taskId, status: 'in_progress' }),
+          result('ur-1', 'tu-1', `Updated task #${taskId} status`),
+        ]),
+        { type: 'assistant', uuid: 'f-go', timestamp: stamp(n++), sessionId: SESSION, parentUuid: null, message: { id: 'fin-go', role: 'assistant', content: [{ type: 'text', text: 'on it' }] } },
+      ]
+    }
+
+    it('extends past the budget to the create, and shows the task the default page shows', async () => {
+      // Forty turns, ~2 MiB, between the creates and the update: well past
+      // 1 MiB and ten turns, inside the default page.
+      await writeTranscript('soft-tasks', taskTranscript(40, '1'))
+      const byDefault = await trailing({}, 'soft-tasks')
+      const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, 'soft-tasks')
+      expect(deriveTaskList(byDefault.messages).activeItem).toMatchObject({ content: 'Export the data', status: 'in_progress' })
+      expect(deriveTaskList(page.messages)).toEqual(deriveTaskList(byDefault.messages))
+      expect(page.messages.map((m) => m.id)).toContain('c-1')
+      expect(page.messages).toEqual(byDefault.messages.slice(byDefault.messages.length - page.messages.length))
+    }, WALK_TIMEOUT_MS)
+
+    it('stays short when no update in the page names an older task', async () => {
+      await writeTranscript('soft-tasks-idle', taskTranscript(40, null))
+      const page = await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, 'soft-tasks-idle')
+      expect(page.messages.map((m) => m.id)).not.toContain('c-1')
+      expect(page.messages.length).toBeLessThan((await trailing({}, 'soft-tasks-idle')).messages.length)
+    }, WALK_TIMEOUT_MS)
+
+    it('is the default page when the create cannot be reached', async () => {
+      // The update names a task no row creates (compacted away): the soft
+      // budget never applies, so the page is what it was without it.
+      await writeTranscript('soft-tasks-orphan', taskTranscript(100, '99'))
+      const byDefault = await trailing({}, 'soft-tasks-orphan')
+      expect(await trailing({ softBudget: { bytes: 1 * MiB, minTurns: 10 } }, 'soft-tasks-orphan')).toEqual(byDefault)
+      expect(byDefault.nextCursor).not.toBeNull()
+    }, WALK_TIMEOUT_MS)
+
+    it('keeps the create out of the sacrificed head position', async () => {
+      // The creates are the oldest rows the page needs, for every distance
+      // between them and the update.
+      for (const between of [11, 12, 20, 21, 33]) {
+        const session = `soft-tasks-${between}`
+        await writeTranscript(session, [...buildTranscript(5), ...taskTranscript(between, '2')])
+        const page = await trailing({ softBudget: { bytes: 64 * KiB, minTurns: 1 } }, session)
+        expect(deriveTaskList(page.messages).activeItem, `between ${between}`).toMatchObject({ content: 'Import the data' })
+      }
+    }, WALK_TIMEOUT_MS)
+  })
 })
 
 describe('resume-replayed rows in a budgeted walk', () => {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { classifyUserMessage, classifyUserText, plainMessage, USER_MESSAGE_KINDS } from './index'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
+import { buildSignInMethodRequestMessage } from '@shared/lib/utils/sign-in-method-request'
+import { INTERRUPT_MARKER_PREFIX, startsVisibleTurn } from '@shared/lib/utils/visible-turn-start'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { SlashCommandBubble } from './slash-command'
 import type { ApiMessage } from '@shared/lib/types/api'
 
@@ -148,5 +151,67 @@ describe('integration messages', () => {
   it('classifies peeled text when the caller passes it, and ignores non-user entries', () => {
     expect(classifyUserMessage({ type: 'user', content: { text: '\\[Ada]: /deploy' } }, '/deploy').kind).toBe('slash')
     expect(classifyUserMessage({ type: 'assistant', content: { text: 'x' }, integration })).toBe(plainMessage)
+  })
+})
+
+// The server's page reader counts turn-opening bubbles to decide that a page
+// holds enough to fill a screen. It cannot import this registry, so the two
+// are pinned here: whatever it counts must be drawn, as a bubble that stays.
+describe('startsVisibleTurn, the page reader’s count of turn-opening bubbles', () => {
+  const samples = [
+    'please look at module 3',
+    '',
+    '/deploy now',
+    '/compaction notes',
+    '/compact',
+    '  /compact keep the plan',
+    '[SYSTEM] Slack: a message arrived in #general',
+    '[SYSTEM] ',
+    '[Request interrupted by user]',
+    '[Request interrupted by user for tool use]',
+    VOICE_MODE_ENTERED_MESSAGE,
+    VOICE_MODE_EXITED_MESSAGE,
+    buildConnectionReplacementMessage({ kind: 'connected-accounts', name: 'Linear', previousId: 'a', replacementId: 'b' }),
+    buildSignInMethodRequestMessage({ username: 'ada', site: 'example.com', from: 'card' }),
+    buildSignInMethodRequestMessage({ username: 'ada', site: 'example.com', from: 'logins', again: true }),
+    '<local-command-stdout>done</local-command-stdout>',
+    '<command-name>/review</command-name><command-args>pr 12</command-args>',
+  ]
+
+  it('never counts a message the list hides, folds into the turn’s work, or may drop', () => {
+    for (const text of samples) {
+      if (!startsVisibleTurn(text)) continue
+      const spec = classifyUserText(text)
+      expect(spec.hidden, text).toBe(false)
+      expect(spec.foldsIntoWork ?? false, text).toBe(false)
+      expect(['plain', 'slash'], text).toContain(spec.kind)
+    }
+  })
+
+  it('counts what a person typed and nothing the app or the CLI wrote', () => {
+    expect(samples.filter(startsVisibleTurn)).toEqual([
+      'please look at module 3',
+      '',
+      '/deploy now',
+      '/compaction notes',
+      '<command-name>/review</command-name><command-args>pr 12</command-args>',
+    ])
+  })
+
+  it('has a sample for every kind the registry hides or folds, none of them counted', () => {
+    const covered = new Set(samples.map((text) => classifyUserText(text).kind))
+    for (const spec of USER_MESSAGE_KINDS) {
+      // The integration card is matched by host metadata, never by text.
+      if (spec.kind === 'integration') continue
+      expect(covered, spec.kind).toContain(spec.kind)
+    }
+    for (const text of samples) {
+      const spec = classifyUserText(text)
+      if (spec.hidden || spec.foldsIntoWork) expect(startsVisibleTurn(text), text).toBe(false)
+    }
+  })
+
+  it('shares the stop marker’s prefix with the interrupt kind', () => {
+    expect(classifyUserText(`${INTERRUPT_MARKER_PREFIX}]`).kind).toBe('interrupt')
   })
 })

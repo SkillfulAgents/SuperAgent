@@ -2922,6 +2922,113 @@ describe('MessageList', () => {
       expect(mockFetchOlder).toHaveBeenCalledTimes(2)
     })
 
+    // A page can render shorter than the viewport (rows the list hides or
+    // folds, a few heavy turns on a tall window). Such a list cannot scroll,
+    // so the near-top trigger never fires: it loads older pages itself.
+    describe('a list too short to scroll', () => {
+      // The geometry has to exist when the list mounts, so it is defined on
+      // the prototype (jsdom's own lives on Element.prototype and returns 0).
+      let geometry = { scrollHeight: 0, clientHeight: 0 }
+      beforeEach(() => {
+        geometry = { scrollHeight: 0, clientHeight: 0 }
+        for (const key of ['scrollHeight', 'clientHeight'] as const) {
+          Object.defineProperty(HTMLElement.prototype, key, {
+            configurable: true,
+            get(this: HTMLElement) {
+              return this.dataset.testid === 'message-list' ? geometry[key] : 0
+            },
+          })
+        }
+      })
+      afterEach(() => {
+        delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
+        delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+      })
+
+      const flush = () => act(async () => {
+        await Promise.resolve()
+      })
+      const systemNotices = (n: number): ApiMessageOrBoundary[] =>
+        Array.from({ length: n }, (_, i) => createUserMessage({ content: { text: `[SYSTEM] notice ${i}` } }))
+
+      it('fetches older history when every row of the page is hidden', async () => {
+        geometry = { scrollHeight: 100, clientHeight: 800 }
+        mockFetchOlder.mockResolvedValue(true)
+        mockMessagesData.data = systemNotices(10)
+        mockMessagesData.hasOlder = true
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(screen.queryByText(/notice/)).not.toBeInTheDocument()
+        expect(mockFetchOlder).toHaveBeenCalledOnce()
+      })
+
+      it('keeps fetching while pages land and the list still does not overflow, then stops', async () => {
+        geometry = { scrollHeight: 300, clientHeight: 800 }
+        mockFetchOlder.mockResolvedValue(true)
+        mockMessagesData.data = manyMessages(3)
+        mockMessagesData.hasOlder = true
+        const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).toHaveBeenCalledTimes(1)
+
+        // A page of hidden rows lands: nothing more on screen, a new list.
+        mockMessagesData.data = [...systemNotices(5), ...mockMessagesData.data!]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).toHaveBeenCalledTimes(2)
+
+        // The next page fills the viewport.
+        geometry = { scrollHeight: 2000, clientHeight: 800 }
+        mockMessagesData.data = [...manyMessages(40), ...mockMessagesData.data]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).toHaveBeenCalledTimes(2)
+      })
+
+      it('leaves alone a list that overflows, has no older history, is fetching, or is not laid out', async () => {
+        mockFetchOlder.mockResolvedValue(true)
+        const cases: Array<[typeof geometry, boolean, boolean]> = [
+          [{ scrollHeight: 2000, clientHeight: 800 }, true, false],
+          [{ scrollHeight: 300, clientHeight: 800 }, false, false],
+          [{ scrollHeight: 300, clientHeight: 800 }, true, true],
+          [{ scrollHeight: 0, clientHeight: 0 }, true, false],
+        ]
+        for (const [shape, hasOlder, isFetchingOlder] of cases) {
+          geometry = shape
+          mockMessagesData.data = manyMessages(3)
+          mockMessagesData.hasOlder = hasOlder
+          mockMessagesData.isFetchingOlder = isFetchingOlder
+          const { unmount } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+          await flush()
+          unmount()
+        }
+        expect(mockFetchOlder).not.toHaveBeenCalled()
+      })
+
+      it('does not spin on a fetch that fails, and tries again when the messages change', async () => {
+        geometry = { scrollHeight: 300, clientHeight: 800 }
+        mockFetchOlder.mockResolvedValue(false)
+        mockMessagesData.data = manyMessages(3)
+        mockMessagesData.hasOlder = true
+        const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        // Each finished fetch flips isFetchingOlder back, which re-checks.
+        for (let i = 0; i < 5; i++) {
+          mockMessagesData.isFetchingOlder = true
+          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+          mockMessagesData.isFetchingOlder = false
+          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+          await flush()
+        }
+        expect(mockFetchOlder).toHaveBeenCalledTimes(1)
+
+        mockMessagesData.data = [...manyMessages(3), createUserMessage({ content: { text: 'm3' } })]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).toHaveBeenCalledTimes(2)
+      })
+    })
+
     // Geometry derives from the mounted row count, so the restore effect only
     // sees scrollHeight growth at the commit where the prepended rows mount.
     // Fixed-geometry mocks cannot catch a guard consumed one commit too early.

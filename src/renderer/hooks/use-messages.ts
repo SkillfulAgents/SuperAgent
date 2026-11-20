@@ -258,13 +258,28 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     // Only items that sat BEFORE the new page's first item can have slid off
     // the trailing window. An item missing from within the still-covered
     // range was rewritten away (e.g. deleted by another client) — retaining
-    // it as scrolled-off history would resurrect it indefinitely. When the
-    // new first item isn't in prev (the page advanced wholesale between
-    // fetches), fall back to treating everything missing as turnover.
+    // it as scrolled-off history would resurrect it indefinitely.
     const firstId = latestMessages[0]?.id
     const boundary = firstId !== undefined ? prev.findIndex((m) => m.id === firstId) : -1
-    const candidates = boundary >= 0 ? prev.slice(0, boundary) : prev
-    const slidOff = candidates.filter((m) => !nextIds.has(m.id) && !deleted.has(m.id))
+    if (boundary < 0) {
+      // The new page starts before the old one (it reaches further back):
+      // nothing slid off, and what the old page lacks was rewritten away.
+      if (prev.some((m) => nextIds.has(m.id))) return
+      // The two pages share nothing: the trailing page moved past the old
+      // one wholesale between fetches, and whatever was written in between
+      // is in neither. Keeping the old page and the history above it would
+      // show a transcript with a hole, and with the cursor of the history
+      // already walked nothing would ever fetch it. Start over from the new
+      // page: its own cursor pages back through the gap.
+      olderGenRef.current++
+      olderAbortRef.current?.abort()
+      olderAbortRef.current = null
+      pagedCursorsRef.current = new Set()
+      setOlder([])
+      setOlderCursor(undefined)
+      return
+    }
+    const slidOff = prev.slice(0, boundary).filter((m) => !nextIds.has(m.id) && !deleted.has(m.id))
     if (slidOff.length === 0) return
     setOlder((cur) => {
       const seen = new Set(cur.map((m) => m.id))

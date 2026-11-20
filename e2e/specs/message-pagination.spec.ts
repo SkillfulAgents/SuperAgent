@@ -375,6 +375,95 @@ test.describe('transcript pagination', () => {
     expect(questions).toEqual(Array.from({ length: HEAVY_TURNS }, (_, i) => heavyUserText(i)))
   })
 
+  /** Rewrite the session as `turns` plain turns, its own turn, then `tail`. */
+  function seedAround(agentSlug: string, sessionId: string, turns: number, tail: object[]): void {
+    const jsonlPath = sessionJsonlPath(agentSlug, sessionId)
+    const existing = fs.readFileSync(jsonlPath, 'utf-8')
+    const at = (seconds: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString()
+    const rows: string[] = []
+    for (let i = 0; i < turns; i++) {
+      rows.push(JSON.stringify({ type: 'user', uuid: `hist-u-${i}`, timestamp: at(i * 2), sessionId, parentUuid: null, message: { role: 'user', content: historyUserText(i) } }))
+      rows.push(JSON.stringify({ type: 'assistant', uuid: `hist-a-${i}`, timestamp: at(i * 2 + 1), sessionId, parentUuid: `hist-u-${i}`, message: { role: 'assistant', content: [{ type: 'text', text: historyReplyText(i) }] } }))
+    }
+    const late = (n: number) => new Date(Date.UTC(2027, 0, 1, 0, 0, n)).toISOString()
+    const tailRows = tail.map((row, n) => JSON.stringify({ timestamp: late(n), sessionId, parentUuid: null, ...row }))
+    fs.writeFileSync(jsonlPath, `${rows.join('\n')}\n${existing}${tailRows.join('\n')}\n`)
+  }
+
+  /** The session's own turn is on disk, reply included, so nothing is appended after the seed. */
+  function hasReply(agentSlug: string, sessionId: string): boolean {
+    const jsonlPath = sessionJsonlPath(agentSlug, sessionId)
+    return fs.existsSync(jsonlPath) && fs.readFileSync(jsonlPath, 'utf-8').includes('"assistant"')
+  }
+
+  const systemNotice = (i: number) =>
+    ({ type: 'user', uuid: `notice-${i}`, message: { role: 'user', content: `[SYSTEM] Slack: message ${i} arrived in #general` } })
+
+  // The trailing page's turn floor counts what the list draws. Ten hidden
+  // system notices after a large tool result used to satisfy it: the page was
+  // the notices and part of one turn, drew nothing, and could not scroll.
+  test('hidden system notices at the end do not leave the chat blank', async ({ page, request }, testInfo) => {
+    test.setTimeout(120_000)
+    const agent = await createAgent(request, uniqueName(testInfo, 'Pagination Notices'))
+    const session = await createSession(request, agent, 'seed the transcript')
+    await expect
+      .poll(() => hasReply(agent.slug, session.id), { timeout: 15_000 })
+      .toBe(true)
+    seedAround(agent.slug, session.id, 40, [
+      { type: 'user', uuid: 'big-u', message: { role: 'user', content: 'read the dump' } },
+      { type: 'assistant', uuid: 'big-c', message: { id: 'msg-big-call', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu-big', name: 'Read', input: { file_path: '/workspace/dump.txt' } }] } },
+      { type: 'user', uuid: 'big-r', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu-big', content: 'x'.repeat(1_300_000) }] } },
+      { type: 'assistant', uuid: 'big-a', message: { id: 'msg-big-answer', role: 'assistant', content: [{ type: 'text', text: 'dump read' }] } },
+      ...Array.from({ length: 10 }, (_, i) => systemNotice(i)),
+    ])
+
+    const pages = trackMessagePages(page)
+    await page.goto(`/agents/${agent.slug}/sessions/${session.id}`)
+    await expect(page.getByText('dump read', { exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect.poll(() => pages.length, { timeout: 15_000 }).toBeGreaterThan(0)
+
+    // The first page alone holds ten drawn turns and overflows the viewport.
+    const first = pages.find((p) => p.cursor === null)!
+    expect(first.nextCursor).not.toBeNull()
+    await expect(page.getByText(/\[SYSTEM\]/)).toHaveCount(0)
+    expect(await page.locator('[data-testid="message-user"]').count()).toBeGreaterThanOrEqual(MIN_TURNS)
+    const opened = await messageListMetrics(page)
+    expect(opened.scrollHeight).toBeGreaterThan(opened.clientHeight)
+    // A bounded page all the same: not the whole transcript.
+    await expect(page.getByText(OLDEST, { exact: true })).toHaveCount(0)
+  })
+
+  // Whatever the server sends, a list with history above it must not sit
+  // there unable to scroll. Here the whole trailing page is hidden rows (more
+  // notices than one page holds), so nothing renders: the list loads older
+  // pages on its own until it overflows or history ends.
+  test('a page that renders nothing loads the history above it', async ({ page, request }, testInfo) => {
+    test.setTimeout(120_000)
+    const agent = await createAgent(request, uniqueName(testInfo, 'Pagination Fill'))
+    const session = await createSession(request, agent, 'seed the transcript')
+    await expect
+      .poll(() => hasReply(agent.slug, session.id), { timeout: 15_000 })
+      .toBe(true)
+    seedAround(agent.slug, session.id, 5, Array.from({ length: PAGE_LIMIT + 20 }, (_, i) => systemNotice(i)))
+
+    const pages = trackMessagePages(page)
+    await page.goto(`/agents/${agent.slug}/sessions/${session.id}`)
+
+    // No scroll gesture: the first message of the chat arrives by itself.
+    await expect(page.getByText(OLDEST, { exact: true })).toBeVisible({ timeout: 30_000 })
+    const first = pages.find((p) => p.cursor === null)!
+    expect(first.count).toBe(PAGE_LIMIT)
+    const olderPages = pages.filter((p) => p.cursor !== null)
+    expect(olderPages.length).toBeGreaterThan(0)
+    expect(olderPages[olderPages.length - 1]!.nextCursor).toBeNull()
+    await expect(page.getByText(/\[SYSTEM\]/)).toHaveCount(0)
+
+    // History is exhausted: it stops asking.
+    await expect(
+      page.waitForResponse((response) => isOlderPageRequest(response.url()), { timeout: 3_000 })
+    ).rejects.toThrow()
+  })
+
   // Guards the fixture's own arithmetic: if the seed ever stops exceeding one
   // page, both tests above would pass while asserting nothing.
   test('the seeded transcript is longer than a single page', () => {

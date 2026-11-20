@@ -2568,16 +2568,18 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const rawMaxBytes = c.req.query('max_bytes')
     const rawSoftBytes = c.req.query('soft_bytes')
     const rawMinTurns = c.req.query('min_turns')
-    // `media` and `max_bytes` select the paginated branch too: they are only
-    // honored there, so leaving them out would silently serve the full
-    // transcript to a client that asked for refs or for a bounded response —
-    // and skip validating the value at all.
+    // `media`, `max_bytes`, `soft_bytes` and `min_turns` select the paginated
+    // branch too: they are only honored there, so leaving them out would
+    // silently serve the full transcript to a client that asked for refs or
+    // for a bounded response — and skip validating the value at all.
     const paginated =
       rawLimit !== undefined ||
       rawCursor !== undefined ||
       rawAfter !== undefined ||
       rawMedia !== undefined ||
-      rawMaxBytes !== undefined
+      rawMaxBytes !== undefined ||
+      rawSoftBytes !== undefined ||
+      rawMinTurns !== undefined
 
     if (!(await actor.sessions.exists(sessionId))) {
       // A live session whose first turn has not persisted anything yet: the

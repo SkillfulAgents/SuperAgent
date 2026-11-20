@@ -643,6 +643,144 @@ describe('useMessages forward delta', () => {
     }
   })
 
+  // A full refetch whose page shares nothing with the cached one: turns were
+  // written in between that neither page holds (a tab left alone while the
+  // agent worked, or a short trailing page after a burst of heavy turns).
+  // The reader here had already paged back to the first message, so the
+  // older cursor was null: keeping that history and appending the new page
+  // showed turns 1-2 then 5-6 as the whole chat, with nothing left to load.
+  it('starts over from the new page when it does not connect to the cached one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const wrapper = createWrapper()
+      const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+      await settleInitialPage(wrapper, result, [user('u2'), assistant('a2')])
+
+      // Page back to the start of history.
+      let olderDone: Promise<boolean>
+      act(() => {
+        olderDone = result.current.fetchOlder()
+      })
+      await waitFor(() => expect(inflight).toHaveLength(2))
+      inflight[1].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
+      await act(async () => {
+        await olderDone
+      })
+      await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']))
+      expect(result.current.hasOlder).toBe(false)
+
+      // Turns 3-6 are written; the next full page holds only 5-6.
+      vi.setSystemTime(Date.now() + MESSAGES_FULL_REFETCH_INTERVAL_MS + 1000)
+      act(() => {
+        void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+      })
+      await waitFor(() => expect(inflight).toHaveLength(3))
+      inflight[2].resolve({
+        messages: [user('u5'), assistant('a5'), user('u6'), assistant('a6')],
+        nextCursor: 'u5',
+      })
+
+      // No hole: the list is the new page, and history is loadable again.
+      await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u5', 'a5', 'u6', 'a6']))
+      expect(result.current.hasOlder).toBe(true)
+
+      // Scrolling up pages from the new page's cursor, through the gap.
+      act(() => {
+        olderDone = result.current.fetchOlder()
+      })
+      await waitFor(() => expect(inflight).toHaveLength(4))
+      expect(inflight[3].url).toContain('cursor=u5')
+      inflight[3].resolve({
+        messages: [user('u1'), assistant('a1'), user('u2'), assistant('a2'), user('u3'), assistant('a3'), user('u4'), assistant('a4')],
+        nextCursor: null,
+      })
+      await act(async () => {
+        await olderDone
+      })
+      await waitFor(() =>
+        expect(result.current.data?.map((m) => m.id)).toEqual(
+          ['u1', 'a1', 'u2', 'a2', 'u3', 'a3', 'u4', 'a4', 'u5', 'a5', 'u6', 'a6'],
+        ),
+      )
+      expect(result.current.hasOlder).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('discards an older page still in flight when the new page does not connect', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const wrapper = createWrapper()
+      const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+      await settleInitialPage(wrapper, result, [user('u2'), assistant('a2')])
+
+      let olderDone: Promise<boolean>
+      act(() => {
+        olderDone = result.current.fetchOlder()
+      })
+      await waitFor(() => expect(inflight).toHaveLength(2))
+
+      vi.setSystemTime(Date.now() + MESSAGES_FULL_REFETCH_INTERVAL_MS + 1000)
+      act(() => {
+        void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+      })
+      await waitFor(() => expect(inflight).toHaveLength(3))
+      inflight[2].resolve({ messages: [user('u6'), assistant('a6')], nextCursor: 'u6' })
+      await waitFor(() => expect(result.current.data?.map((m) => m.id)).toEqual(['u6', 'a6']))
+
+      // The page asked for before the jump lands late: it must not put
+      // turn 1 above turn 6, nor end history with its null cursor.
+      expect(inflight[1].init?.signal?.aborted).toBe(true)
+      inflight[1].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
+      await act(async () => {
+        await olderDone
+      })
+      expect(result.current.data?.map((m) => m.id)).toEqual(['u6', 'a6'])
+      expect(result.current.hasOlder).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A full page can also start EARLIER than the cached one (the server
+  // extended it to hold what an open task needs). The pages connect, so the
+  // history above is kept and nothing is treated as slid off.
+  it('keeps loaded history when the new page reaches further back than the cached one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const wrapper = createWrapper()
+      const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+      await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+
+      let olderDone: Promise<boolean>
+      act(() => {
+        olderDone = result.current.fetchOlder()
+      })
+      await waitFor(() => expect(inflight).toHaveLength(2))
+      inflight[1].resolve({ messages: [user('u1'), assistant('a1'), user('u2'), assistant('a2')], nextCursor: null })
+      await act(async () => {
+        await olderDone
+      })
+
+      vi.setSystemTime(Date.now() + MESSAGES_FULL_REFETCH_INTERVAL_MS + 1000)
+      act(() => {
+        void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
+      })
+      await waitFor(() => expect(inflight).toHaveLength(3))
+      inflight[2].resolve({
+        messages: [user('u2'), assistant('a2'), user('u3'), assistant('a3'), user('u4'), assistant('a4')],
+        nextCursor: 'u2',
+      })
+      await waitFor(() =>
+        expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3', 'u4', 'a4']),
+      )
+      expect(result.current.hasOlder).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('falls back to a full fetch when the delta window predates the cache', async () => {
     const wrapper = createWrapper()
     const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })

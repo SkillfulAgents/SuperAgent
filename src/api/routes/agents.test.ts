@@ -5770,6 +5770,48 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
       expect(getSessionMessagesPage).not.toHaveBeenCalled()
     })
 
+    // Every combination of the two parameters, with and without the others
+    // that select the paged path. Either one selects it by itself: a client
+    // that asked for a bounded page never gets the whole transcript array,
+    // and half a pair is rejected rather than ignored.
+    it('answers every combination of soft_bytes and min_turns deliberately', async () => {
+      const soft = { softBudget: { bytes: 1048576, minTurns: 10 } }
+      const matrix: Array<[query: string, status: number, page?: Record<string, unknown>]> = [
+        ['soft_bytes=1048576&min_turns=10', 200, { limit: 300, ...soft }],
+        ['soft_bytes=1048576', 400],
+        ['min_turns=10', 400],
+        ['limit=50&soft_bytes=1048576&min_turns=10', 200, { limit: 50, ...soft }],
+        ['limit=50&soft_bytes=1048576', 400],
+        ['limit=50&min_turns=10', 400],
+        ['media=ref&min_turns=10', 400],
+        ['max_bytes=524288&min_turns=10', 400],
+        ['max_bytes=524288&soft_bytes=1048576', 400],
+        ['max_bytes=2097152&soft_bytes=1048576&min_turns=10', 200, { byteBudget: 2097152, ...soft }],
+        ['cursor=m1&soft_bytes=1048576&min_turns=10', 200, { cursor: 'm1', limit: 200, ...soft }],
+        ['cursor=m1&min_turns=10', 400],
+        ['after=m1&soft_bytes=1048576', 400],
+        ['after=m1&min_turns=10', 400],
+        ['soft_bytes=&min_turns=10', 400],
+        ['soft_bytes=1048576&min_turns=', 400],
+        ['soft_bytes=-1&min_turns=10', 400],
+        ['soft_bytes=1048576&min_turns=ten', 400],
+      ]
+      for (const [query, status, page] of matrix) {
+        vi.mocked(getSessionMessagesPage).mockClear()
+        vi.mocked(getSessionMessagesWithCompact).mockClear()
+        const res = await getReq(app, `${URL}?${query}`)
+        expect(res.status, query).toBe(status)
+        // Never the legacy whole-transcript read.
+        expect(getSessionMessagesWithCompact, query).not.toHaveBeenCalled()
+        if (page) {
+          expect(await res.json(), query).toEqual({ messages: [], nextCursor: null })
+          expect(pageOpts(), query).toMatchObject(page)
+        } else {
+          expect(getSessionMessagesPage, query).not.toHaveBeenCalled()
+        }
+      }
+    })
+
     it('leaves the unpaginated read untouched', async () => {
       vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
       mockTransformMessages.mockReturnValue([])
