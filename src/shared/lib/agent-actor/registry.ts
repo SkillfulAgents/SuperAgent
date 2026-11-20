@@ -12,6 +12,8 @@ import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { localHostPort } from '@shared/lib/host/local-host-port'
+import type { HostPort } from './host-port'
+import { setWorkspaceRemoval, type WorkspaceRemoval } from './workspace-removal'
 import { background } from '@shared/lib/background'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import { serializingActor } from './serializing-actor'
@@ -191,23 +193,31 @@ if (process.env.NODE_ENV !== 'production') {
   globalForRegistry.agentActorStates = agentActorStates
 }
 
-// Set once at boot by a deployment whose agents run outside this process. Desktop and the Node host never set them.
-let actorTransport: ((slug: AgentSlug, local: AgentActor) => AgentActor) | undefined
-let sessionStoreFactory: LocalActorDeps['createSessionStore']
-
 /**
- * How callers reach each agent: what `agentRegistry.get` hands out in place of
- * the actor in this process, such as a client of the agent's actor in another
- * process. Called once at boot, before the first `get`: a handle
- * already handed out keeps what it was made with.
+ * What a deployment whose agents run outside this process supplies, all at
+ * once. Desktop and the Node server install nothing: each agent runs in this
+ * process, with its files in a directory on this machine.
  */
-export function setActorTransport(make: (slug: AgentSlug, local: AgentActor) => AgentActor): void {
-  actorTransport = make
+export interface AgentDeployment {
+  /** What `agentRegistry.get` hands out in place of the actor in this process, such as a client of the agent's actor in another process. */
+  transport(slug: AgentSlug, local: AgentActor): AgentActor
+  /** Where each agent's files, config documents and transcripts are (see `LocalActorDeps.createSessionStore`). */
+  sessionStore: NonNullable<LocalActorDeps['createSessionStore']>
+  /** The host the agents ask for host tools, machine work and side effects. */
+  host: HostPort
+  /** How a deleted agent's workspace is removed (see `setWorkspaceRemoval`). */
+  removeWorkspace: WorkspaceRemoval
 }
 
-/** Where each agent's files are, when the deployment keeps them somewhere other than this machine (see `LocalActorDeps.createSessionStore`). */
-export function setSessionStore(make: NonNullable<LocalActorDeps['createSessionStore']>): void {
-  sessionStoreFactory = make
+let deployment: AgentDeployment | undefined
+
+/**
+ * The one place a deployment sets how its agents run. Called once at boot,
+ * before the first `get`: a handle already handed out keeps what it was made with.
+ */
+export function installAgentDeployment(installed: AgentDeployment): void {
+  deployment = installed
+  setWorkspaceRemoval(installed.removeWorkspace)
 }
 
 // Development and tests only: every actor reached through the serializing test transport.
@@ -266,15 +276,15 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
     return loadSessionUsageTotals
   },
   get host() {
-    return localHostPort
+    return deployment?.host ?? localHostPort
   },
   get createSessionStore() {
-    return sessionStoreFactory
+    return deployment?.sessionStore
   },
 }, {
   states: agentActorStates,
   get transport() {
-    const make = actorTransport
-    return make ? (actor: AgentActor) => make(actor.slug, actor) : testTransport
+    const installed = deployment
+    return installed ? (actor: AgentActor) => installed.transport(actor.slug, actor) : testTransport
   },
 })

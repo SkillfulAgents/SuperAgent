@@ -18,7 +18,7 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: {} }))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 
-import { localHostPort, setSessionStartAnnouncer } from './local-host-port'
+import { createProcessHostPort, localHostPort } from './local-host-port'
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -92,13 +92,12 @@ describe('the local host port: computer use under the mock E2E runtime', () => {
   })
 })
 
-// Last in the file: the announcer is set once at boot and stays set.
-describe('the local host port: a deployment that announces a session start elsewhere', () => {
+describe('the host port of a deployment that announces a session start elsewhere', () => {
   it('hands the start to the deployment, and not to the integration manager of this process', async () => {
     const announce = vi.fn(async (_agentSlug: string, _sessionId: string) => {})
-    setSessionStartAnnouncer(announce)
+    const port = createProcessHostPort({ announceSessionStart: announce })
 
-    localHostPort.send('global', { type: 'session_active', agentSlug: 'sales', sessionId: 'session-1', isActive: true })
+    port.send('global', { type: 'session_active', agentSlug: 'sales', sessionId: 'session-1', isActive: true })
 
     await vi.waitFor(() => expect(announce).toHaveBeenCalledExactlyOnceWith('sales', 'session-1'))
     await settle()

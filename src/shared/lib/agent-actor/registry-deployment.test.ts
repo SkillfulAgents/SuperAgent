@@ -5,7 +5,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createInMemorySessionStore } from './testing/in-memory-session-store'
 import { serializingActor } from './serializing-actor'
+import { createRecordingHostPort } from './testing/recording-host-port'
 import type { AgentActor } from './types'
+import type { SessionStore } from './session-store'
 
 vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
@@ -42,6 +44,14 @@ async function freshRegistry() {
   return registry
 }
 
+/** A deployment with the given parts, and the rest that does nothing. */
+const deploymentWith = (parts: { sessionStore: () => SessionStore; transport?: (slug: string, local: AgentActor) => AgentActor }) => ({
+  transport: parts.transport ?? ((_slug: string, local: AgentActor) => local),
+  sessionStore: parts.sessionStore,
+  host: createRecordingHostPort().port,
+  removeWorkspace: vi.fn(async () => {}),
+})
+
 afterEach(async () => {
   await evictAll?.()
   evictAll = undefined
@@ -49,9 +59,9 @@ afterEach(async () => {
 
 describe('agentRegistry in a deployment', () => {
   it("keeps the agent's files in the session store the deployment supplies", async () => {
-    const { agentRegistry, setSessionStore } = await freshRegistry()
+    const { agentRegistry, installAgentDeployment } = await freshRegistry()
     const store = createInMemorySessionStore('sales-agent')
-    setSessionStore(() => store)
+    installAgentDeployment(deploymentWith({ sessionStore: () => store }))
 
     await agentRegistry.get('sales-agent').files.putDoc('notes/q3.md', 'Pipeline review on Friday')
 
@@ -59,11 +69,10 @@ describe('agentRegistry in a deployment', () => {
   })
 
   it("hands callers the agent through the deployment's transport, made once per agent", async () => {
-    const { agentRegistry, setActorTransport, setSessionStore } = await freshRegistry()
+    const { agentRegistry, installAgentDeployment } = await freshRegistry()
     const store = createInMemorySessionStore('sales-agent')
-    setSessionStore(() => store)
     const make = vi.fn((_slug: string, local: AgentActor) => serializingActor(local))
-    setActorTransport(make)
+    installAgentDeployment(deploymentWith({ sessionStore: () => store, transport: make }))
 
     const actor = agentRegistry.get('sales-agent')
     await actor.files.putDoc('notes/q3.md', 'Pipeline review on Friday')
@@ -72,5 +81,17 @@ describe('agentRegistry in a deployment', () => {
     expect(make.mock.calls[0][0]).toBe('sales-agent')
     expect(agentRegistry.get('sales-agent')).toBe(actor)
     expect(new TextDecoder().decode((await store.files.getDoc('notes/q3.md'))!)).toBe('Pipeline review on Friday')
+  })
+
+  it("removes a deleted agent's workspace with the deployment's removal", async () => {
+    const { installAgentDeployment } = await freshRegistry()
+    const installed = deploymentWith({ sessionStore: () => createInMemorySessionStore('sales-agent') })
+    installAgentDeployment(installed)
+    // The removal module of this registry: freshRegistry loaded both again.
+    const { removeAgentWorkspace } = await import('./workspace-removal')
+
+    await removeAgentWorkspace('sales-agent')
+
+    expect(installed.removeWorkspace).toHaveBeenCalledExactlyOnceWith('sales-agent')
   })
 })
