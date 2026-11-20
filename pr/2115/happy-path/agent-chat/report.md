@@ -1,9 +1,8 @@
 [TEST_PASS]
-[REASON] Sent "Hello! What is 2+2?" to agent QA-20261120-010130-ice0 and verified the reply contains "4".
-[STEP] Navigated to http://localhost:47891 — the Gamut home page loaded with both agents listed in the sidebar and in "Your Agents" cards.
-[STEP] Clicked QA-20261120-010130-ice0 in the sidebar — its agent page opened at /agents/qa-20261120-010130-ice0-19mghup7jl.
-[STEP] Verified agent status — the header status indicator reads "idle", which is an accepted status.
-[STEP] Typed "Hello! What is 2+2?" into the agent message input — the text appeared in the input and the send button became enabled.
-[STEP] Clicked Send — the page navigated to a new session ("Simple Arithmetic Question") and the message appeared in the chat.
-[STEP] Waited for a response — none was needed. The assistant reply "2 + 2 = 4." was already in the message list when the page was next checked, well within the 3-minute limit.
-[STEP] Verified the response and took a screenshot — the reply "2 + 2 = 4." contains "4", and the header shows "idle".
+[REASON] Sent "Hello! What is 2+2?" to the existing idle agent QA-20261120-191051-aznv and verified the assistant replied "2 + 2 = 4." within the 3-minute window.
+[STEP] 1. Navigated to http://localhost:47891 — Gamut home loaded with the sidebar listing QA-20261120-191052-qk1r and QA-20261120-191051-aznv, no errors.
+[STEP] 2. Clicked QA-20261120-191051-aznv in the sidebar — its agent page opened at /agents/qa-20261120-191051-aznv-o1mxlpnlxo.
+[STEP] 3. Verified status — header shows "idle", matching the expected "running" or "idle".
+[STEP] 4. Typed "Hello! What is 2+2?" into the agent message box and clicked Send — a new session "Basic Arithmetic Question Check" opened, showing the message and a "Working..." indicator.
+[STEP] 5. Waited up to 3 minutes for the response — "Working..." cleared and the status returned to "idle" well within the limit.
+[STEP] 6. Verified the response mentions 4 — the assistant replied "2 + 2 = 4." Screenshot taken (step6-response.png).

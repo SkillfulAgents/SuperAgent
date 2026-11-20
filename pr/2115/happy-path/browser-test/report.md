@@ -1,9 +1,8 @@
 [TEST_PASS]
-[REASON] Sent a browser task to agent QA-20261120-010131-6zgk and verified the reply reports the example.com page title as "Example Domain".
-[STEP] Step 1: Navigated to http://localhost:47891. The Gamut home page loaded with the sidebar listing "QA-20261120-010131-6zgk" under Your Agents.
-[STEP] Step 2: Clicked the "QA-20261120-010131-6zgk" agent in the sidebar. The agent page opened at /agents/qa-20261120-010131-6zgk-syu0tmn89z, showing status "idle" and an empty message box.
-[STEP] Step 3: Typed "Open a browser and go to https://example.com. Tell me the page title." and clicked Send. A new session "Check Example.com Page Title" opened, the message appeared in the chat, and the agent status changed to "working".
-[STEP] Step 4: Waited up to 3 minutes for a response. The "Example Domain" text appeared in the chat, the agent returned to "idle", and the run showed "Worked for 5s · 3 tool calls".
-[STEP] Step 5: The response reads: "The page title of https://example.com is "Example Domain". The page loaded normally, and I've closed the browser." The text "Example Domain" is present, so the check passed. Screenshot taken of the response.
-
-No bugs found.
+[REASON] Sent the example.com page-title prompt to agent QA-20261120-191052-qk1r in the browser UI and verified the reply mentions "Example Domain".
+[STEP] Step 1: navigated to http://localhost:47891 — Gamut home loaded with "QA-20261120-191052-qk1r" in the sidebar and "Your Agents" list.
+[STEP] Step 2: clicked the QA-20261120-191052-qk1r agent in the sidebar — its agent page opened at /agents/qa-20261120-191052-qk1r-6bsmb6960f with an empty message box (screenshot: step2-agent-opened.png).
+[STEP] Step 3: typed "Open a browser and go to https://example.com. Tell me the page title." and sent it — my first click targeted the textarea, not the Send button, so nothing was sent; I then clicked the Send button and the message appeared in a new session "Check Example.com Page Title" with the agent switching to "working" (screenshots: step3-message-typed.png, step3-message-sent.png).
+[STEP] Step 4: waited up to 3 minutes for a response — the reply appeared well within that window. The agent ran 3 tool calls (ToolSearch, browser open to https://example.com, browser close), "Worked for 5s", and the status returned to "idle".
+[STEP] Step 5: the response reads "The page title is "Example Domain". The page loaded normally, and I've closed the browser." — the text "Example Domain" is present, so the check passes (screenshot: step5-response-verified.png).
+[BUG_FOUND] Minor, observed only in the accessibility snapshot, not a visible failure: the sidebar session link for "Check Example.com Page Title" has href /agents/6bsmb6960f/sessions/abdf81cd-..., which is missing the "qa-20261120-191052-" prefix that the agent's own URL uses (/agents/qa-20261120-191052-qk1r-6bsmb6960f). It may be a relative-path or ID-only route, so it should be checked in case it breaks navigation.
