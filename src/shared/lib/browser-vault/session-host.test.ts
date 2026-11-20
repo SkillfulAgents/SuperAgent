@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 
 /** The agent's container as the host reaches it: the browser it reports, and what each capture finds. */
 const container = vi.hoisted(() => ({
@@ -45,7 +46,8 @@ vi.mock('@shared/lib/agent-actor', () => ({
         },
       },
       inputs: {
-        snapshot: async (sessionId: string) => container.open.filter((request) => request.scope.sessionId === sessionId),
+        snapshot: async (sessionId?: string) =>
+          container.open.filter((request) => request.scope.sessionId === sessionId) as unknown as PendingUserInputRequest[],
       },
     }),
   },
