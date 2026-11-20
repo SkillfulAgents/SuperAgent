@@ -2,6 +2,7 @@
 # Only grows: add a file once its database access is fully awaited and it uses
 # createTestDatabase() from src/shared/lib/db/testing.
 src/shared/lib/db/batch.test.ts
+src/shared/lib/db/bound-parameters.test.ts
 src/shared/lib/db/migrations/bundle.test.ts
 src/shared/lib/db/migrations/agent-avatars.test.ts
 src/shared/lib/db/migrations/user-ownership-fks.test.ts

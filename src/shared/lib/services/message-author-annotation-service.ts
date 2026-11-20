@@ -9,7 +9,7 @@
 
 import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { inList } from '@shared/lib/db/bound-parameters'
+import { withInList } from '@shared/lib/db/bound-parameters'
 import { agents, messageAuthor, user } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
@@ -32,23 +32,25 @@ function parseDisplay(json: string | null): IntegrationMessageDisplay | null {
  * Exported for the test that pins the parameter count.
  */
 export function messageAuthorsQuery(agentSlug: string, sessionId: string, ids: readonly string[] | null) {
-  return db
-    .select({
-      id: messageAuthor.id,
-      authorAgentSlug: messageAuthor.authorAgentSlug,
-      agent: { name: agents.name, color: agents.avatarColor, shape: agents.avatarShape },
-      integrationId: messageAuthor.integrationId,
-      display: messageAuthor.display,
-      profile: userProfileFields(),
-    })
-    .from(messageAuthor)
-    .leftJoin(user, eq(user.id, messageAuthor.userId))
-    .leftJoin(agents, eq(agents.slug, messageAuthor.authorAgentSlug))
-    .where(and(
-      eq(messageAuthor.agentSlug, agentSlug),
-      eq(messageAuthor.sessionId, sessionId),
-      ids ? inList(messageAuthor.id, ids, { otherParams: 2 }) : undefined,
-    ))
+  return withInList(messageAuthor.id, ids, matches =>
+    db
+      .select({
+        id: messageAuthor.id,
+        authorAgentSlug: messageAuthor.authorAgentSlug,
+        agent: { name: agents.name, color: agents.avatarColor, shape: agents.avatarShape },
+        integrationId: messageAuthor.integrationId,
+        display: messageAuthor.display,
+        profile: userProfileFields(),
+      })
+      .from(messageAuthor)
+      .leftJoin(user, eq(user.id, messageAuthor.userId))
+      .leftJoin(agents, eq(agents.slug, messageAuthor.authorAgentSlug))
+      .where(and(
+        eq(messageAuthor.agentSlug, agentSlug),
+        eq(messageAuthor.sessionId, sessionId),
+        matches,
+      )),
+  )
 }
 
 type UserItem = Extract<TransformedItem, { type: 'user' | 'assistant' }>

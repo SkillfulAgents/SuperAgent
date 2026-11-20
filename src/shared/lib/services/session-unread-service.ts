@@ -21,7 +21,7 @@
  */
 
 import { db } from '@shared/lib/db'
-import { inList } from '@shared/lib/db/bound-parameters'
+import { withInList } from '@shared/lib/db/bound-parameters'
 import { changesOf } from '@shared/lib/db/batch'
 import { sessionUnreadMarks } from '@shared/lib/db/schema'
 import { and, eq, inArray } from 'drizzle-orm'
@@ -130,12 +130,9 @@ export async function deleteSessionUnreadMarks(
 ): Promise<number> {
   if (sessionIds.length === 0) return 0
 
-  const result = await db
-    .delete(sessionUnreadMarks)
-    .where(and(
-      eq(sessionUnreadMarks.agentSlug, agentSlug),
-      inList(sessionUnreadMarks.sessionId, sessionIds, { otherParams: 1 }),
-    ))
+  const result = await withInList(sessionUnreadMarks.sessionId, sessionIds, matches =>
+    db.delete(sessionUnreadMarks).where(and(eq(sessionUnreadMarks.agentSlug, agentSlug), matches)),
+  )
 
   return changesOf(result)
 }

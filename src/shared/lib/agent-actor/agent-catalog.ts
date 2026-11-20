@@ -16,7 +16,7 @@ import { agentCreationReceiptSchema } from '@shared/lib/app-records/record-schem
 import { serializeRecordValue } from '@shared/lib/app-records/records'
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { inList } from '@shared/lib/db/bound-parameters'
+import { withInList } from '@shared/lib/db/bound-parameters'
 import { agentAcl, agents, appRecords, type AgentRow } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { randomAgentAvatar } from './agent-avatar'
@@ -105,10 +105,9 @@ export async function resolveAgentRecordWithRole(input: string, userId: string):
  * Exported for the test that pins the parameter count.
  */
 export function existingAgentSlugsQuery(slugs: readonly string[]) {
-  return db
-    .select({ slug: agents.slug })
-    .from(agents)
-    .where(inList(agents.slug, slugs, { otherParams: 0 }))
+  return withInList(agents.slug, slugs, matches =>
+    db.select({ slug: agents.slug }).from(agents).where(matches),
+  )
 }
 
 /**
