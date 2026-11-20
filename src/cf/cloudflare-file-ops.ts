@@ -338,12 +338,15 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
         return now.size ?? 0
       }
       return {
+        // Asked each time, as a local handle's size is: the file may have grown since it was opened.
         size: async () => {
           assertOpen()
-          return whole ? whole.byteLength : sizeNow()
+          return sizeNow()
         },
         readAt: async (offset, length) => {
           assertOpen()
+          // Past what was read at open, and the file grew: it is read by range from here on.
+          if (whole && offset + length > whole.byteLength && (await sizeNow()) > whole.byteLength) whole = null
           if (whole) return whole.slice(offset, offset + length)
           if (length <= 0) return new Uint8Array()
           const stream = await bytesStream(rel, { start: offset, end: offset + length - 1 })

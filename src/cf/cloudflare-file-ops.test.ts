@@ -290,14 +290,17 @@ describe('Cloudflare file ops while the container runs', () => {
     await expect(file.readAt(0, 1)).rejects.toThrow('session.jsonl is closed')
   })
 
-  it('reads an opened file from one fetch, and not after close', async () => {
+  it("reads an opened small file's bytes from one fetch, sees it grow, and not after close", async () => {
     const container = fakeContainer({ 'session.jsonl': '{"a":1}\n{"b":2}\n' })
     const files = createCloudflareFileOps(container.call, unused)
     const file = await files.open('session.jsonl')
-    const fetches = container.calls.length
     expect(await file.size()).toBe(16)
     expect(text(await file.readAt(8, 7))).toBe('{"b":2}')
-    expect(container.calls.length).toBe(fetches)
+    expect(text(await file.readAt(0, 7))).toBe('{"a":1}')
+    expect(container.calls.filter((call) => call.endsWith('/content'))).toHaveLength(1)
+    container.files.set('session.jsonl', new TextEncoder().encode('{"a":1}\n{"b":2}\n{"c":3}\n'))
+    expect(await file.size()).toBe(24)
+    expect(text(await file.readAt(16, 7))).toBe('{"c":3}')
     await file.close()
     await expect(file.readAt(0, 1)).rejects.toThrow('session.jsonl is closed')
   })
