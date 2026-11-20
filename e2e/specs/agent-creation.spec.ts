@@ -267,7 +267,7 @@ test('removing Dream before leaving the wizard clears its first-job instruction'
   expect(response.request().postDataJSON().message).toBe('Prepare a weekly research brief.')
 })
 
-test('More channels opens Telegram setup and returns to the wizard after connecting', async ({ page }) => {
+test('Telegram setup returns to the wizard after connecting', async ({ page }) => {
   await page.route('**/api/agent-integrations/providers', route => route.fulfill({ json: [{ provider: 'telegram' }, { provider: 'linear' }] }))
   let connected = false
   await page.route('**/api/agent-integrations/agents/*', route => {
@@ -286,9 +286,6 @@ test('More channels opens Telegram setup and returns to the wizard after connect
   await inbox.hover()
   await expect(page.getByRole('tooltip')).toHaveText('Connect your Gamut account to set up Inbox.')
   const telegram = page.getByRole('button', { name: 'Set up Telegram' })
-  await expect(telegram).toBeHidden()
-  const more = page.getByRole('button', { name: 'More channels' })
-  await more.click()
   await expect(page.getByRole('button', { name: 'Set up iMessage' })).toBeDisabled()
   const github = page.getByRole('button', { name: 'Set up GitHub' })
   await expect(github).toBeDisabled()
@@ -318,7 +315,6 @@ test('deferred channels survive reload, reopen from Agent Home, and dismiss inde
   await dialog.getByRole('button', { name: 'Set this up later' }).click()
   await expect(dialog).toBeHidden()
   await expect(page.getByRole('button', { name: 'Set up Slack, saved for later' })).toBeEnabled()
-  await page.getByRole('button', { name: 'More channels' }).click()
   await page.getByRole('button', { name: 'Set up Telegram' }).click()
   await dialog.getByRole('button', { name: 'Set this up later' }).click()
   await expect(dialog).toBeHidden()

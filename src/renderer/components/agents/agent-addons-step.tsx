@@ -3,6 +3,7 @@ import { Brain, NotebookPen, TrendingUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@renderer/components/ui/switch'
 import { AgentCreationChannels } from './agent-creation-channels'
+import { CREATE_STEP_FADE_MASK } from './create-agent-layout'
 import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -63,8 +64,12 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   return (
     // 8px either side for focus rings at the column's edge (More's sits 6px
     // out, plus its 2px ring): a scroller clips sideways too.
-    <div className="-mx-2 h-full overflow-y-auto px-2" data-testid="agent-addons-step">
-      <div className="flex min-h-full w-full flex-col justify-center py-8">
+    // The edges fade (CREATE_STEP_FADE_MASK), so the tiles peeking in at the
+    // bottom dissolve rather than clip against Back and Create.
+    <div className="-mx-2 h-full overflow-y-auto px-2" style={{ maskImage: CREATE_STEP_FADE_MASK, WebkitMaskImage: CREATE_STEP_FADE_MASK }} data-testid="agent-addons-step">
+      {/* Starts near the top, the channel tiles running past the bottom edge
+          and peeking through its fade: a sign there is more below. */}
+      <div className="flex w-full flex-col pb-8 pt-16">
         {header}
         <TooltipProvider delayDuration={200}>
           <div className="space-y-5">

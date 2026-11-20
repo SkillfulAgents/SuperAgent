@@ -1,5 +1,5 @@
-import { useId, useState } from 'react'
-import { ArrowRight, Check, ChevronRight, Clock3, Plus } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowRight, Check, Clock3, Plus } from 'lucide-react'
 import { channelSetupComplete } from '@shared/lib/agent-integrations/public'
 import { ChannelAction } from '@renderer/components/agent-integrations/channel-action'
 import { ChannelSetupDialog, channelSetupTarget, type ChannelSetupTarget } from '@renderer/components/agent-integrations/channel-setup-dialog'
@@ -10,8 +10,9 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { cn } from '@shared/lib/utils/cn'
 import { useAgentIntegrations, useAvailableAgentIntegrationProviders } from '@renderer/hooks/use-agent-integrations'
 
+/** Every channel, Inbox and Slack first. */
 const featured = integrationSetupProviders.filter(p => p.slug === 'platform-email' || p.slug === 'slack')
-const moreChannels = integrationSetupProviders.filter(provider => !featured.includes(provider))
+const channels = [...featured, ...integrationSetupProviders.filter(provider => !featured.includes(provider))]
 
 /**
  * Two columns from `sm`, one on phones, and every row as tall as the
@@ -25,8 +26,6 @@ const CHANNEL_TILE_CLASS = 'flex flex-col gap-2 rounded-card border bg-card/50 p
 export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
   const providers = useAvailableAgentIntegrationProviders()
   const integrations = useAgentIntegrations(agentSlug)
-  const [expanded, setExpanded] = useState(false)
-  const moreId = useId()
   const [target, setTarget] = useState<ChannelSetupTarget | null>(null)
   const { data: deferred } = useFinishedSetup(agentSlug)
 
@@ -83,24 +82,7 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
   }
 
   return <>
-    {/* One grid for both: More's tiles carry on after the featured two. */}
-    <div className={CHANNEL_GRID_CLASS}>
-      {featured.map(channelRow)}
-      {expanded && moreChannels.map(channelRow)}
-    </div>
-    {/* What More controls, for aria-controls; its tiles join the grid above. */}
-    <span id={moreId} hidden />
-    {/* Under the card, on its left edge, like Agent Home's Show more but a
-        step stronger than the section headers; its chevron turns down once
-        open (aria-expanded says so to a screen reader). */}
-    <button type="button" aria-expanded={expanded} aria-controls={moreId} aria-label="More channels"
-      // The negative margin keeps "More" on the cards' edge while its focus
-      // ring gets room around the words.
-      className="-ml-1.5 mt-2 flex min-h-8 items-center gap-1 rounded-control px-1.5 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      onClick={() => setExpanded(open => !open)}>
-      More
-      <ChevronRight aria-hidden className={`size-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
-    </button>
+    <div className={CHANNEL_GRID_CLASS}>{channels.map(channelRow)}</div>
     {target && <ChannelSetupDialog agentSlug={agentSlug} target={target} integrations={integrations.data} onClose={() => {
       setTarget(null)
       void integrations.refetch()

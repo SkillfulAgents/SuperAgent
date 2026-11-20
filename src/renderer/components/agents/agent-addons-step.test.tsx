@@ -115,17 +115,10 @@ it.each([['Inbox', 'platform-email'], ['Slack', 'slack']])('opens the existing %
 
 it.each([
   ['Telegram', 'telegram'], ['iMessage', 'imessage'], ['GitHub', 'github'], ['Linear', 'linear'], ['Meetings', 'recall'],
-])('opens %s setup from More channels', async (label, provider) => {
+])('opens %s setup, shown beside Inbox and Slack', async (label, provider) => {
   show()
   const action = { name: 'Set up ' + label }
-  expect(screen.queryByRole('button', action)).toBeNull()
-  const more = screen.getByRole('button', { name: 'More channels' })
-  await userEvent.click(more)
-  expect(more).toHaveAttribute('aria-expanded', 'true')
   expect(screen.getByRole('button', action)).toBeVisible()
-  await userEvent.click(more)
-  expect(screen.queryByRole('button', action)).toBeNull()
-  await userEvent.click(more)
   await userEvent.click(screen.getByRole('button', action))
   expect(screen.getByRole('dialog')).toHaveTextContent(provider)
 })
@@ -152,12 +145,11 @@ it.each([
   expect(screen.queryByRole('dialog')).toBeNull()
 })
 
-it('explains both configured and unavailable channels inside More', async () => {
+it('explains both configured and unavailable channels', async () => {
   availableProviders = ['telegram']
   state.integrations = [{ provider: 'telegram', hasCredentials: true }]
   show()
   const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: 'More channels' }))
   const telegram = screen.getByRole('button', { name: 'Configured Telegram' })
   await user.hover(telegram)
   expect(await screen.findByRole('tooltip')).toHaveTextContent('Telegram is already set up')
@@ -188,7 +180,6 @@ vi.mock('@renderer/components/agent-integrations/linear-setup', () => ({
 it.each([['GitHub', 'github'], ['Linear', 'linear']])('resumes an unfinished %s authorization on the existing integration', async (label, provider) => {
   state.integrations = [{ id: 'existing-installation', provider, hasCredentials: false }]
   show()
-  await userEvent.click(screen.getByRole('button', { name: 'More channels' }))
   await userEvent.click(screen.getByRole('button', { name: 'Finish setup ' + label }))
   expect(screen.getByRole('dialog', { name: 'Finish ' + label + ' setup' })).toHaveTextContent('existing-installation')
 })

@@ -34,7 +34,7 @@ import {
 } from '@renderer/components/messages/composer-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
-import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
+import { CREATE_STEP_BOTTOM_SPACER, CREATE_STEP_FADE_MASK } from '@renderer/components/agents/create-agent-layout'
 import { DREAM_SETUP_PROMPT } from '@shared/lib/skillset-provider/dream-skill'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent, ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
@@ -55,14 +55,12 @@ import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
 /**
- * Soft edges for the template roster's scroll viewport: cards dissolve over
- * 32px instead of clipping at the top of the composer above and the footer
+ * Soft edges for the template roster's scroll viewport (CREATE_STEP_FADE_MASK):
+ * cards dissolve instead of clipping at the composer above and the footer
  * below. Top padding (the measured composer overlap plus this gap) keeps
- * at-rest content clear of the bands, so nothing looks faded until it is
- * actually leaving.
+ * at-rest content clear of the bands.
  */
-const ROSTER_FADE_MASK =
-  'linear-gradient(to bottom, transparent 0, black 32px, black calc(100% - 32px), transparent 100%)'
+const ROSTER_FADE_MASK = CREATE_STEP_FADE_MASK
 
 /** At-rest gap between the composer's bottom edge and the roster heading. */
 const ROSTER_TOP_GAP_PX = 64
