@@ -158,3 +158,26 @@ describe('releaseSession', () => {
     }))
   })
 })
+
+describe('a runtime with its own way to reach the container', () => {
+  class OwnReach extends Client {
+    readonly sent: string[] = []
+    protected override request(url: string, init?: RequestInit): Promise<Response> {
+      this.sent.push(`${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:1234', '')}`)
+      return Promise.resolve(url.endsWith('/sessions') ? Response.json({ id: 'created-session' }, { status: 201 }) : Response.json({ ok: true }))
+    }
+  }
+
+  it('sends every request through its own request, never the global fetch', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
+    const client = new OwnReach()
+
+    await client.createSession({ initialMessage: 'Summarize the Q3 pipeline' })
+    await client.sendMessage('created-session', 'Add the top three deals')
+    await client.fetch('/files/notes.md')
+    await client.health(1234)
+
+    expect(client.sent).toEqual(['POST /sessions', 'POST /sessions/created-session/messages', 'GET /files/notes.md', 'GET /health'])
+    expect(fetch).not.toHaveBeenCalled()
+  })
+})
