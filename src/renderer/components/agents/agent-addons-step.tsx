@@ -3,6 +3,7 @@ import { Brain, NotebookPen, TrendingUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@renderer/components/ui/switch'
 import { AgentCreationChannels } from './agent-creation-channels'
+import { ADDON_CARD_CLASS } from './create-agent-layout'
 import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -61,13 +62,14 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   }
 
   return (
-    <div className="h-full overflow-y-auto" data-testid="agent-addons-step">
-      <div className="mx-auto flex min-h-full w-full max-w-xl flex-col justify-center py-8">
+    // 4px either side for focus rings at the column's edge: a scroller clips sideways too.
+    <div className="-mx-1 h-full overflow-y-auto px-1" data-testid="agent-addons-step">
+      <div className="flex min-h-full w-full flex-col justify-center py-8">
         {header}
         <TooltipProvider delayDuration={200}>
           <div className="space-y-5">
             <Section title="Skills">
-              <Row icon={<TrendingUp />} title="Self-Improvement" description="Installs Dream to review past work and improve between sessions."
+              <Row icon={<TrendingUp />} title="Self-Improvement" description="Install a dreaming skill to review past work and improve between sessions."
                 checked={!!installed} disabled={changingSkill || !skills.data || (!installed && !dream)} onChange={on => void toggleDream(on)}
                 reason={dreamReason} />
               {(discoverable.isError || skills.isError) && <Button size="sm" variant="ghost" onClick={() => {
@@ -79,7 +81,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
               <Row icon={<NotebookPen />} title="Memories" description="Remembers what it learns across sessions."
                 checked={preferences.data?.autoMemoryEnabled !== false} disabled={!preferences.data || updatePreferences.isPending}
                 onChange={autoMemoryEnabled => updatePreferences.mutate({ autoMemoryEnabled })} />
-              <Row icon={<Brain />} title="Team Brain" description="Read the shared drive and message Team Brain. Team Brain can read this agent’s sessions."
+              <Row icon={<Brain />} title="Team Brain" description="Reads the shared drive. Team Brain can read its sessions."
                 checked={access.checked} disabled={access.changing || !access.ready}
                 reason={access.reason} onChange={access.toggle} />
               {access.partial && <div className="flex flex-wrap items-center gap-2 px-4 py-2">
@@ -88,7 +90,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
                 <Button variant="ghost" size="sm" disabled={!!access.reason} onClick={() => access.toggle(false)}>Remove access</Button>
               </div>}
             </Section>
-            <Section title="Channels">
+            <Section title="Channels" bare>
               <AgentCreationChannels agentSlug={agentSlug} />
             </Section>
           </div>
@@ -98,10 +100,15 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   )
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+/**
+ * A titled group of add-ons. Its rows go in the card; `bare` hands the
+ * children the whole area instead, for a section that also puts something
+ * under its card (Channels' Show more).
+ */
+function Section({ title, bare = false, children }: { title: string; bare?: boolean; children: ReactNode }) {
   return <section>
-    <h3 className="mb-2 text-[13px] font-medium text-muted-foreground">{title}</h3>
-    <div className="divide-y rounded-card border bg-card/50">{children}</div>
+    <h3 className="mb-2 text-xs font-normal text-muted-foreground/70">{title}</h3>
+    {bare ? children : <div className={ADDON_CARD_CLASS}>{children}</div>}
   </section>
 }
 

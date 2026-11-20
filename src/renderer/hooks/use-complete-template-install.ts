@@ -21,14 +21,9 @@ export function useCompleteTemplateInstall() {
   const draftsStore = useDraftsStore()
 
   return useCallback(
-    async (
-      agent: ApiAgentTemplateInstallResult,
-      // An imported package hands off the same way; only the analytics differ.
-      { source = 'skillset', surface }: { source?: 'skillset' | 'import'; surface?: string } = {},
-    ) => {
+    async (agent: ApiAgentTemplateInstallResult) => {
       track('agent_created', {
-        source,
-        ...(surface ? { surface } : {}),
+        source: 'skillset',
         num_skills_added_at_creation: 0,
         has_template_prompt: Boolean(agent.templatePrompt),
       })

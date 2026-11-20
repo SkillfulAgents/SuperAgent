@@ -1,5 +1,9 @@
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import { createAgent, uniqueName } from '../helpers/agents'
+import { buildAgentTemplateZip } from '../helpers/agent-template-zip'
 
 // Every test here mutates ONE user's settings row (folders are a per-user
 // projection), and folder writes replace whole fields — so two of these tests
@@ -344,24 +348,36 @@ test.describe('agent folders in the left nav', () => {
     await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
   })
 
-  test('files a template selected via Show more into the opening section', async ({ page, request }, testInfo) => {
+  test('files an agent imported on the job step into the opening section, in place of the named one', async ({ page, request }, testInfo) => {
     await createAgent(request, uniqueName(testInfo, 'Section Anchor'))
-    const { agents } = await (await request.get('/api/agents/discoverable-agents')).json()
-    const source = agents.find((item: { name: string }) => item.name === 'E2E Onboarding Template')
-    const previews = Array.from({ length: 6 }, (_, i) => ({ ...source, name: `Preview ${i}`, path: `agents/preview-${i}`, category: 'Test' }))
-    await page.route('**/api/agents/discoverable-agents*', route => route.fulfill({
-      json: { agents: [...previews, { ...source, category: 'Test' }] },
-    }))
-    await page.goto('/')
-    const folder = await createFolder(page, uniqueName(testInfo, 'Templates'))
-    const id = await folderIdOf(folder)
-    await page.getByTestId(`new-agent-in-folder-${id}`).click()
-    await page.getByRole('button', { name: 'Browse Templates' }).click()
-    await page.getByTestId('explore-see-more').last().click()
-    const installed = page.waitForResponse(r => r.url().endsWith('/api/agents/install-from-skillset') && r.status() === 201)
-    await page.getByRole('button', { name: 'E2E Onboarding Template — install' }).last().click()
-    const { slug } = await (await installed).json()
-    await expect.poll(async () => (await (await request.get('/api/user-settings')).json()).agentFolderAssignments?.[slug]).toBe(id)
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-section-import-'))
+    try {
+      const zipPath = await buildAgentTemplateZip(path.join(tmpDir, 'plain.zip'), { name: 'Name inside the package' })
+      await page.goto('/')
+      const folder = await createFolder(page, uniqueName(testInfo, 'Imports'))
+      const id = await folderIdOf(folder)
+      const created = page.waitForResponse(r => r.url().endsWith('/api/agents') && r.request().method() === 'POST' && r.status() === 201)
+      await page.getByTestId(`new-agent-in-folder-${id}`).click()
+      const name = uniqueName(testInfo, 'Imported teammate')
+      await page.getByTestId('agent-identity-name').fill(name)
+      await page.getByTestId('agent-identity-continue').click()
+      const named = await (await created).json() as { slug: string }
+
+      const imported = page.waitForResponse(r => r.url().endsWith('/api/agents/import-template') && r.status() === 201)
+      await page.getByRole('button', { name: 'Import an agent' }).click()
+      const dialog = page.getByRole('dialog')
+      await dialog.locator('input[type="file"]').setInputFiles(zipPath)
+      await dialog.locator('button[type="submit"]').click()
+      const agent = await (await imported).json() as { slug: string; name: string }
+
+      expect(agent.name).toBe(name)
+      await expect.poll(async () => (await (await request.get('/api/user-settings')).json()).agentFolderAssignments?.[agent.slug]).toBe(id)
+      await expect(page.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
+      await expect(page.getByTestId(`agent-item-${named.slug}`)).toHaveCount(0)
+      await expect.poll(async () => (await request.get(`/api/agents/${named.slug}`)).status()).toBe(404)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 
   test('opens the section menu with the keyboard and cancels a rename through its actions', async ({

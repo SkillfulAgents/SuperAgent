@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { CreateAgentFormProps } from '@renderer/components/agents/create-agent-form'
 import type { SignupHandoff } from '@renderer/context/nav-transient-context'
 
-const { track, handoff, formProps, formSubmit, create, rename, start, navigate } = vi.hoisted(() => ({
+const { track, handoff, formProps, formSubmit, create, rename, setAvatar, remove, start, navigate } = vi.hoisted(() => ({
   track: vi.fn(),
   create: vi.fn(async ({ name }: { name: string }) => ({ name, slug: 'scout', displaySlug: 'scout-id', replayed: false })),
   rename: vi.fn(async () => ({ slug: 'scout', displaySlug: 'scouty-id' })),
+  setAvatar: vi.fn(async () => {}),
+  remove: vi.fn(async () => {}),
   start: vi.fn(),
   navigate: vi.fn(),
   handoff: { current: null as SignupHandoff | null },
@@ -19,7 +21,8 @@ const { track, handoff, formProps, formSubmit, create, rename, start, navigate }
 vi.mock('@renderer/hooks/use-agents', () => ({
   useCreateAgent: () => ({ mutateAsync: create }),
   useUpdateAgent: () => ({ mutateAsync: rename }),
-  useUpdateAgentAvatar: () => ({ mutateAsync: vi.fn() }),
+  useUpdateAgentAvatar: () => ({ mutateAsync: setAvatar }),
+  useDeleteAgent: () => ({ mutateAsync: remove }),
   useStartAgent: () => ({ mutate: start }),
 }))
 vi.mock('@renderer/hooks/use-settings', () => ({ useWarmStartOnTypeEnabled: () => true }))
@@ -45,14 +48,15 @@ vi.mock('@renderer/components/agents/create-agent-form', () => ({
   },
 }))
 
-import { CreateAgentContinueButton, CreateAgentStep } from './create-agent-step'
-import { useCreateAgentFlow } from '@renderer/hooks/use-create-agent-flow'
+import { CreateAgentContinueButton, CreateAgentSkipButton, CreateAgentStep } from './create-agent-step'
+import { useCreateAgentFlow, type CreationOptions } from '@renderer/hooks/use-create-agent-flow'
 
-/** The step plus the bottom row's Continue, as the create screen and wizard lay them out. */
-function Harness() {
-  const flow = useCreateAgentFlow()
+/** The step plus the corner's Skip and the bottom row's Continue, as the create screen and wizard lay them out. */
+function Harness(options: CreationOptions) {
+  const flow = useCreateAgentFlow(options)
   return (
     <>
+      <CreateAgentSkipButton flow={flow} />
       <CreateAgentStep flow={flow} />
       <CreateAgentContinueButton flow={flow} />
     </>
@@ -88,6 +92,49 @@ describe('CreateAgentStep', () => {
     expect(screen.getByTestId('agent-identity-continue')).toBeDisabled()
   })
 
+  it('asks only for a name and an orb on the name step', () => {
+    render(<Harness />)
+    expect(screen.queryByRole('button', { name: 'Browse Templates' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /import an agent/i })).toBeNull()
+  })
+
+  it('offers an import on the job step, under the chosen name', async () => {
+    render(<Harness />)
+    await userEvent.type(screen.getByTestId('agent-identity-name'), '  Scout  {Enter}')
+    expect(formProps.current?.importAs?.name).toBe('Scout')
+  })
+
+  it('puts an imported agent in the named one’s place: its orb, its section, and the empty one deleted', async () => {
+    const onIdentityCreated = vi.fn()
+    render(<Harness onIdentityCreated={onIdentityCreated} />)
+    await userEvent.type(screen.getByTestId('agent-identity-name'), 'Scout')
+    await userEvent.click(screen.getByRole('button', { name: 'Hexagon' }))
+    await userEvent.click(screen.getByTestId('agent-identity-continue'))
+    onIdentityCreated.mockClear()
+
+    await act(async () => { await formProps.current?.importAs?.onImported({ slug: 'imported' }) })
+    expect(setAvatar).toHaveBeenCalledWith({ slug: 'imported', avatar: expect.objectContaining({ shape: 'hexagon' }) })
+    expect(onIdentityCreated).toHaveBeenCalledWith({ slug: 'imported' })
+    expect(remove).toHaveBeenCalledWith('scout')
+  })
+
+  it('still hands over an imported agent when the empty one cannot be deleted', async () => {
+    remove.mockRejectedValueOnce(new Error('container is busy'))
+    render(<Harness />)
+    await userEvent.type(screen.getByTestId('agent-identity-name'), 'Scout{Enter}')
+    await act(async () => { await formProps.current?.importAs?.onImported({ slug: 'imported' }) })
+    expect(remove).toHaveBeenCalledWith('scout')
+  })
+
+  it('offers Skip on the job step only', async () => {
+    render(<Harness />)
+    expect(screen.queryByTestId('create-agent-skip')).toBeNull()
+    await userEvent.type(screen.getByTestId('agent-identity-name'), 'Scout{Enter}')
+    expect(screen.getByTestId('create-agent-skip')).toHaveTextContent('Skip')
+    await userEvent.click(screen.getByTestId('create-agent-continue'))
+    expect(screen.queryByTestId('create-agent-skip')).toBeNull()
+  })
+
   it('offers Continue only on the name step', async () => {
     render(<Harness />)
     await userEvent.type(screen.getByTestId('agent-identity-name'), 'Scout')
@@ -101,7 +148,7 @@ describe('CreateAgentStep', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Hexagon' }))
     await userEvent.click(screen.getByTestId('agent-identity-continue'))
 
-    expect(screen.getByRole('heading', { name: 'What job do you want to give me?' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Hey there! I’m Scout. What job will you give me?' })).toBeInTheDocument()
     expect(screen.getByTestId('agent-identity-name-label')).toHaveTextContent('Scout')
     expect(create).toHaveBeenCalledWith({ name: 'Scout', avatar: expect.objectContaining({ shape: 'hexagon' }), requestId: expect.any(String) })
   })
@@ -131,6 +178,8 @@ describe('CreateAgentStep', () => {
     render(<Harness />)
     expect(screen.getByTestId('create-agent-form')).toBeVisible()
     expect(formProps.current?.existingAgent).toBeUndefined()
+    // Unnamed, the form keeps its roster, whose last tile is the import.
+    expect(formProps.current?.importAs).toBeUndefined()
     expect(screen.getByRole('heading', { name: 'Describe your first AI teammate' })).toBeInTheDocument()
   })
 

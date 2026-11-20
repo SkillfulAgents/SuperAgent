@@ -1,5 +1,6 @@
 import { useId, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
+import { ADDON_CARD_CLASS } from './create-agent-layout'
 import { channelSetupComplete } from '@shared/lib/agent-integrations/public'
 import { ChannelAction } from '@renderer/components/agent-integrations/channel-action'
 import { ChannelSetupDialog, channelSetupTarget, type ChannelSetupTarget } from '@renderer/components/agent-integrations/channel-setup-dialog'
@@ -51,14 +52,19 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
   }
 
   return <>
-    {featured.map(channelRow)}
-    <button type="button" aria-label="More channels" aria-expanded={expanded} aria-controls={moreId}
-      className="flex w-full items-center justify-between gap-3 rounded-b-card px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-expanded:rounded-none"
+    <div className={ADDON_CARD_CLASS}>
+      {featured.map(channelRow)}
+      <div id={moreId} hidden={!expanded} className="divide-y">{expanded && moreChannels.map(channelRow)}</div>
+    </div>
+    {/* Under the card, on its left edge, like Agent Home's Show more but a
+        step stronger than the section headers; its chevron turns down once
+        open (aria-expanded says so to a screen reader). */}
+    <button type="button" aria-expanded={expanded} aria-controls={moreId} aria-label="More channels"
+      className="mt-2 flex min-h-8 items-center gap-1 rounded-control text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={() => setExpanded(open => !open)}>
       More
-      <ChevronDown aria-hidden className={`size-4 ${expanded ? 'rotate-180' : ''}`} />
+      <ChevronRight aria-hidden className={`size-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
     </button>
-    <div id={moreId} hidden={!expanded} className="divide-y">{expanded && moreChannels.map(channelRow)}</div>
     {target && <ChannelSetupDialog agentSlug={agentSlug} target={target} integrations={integrations.data} onClose={() => {
       setTarget(null)
       void integrations.refetch()

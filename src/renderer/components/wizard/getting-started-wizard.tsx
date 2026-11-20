@@ -14,7 +14,7 @@ import { ConfigureModelStep } from './configure-model-step'
 import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
-import { AGENT_STEP_MAX_WIDTH, CreateAgentContinueButton, CreateAgentScreenLayout, CreateAgentStep } from './create-agent-step'
+import { agentStepWidth, CornerSkipButton, CreateAgentContinueButton, CreateAgentScreenLayout, CreateAgentSkipButton, CreateAgentStep } from './create-agent-step'
 import { useCreateAgentFlow } from '@renderer/hooks/use-create-agent-flow'
 import { PrivacyStep } from './privacy-step'
 import { WelcomeOrbCrowd } from './welcome-orb-crowd'
@@ -163,18 +163,13 @@ function LoadedGettingStartedWizard({ agentOnly, onClose, initialProgress }: Get
         data-testid="wizard-container"
         onAgentCreated={handleFinish}
         onNavigateAway={handleFinish}
-        footer={(flow) => flow.stage === 'templates' || (flow.named && flow.stage !== 'name') ? (
+        footer={(flow) => flow.named && flow.stage !== 'name' && (
           <Button variant="outline" onClick={flow.back}>Back</Button>
-        ) : (
-          <Button
-            variant="outline"
-            className="ml-auto"
-            onClick={() => void handleFinish()}
-            data-testid="wizard-skip"
-          >
-            Skip
-            <ChevronRight className="h-4 w-4 ml-1" />
-          </Button>
+        )}
+        // Before there is an agent, Skip leaves onboarding; after, the job
+        // step's own Skip takes the same corner.
+        cornerActions={(flow) => !(flow.named && flow.stage !== 'name') && (
+          <CornerSkipButton onClick={() => void handleFinish()} data-testid="wizard-skip" />
         )}
       />
     )
@@ -188,9 +183,15 @@ function LoadedGettingStartedWizard({ agentOnly, onClose, initialProgress }: Get
       {/* Left column: wizard content */}
       <div className={`relative flex flex-col h-svh transition-[width] duration-500 ease-in-out ${isAgentStep ? 'w-full' : 'w-full lg:w-1/2'}`}>
         <h1 className="sr-only">Getting Started</h1>
+        {/* The job step's Skip, in the corner it has on the create page. */}
+        {activeStep?.id === 'agent' && (
+          <div className={`app-no-drag absolute right-4 z-20 ${getPlatform() === 'win32' ? 'top-12' : 'top-4'}`}>
+            <CreateAgentSkipButton flow={agentFlow} />
+          </div>
+        )}
 
         <div className={`flex flex-1 min-h-0 flex-col ${isAgentStep ? 'overflow-hidden' : 'justify-center'}`}>
-          <div className={`w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? `${AGENT_STEP_MAX_WIDTH} flex h-full min-h-0 flex-col pt-10` : 'max-w-[480px] py-10'}`}>
+          <div className={`w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? `${agentStepWidth(agentFlow)} flex h-full min-h-0 flex-col pt-10` : 'max-w-[480px] py-10'}`}>
 
           {/* Step content. The agent step fills the column height (its roster
               scrolls internally); the rest keep the centered min-height block. */}
@@ -217,7 +218,7 @@ function LoadedGettingStartedWizard({ agentOnly, onClose, initialProgress }: Get
         </div>
 
         {/* Navigation buttons — hidden on welcome page */}
-        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? `${AGENT_STEP_MAX_WIDTH} max-sm:py-6` : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
+        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? `${agentStepWidth(agentFlow)} max-sm:py-6` : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
           {!welcomePath ? (
             <div />
           ) : (
