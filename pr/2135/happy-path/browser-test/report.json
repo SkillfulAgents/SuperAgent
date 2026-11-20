@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Sent a browser task to the QA-20261120-231931-d44a agent and verified it replied with the example.com page title \"Example Domain\".",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — the Gamut app loaded with the sidebar showing QA-20261120-231931-d44a under \"Your Agents\". No errors.",
+    "Step 2: Clicked the QA-20261120-231931-d44a agent in the sidebar — the agent page opened at /agents/qa-20261120-231931-d44a-2vy1is87zl, status \"idle\", with the chat input visible. Screenshot: step2-agent-opened.png.",
+    "Step 3: Typed \"Open a browser and go to https://example.com. Tell me the page title.\" and clicked Send — the message appeared in the chat, a new session \"Check Example.com Page Title\" was created, and the agent status changed to \"working\". Tool activity showed a ToolSearch call; the agent's transcript shows it searched for `mcp__browser__browser_open`/`browser_close`. Screenshots: step3-message-typed.png, step3-message-sent.png.",
+    "Step 4: Waited for the response — \"Example Domain\" appeared within the 90-second wait, well inside the 3-minute limit. The turn completed in \"Worked for 5s · 3 tool calls · 163,128 tokens\", and the agent returned to \"idle\".",
+    "Step 5: Verified the response reads \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" Screenshot: step5-response-verified.png."
+  ],
+  "bugs": [],
+  "durationMs": 65395,
+  "sessionId": "6d303874-a328-4ceb-a28f-cbb3e61607a9",
+  "cost": {
+    "inputTokens": 8856,
+    "outputTokens": 7093,
+    "cacheCreationTokens": 87556,
+    "cacheReadTokens": 901081,
+    "model": "claude-haiku-5-5",
+    "totalCostUsd": 0.243874
+  }
+}
