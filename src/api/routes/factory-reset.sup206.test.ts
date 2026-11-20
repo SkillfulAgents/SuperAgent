@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { is, Table, getTableName } from 'drizzle-orm'
 import * as schema from '@shared/lib/db/schema'
@@ -15,11 +15,14 @@ import * as schema from '@shared/lib/db/schema'
 
 // Names prefixed with `mock` so vitest's vi.mock hoisting allows referencing it.
 const mockDeletedTables: unknown[] = []
+// What the reset did to agents and tables, in order.
+const mockSteps: string[] = []
 
 vi.mock('@shared/lib/db', () => ({
   db: {
     delete: (t: unknown) => {
       mockDeletedTables.push(t)
+      mockSteps.push('clear table')
       return { run: () => undefined, where: () => ({ run: () => undefined }) }
     },
   },
@@ -65,6 +68,21 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
+// The agent layer: the catalog lists the agents, and each actor reports and
+// stops its own container (none of them is held by this process's host).
+type MockActor = { container: { status: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> } }
+const mockActors = new Map<string, MockActor>()
+
+vi.mock('@shared/lib/agent-actor/agent-catalog', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/agent-catalog')>()),
+  agentCatalog: { list: async () => [...mockActors.keys()] },
+}))
+
+vi.mock('@shared/lib/agent-actor/registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/registry')>()),
+  agentRegistry: { get: (slug: string) => mockActors.get(slug) },
+}))
+
 vi.mock('@shared/lib/container/client-factory', () => ({
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   refreshRunnerAvailability: vi.fn().mockResolvedValue([]),
@@ -109,8 +127,10 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   revokePlatformToken: (...args: unknown[]) => mockRevokePlatformToken(...args),
 }))
 
+const mockRm = vi.fn()
+
 vi.mock('fs', () => ({
-  default: { promises: { rm: vi.fn().mockResolvedValue(undefined) } },
+  default: { promises: { rm: (...args: unknown[]) => mockRm(...args) } },
 }))
 
 vi.mock('@shared/lib/analytics/tenant-id', () => ({
@@ -122,6 +142,7 @@ vi.mock('path', () => ({
 }))
 
 import settings from './settings'
+import { setWorkspaceRemoval } from '@shared/lib/agent-actor/workspace-removal'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -218,5 +239,93 @@ describe('POST /api/settings/factory-reset — agent/app-owned table cleanup', (
     const res = await factoryReset()
     expect(res.status).toBe(200)
     expect(mockDeletedTables).not.toContain(schema.dataMigrations)
+  })
+})
+
+describe('POST /api/settings/factory-reset — agents reached through the agent layer', () => {
+  let app: ReturnType<typeof createApp>
+
+  function addAgent(slug: string, status: 'running' | 'stopped'): MockActor {
+    const actor: MockActor = {
+      container: {
+        status: vi.fn(async () => ({ status, port: null })),
+        stop: vi.fn(async () => { mockSteps.push(`stop ${slug}`) }),
+      },
+    }
+    mockActors.set(slug, actor)
+    return actor
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRm.mockResolvedValue(undefined)
+    mockSteps.length = 0
+    mockActors.clear()
+    // The deployment's own removal: from here on no workspace directory is touched.
+    setWorkspaceRemoval(async (slug) => { mockSteps.push(`remove ${slug}`) })
+    app = createApp()
+  })
+
+  afterEach(() => {
+    setWorkspaceRemoval(null)
+    mockActors.clear()
+  })
+
+  async function factoryReset(): Promise<Response> {
+    return app.request('http://localhost/api/settings/factory-reset', { method: 'POST' })
+  }
+
+  it('stops each running agent through its actor, for deletion', async () => {
+    const research = addAgent('research-agent', 'running')
+    const writer = addAgent('writer-agent', 'stopped')
+    const support = addAgent('support-agent', 'running')
+
+    const res = await factoryReset()
+
+    expect(res.status).toBe(200)
+    expect(research.container.stop).toHaveBeenCalledWith({ forDeletion: true })
+    expect(support.container.stop).toHaveBeenCalledWith({ forDeletion: true })
+    expect(writer.container.stop).not.toHaveBeenCalled()
+  })
+
+  it('removes every workspace through the removal after the stops and before the tables, touching no agent directory', async () => {
+    addAgent('research-agent', 'running')
+    addAgent('writer-agent', 'stopped')
+
+    const res = await factoryReset()
+
+    expect(res.status).toBe(200)
+    const removals = mockSteps.filter((step) => step.startsWith('remove '))
+    expect(removals.sort()).toEqual(['remove research-agent', 'remove writer-agent'])
+    const lastStop = mockSteps.lastIndexOf('stop research-agent')
+    const firstRemoval = mockSteps.findIndex((step) => step.startsWith('remove '))
+    const lastRemoval = mockSteps.findLastIndex((step) => step.startsWith('remove '))
+    expect(lastStop).toBeLessThan(firstRemoval)
+    expect(lastRemoval).toBeLessThan(mockSteps.indexOf('clear table'))
+    expect(mockRm.mock.calls.map(([target]) => target)).toEqual([
+      '/mock/data/agents',
+      '/mock/data/settings.json',
+      '/mock/data/.platform-auth',
+    ])
+  })
+
+  it('treats a missing agents directory as already removed', async () => {
+    addAgent('research-agent', 'running')
+    mockRm.mockRejectedValue(Object.assign(new Error("no such file or directory, rm 'agents'"), { code: 'ENOENT' }))
+
+    const res = await factoryReset()
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true })
+    expect(mockSteps).toContain('clear table')
+  })
+
+  it('still fails when the agents directory cannot be removed for another reason', async () => {
+    mockRm.mockRejectedValueOnce(Object.assign(new Error('permission denied'), { code: 'EACCES' }))
+
+    const res = await factoryReset()
+
+    expect(res.status).toBe(500)
+    expect(mockSteps).not.toContain('clear table')
   })
 })

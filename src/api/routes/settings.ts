@@ -66,6 +66,7 @@ import { SteelApi, SteelApiError } from '../../main/host-browser/steel-api'
 import { TabtenderApi, TabtenderApiError, isLoopbackUrl, normalizeTabtenderUrl } from '../../main/host-browser/tabtender-api'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { resetApplicationTables } from '@shared/lib/db/reset'
+import { stopAgentsAndRemoveWorkspaces } from '@shared/lib/services/agent-service'
 import fs from 'fs'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -957,6 +958,15 @@ settings.post('/validate-web-key', async (c) => {
   }
 })
 
+/** A missing path counts as removed: some runtimes throw for it despite `force`. */
+async function removeIfPresent(target: string): Promise<void> {
+  try {
+    await fs.promises.rm(target, { recursive: true, force: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
 // POST /api/settings/factory-reset - Reset all data
 settings.post('/factory-reset', async (c) => {
   try {
@@ -974,12 +984,11 @@ settings.post('/factory-reset', async (c) => {
       // Best-effort: continue with reset even if remote revoke fails
     }
 
-    // Stop all running containers
+    // Through each agent's actor: this process may hold none of the containers.
+    await stopAgentsAndRemoveWorkspaces()
+    // Then whatever this process still holds, and folders no agent claims.
     await containerHost.stopAll()
-
-    // Delete agents directory
-    const agentsDir = getAgentsDataDir()
-    await fs.promises.rm(agentsDir, { recursive: true, force: true })
+    await removeIfPresent(getAgentsDataDir())
 
     // Clear every agent/app-owned relational table (children before parents).
     // Better Auth tables (user/session/account/verification) are preserved.
@@ -992,8 +1001,8 @@ settings.post('/factory-reset', async (c) => {
     settingsWritten()
     await deleteRecord(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY)
     // The files they were once imported from (settings.json holds API keys).
-    await fs.promises.rm(path.join(getDataDir(), 'settings.json'), { force: true })
-    await fs.promises.rm(path.join(getDataDir(), '.platform-auth'), { recursive: true, force: true })
+    await removeIfPresent(path.join(getDataDir(), 'settings.json'))
+    await removeIfPresent(path.join(getDataDir(), '.platform-auth'))
     return c.json({ success: true })
   } catch (error) {
     console.error('Factory reset failed:', error)
