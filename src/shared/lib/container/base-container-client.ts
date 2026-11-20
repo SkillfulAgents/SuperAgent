@@ -4,6 +4,7 @@ import type { ConnectionRuntime } from '@shared/lib/llm-provider/connection-runt
 import { prewarmConnectionRuntime, sessionConnectionRuntime } from '@shared/lib/llm-provider/session-connection-runtime'
 import { resolveSelectionHierarchyFrom, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
+import { randomUUID } from 'crypto'
 import path from 'path'
 import { promisify } from 'util'
 import { EventEmitter } from 'events'
@@ -306,6 +307,13 @@ const HEALTH_PROBE_TIMEOUT_MS = 2000
 const WARM_SESSION_TIMEOUT_MS = 5000
 // Max wait for the container to drop a session. Its dispose gives the CLI 5 s to exit.
 const DELETE_SESSION_TIMEOUT_MS = 10000
+// A create whose request timed out is looked for in the container's session
+// list this long, at this interval: a suspended VM answers it when it wakes.
+const LOST_CREATE_WAIT_MS = 30 * 60_000
+const LOST_CREATE_POLL_MS = 5_000
+// Once the container answers again, a create still in its hands lands within
+// its own bounds (CLI start plus a 30 s init wait).
+const LOST_CREATE_GRACE_MS = 2 * 60_000
 
 // Reads stderr only: an exec error's message repeats the command line, flags included.
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
@@ -1411,12 +1419,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const controller = new AbortController()
       timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
+      const createKey = randomUUID()
       const url = `${this.getBaseUrl(port)}/sessions`
       const request: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...hostAuthHeaders },
         body: JSON.stringify({
-          metadata: options.metadata,
+          metadata: { ...options.metadata, createKey },
           llmProviderId: selected.llmProviderId,
           llmRuntime,
           systemPrompt: options.systemPrompt,
@@ -1455,7 +1464,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         signal: controller.signal,
       }
       requestStarted = true
-      const response = await fetch(url, request)
+      let response: Response
+      try {
+        response = await fetch(url, request)
+      } catch (error) {
+        // Only this request gave up: a suspended container (a sleeping Mac)
+        // still runs the create when it wakes, and its session must not run unseen.
+        if (!controller.signal.aborted) throw error
+        const lost = await this.findLostCreate(createKey)
+        if (!lost) throw error
+        await recordSessionRuntime(this.config.agentId, lost.id, llmRuntime)
+        return lost
+      }
 
       clearTimeout(timeoutId)
 
@@ -1547,6 +1567,33 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } finally {
       clearTimeout(timeoutId)
     }
+  }
+
+  /**
+   * The session a timed-out create still made, found by the key it carried;
+   * null once the container answers without it past the grace, or stops.
+   */
+  private async findLostCreate(createKey: string): Promise<ContainerSession | null> {
+    const giveUpAt = Date.now() + LOST_CREATE_WAIT_MS
+    let answeringSince: number | null = null
+    while (Date.now() < giveUpAt) {
+      await new Promise((resolve) => setTimeout(resolve, LOST_CREATE_POLL_MS))
+      let sessions: Array<ContainerSession & { metadata?: Record<string, unknown> }>
+      try {
+        if ((await this.getInfo()).status !== 'running') return null
+        const response = await this.fetch('/sessions', { signal: AbortSignal.timeout(LOST_CREATE_POLL_MS) })
+        if (!response.ok) throw new Error(`Failed to list sessions: ${response.statusText}`)
+        sessions = await response.json()
+      } catch {
+        answeringSince = null
+        continue
+      }
+      const found = sessions.find((session) => session.metadata?.createKey === createKey)
+      if (found) return found
+      answeringSince ??= Date.now()
+      if (Date.now() - answeringSince >= LOST_CREATE_GRACE_MS) return null
+    }
+    return null
   }
 
   // getSession/deleteSession/cancelQueuedMessage/interruptSession go through

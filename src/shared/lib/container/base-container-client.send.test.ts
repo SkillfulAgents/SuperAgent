@@ -148,6 +148,46 @@ describe('deleteSession', () => {
   })
 })
 
+describe('a create the container answers after the request timed out', () => {
+  afterEach(() => { vi.useRealTimers() })
+  // A suspended container: it holds the create, and only the host's own timeout ends the request.
+  const suspendedContainer = (listed: () => unknown[]) => {
+    const created = { key: undefined as unknown, metadata: undefined as unknown }
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, request?: RequestInit) => {
+      if (request?.method !== 'POST') return Response.json(listed())
+      created.metadata = JSON.parse(request.body as string).metadata
+      created.key = (created.metadata as { createKey: string }).createKey
+      return new Promise<Response>((_resolve, reject) => {
+        request.signal!.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
+      })
+    }))
+    return created
+  }
+
+  it('returns the session the container made once it wakes, found by the key the create carried', async () => {
+    vi.useFakeTimers()
+    let awake = false
+    const created = suspendedContainer(() => awake ? [{ id: 'late-session', metadata: { isAutomated: true, createKey: created.key } }] : [])
+    const session = new Client().createSession({ initialMessage: 'first input', metadata: { isAutomated: true } })
+    // The request times out, and the first look finds nothing yet.
+    await vi.advanceTimersByTimeAsync(65_000)
+    awake = true
+    await vi.advanceTimersByTimeAsync(5_000)
+    await expect(session).resolves.toMatchObject({ id: 'late-session' })
+    expect(created.metadata).toEqual({ isAutomated: true, createKey: expect.any(String) })
+  })
+
+  it('fails as before once the container answers without it for the grace', async () => {
+    vi.useFakeTimers()
+    suspendedContainer(() => [{ id: 'other-session', metadata: { createKey: 'another-create' } }])
+    const failure = new Client().createSession({ initialMessage: 'first input' }).catch(error => error)
+    await vi.advanceTimersByTimeAsync(60_000 + 2 * 60_000 + 5_000)
+    const error = await failure
+    expect(error.message).toMatch(/request timed out/)
+    expect(error).not.toBeInstanceOf(MessageNotAcceptedError)
+  })
+})
+
 describe('releaseSession', () => {
   it.each([200, 404, 500])('requires the release endpoint to acknowledge HTTP %s', async (status) => {
     const fetch = vi.fn(async () => Response.json({ success: status === 200 }, { status }))
