@@ -1,9 +1,9 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { signIn, signUp, signOut } from '@renderer/lib/auth-client'
-import { apiFetch, consumeRedirectStash, peekRedirectStash } from '@renderer/lib/api'
+import { apiFetch, consumeRedirectStash, isDeliberateSignOut, peekRedirectStash } from '@renderer/lib/api'
 import { Card, CardContent, CardHeader } from '@renderer/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { Input } from '@renderer/components/ui/input'
@@ -407,6 +407,18 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
       setProviderLoadingId(null)
     }
   }
+
+  // With one provider and no password form, the button is the only choice, so start it.
+  // Not after a deliberate sign-out (it would sign straight back in) or a failed
+  // OAuth return (Better Auth adds `?error=`), which would loop.
+  const autoStarted = useRef(false)
+  const onlyProvider = !isLoading && !error && !showLocalAuth && config.providers.length === 1 ? config.providers[0] : null
+  useEffect(() => {
+    if (!onlyProvider?.available || autoStarted.current) return
+    if (isDeliberateSignOut() || new URLSearchParams(window.location.search).has('error')) return
+    autoStarted.current = true
+    void handleProviderSignIn(onlyProvider.id)
+  })
 
   return (
     <div className="flex items-center justify-center h-screen bg-background" data-testid="auth-page">
