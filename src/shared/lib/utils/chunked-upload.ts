@@ -319,15 +319,24 @@ async function changeManifest<R>(
 /** What `finish` gets, and how to remove the file it may have asked for. */
 function openAssembled(store: UploadByteStore, attempt: ChunkAttempt, chunks: CommittedChunk[]) {
   const filePath = path.join(getTempUploadsDir(), ASSEMBLED_DIR, `${attempt.ownerPart}.${attempt.uploadId}.${attempt.attemptId}`)
+  const size = chunks.reduce((total, chunk) => total + chunk.size, 0)
   const stream = () => store.streamInOrder(chunks.map((chunk) => ({ key: bytesKey(attempt.ownerPart, attempt.uploadId, chunk.attemptId), size: chunk.size })))
   const spool = async (): Promise<string> => {
     await ensureDirectory(path.dirname(filePath))
-    await pipeline(Readable.fromWeb(stream() as NodeReadableStream), fs.createWriteStream(filePath))
+    const handle = await fs.promises.open(filePath, 'w')
+    try {
+      // Sized up front: a file system that copies a file to grow it would copy it once per piece.
+      await handle.truncate(size)
+    } catch (error) {
+      await handle.close()
+      throw error
+    }
+    await pipeline(Readable.fromWeb(stream() as NodeReadableStream), handle.createWriteStream())
     return filePath
   }
   let spooled: Promise<string> | null = null
   const assembled: AssembledUpload = {
-    size: chunks.reduce((total, chunk) => total + chunk.size, 0),
+    size,
     stream,
     toFile: () => (spooled ??= spool()),
   }
