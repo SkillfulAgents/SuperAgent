@@ -1,17 +1,19 @@
 /**
  * The live browser view in a Worker: what browser-stream-proxy.ts does for the Node server. The
  * upgrade arrives here instead of at an HTTP server, and the container's socket comes from the
- * agent's object (cloudflare-agent.ts bridges it), reached like any other container call.
+ * agent's object (cloudflare-agent.ts bridges it), reached as the container runner reaches it (agentContainers).
  */
 import type { IncomingMessage } from 'node:http'
 import type { WorkerWebSocket } from 'cloudflare:workers'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { authenticateAgentWebSocket } from '../../main/agent-websocket-auth'
+import { agentContainers } from '../cloudflare-container-control'
+import type { Env } from '../index'
 
 /** A real viewport command is tiny, so a view-only client cannot make the Worker parse anything large. */
 const MAX_VIEWPORT_COMMAND_BYTES = 256
 
-export async function serveBrowserStream(request: Request, slugInUrl: string): Promise<Response> {
+export async function serveBrowserStream(request: Request, slugInUrl: string, env: Env): Promise<Response> {
   const agentSlug = await agentCatalog.resolve(slugInUrl)
   if (!agentSlug) return new Response(null, { status: 404 })
   // In auth mode the helper reads only the request's headers.
@@ -24,7 +26,7 @@ export async function serveBrowserStream(request: Request, slugInUrl: string): P
     search: width && /^\d+$/.test(width) ? `?width=${width}` : '',
   })
   if (!target) return new Response('Agent container is not running', { status: 503 })
-  const upstreamResponse = await fetch(target.url.replace(/^ws/, 'http'), { headers: { ...target.headers, Upgrade: 'websocket' } })
+  const upstreamResponse = await agentContainers(env.AGENT, env.VERSION?.timestamp).fetch(target.url.replace(/^ws/, 'http'), { headers: { ...target.headers, Upgrade: 'websocket' } })
   const upstream = (upstreamResponse as Response & { webSocket?: WorkerWebSocket | null }).webSocket
   if (!upstream) return new Response('The browser stream did not open', { status: 502 })
 

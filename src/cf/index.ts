@@ -114,7 +114,7 @@ export default {
       void prepareDeployOnce(env, ctx, origin)
       // A WebSocket upgrade does not go through the API's routes, as on the Node server (browser-stream-proxy.ts).
       const browserStream = request.headers.get('Upgrade')?.toLowerCase() === 'websocket' ? BROWSER_STREAM_PATH.exec(pathname) : null
-      if (browserStream) return await (await import('./lib/browser-stream')).serveBrowserStream(request, decodeURIComponent(browserStream[1]))
+      if (browserStream) return await (await import('./lib/browser-stream')).serveBrowserStream(request, decodeURIComponent(browserStream[1]), env)
       return await app.serve(withClientAddress(request), env, ctx)
     } catch (error) {
       // A failed boot, or an error the API did not answer itself: reported before the request ends,
