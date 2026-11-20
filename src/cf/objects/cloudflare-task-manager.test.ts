@@ -500,10 +500,14 @@ describe('requests that need the live chat connections', () => {
       '/api/webhook-relay',
       '/api/x-agent/chat/send',
       '/api/x-agent/meetings/join',
+      '/api/agents/support-desk/sessions/session-1/fill-login',
+      '/api/agents/support-desk/sessions/session-1/login-via',
     ]) expect(needsLiveConnections(path), path).toBe(true)
     for (const path of [
       '/api/agents',
       '/api/agents/support-desk/sessions',
+      '/api/agents/support-desk/sessions/session-1/login-request',
+      '/api/agents/support-desk/sessions/session-1/fill-login/extra',
       '/api/agent-integrations-export',
       '/api/x-agent/chatter',
       '/api/x-agent/integrations',

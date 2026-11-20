@@ -103,6 +103,9 @@ const LIVE_CONNECTION_ROUTES = [
   // The relay's connection is one of them: its status is read where the relay runs.
   /^\/api\/webhook-relay(\/|$)/,
   /^\/api\/x-agent\/(chat|meetings)(\/|$)/,
+  // A sign-in the user makes from a login card: its session is then watched for minutes, on
+  // timers that a request's isolate does not keep after the answer.
+  /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/(fill-login|login-via)$/,
 ]
 
 export function needsLiveConnections(pathname: string): boolean {
