@@ -1,4 +1,4 @@
-import { createContext, useContext, useCallback } from 'react'
+import { createContext, useContext, useCallback, useMemo } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { settingsSearchSchema } from '@renderer/router/search-schemas'
 
@@ -69,11 +69,16 @@ export function DialogProvider({
   // (which calls openSettings) — keeping the menu→action mapping in one place
   // and, post-SUP-264, draining commands queued while the window was closed.
 
-  return (
-    <DialogContext.Provider value={{ openSettings, closeSettings, openWizard }}>
-      {children}
-    </DialogContext.Provider>
+  // One value for as long as the three actions are the same: a context value
+  // built per render re-renders every consumer whenever the root layout
+  // renders, and the consumers include every link in an open transcript.
+  // Pinned by dialog-context.test.tsx.
+  const value = useMemo(
+    () => ({ openSettings, closeSettings, openWizard }),
+    [openSettings, closeSettings, openWizard],
   )
+
+  return <DialogContext.Provider value={value}>{children}</DialogContext.Provider>
 }
 
 export function useDialogs(): DialogContextType {

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { OnboardingSetupDialog } from '@renderer/components/agents/onboarding-setup-dialog'
 
 interface OnboardingContextType {
@@ -14,8 +14,12 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setIsPending(pending)
   }, [])
 
+  // Stable across renders, so a root layout render (or the dialog opening)
+  // does not re-render useOnboarding() consumers.
+  const value = useMemo(() => ({ setOnboarding }), [setOnboarding])
+
   return (
-    <OnboardingContext.Provider value={{ setOnboarding }}>
+    <OnboardingContext.Provider value={value}>
       {children}
       <OnboardingSetupDialog open={isPending} />
     </OnboardingContext.Provider>

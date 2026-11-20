@@ -282,3 +282,14 @@ export function useDocumentTitle() {
     document.title = applyTitleIndicator(title, indicator)
   }, [indicator, title])
 }
+
+/**
+ * The hook as a leaf that renders nothing. It subscribes to the current agent,
+ * the current session and the streaming flag, which change several times in
+ * one chat turn; called from a layout, each change re-renders that layout and
+ * what it renders. Mounted here, each change re-renders this component alone.
+ */
+export function DocumentTitle(): null {
+  useDocumentTitle()
+  return null
+}

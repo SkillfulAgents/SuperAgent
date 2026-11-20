@@ -24,7 +24,7 @@ import { useKeyboardViewport } from '@renderer/hooks/use-keyboard-viewport'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { useDocumentTitle } from '@renderer/hooks/use-document-title'
+import { DocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
 import { homeSearchSchema } from '@renderer/router/search-schemas'
 import { lenient } from '@renderer/router/zod-search'
@@ -51,7 +51,6 @@ export function RootLayout() {
 function RootLayoutContent() {
   useTheme()
   useInsetRadius()
-  useDocumentTitle()
   useKeyboardViewport()
 
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -158,6 +157,10 @@ function RootLayoutContent() {
                 drains the window-closed menu-command queue (SUP-264). All only need
                 useNavigate / useDialogs / useUser / useUserSettings — available at
                 the root route. */}
+            {/* A leaf, not a hook call up top: the title follows the current
+                agent, session and streaming flag, which change several times a
+                chat turn and would re-render this whole layout each time. */}
+            <DocumentTitle />
             <MenuCommandHandler />
             <PackageImportHandler />
             <HistoryNavigationHandler />
