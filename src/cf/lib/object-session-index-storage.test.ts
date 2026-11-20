@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { SqlStorage } from 'cloudflare:workers'
 import { REMOVE_SESSION } from '@shared/lib/agent-actor/session-index'
 import type { SessionMetadata } from '@shared/lib/types/agent'
+import { describeSessionIndexStorageContract } from '@shared/lib/agent-actor/testing/session-index-storage-contract'
 import { createObjectSessionIndexStorage, dropObjectSessionIndex } from './object-session-index-storage'
 
 /** An object's SQLite in memory. */
@@ -80,4 +81,11 @@ describe('createObjectSessionIndexStorage', () => {
     dropObjectSessionIndex(sql)
     expect(await storage.list()).toEqual([])
   })
+})
+
+// Each agent has its own object, so another agent's index is in another SQLite.
+describeSessionIndexStorageContract('Object SQLite session index', () => {
+  const own = objectSql()
+  const other = objectSql()
+  return { storage: createObjectSessionIndexStorage(() => own), other: createObjectSessionIndexStorage(() => other) }
 })
