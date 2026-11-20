@@ -41,7 +41,7 @@ import { CloudflareBlobStore, CloudflareUploadByteStore } from './cloudflare-hos
 import { CloudflareImageService } from './cloudflare-image-service'
 import { createCloudflareErrorReporter } from './lib/cloudflare-error-reporting'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
-import { CloudflareTaskManager, announceSessionStart } from './objects/cloudflare-task-manager'
+import { CloudflareTaskManager, announceSessionStart, runHostToolInTaskManager, webhookRelayAvailableInTaskManager } from './objects/cloudflare-task-manager'
 import { agentContainers, withAgentObject, sleepingStore } from './cloudflare-container-control'
 import { installCloudflareContainers } from '@shared/lib/container/cloudflare-container-runtime'
 import { createCloudflareFileOps } from './cloudflare-file-ops'
@@ -257,8 +257,11 @@ function wireAgents(env: Env): void {
     // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
     transport: (slug, local) => ownedHere(slug, local, cloudflareAgentActor(slug, (run) => reachAgentActor(env, slug, run))),
     sessionStore: (slug, hooks) => cloudflareSessionStore(env, slug, hooks),
-    // A session runs in its agent's object, and the chat connections are in the task manager object.
-    host: createProcessHostPort({ announceSessionStart: (slug, sessionId) => announceSessionStart(env, slug, sessionId) }),
+    // A session runs in its agent's object; the chat connections, the webhook relay and the trigger manager are in the task manager object.
+    host: createProcessHostPort({
+      announceSessionStart: (slug, sessionId) => announceSessionStart(env, slug, sessionId),
+      runHostTool: (request) => runHostToolInTaskManager(env, request),
+    }),
     // A deleted agent's saved files are in its object and R2, not in a directory here. They are removed
     // after the answer, by a task that is tried again if it fails: the purge lists and deletes every
     // object the agent saved. A removal that cannot be scheduled fails, and the agent is kept.
@@ -266,6 +269,7 @@ function wireAgents(env: Env): void {
       await taskManager().at(Date.now(), `${PURGE_WORKSPACE_TASK}:${slug}`, { taskType: PURGE_WORKSPACE_TASK, payload: { slug } })
     },
     idleTimer: agentIdleTimer,
+    webhookRelayAvailable: () => webhookRelayAvailableInTaskManager(env),
   })
 }
 

@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   publish: vi.fn(),
   afterSessionSettled: vi.fn(),
   sessionStarted: vi.fn(),
+  runHostTool: vi.fn(),
 }))
 
 // The feed only hints to clients; here it reaches no one, so whatever the
@@ -17,6 +18,7 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: {} }))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
+vi.mock('./tools', () => ({ runHostTool: mocks.runHostTool }))
 
 import { createProcessHostPort, localHostPort } from './local-host-port'
 
@@ -102,5 +104,25 @@ describe('the host port of a deployment that announces a session start elsewhere
     await vi.waitFor(() => expect(announce).toHaveBeenCalledExactlyOnceWith('sales', 'session-1'))
     await settle()
     expect(mocks.sessionStarted).not.toHaveBeenCalled()
+  })
+})
+
+describe('the host port of a deployment that runs the host tools elsewhere', () => {
+  it('hands each host tool call to the deployment, and not to the host tools of this process', async () => {
+    const request = { agentSlug: 'sales', sessionId: 'session-1', toolUseId: 'tool-1', toolName: 'create_webhook_endpoint' as const, input: '{"name":"Orders"}' }
+    const runHostTool = vi.fn(async () => ({ status: 'resolved' as const, value: 'Created' }))
+    const port = createProcessHostPort({ runHostTool })
+
+    expect(await port.call('hostTool', request)).toEqual({ status: 'resolved', value: 'Created' })
+    expect(runHostTool).toHaveBeenCalledExactlyOnceWith(request)
+    expect(mocks.runHostTool).not.toHaveBeenCalled()
+  })
+
+  it('runs a host tool in this process when the deployment names no other place', async () => {
+    mocks.runHostTool.mockResolvedValueOnce({ status: 'resolved', value: 'Scheduled' })
+    const request = { agentSlug: 'sales', sessionId: 'session-1', toolUseId: 'tool-1', toolName: 'schedule_task' as const, input: '{}' }
+
+    expect(await localHostPort.call('hostTool', request)).toEqual({ status: 'resolved', value: 'Scheduled' })
+    expect(mocks.runHostTool).toHaveBeenCalledExactlyOnceWith(request)
   })
 })

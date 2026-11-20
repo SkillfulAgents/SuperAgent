@@ -210,6 +210,8 @@ export interface AgentDeployment {
   removeWorkspace: WorkspaceRemoval
   /** What each agent's idle alarm waits with (see `LocalActorDeps.idleTimer`). */
   idleTimer: (slug: AgentSlug) => IdleTimer
+  /** Whether webhooks can be received, as the process that runs the webhook relay sees it. */
+  webhookRelayAvailable: () => Promise<boolean>
 }
 
 let deployment: AgentDeployment | undefined
@@ -221,6 +223,7 @@ let deployment: AgentDeployment | undefined
 export function installAgentDeployment(installed: AgentDeployment): void {
   deployment = installed
   setWorkspaceRemoval(installed.removeWorkspace)
+  containerHost.useWebhookRelayStatus(installed.webhookRelayAvailable)
 }
 
 // Development and tests only: every actor reached through the serializing test transport.

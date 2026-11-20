@@ -16,6 +16,7 @@ vi.mock('@shared/lib/container/container-host', () => ({
     dropRuntime: vi.fn(),
     clearRuntimes: vi.fn(),
     attachAgentIdleAlarms: vi.fn(),
+    useWebhookRelayStatus: vi.fn(),
     runtime: () => ({ getCachedInfo: () => ({ status: 'stopped', port: null }), noteSessionActivity: vi.fn() }),
   },
 }))
@@ -52,6 +53,7 @@ const deploymentWith = (parts: { sessionStore: () => SessionStore; transport?: (
   host: createRecordingHostPort().port,
   removeWorkspace: vi.fn(async () => {}),
   idleTimer: () => ({ set: vi.fn(), clear: vi.fn() }),
+  webhookRelayAvailable: vi.fn(async () => true),
 })
 
 afterEach(async () => {

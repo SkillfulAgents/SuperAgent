@@ -8,7 +8,7 @@
  * import graph of anything that touches an agent. Notifications, analytics
  * and the global feed are handed over synchronously, as they always were.
  */
-import { createLocalHostPort, type ComputerUseCaller, type HostPort, type SessionNotification } from '@shared/lib/agent-actor/host-port'
+import { createLocalHostPort, type ComputerUseCaller, type HostPort, type HostToolRequest, type HostToolResult, type SessionNotification } from '@shared/lib/agent-actor/host-port'
 import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -101,16 +101,20 @@ async function hostWorkFor(event: GlobalFeedEvent, announceSessionStart?: Sessio
   }
 }
 
+type HostToolRunner = (request: HostToolRequest) => Promise<HostToolResult>
+
 /**
  * The host as the agents in this process reach it. `announceSessionStart` is where a session's
  * start is announced, so the chat it belongs to follows it. Omitted, as on desktop and the Node
  * server, it is the integration manager of this process; a deployment that keeps the chat
- * connections in another process passes what reaches them there.
+ * connections in another process passes what reaches them there. `runHostTool` is the same for
+ * the host tools: they use the webhook relay and the trigger manager, which run with the
+ * background services.
  */
-export function createProcessHostPort(options: { announceSessionStart?: SessionStartAnnouncer } = {}): HostPort {
+export function createProcessHostPort(options: { announceSessionStart?: SessionStartAnnouncer; runHostTool?: HostToolRunner } = {}): HostPort {
   return createLocalHostPort({
     calls: {
-      hostTool: async (request) => (await import('./tools')).runHostTool(request),
+      hostTool: async (request) => (options.runHostTool ? options.runHostTool(request) : (await import('./tools')).runHostTool(request)),
       computerUse: async ({ method, params, caller, startBy, app }) => {
         if (!isE2EMock()) return (await computerUse()).executeComputerUseCommand(method, params, await computerUseCaller(caller), { startBy, app })
         const acted = app ?? (await mockTargetApp(method, params))

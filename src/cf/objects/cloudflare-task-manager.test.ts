@@ -23,8 +23,12 @@ vi.mock('../boot', () => app)
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 const integrations = vi.hoisted(() => ({ sessionStarted: vi.fn(async (_agentSlug: string, _sessionId: string) => {}) }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: integrations }))
+const hostTools = vi.hoisted(() => ({ runHostTool: vi.fn() }))
+vi.mock('@shared/lib/host/tools', () => ({ runHostTool: hostTools.runHostTool }))
+const relay = vi.hoisted(() => ({ available: false }))
+vi.mock('@shared/lib/webhook-relay', () => ({ getWebhookRelay: () => ({ snapshot: () => ({ available: relay.available }) }) }))
 
-import { CloudflareTaskManager, DeployStepNotReady, TaskManagerDurableObject, announceSessionStart, ensureMigrated, ensureOrgPrepared, needsLiveConnections, prepareDeploy, serveInTaskManager } from './cloudflare-task-manager'
+import { CloudflareTaskManager, DeployStepNotReady, TaskManagerDurableObject, announceSessionStart, runHostToolInTaskManager, servingTaskManager, webhookRelayAvailableInTaskManager, ensureMigrated, ensureOrgPrepared, needsLiveConnections, prepareDeploy, serveInTaskManager } from './cloudflare-task-manager'
 import type { Env } from '../index'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -513,6 +517,53 @@ describe('a session that starts a turn', () => {
     await expect(announceSessionStart({ TASK_MANAGER: unreachable }, 'sales', 'session-1')).resolves.toBeUndefined()
     expect(captureException).toHaveBeenCalled()
     vi.restoreAllMocks()
+  })
+})
+
+describe("an agent session's host tools", () => {
+  const request = { agentSlug: 'sales', sessionId: 'session-1', toolUseId: 'tool-1', toolName: 'create_webhook_endpoint' as const, input: '{"name":"Orders"}' }
+
+  it('run in the task manager object, after its services started', async () => {
+    app.startBackgroundServices.mockClear()
+    hostTools.runHostTool.mockReset()
+    const { object } = testObject()
+    managerFor(object)
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+    let servedBy: unknown
+    hostTools.runHostTool.mockImplementationOnce(async () => {
+      servedBy = servingTaskManager()
+      return { status: 'resolved', value: 'Created the endpoint' }
+    })
+
+    expect(await runHostToolInTaskManager({ TASK_MANAGER: objects }, request)).toEqual({ status: 'resolved', value: 'Created the endpoint' })
+
+    expect(hostTools.runHostTool).toHaveBeenCalledExactlyOnceWith(request)
+    expect(servedBy).toBe(object)
+    expect(app.startBackgroundServices.mock.invocationCallOrder[0]).toBeLessThan(hostTools.runHostTool.mock.invocationCallOrder[0])
+    object.stopDispatch()
+  })
+
+  it('reject when the task manager object cannot be reached, so the session reports the tool as failed', async () => {
+    const unreachable = { getByName: () => ({ runHostTool: async () => { throw new Error('Network connection lost.') } }) } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await expect(runHostToolInTaskManager({ TASK_MANAGER: unreachable }, request)).rejects.toThrow('Network connection lost.')
+  })
+})
+
+describe("the webhook relay's status for an agent's container start", () => {
+  it('is read from the relay in the task manager object, after its services started', async () => {
+    app.startBackgroundServices.mockClear()
+    const { object } = testObject()
+    managerFor(object)
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    relay.available = true
+    expect(await webhookRelayAvailableInTaskManager({ TASK_MANAGER: objects })).toBe(true)
+    relay.available = false
+    expect(await webhookRelayAvailableInTaskManager({ TASK_MANAGER: objects })).toBe(false)
+
+    expect(app.startBackgroundServices).toHaveBeenCalledTimes(1)
+    object.stopDispatch()
   })
 })
 
