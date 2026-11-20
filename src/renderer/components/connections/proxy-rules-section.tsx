@@ -13,6 +13,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
+import { InlineCode } from '@renderer/components/ui/inline-code'
 import { cn } from '@shared/lib/utils/cn'
 import { ruleEffectLabel, type RuleEffectView } from '@shared/lib/proxy/rules/proposal-schema'
 
@@ -202,7 +203,7 @@ function RuleRow({ rule, agentName, onDelete, deleting }: {
         </div>
         <CollapsibleContent>
           <div className="px-3 pb-3 pl-8">
-            {rule.restatement && <p className="text-xs leading-5 text-foreground/85">{rule.restatement}</p>}
+            {rule.restatement && <p className="text-xs leading-5 text-foreground/85"><InlineCode text={rule.restatement} /></p>}
             <p className="mt-1 text-xs text-muted-foreground">{origin} · v{rule.version}</p>
             <RuleDetails description={rule.description} patterns={rule.patterns} code={rule.code} warnings={rule.warnings} />
           </div>
@@ -215,7 +216,7 @@ function RuleRow({ rule, agentName, onDelete, deleting }: {
 function RuleDetails({ description, patterns, code, warnings }: { description: string; patterns: string[]; code: string; warnings: string[] }) {
   return (
     <div className="mt-2 space-y-2 text-xs">
-      <p className="text-muted-foreground">Requested as: <span className="text-foreground/85">{description}</span></p>
+      <p className="text-muted-foreground">Requested as: <span className="text-foreground/85"><InlineCode text={description} /></span></p>
       <div className="flex flex-wrap gap-1">
         {patterns.map((p) => <span key={p} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">{p}</span>)}
       </div>
