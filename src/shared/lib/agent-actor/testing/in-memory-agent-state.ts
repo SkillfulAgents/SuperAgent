@@ -34,6 +34,13 @@ export interface InMemoryAgentStateOptions {
   sessions?: (slug: AgentSlug) => Partial<AgentStateHooks['sessions']>
 }
 
+/** An agent with no container: its idle alarm never arms. */
+const NO_CONTAINER_IDLE: AgentStateHooks['idle'] = {
+  timeoutMs: async () => 0,
+  lastActivityAt: () => undefined,
+  sleep: async () => {},
+}
+
 /** A runtime with no container: there is no client, and nothing recovers. */
 export const NO_CONTAINER_RUNTIME: SessionsRuntime = {
   client: () => {
@@ -67,6 +74,7 @@ export function createInMemoryAgentState(options: InMemoryAgentStateOptions = {}
           runtime: NO_CONTAINER_RUNTIME,
           ...options.sessions?.(slug),
         },
+        idle: NO_CONTAINER_IDLE,
       })
       states.set(slug, state)
     }

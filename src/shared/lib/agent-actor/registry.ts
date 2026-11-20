@@ -12,6 +12,7 @@ import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { localHostPort } from '@shared/lib/host/local-host-port'
+import { background } from '@shared/lib/background'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import { serializingActor } from './serializing-actor'
 import type { AgentState } from './agent-state'
@@ -25,8 +26,8 @@ import type { AgentActor, AgentRegistry, AgentSlug } from './types'
  * container host and created on first use. Evicting a handle releases both.
  *
  * The registry also hands the container host the way to each agent's
- * workspace and live sessions, and the user-input, review, re-auth and
- * computer-use routers the way to each actor's stores.
+ * workspace, live sessions and idle alarm, and the user-input, review,
+ * re-auth and computer-use routers the way to each actor's stores.
  */
 export function createAgentRegistry(
   deps: LocalActorDeps,
@@ -98,6 +99,36 @@ export function createAgentRegistry(
   // A runtime marks and recovers only sessions that are live, and a live
   // session is always on a held actor: peeking never creates one.
   deps.containerHost.attachAgentSessions({ peek: (slug) => handles.get(slug)?.state.sessions })
+  // A container the runtime sees running gets an alarm even when nothing has
+  // asked for its actor yet (a container found running at startup).
+  deps.containerHost.attachAgentIdleAlarms({
+    get: (slug) => get(slug).state.idleAlarm,
+    peek: (slug) => handles.get(slug)?.state.idleAlarm,
+  })
+
+  // Orders the re-arms' timeout reads: only the newest one to start re-arms.
+  let idleRearms = 0
+  const rearmIdleAlarms = (timeoutMs?: number): void => {
+    const rearm = ++idleRearms
+    if (timeoutMs !== undefined) {
+      for (const actor of handles.values()) actor.state.idleAlarm.rearm(timeoutMs)
+      return
+    }
+    if (handles.size === 0) return
+    background((async () => {
+      let read: number
+      try {
+        read = await deps.containerHost.autoSleepTimeoutMs()
+      } catch (error) {
+        // Each alarm keeps what it armed; its next mark or fire reads again.
+        console.error('[AgentRegistry] Could not read the auto-sleep timeout to re-arm the idle alarms:', error)
+        return
+      }
+      // A later re-arm started meanwhile decides instead.
+      if (rearm !== idleRearms) return
+      for (const actor of handles.values()) actor.state.idleAlarm.rearm(read)
+    })(), { name: 'agent-registry.rearm-idle-alarms' })
+  }
 
   // The routers over the actors' stores get the same: one directory each,
   // reading through the handles, so nothing is stored anywhere but on them.
@@ -118,6 +149,7 @@ export function createAgentRegistry(
 
   return {
     get: (slug): AgentActor => outward(get(slug)),
+    rearmIdleAlarms,
     evict: async (slug) => evict(slug),
     evictAll: async () => {
       // Release every handle, then let the host forget the runtimes its own

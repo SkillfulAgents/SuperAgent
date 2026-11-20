@@ -22,7 +22,7 @@ import { createRecordingHostPort } from './testing/recording-host-port'
 // import side-effect free. The per-agent stores (input requests, reviews,
 // re-auth waits, computer-use grants) and the routers over them are real:
 // they are the actor's own and are what the tests below exercise.
-vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {} } }))
+vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {}, attachAgentIdleAlarms: () => {} } }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(async () => null),
@@ -132,6 +132,7 @@ function fakeDeps() {
     clearRuntimes: vi.fn(),
     attachAgentWorkspaces: vi.fn(),
     attachAgentSessions: vi.fn(),
+    attachAgentIdleAlarms: vi.fn(),
   }
   const { inputManager, transitions, reviewManager, accountReauthManager, mcpReauthManager, computerUsePermissionManager } =
     routers()

@@ -194,6 +194,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
+import { IdleAlarm } from './idle-alarm'
 import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 describe('ContainerRuntime.ensureRunning — env var construction', () => {
@@ -638,14 +639,22 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     mockHealth.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
     mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false })
     const runtime = containerHost.runtime('test-agent')
+    // The agent's alarm, as its actor would hold it.
+    const alarm = new IdleAlarm({ timeoutMs: async () => 30 * 60_000, lastActivityAt: () => runtime.sleepableSince(), isBusy: () => false, sleep: async () => {} })
+    containerHost.attachAgentIdleAlarms({ get: () => alarm, peek: () => alarm })
 
-    const started = runtime.ensureRunning()
-    await vi.waitFor(() => expect(mockHealth).toHaveBeenCalled())
-    await runtime.stopContainer()
-    answer({ status: 'ok', volumes: ['m1'] })
-    await expect(started).rejects.toThrow(/overtook/)
+    try {
+      const started = runtime.ensureRunning()
+      await vi.waitFor(() => expect(mockHealth).toHaveBeenCalled())
+      await runtime.stopContainer()
+      answer({ status: 'ok', volumes: ['m1'] })
+      await expect(started).rejects.toThrow(/overtook/)
 
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
+      await vi.waitFor(() => expect(alarm.isArmed()).toBe(true))
+    } finally {
+      alarm.cancel()
+      containerHost.attachAgentIdleAlarms(null)
+    }
   })
 
   it.each([

@@ -74,7 +74,6 @@ const HOST_METHODS = [
   'stopHealthMonitor',
   'stopAll',
   'stopAllSync',
-  'rearmIdleAlarms',
   'workspaceHostPath',
   'agentHostPath',
 ] as const
@@ -144,8 +143,7 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
   // host has no runtimes that would read them, so it only has to accept them.
   if (typeof host.attachAgentWorkspaces !== 'function') host.attachAgentWorkspaces = () => {}
   if (typeof host.attachAgentSessions !== 'function') host.attachAgentSessions = () => {}
-  // A mock host has no alarms to re-arm; it only has to accept the call.
-  if (typeof host.rearmIdleAlarms !== 'function') host.rearmIdleAlarms = () => {}
+  if (typeof host.attachAgentIdleAlarms !== 'function') host.attachAgentIdleAlarms = () => {}
   // `onBeforeContainerStop` is a property the app assigns; share it with the mock.
   Object.defineProperty(host, 'onBeforeContainerStop', {
     get: () => manager.onBeforeContainerStop,

@@ -1,5 +1,6 @@
 import pLimit from 'p-limit'
 import type { containerHost } from '@shared/lib/container/container-host'
+import { processIdleTimer, type IdleTimer } from '@shared/lib/container/idle-alarm'
 import type { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
 import type { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
@@ -25,7 +26,7 @@ import { matchesTranscriptQuery } from './transcript-query'
 import { findDeliveredFile, readTranscriptView } from '@shared/lib/services/x-agent-transcript-view'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
+import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState, type AgentStateHooks } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { exportSessionMetadata, ingestSessionMetadataFile } from '@shared/lib/services/session-metadata-file'
 import { transcriptPath, type SessionStore } from './session-store'
@@ -84,6 +85,11 @@ export interface LocalActorDeps {
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
+  /**
+   * What the agent's idle alarm waits with, for a deployment whose process
+   * can end while the container runs. Absent: this process's timer.
+   */
+  readonly idleTimer?: (slug: AgentSlug) => IdleTimer
 }
 
 // Dev-only capture of the sessions' frames for fixture replays: one per
@@ -152,6 +158,7 @@ export class LocalAgentActor implements AgentActor {
           runtime: createSessionsRuntime(slug, deps),
           capture: subagentCapture,
         },
+        idle: createIdleAlarmHooks(slug, deps),
       })
     this.store = this.state.store
     this.files = this.store.files
@@ -184,6 +191,17 @@ export class LocalAgentActor implements AgentActor {
   /** The registry is dropping this handle: release everything it owns. */
   dispose(): void {
     releaseAgentState(this.state)
+  }
+}
+
+/** What the agent's idle alarm reads and does: the auto-sleep timeout, and the agent's container runtime. */
+function createIdleAlarmHooks(slug: AgentSlug, deps: LocalActorDeps): AgentStateHooks['idle'] {
+  const runtime = () => deps.containerHost.runtime(slug)
+  return {
+    timeoutMs: () => deps.containerHost.autoSleepTimeoutMs(),
+    lastActivityAt: () => runtime().sleepableSince(),
+    sleep: (timeoutMs) => runtime().sleepIdle(timeoutMs),
+    timer: () => deps.idleTimer?.(slug) ?? processIdleTimer(),
   }
 }
 
