@@ -177,10 +177,10 @@ describe('Cloudflare file ops while the container runs', () => {
     expect(container.calls).toContain('GET /files/my%20files/report%20%231.md/content')
   })
 
-  it('reports missing files as empty or null, and a directory read as not-a-file', async () => {
+  it('reports missing files as not-found or null, and a directory read as not-a-file', async () => {
     const container = fakeContainer({ 'notes/todo.md': 'x' })
     const files = createCloudflareFileOps(container.call, unused)
-    expect(await files.list('missing')).toEqual([])
+    await expect(files.list('missing')).rejects.toMatchObject({ code: 'not-found' })
     expect(await files.stat('missing.md')).toBeNull()
     expect(await files.resolve('missing.md')).toBeNull()
     expect(await files.getDoc('missing.md')).toBeNull()

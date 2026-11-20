@@ -207,7 +207,7 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
     async list(dir) {
       const rel = dir ? normalizeWorkspacePath(dir) : ''
       const found = await info(rel)
-      if (!found) return []
+      if (!found) throw new WorkspaceFileError('not-found')
       if (!Array.isArray(found)) throw new WorkspaceFileError('not-a-directory')
       return found.map((entry): FileEntry => ({ name: entry.name, path: entry.path, kind: entry.type }))
     },
