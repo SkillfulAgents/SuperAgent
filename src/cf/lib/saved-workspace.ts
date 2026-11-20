@@ -77,14 +77,14 @@ export class SavedWorkspace {
     if (linked) return { ...linked.entry, name: rel.slice(rel.lastIndexOf('/') + 1), path: rel }
     const sql = this.sql
     // Links are not listed while asleep; one is read through to its file (linkedFile).
-    type Row = { path: string; size: number; mtime: number; kind: string }
-    const file = sql.exec<Row>("SELECT path, size, mtime, kind FROM workspace_file WHERE path = ? AND kind != 'symlink'", rel).toArray()[0]
+    type Row = { path: string; size: number; mtime: number; mode: number; kind: string }
+    const file = sql.exec<Row>("SELECT path, size, mtime, mode, kind FROM workspace_file WHERE path = ? AND kind != 'symlink'", rel).toArray()[0]
     if (file?.kind === 'file') return fileEntry(file)
     const prefix = rel ? `${rel}/` : ''
     // By key range, so a folder's listing reads its own rows and not the whole file list.
     const rows = rel
-      ? sql.exec<Row>("SELECT path, size, mtime, kind FROM workspace_file WHERE path >= ? AND path < ? AND kind != 'symlink'", ...under(rel)).toArray()
-      : sql.exec<Row>("SELECT path, size, mtime, kind FROM workspace_file WHERE kind != 'symlink'").toArray()
+      ? sql.exec<Row>("SELECT path, size, mtime, mode, kind FROM workspace_file WHERE path >= ? AND path < ? AND kind != 'symlink'", ...under(rel)).toArray()
+      : sql.exec<Row>("SELECT path, size, mtime, mode, kind FROM workspace_file WHERE kind != 'symlink'").toArray()
     if (rows.length === 0 && rel && !file) return null
     const children = new Map<string, StoredEntry>()
     for (const row of rows) {
@@ -121,8 +121,8 @@ export class SavedWorkspace {
   private linkedFile(rel: string): { path: string; entry: StoredEntry } | null {
     let path = rel
     for (let hop = 0; hop < MAX_LINK_HOPS; hop++) {
-      type Row = { path: string; size: number; mtime: number; kind: string; target: string | null }
-      const row = this.sql.exec<Row>('SELECT path, size, mtime, kind, target FROM workspace_file WHERE path = ?', path).toArray()[0]
+      type Row = { path: string; size: number; mtime: number; mode: number; kind: string; target: string | null }
+      const row = this.sql.exec<Row>('SELECT path, size, mtime, mode, kind, target FROM workspace_file WHERE path = ?', path).toArray()[0]
       if (!row) return null
       if (row.kind === 'file') return path === rel ? null : { path, entry: fileEntry(row) }
       if (row.kind !== 'symlink' || !row.target) return null
@@ -133,8 +133,8 @@ export class SavedWorkspace {
     return null
   }
 
-  /** Writes one file. Returns the hashes it replaced, for the caller to settle. */
-  async write(rel: string, bytes: Uint8Array): Promise<string[]> {
+  /** Writes one file, with `mode` or else the mode it had. Returns the hashes it replaced, for the caller to settle. */
+  async write(rel: string, bytes: Uint8Array, mode?: number): Promise<string[]> {
     // As the agent's disk would refuse it: the saved workspace cannot hold a file and a folder at one path.
     const parent = this.nonFolderParent(rel)
     if (parent) throw new WorkspaceFileError('not-a-directory', `Cannot write ${rel}: ${parent} is not a folder`)
@@ -148,7 +148,7 @@ export class SavedWorkspace {
     if (bytes.byteLength <= HELD_MAX_BYTES) sql.exec('INSERT OR REPLACE INTO workspace_held (hash, bytes) VALUES (?, ?)', hash, bytes.slice().buffer)
     else await this.bucket.put(this.blobKey(hash), bytes)
     const previous = sql.exec<{ mode: number }>('SELECT mode FROM workspace_file WHERE path = ?', rel).toArray()[0]
-    return this.record([{ path: rel, hash, size: bytes.byteLength, mode: previous?.mode ?? NEW_FILE_MODE, mtimeMs: Date.now(), kind: 'file' }])
+    return this.record([{ path: rel, hash, size: bytes.byteLength, mode: mode ?? previous?.mode ?? NEW_FILE_MODE, mtimeMs: Date.now(), kind: 'file' }])
   }
 
   /** Adds bytes to the end of a file, or makes it. Returns the hashes it replaced, for the caller to settle. */
@@ -396,12 +396,13 @@ export function linkTarget(rel: string, target: string): string | null {
   return parts.length ? parts.join('/') : null
 }
 
-function fileEntry(row: { path: string; size: number; mtime: number }): StoredEntry {
+function fileEntry(row: { path: string; size: number; mtime: number; mode: number }): StoredEntry {
   return {
     name: row.path.slice(row.path.lastIndexOf('/') + 1),
     path: row.path,
     type: 'file',
     size: row.size,
+    mode: row.mode,
     ...(row.mtime ? { modifiedAt: new Date(row.mtime).toISOString() } : {}),
   }
 }

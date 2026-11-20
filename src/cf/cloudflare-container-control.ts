@@ -18,7 +18,7 @@ type AgentObjects = DurableObjectNamespace<AgentDurableObject>
 export const ASLEEP_HEADER = 'X-Agent-Asleep'
 
 /** A saved file or folder, in the shape of the container's file API. */
-export type StoredEntry = { name: string; path: string; type: 'file' | 'directory'; size?: number; modifiedAt?: string }
+export type StoredEntry = { name: string; path: string; type: 'file' | 'directory'; size?: number; modifiedAt?: string; mode?: number }
 
 /**
  * A change the saved workspace refuses as the agent's disk would, by its WorkspaceFileError code:
@@ -36,7 +36,7 @@ export interface SleepingStore {
   /** A file's bytes, or the range asked for, streamed from R2; `size` is the whole file's. */
   read(path: string, range?: ByteRange): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** False when the container started meanwhile: the write has to go to the container. A refusal when a folder is in the way. */
-  write(path: string, bytes: Uint8Array): Promise<boolean | StoredRefusal>
+  write(path: string, bytes: Uint8Array, mode?: number): Promise<boolean | StoredRefusal>
   /** Removes a file or a directory with everything under it; false as for write. */
   remove(path: string): Promise<boolean>
   /** Keeps an empty directory, unless something is already there; false and a refusal as for write. */
@@ -53,7 +53,7 @@ export function sleepingStore(agents: AgentObjects, agentId: string): SleepingSt
   return {
     entry: (path) => agent().storedEntry(path),
     read: (path, range) => agent().storedRead(path, range),
-    write: (path, bytes) => agent().storedWrite(path, bytes),
+    write: (path, bytes, mode) => agent().storedWrite(path, bytes, mode),
     remove: (path) => agent().storedRemove(path),
     mkdir: (path) => agent().storedMkdir(path),
     appendToFile: (path, bytes) => agent().appendToFile(path, bytes),

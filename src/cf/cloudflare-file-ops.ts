@@ -201,11 +201,12 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
     throw new Error(`The container for ${rel || '/'} kept starting and stopping`)
   }
 
-  const upload = (rel: string, bytes: Uint8Array) =>
+  // The container's upload takes no mode: a mode asked for is kept only while the agent sleeps.
+  const upload = (rel: string, bytes: Uint8Array, mode?: number) =>
     change(
       rel,
       () => awake(`/files/${encodePath(rel)}/upload`, { method: 'POST', body: bytes as Uint8Array<ArrayBuffer> }),
-      () => sleeping.write(rel, bytes),
+      () => sleeping.write(rel, bytes, mode),
     )
 
   const files: StoreFileOps = {
@@ -221,7 +222,8 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
       const found = await info(normalizeWorkspacePath(path))
       if (!found) return null
       if (Array.isArray(found)) return { kind: 'directory', size: 0, mtimeMs: 0 }
-      return { kind: found.type, size: found.size ?? 0, mtimeMs: found.modifiedAt ? Date.parse(found.modifiedAt) : 0 } satisfies FileStat
+      const stat: FileStat = { kind: found.type, size: found.size ?? 0, mtimeMs: found.modifiedAt ? Date.parse(found.modifiedAt) : 0 }
+      return found.mode === undefined ? stat : { ...stat, mode: found.mode }
     },
 
     async resolve(path) {
@@ -246,16 +248,16 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
       }
     },
 
-    async putDoc(path, bytes) {
-      await upload(filePath(path), toBytes(bytes))
+    async putDoc(path, bytes, options) {
+      await upload(filePath(path), toBytes(bytes), options?.mode)
     },
 
     // A stream goes to a running container as it arrives, so a large upload is never whole in
     // memory. Asleep, the saved workspace hashes the whole file, so it is read first.
-    async write(path, body) {
+    async write(path, body, options) {
       const rel = filePath(path)
       if (body instanceof Uint8Array) {
-        await upload(rel, body)
+        await upload(rel, body, options?.mode)
         return { size: body.byteLength }
       }
       let size = 0
@@ -273,7 +275,7 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
       // The container went to sleep after taking (part of) the stream: it cannot be sent again.
       if (response) throw new Error(`The container stopped while ${rel} was being sent; try the upload again`)
       const bytes = await readUpTo(counted, MAX_ASLEEP_WRITE_BYTES, rel)
-      await upload(rel, bytes)
+      await upload(rel, bytes, options?.mode)
       return { size: bytes.byteLength }
     },
 

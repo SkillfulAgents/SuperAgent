@@ -294,8 +294,8 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   /** False when the agent is running: the write has to go to its container. */
-  storedWrite(rel: string, bytes: Uint8Array): Promise<boolean | StoredRefusal> {
-    return refusedAs(this.storeChange(async () => this.settleLater(await this.workspace.write(rel, bytes))))
+  storedWrite(rel: string, bytes: Uint8Array, mode?: number): Promise<boolean | StoredRefusal> {
+    return refusedAs(this.storeChange(async () => this.settleLater(await this.workspace.write(rel, bytes, mode))))
   }
 
   /**
