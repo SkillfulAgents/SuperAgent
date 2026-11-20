@@ -6,7 +6,7 @@
  */
 import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher, R2Bucket } from 'cloudflare:workers'
 import { captureException, flushErrorReporting } from '@shared/lib/error-reporting'
-import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
+import { declareServerCapabilities, getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import type { AppStateDurableObject } from './objects/cloudflare-app-state'
 import { DeployStepNotReady, needsLiveConnections, prepareDeploy, serveInTaskManager, startTaskManager, type TaskManagerDurableObject } from './objects/cloudflare-task-manager'
 import { logErrorsAsText } from './lib/cloudflare-error-reporting'
@@ -42,6 +42,15 @@ export interface Env {
 }
 
 logErrorsAsText()
+// No file or process here outlives a request, and it is not the person's computer: nothing runs on the host.
+declareServerCapabilities({
+  canUseComputer: false,
+  canRunHostScripts: false,
+  canDriveUserChrome: false,
+  canReadHostFoldersByPath: false,
+  canFindHostApps: false,
+  canRunHostGit: false,
+})
 
 const SERVICE_WORKER = '/sw.js'
 /** What the deploy step calls right after an upload (wrangler.jsonc). */

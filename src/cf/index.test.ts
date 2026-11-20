@@ -92,3 +92,18 @@ describe('serveAppShell', () => {
     expect(entry.headers.get('cache-control')).toBe('no-cache')
   })
 })
+
+describe('the server facts of a Worker', () => {
+  it('declare nothing on the host, so host git, folders and scripts are not offered', async () => {
+    const { getServerCapabilities, getServerFacts } = await import('@shared/lib/facts/server-facts')
+    expect(getServerCapabilities()).toEqual({
+      canUseComputer: false,
+      canRunHostScripts: false,
+      canDriveUserChrome: false,
+      canReadHostFoldersByPath: false,
+      canFindHostApps: false,
+      canRunHostGit: false,
+    })
+    expect(getServerFacts().capabilities).toEqual(getServerCapabilities())
+  })
+})
