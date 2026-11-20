@@ -1,6 +1,6 @@
 import { and, asc, eq, isNotNull, min } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { withInList } from '@shared/lib/db/bound-parameters'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { messageAuthor, user } from '@shared/lib/db/schema'
 import { toUserProfile, userProfileFields } from '@shared/lib/services/user-profile-service'
 
@@ -15,30 +15,31 @@ export type SessionParticipant = ReturnType<typeof toUserProfile>
 
 /** Exported for tests of the statement's shape. */
 export function sessionParticipantsQuery(agentSlug: string, ids: ReadonlySet<string>) {
-  const sessionIds = ids.size <= MAX_SESSION_IDS_IN_STATEMENT ? [...ids] : undefined
-  return withInList(messageAuthor.sessionId, sessionIds, matches => {
-    // Grouped before the join, so a user is looked up once per session they
-    // wrote in, not once per message.
-    const wrote = db
-      .select({
-        sessionId: messageAuthor.sessionId,
-        userId: messageAuthor.userId,
-        firstAt: min(messageAuthor.createdAt).as('first_at'),
-      })
-      .from(messageAuthor)
-      .where(and(
-        eq(messageAuthor.agentSlug, agentSlug),
-        matches,
-        isNotNull(messageAuthor.userId),
-      ))
-      .groupBy(messageAuthor.sessionId, messageAuthor.userId)
-      .as('wrote')
-    return db
-      .select({ sessionId: wrote.sessionId, ...userProfileFields() })
-      .from(wrote)
-      .innerJoin(user, eq(user.id, wrote.userId))
-      .orderBy(asc(wrote.firstAt), asc(wrote.userId))
-  })
+  // One statement and at most two bound parameters however many sessions there
+  // are (Cloudflare D1 allows 100 per statement): the ids travel as one JSON
+  // array read with `json_each` (`inList`).
+  const named = ids.size <= MAX_SESSION_IDS_IN_STATEMENT
+  // Grouped before the join, so a user is looked up once per session they
+  // wrote in, not once per message.
+  const wrote = db
+    .select({
+      sessionId: messageAuthor.sessionId,
+      userId: messageAuthor.userId,
+      firstAt: min(messageAuthor.createdAt).as('first_at'),
+    })
+    .from(messageAuthor)
+    .where(and(
+      eq(messageAuthor.agentSlug, agentSlug),
+      named ? inList(messageAuthor.sessionId, [...ids]) : undefined,
+      isNotNull(messageAuthor.userId),
+    ))
+    .groupBy(messageAuthor.sessionId, messageAuthor.userId)
+    .as('wrote')
+  return db
+    .select({ sessionId: wrote.sessionId, ...userProfileFields() })
+    .from(wrote)
+    .innerJoin(user, eq(user.id, wrote.userId))
+    .orderBy(asc(wrote.firstAt), asc(wrote.userId))
 }
 
 /**

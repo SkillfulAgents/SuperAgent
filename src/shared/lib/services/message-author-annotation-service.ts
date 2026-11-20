@@ -3,13 +3,15 @@
  * in one statement: an integration's card (`integration`) and, when asked for,
  * the person's profile (`sender`) or the calling agent (`agentSender`).
  *
- * A page holds up to 500 messages. The ID filter shares the driver’s
- * parameter budget with the agent slug and session ID.
+ * The statement binds a fixed number of parameters however many messages the
+ * response holds. The ids travel as one JSON array read with `json_each`, not
+ * as an `IN (?, ?, …)` list: Cloudflare D1 allows 100 bound parameters per
+ * statement and a page holds up to 500 messages.
  */
 
 import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { withInList } from '@shared/lib/db/bound-parameters'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { agents, messageAuthor, user } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
@@ -28,29 +30,27 @@ function parseDisplay(json: string | null): IntegrationMessageDisplay | null {
 
 /**
  * The one read: the session's author rows, each with its user's profile
- * fields. An ID list narrows the read to those messages.
+ * fields. `ids` narrows it to those messages; it is bound as one parameter.
  * Exported for the test that pins the parameter count.
  */
 export function messageAuthorsQuery(agentSlug: string, sessionId: string, ids: readonly string[] | null) {
-  return withInList(messageAuthor.id, ids, matches =>
-    db
-      .select({
-        id: messageAuthor.id,
-        authorAgentSlug: messageAuthor.authorAgentSlug,
-        agent: { name: agents.name, color: agents.avatarColor, shape: agents.avatarShape },
-        integrationId: messageAuthor.integrationId,
-        display: messageAuthor.display,
-        profile: userProfileFields(),
-      })
-      .from(messageAuthor)
-      .leftJoin(user, eq(user.id, messageAuthor.userId))
-      .leftJoin(agents, eq(agents.slug, messageAuthor.authorAgentSlug))
-      .where(and(
-        eq(messageAuthor.agentSlug, agentSlug),
-        eq(messageAuthor.sessionId, sessionId),
-        matches,
-      )),
-  )
+  return db
+    .select({
+      id: messageAuthor.id,
+      authorAgentSlug: messageAuthor.authorAgentSlug,
+      agent: { name: agents.name, color: agents.avatarColor, shape: agents.avatarShape },
+      integrationId: messageAuthor.integrationId,
+      display: messageAuthor.display,
+      profile: userProfileFields(),
+    })
+    .from(messageAuthor)
+    .leftJoin(user, eq(user.id, messageAuthor.userId))
+    .leftJoin(agents, eq(agents.slug, messageAuthor.authorAgentSlug))
+    .where(and(
+      eq(messageAuthor.agentSlug, agentSlug),
+      eq(messageAuthor.sessionId, sessionId),
+      ids ? inList(messageAuthor.id, ids) : undefined,
+    ))
 }
 
 type UserItem = Extract<TransformedItem, { type: 'user' | 'assistant' }>

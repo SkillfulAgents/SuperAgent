@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, notExists, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
-import { withInList } from '@shared/lib/db/bound-parameters'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { todos, type TodoRow } from '@shared/lib/db/schema'
 import {
   TODO_TRANSITIONS,
@@ -297,20 +297,17 @@ export async function deleteTodo(userId: string, id: string): Promise<boolean> {
  * Scoped to the agent because a session id is unique only within one.
  */
 export function unlinkSessionStatements(agentSlug: string, sessionIds?: string[]) {
+  const linked = sessionIds
+    ? and(eq(todos.agentSlug, agentSlug), inList(todos.sessionId, sessionIds))
+    : and(eq(todos.agentSlug, agentSlug), isNotNull(todos.sessionId))
   const now = new Date()
-  const agent = eq(todos.agentSlug, agentSlug)
-  const linkedSession = isNotNull(todos.sessionId)
   return [
-    withInList(todos.sessionId, sessionIds, matches =>
-      db.update(todos)
-        .set({ status: 'draft', sessionId: null, startedAt: null, updatedAt: now })
-        .where(and(agent, matches ?? linkedSession, eq(todos.status, 'active'))),
-    ),
-    withInList(todos.sessionId, sessionIds, matches =>
-      db.update(todos)
-        .set({ sessionId: null, updatedAt: now })
-        .where(and(agent, matches ?? linkedSession)),
-    ),
+    db.update(todos)
+      .set({ status: 'draft', sessionId: null, startedAt: null, updatedAt: now })
+      .where(and(linked, eq(todos.status, 'active'))),
+    db.update(todos)
+      .set({ sessionId: null, updatedAt: now })
+      .where(linked),
   ] as const
 }
 

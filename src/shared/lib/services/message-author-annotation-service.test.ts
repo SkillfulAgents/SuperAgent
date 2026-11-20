@@ -1,11 +1,10 @@
 /**
  * The messages API's author read against a real database: one statement per
- * response whatever its size, within the driver’s parameter limit, and the same
+ * response whatever its size, a fixed number of bound parameters, and the same
  * JSON as the statements it replaced.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm'
-import { setMaxBoundParameters } from '@shared/lib/db/bound-parameters'
 import * as schema from '@shared/lib/db/schema'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -169,7 +168,6 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  setMaxBoundParameters(undefined)
   vi.restoreAllMocks()
   await handle.close()
 })
@@ -283,13 +281,13 @@ describe('annotateMessageAuthors', () => {
     expect((await read(AGENT)).agentSender).toEqual({ slug: 'writer', name: 'writer', avatar: null })
   })
 
-  it.each([0, 1, 98, 99, 500, 5000])('reserves the agent and session binds for %i message ids on D1', (count) => {
-    setMaxBoundParameters(100)
+  // Cloudflare D1 allows 100 bound parameters per statement.
+  it.each([1, 300, 500, 5000])('binds three parameters for %i message ids', (count) => {
     const ids = Array.from({ length: count }, (_, i) => `message-${i}`)
 
     const { params } = messageAuthorsQuery(AGENT, SESSION, ids).toSQL()
 
-    expect(params).toEqual([AGENT, SESSION, ...(count <= 98 ? ids : [JSON.stringify(ids)])])
+    expect(params).toEqual([AGENT, SESSION, JSON.stringify(ids)])
   })
 
   it('binds only the recipient and session for the whole transcript', () => {

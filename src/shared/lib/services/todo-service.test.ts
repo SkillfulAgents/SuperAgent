@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { setMaxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { batch } from '@shared/lib/db/batch'
 
 let testDb: AppDatabase
@@ -19,7 +18,6 @@ import {
   setTodoStatus,
   startTodo,
   unlinkAgentStatements,
-  unlinkSessionStatements,
   unlinkTodosFromSessions,
   updateDraft,
 } from './todo-service'
@@ -34,7 +32,6 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  setMaxBoundParameters(undefined)
   await handle.close()
 })
 
@@ -228,19 +225,6 @@ const entry = {
 }
 
 describe('deleting sessions and agents', () => {
-  it.each([
-    [94, 100, 97],
-    [95, 7, 98],
-    [97, 7, 100],
-    [98, 7, 4],
-  ])('fits both updates for %i session ids on D1', (count, activeBinds, remainingBinds) => {
-    setMaxBoundParameters(100)
-    const ids = Array.from({ length: count }, (_, i) => `session-${i}`)
-    const [active, remaining] = unlinkSessionStatements('agent-a', ids)
-    expect(active.toSQL().params).toHaveLength(activeBinds)
-    expect(remaining.toSQL().params).toHaveLength(remainingBinds)
-  })
-
   it('a deleted session sends work in progress back to Drafts', async () => {
     const todo = await startedTodo('agent-a', 'session-1')
     await unlinkTodosFromSessions('agent-a', ['session-1'])
