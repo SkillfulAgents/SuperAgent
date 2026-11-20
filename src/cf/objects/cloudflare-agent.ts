@@ -81,7 +81,7 @@ const INSTANCE = 'standard-3'
 const HOST = 'host.internal'
 const WORKSPACE = 'workspace.internal'
 const BLOB = /^\/blobs\/([0-9a-f]{64})$/
-// The first idle check after a launch; each check schedules the next at the agent's deadline.
+// The first idle check after a launch; from then on the agent's idle alarm sets each next one.
 const FIRST_IDLE_CHECK_MS = 60_000
 // A failed idle check is tried again after a wait that doubles up to this.
 const IDLE_CHECK_RETRY_MAX_MS = 15 * 60_000
@@ -185,6 +185,8 @@ export class AgentDurableObject extends DurableObject<Env> {
   private statusSynced: Promise<void> | undefined
   /** Idle checks that failed in a row: the next one waits longer, and only the first is reported. */
   private idleCheckFailures = 0
+  /** When this instance last set the object's alarm for; null when it set none, or it went off. */
+  private idleCheckAt: number | null = null
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, nearStorage(env))
@@ -203,12 +205,11 @@ export class AgentDurableObject extends DurableObject<Env> {
     return this.containerFetch(request, CONTAINER_INTERNAL_PORT)
   }
 
-  /** SuperAgent's idle check for this agent (checkIdle in boot.ts): sleeps it if idle, else schedules the next check. */
+  /** SuperAgent's idle check for this agent (checkIdle in boot.ts): its idle alarm sleeps it, or sets the next check. */
   async checkIdle(): Promise<void> {
     const slug = this.agentSlug()
-    let next: number | null
     try {
-      next = await runAsAgentObject(slug, this, async () => {
+      await runAsAgentObject(slug, this, async () => {
         const app = await import('../boot')
         await app.boot(this.env)
         await this.syncStatus(app, slug)
@@ -219,24 +220,36 @@ export class AgentDurableObject extends DurableObject<Env> {
       const wait = Math.min(FIRST_IDLE_CHECK_MS * 2 ** this.idleCheckFailures, IDLE_CHECK_RETRY_MAX_MS)
       console.error(`[AgentDurableObject ${slug}] the idle check failed; trying again in ${wait / 1000} s:`, error)
       if (this.idleCheckFailures++ === 0) captureException(error, { tags: { component: 'agent-object', operation: 'idle-check' }, extra: { agent: slug } })
-      next = Date.now() + wait
+      if (await this.agentRunning()) this.scheduleIdleCheck(Date.now() + wait)
     }
-    if (next !== null && (await this.agentRunning())) this.scheduleIdleCheck(next)
   }
 
-  // The object's one alarm: it outlives the isolate, and each check sets the next.
+  /**
+   * Sets the idle check for `at`, unless one is set already at or before it: an early check finds
+   * the agent busy or recently active and sets the next. So the alarm is written about once per
+   * auto-sleep window, not at every mark of the agent's activity.
+   */
+  scheduleIdleCheckBy(at: number): void {
+    if (this.idleCheckAt !== null && this.idleCheckAt <= at) return
+    this.scheduleIdleCheck(at)
+  }
+
+  // The object's one alarm: it outlives the isolate.
   private scheduleIdleCheck(at: number): void {
+    this.idleCheckAt = at
     this.ctx.storage.setAlarm(at).catch((error: unknown) => {
       console.error(`[AgentDurableObject ${this.agentName()}] scheduling the idle check failed:`, error)
       captureException(error, { tags: { component: 'agent-object', operation: 'schedule-idle-check' }, extra: { agent: this.agentName() } })
     })
   }
 
-  private async cancelIdleCheck(): Promise<void> {
+  async cancelIdleCheck(): Promise<void> {
+    this.idleCheckAt = null
     await this.ctx.storage.deleteAlarm()
   }
 
   async alarm(): Promise<void> {
+    this.idleCheckAt = null
     await this.checkIdle()
   }
 

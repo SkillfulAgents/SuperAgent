@@ -15,6 +15,7 @@ import { localHostPort } from '@shared/lib/host/local-host-port'
 import type { HostPort } from './host-port'
 import { setWorkspaceRemoval, type WorkspaceRemoval } from './workspace-removal'
 import { background } from '@shared/lib/background'
+import type { IdleTimer } from '@shared/lib/container/idle-alarm'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import { serializingActor } from './serializing-actor'
 import type { AgentState } from './agent-state'
@@ -207,6 +208,8 @@ export interface AgentDeployment {
   host: HostPort
   /** How a deleted agent's workspace is removed (see `setWorkspaceRemoval`). */
   removeWorkspace: WorkspaceRemoval
+  /** What each agent's idle alarm waits with (see `LocalActorDeps.idleTimer`). */
+  idleTimer: (slug: AgentSlug) => IdleTimer
 }
 
 let deployment: AgentDeployment | undefined
@@ -280,6 +283,9 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
   get createSessionStore() {
     return deployment?.sessionStore
+  },
+  get idleTimer() {
+    return deployment?.idleTimer
   },
 }, {
   states: agentActorStates,

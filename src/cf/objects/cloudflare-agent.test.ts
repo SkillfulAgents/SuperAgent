@@ -866,6 +866,30 @@ describeFileOpsContract('Cloudflare file ops while the agent sleeps', () => {
   }
 })
 
+describe("AgentDurableObject as its agent's idle timer", () => {
+  it('writes the alarm once per window: a later deadline keeps the earlier check, an earlier one moves it', async () => {
+    const alarms: Array<number | null> = []
+    const object = Object.create(AgentDurableObject.prototype) as AgentDurableObject & Record<string, unknown>
+    Object.assign(object, {
+      ctx: { id: { name: 'sales agent' }, storage: { setAlarm: async (at: number) => void alarms.push(at), deleteAlarm: async () => void alarms.push(null) } },
+      idleCheckAt: null,
+    })
+
+    object.scheduleIdleCheckBy(30 * 60_000)
+    object.scheduleIdleCheckBy(31 * 60_000)
+    object.scheduleIdleCheckBy(32 * 60_000)
+    expect(alarms).toEqual([30 * 60_000])
+
+    object.scheduleIdleCheckBy(20 * 60_000)
+    expect(alarms).toEqual([30 * 60_000, 20 * 60_000])
+
+    // A stop clears it; the next start's first mark sets it again.
+    await object.cancelIdleCheck()
+    object.scheduleIdleCheckBy(50 * 60_000)
+    expect(alarms).toEqual([30 * 60_000, 20 * 60_000, null, 50 * 60_000])
+  })
+})
+
 describe('SavedWorkspace writing a large file from a stream', () => {
   /** R2 in memory with multipart uploads; parts must be one size but the last, as R2 asks. */
   function multipartBucket() {

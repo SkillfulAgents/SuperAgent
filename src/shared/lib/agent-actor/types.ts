@@ -288,6 +288,12 @@ export interface ContainerOps {
   stop(options?: StopOptions): Promise<void>
   /** `containerManager.keepAlive` */
   keepAlive(): Promise<void>
+  /**
+   * Decide now whether the idle container sleeps, as the agent's idle alarm
+   * does when its wait ends: a deployment whose wait outlives the process
+   * (see `LocalActorDeps.idleTimer`) calls this when the wait goes off.
+   */
+  checkIdle(): Promise<void>
   /** `containerManager.getCachedInfo` — the cached status; no runtime is queried. */
   status(): Promise<ContainerInfo>
   /**

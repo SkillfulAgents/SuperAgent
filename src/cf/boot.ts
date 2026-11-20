@@ -32,9 +32,9 @@ import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import { SessionIndex } from '@shared/lib/agent-actor/session-index'
 import { ingestSessionMetadataFile } from '@shared/lib/services/session-metadata-file'
-// eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the agent's object schedules its idle check from the same timeout the alarm reads
+// eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the agent's object sets its container's inactivity timeout from the same timeout the alarm reads
 import { autoSleepTimeoutMsFrom } from '@shared/lib/container/container-runtime'
-import { IDLE_ALARM_RETRY_MS } from '@shared/lib/container/idle-alarm'
+import { processIdleTimer, type IdleTimer } from '@shared/lib/container/idle-alarm'
 import type { ExecutionContext, SqlStorage } from 'cloudflare:workers'
 import { CloudflareAppState } from './objects/cloudflare-app-state'
 import { CloudflareBlobStore, CloudflareUploadByteStore } from './cloudflare-host-files'
@@ -110,20 +110,31 @@ export async function syncAgentStatus(slug: AgentSlug): Promise<void> {
 }
 
 /**
- * The agent's idle check, in its own object: SuperAgent's idle decision puts the agent to sleep
- * if it has been idle past the auto-sleep timeout. Returns when to check again, or null when
- * auto-sleep is off. The object's alarm outlives this isolate, whose process timer does not.
+ * The agent's idle check, in its own object, when the object's alarm goes off: the agent's idle
+ * alarm decides, and puts the agent to sleep or sets the next check (agentIdleTimer).
  */
-export async function checkIdle(slug: AgentSlug): Promise<number | null> {
-  const runtime = containerHost.runtime(slug)
-  await runtime.idleAlarm.fire()
-  const timeoutMs = autoSleepTimeoutMsFrom(await getSettings())
-  if (timeoutMs <= 0) return null
-  const now = Date.now()
-  const idleSince = runtime.idleSince()
-  // Busy: a full window from now. Quiet: the rest of the window, or a retry if a sleep did not complete.
-  if (idleSince === null) return now + timeoutMs
-  return Math.max(idleSince + timeoutMs, now + IDLE_ALARM_RETRY_MS)
+export async function checkIdle(slug: AgentSlug): Promise<void> {
+  await agentRegistry.get(slug).container.checkIdle()
+}
+
+/**
+ * What the agent's idle alarm waits with. In the agent's own object it is the object's alarm,
+ * which outlives this isolate; when it goes off, the object runs checkIdle. Anywhere else, this
+ * isolate's timer.
+ */
+function agentIdleTimer(slug: AgentSlug): IdleTimer {
+  const here = processIdleTimer()
+  return {
+    set(ms, fire) {
+      const own = servingAgentObject(slug)
+      if (own) own.scheduleIdleCheckBy(Date.now() + ms)
+      else here.set(ms, fire)
+    },
+    clear() {
+      here.clear()
+      void servingAgentObject(slug)?.cancelIdleCheck()
+    },
+  }
 }
 
 /** The agent auto-sleep timeout in the org's settings; 0 when auto-sleep is off. */
@@ -254,6 +265,7 @@ function wireAgents(env: Env): void {
     removeWorkspace: async (slug) => {
       await taskManager().at(Date.now(), `${PURGE_WORKSPACE_TASK}:${slug}`, { taskType: PURGE_WORKSPACE_TASK, payload: { slug } })
     },
+    idleTimer: agentIdleTimer,
   })
 }
 

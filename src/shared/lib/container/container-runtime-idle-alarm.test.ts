@@ -406,6 +406,14 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).toHaveBeenCalledTimes(1)
   })
 
+  it('a check run when a wait kept outside this process goes off decides like the alarm', async () => {
+    await startRuntime()
+    // The clock moves past the timeout, and no timer here goes off.
+    vi.setSystemTime(T0 + TIMEOUT + 1)
+    await registry.get(SLUG).container.checkIdle()
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
   it('dropping the runtime disarms the alarm, and so does evicting the actor', async () => {
     await startRuntime()
     containerHost.dropRuntime(SLUG)
