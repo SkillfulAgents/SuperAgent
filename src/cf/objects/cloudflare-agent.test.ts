@@ -4,6 +4,9 @@ import { AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cl
 import { SavedWorkspace, linkTarget, workspaceBlobKey } from '../lib/saved-workspace'
 import type { Env } from '../index'
 import { captureException } from '@shared/lib/error-reporting'
+import { describeFileOpsContract } from '@shared/lib/agent-actor/testing/file-ops-contract'
+import { createCloudflareFileOps } from '../cloudflare-file-ops'
+import { sleepingStore } from '../cloudflare-container-control'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
@@ -714,4 +717,14 @@ describe('SavedWorkspace reading a link while its agent sleeps', () => {
     expect(linkTarget('link', '/etc/passwd')).toBeNull()
     expect(linkTarget('a/link', '../../x')).toBeNull()
   })
+})
+
+// The shared contract over the real file ops, object and saved workspace of a sleeping agent.
+describeFileOpsContract('Cloudflare file ops while the agent sleeps', () => {
+  const { object } = runningAgent(false)
+  const agents = { getByName: () => object } as unknown as Env['AGENT']
+  return {
+    files: createCloudflareFileOps(async () => null, sleepingStore(agents, 'sales agent')),
+    dispose: () => clearTimeout((object as unknown as { settleTimer?: ReturnType<typeof setTimeout> }).settleTimer),
+  }
 })
