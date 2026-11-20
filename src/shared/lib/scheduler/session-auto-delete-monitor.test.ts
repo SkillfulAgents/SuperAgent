@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
-import type { AgentConfig } from '@shared/lib/types/agent'
+import type { AgentConfig, SessionInfo } from '@shared/lib/types/agent'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+import { messageAuthor, notifications } from '@shared/lib/db/schema'
+import { createNotification } from '@shared/lib/services/notification-service'
+
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
 // ============================================================================
 // Mocks — must be declared before any import that triggers the module
@@ -15,8 +20,6 @@ const mockGetSettings = vi.fn()
 const mockIsAuthMode = vi.fn(() => false)
 const mockActiveIds = vi.fn((_agentSlug: string): string[] => [])
 const mockUnsubscribeFromSession = vi.fn()
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockDbDelete = vi.fn((..._args: any[]) => ({ where: vi.fn(() => ({ changes: 0 })) }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgents: () => mockListAgents(),
@@ -66,29 +69,11 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
     mockListSessionIdsWithPendingWakes(slug),
 }))
 
-vi.mock('@shared/lib/db', () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db: { delete: (...args: any[]) => mockDbDelete(...args) },
-}))
-
-vi.mock('@shared/lib/db/schema', () => ({
-  messageAuthor: { sessionId: 'message_author_session_id', agentSlug: 'message_author_agent_slug' },
-  notifications: { sessionId: 'notifications_session_id', agentSlug: 'notifications_agent_slug' },
-  agentAcl: { agentSlug: 'agent_acl_slug', userId: 'agent_acl_user_id' },
-}))
-
-vi.mock('drizzle-orm', () => ({
-  inArray: vi.fn(),
-  eq: vi.fn(),
-  and: vi.fn(),
-}))
-
 // Import after mocks are set up
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
 import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 beforeEach(() => registerTasks(sessionAutoDeleteMonitor))
-import { inArray } from 'drizzle-orm'
 
 // ============================================================================
 // Helpers
@@ -114,6 +99,21 @@ function makeAgent(slug: string): AgentConfig {
     frontmatter: { name: slug, createdAt: '2026-01-01T00:00:00Z' },
     instructions: '',
   }
+}
+
+async function seedSessionRecords(session: SessionInfo) {
+  const { agentSlug, id: sessionId } = session
+  await database.db.insert(messageAuthor).values({
+    agentSlug, sessionId, id: `message-${sessionId}`, integrationId: 'slack', display: '{}',
+  })
+  await createNotification({ agentSlug, sessionId, type: 'session_complete', title: 'Done', body: '' })
+}
+
+async function expectSessionRecords(sessionIds: string[]) {
+  const authors = await database.db.select({ id: messageAuthor.sessionId }).from(messageAuthor)
+  const notified = await database.db.select({ id: notifications.sessionId }).from(notifications)
+  expect(authors.map(row => row.id).sort()).toEqual(sessionIds)
+  expect(notified.map(row => row.id).sort()).toEqual(sessionIds)
 }
 
 // ============================================================================
@@ -346,6 +346,8 @@ describe('SessionAutoDeleteMonitor', () => {
     const now = Date.now()
     const old1 = makeSession('ok', new Date(now - 60 * 86_400_000))
     const old2 = makeSession('failed', new Date(now - 60 * 86_400_000))
+    await seedSessionRecords(old1)
+    await seedSessionRecords(old2)
 
     mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
     mockListAgents.mockResolvedValue([makeAgent('test-agent')])
@@ -357,10 +359,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDbDelete).toHaveBeenCalled()
-    // The records go only for what was deleted.
-    expect(vi.mocked(inArray)).toHaveBeenCalled()
-    expect(vi.mocked(inArray).mock.calls.every(([, ids]) => JSON.stringify(ids) === '["ok"]')).toBe(true)
+    await expectSessionRecords(['failed'])
     // Every stream lets go before the delete, as a single delete's does.
     expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'ok')
     expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'failed')
@@ -369,6 +368,7 @@ describe('SessionAutoDeleteMonitor', () => {
   it('cleans notifications and message authors when not in auth mode (integrations author messages too)', async () => {
     const now = Date.now()
     const old = makeSession('old', new Date(now - 60 * 86_400_000))
+    await seedSessionRecords(old)
 
     mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
     mockListAgents.mockResolvedValue([makeAgent('test-agent')])
@@ -379,11 +379,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    // Both are unconditional: notifications exist in both modes, and an
-    // integration's message_author rows exist without auth.
-    const deletedTables = mockDbDelete.mock.calls.map((call) => call[0])
-    expect(deletedTables).toContainEqual(expect.objectContaining({ sessionId: 'notifications_session_id' }))
-    expect(deletedTables).toContainEqual(expect.objectContaining({ sessionId: 'message_author_session_id' }))
+    await expectSessionRecords([])
   })
 
   // --------------------------------------------------------------------------

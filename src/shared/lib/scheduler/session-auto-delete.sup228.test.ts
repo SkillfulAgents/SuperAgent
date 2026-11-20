@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type { SessionInfo } from '@shared/lib/types/agent'
-import type { AgentConfig } from '@shared/lib/types/agent'
+import type { AgentConfig, SessionInfo } from '@shared/lib/types/agent'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+import { notifications } from '@shared/lib/db/schema'
+import { createNotification, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 
 // ============================================================================
 // SUP-228 — Session auto-delete leaves stale notifications for deleted sessions
@@ -9,36 +11,10 @@ import type { AgentConfig } from '@shared/lib/types/agent'
 // (auth mode only) deleted message_author rows, but it never deleted the
 // `notifications` rows for the removed session IDs. Notifications are stored in
 // BOTH auth and non-auth modes (userId is nullable), so the leak affects both.
-//
-// These tests mirror session-auto-delete-monitor.test.ts's mocking style. The
-// real `notification-service` is intentionally NOT mocked so that the monitor
-// drives the real `deleteNotificationsBySessionIds()` helper against the mocked
-// `db`/`schema`/`drizzle-orm`, letting us assert the exact delete predicate.
 // ============================================================================
 
-// Schema table identities. These are read EAGERLY inside the schema vi.mock
-// factory, so they must be available before the (hoisted) module imports run —
-// hence vi.hoisted, which is lifted above everything.
-const tables = vi.hoisted(() => ({
-  notifications: { sessionId: 'notifications.session_id', agentSlug: 'notifications.agent_slug' },
-  messageAuthor: { sessionId: 'message_author.session_id', agentSlug: 'message_author.agent_slug' },
-  agentAcl: { agentSlug: 'agent_acl.agent_slug', userId: 'agent_acl.user_id' },
-}))
-
-interface DeleteCall {
-  table: unknown
-  predicate: unknown
-}
-const mockDeleteCalls: DeleteCall[] = []
-
-const mockDbDelete = vi.fn((table: unknown) => ({
-  where: (predicate: unknown) => {
-    mockDeleteCalls.push({ table, predicate })
-    return { returning: async () => [] }
-  },
-}))
-
-const mockInArray = vi.fn((col: unknown, vals: unknown) => ({ __pred: 'inArray', col, vals }))
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
 const mockListAgents = vi.fn()
 const mockListSessions = vi.fn()
@@ -88,37 +64,11 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listSessionIdsWithPendingWakes: () => Promise.resolve(new Set<string>()),
 }))
 
-vi.mock('@shared/lib/db', () => ({
-  db: { delete: (table: unknown) => mockDbDelete(table) },
-}))
-
-// notification-service imports `notifications` and `agentAcl`; the monitor
-// imports `messageAuthor`. Provide stable identities so we can match calls.
-vi.mock('@shared/lib/db/schema', () => ({
-  notifications: tables.notifications,
-  messageAuthor: tables.messageAuthor,
-  agentAcl: tables.agentAcl,
-}))
-
-// notification-service imports eq/desc/and/lt/inArray/count; the monitor uses
-// inArray. Only `inArray` is exercised here — the rest are inert stubs.
-vi.mock('drizzle-orm', () => ({
-  inArray: (col: unknown, vals: unknown) => mockInArray(col, vals),
-  eq: vi.fn((col: unknown, val: unknown) => ({ __pred: 'eq', col, val })),
-  and: vi.fn((...a: unknown[]) => ({ __pred: 'and', a })),
-  desc: vi.fn(),
-  lt: vi.fn(),
-  count: vi.fn(),
-}))
-
-// NOTE: notification-service is deliberately NOT mocked.
-
 // Import after mocks are set up.
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
 import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 beforeEach(() => registerTasks(sessionAutoDeleteMonitor))
-import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 
 // ============================================================================
 // Helpers
@@ -146,8 +96,17 @@ function makeAgent(slug: string): AgentConfig {
   }
 }
 
-function notificationDeleteCalls(): DeleteCall[] {
-  return mockDeleteCalls.filter((c) => c.table === tables.notifications)
+async function seedNotifications(agentSlug: string, sessionIds: string[]) {
+  for (const sessionId of sessionIds) {
+    await createNotification({ agentSlug, sessionId, type: 'session_complete', title: 'Done', body: '' })
+  }
+}
+
+async function notifiedSessions() {
+  const rows = await database.db.select({
+    agentSlug: notifications.agentSlug, sessionId: notifications.sessionId,
+  }).from(notifications)
+  return rows.map(row => `${row.agentSlug}/${row.sessionId}`).sort()
 }
 
 // ============================================================================
@@ -158,7 +117,6 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
-    mockDeleteCalls.length = 0
 
     mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
     mockListAgents.mockResolvedValue([])
@@ -188,6 +146,7 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
     const s1 = makeSession('s1', new Date(now - 60 * 86_400_000))
     const s2 = makeSession('s2', new Date(now - 60 * 86_400_000))
     const s3 = makeSession('s3', new Date(now - 60 * 86_400_000))
+    await seedNotifications('test-agent', ['s1', 's2', 's3'])
 
     mockListAgents.mockResolvedValue([makeAgent('test-agent')])
     mockListSessions.mockResolvedValue([s1, s2, s3])
@@ -199,17 +158,13 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
 
     await startAndTrigger()
 
-    const notifCalls = notificationDeleteCalls()
-    expect(notifCalls).toHaveLength(1)
-    // The predicate is built over exactly the deletedIds [s1, s2] — not s3,
-    // and not the full toDelete list [s1, s2, s3].
-    expect(notifCalls[0].predicate).toEqual({ __pred: 'and', a: [{ __pred: 'eq', col: tables.notifications.agentSlug, val: expect.any(String) }, { __pred: 'inArray', col: tables.notifications.sessionId, vals: ['s1', 's2'] }] })
-    expect(mockInArray).toHaveBeenCalledWith(tables.notifications.sessionId, ['s1', 's2'])
+    expect(await notifiedSessions()).toEqual(['test-agent/s3'])
   })
 
   it('does not delete notifications when nothing was actually deleted', async () => {
     const now = Date.now()
     const s1 = makeSession('s1', new Date(now - 60 * 86_400_000))
+    await seedNotifications('test-agent', ['s1'])
 
     mockListAgents.mockResolvedValue([makeAgent('test-agent')])
     mockListSessions.mockResolvedValue([s1])
@@ -219,7 +174,7 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
 
     await startAndTrigger()
 
-    expect(notificationDeleteCalls()).toHaveLength(0)
+    expect(await notifiedSessions()).toEqual(['test-agent/s1'])
   })
 })
 
@@ -228,23 +183,21 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
 // ============================================================================
 
 describe('SUP-228: deleteNotificationsBySessionIds helper', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mockDeleteCalls.length = 0
-  })
-
   it('deletes one agent\'s notification rows by session id', async () => {
-    await deleteNotificationsBySessionIds('agent-1', ['a', 'b'])
+    await seedNotifications('agent-1', ['a', 'b', 'c'])
+    await seedNotifications('agent-2', ['a'])
 
-    const notifCalls = notificationDeleteCalls()
-    expect(notifCalls).toHaveLength(1)
-    expect(notifCalls[0].predicate).toEqual({ __pred: 'and', a: [{ __pred: 'eq', col: tables.notifications.agentSlug, val: 'agent-1' }, { __pred: 'inArray', col: tables.notifications.sessionId, vals: ['a', 'b'] }] })
+    expect(await deleteNotificationsBySessionIds('agent-1', ['a', 'b'])).toBe(2)
+    expect(await notifiedSessions()).toEqual(['agent-1/c', 'agent-2/a'])
   })
 
   it('is a no-op on an empty session id list', async () => {
+    await seedNotifications('agent-1', ['a'])
+    const deleteRows = vi.spyOn(database.db, 'delete')
     const deleted = await deleteNotificationsBySessionIds('agent-1', [])
 
     expect(deleted).toBe(0)
-    expect(mockDbDelete).not.toHaveBeenCalled()
+    expect(deleteRows).not.toHaveBeenCalled()
+    expect(await notifiedSessions()).toEqual(['agent-1/a'])
   })
 })
