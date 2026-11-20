@@ -14,8 +14,9 @@ import { randomUUID } from 'node:crypto'
 import { batch } from '@shared/lib/db/batch'
 import { agentCreationReceiptSchema } from '@shared/lib/app-records/record-schemas'
 import { serializeRecordValue } from '@shared/lib/app-records/records'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { agentAcl, agents, appRecords, type AgentRow } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { randomAgentAvatar } from './agent-avatar'
@@ -109,7 +110,7 @@ export function existingAgentSlugsQuery(slugs: readonly string[]) {
   return db
     .select({ slug: agents.slug })
     .from(agents)
-    .where(inArray(agents.slug, sql`(select value from json_each(${JSON.stringify(slugs)}))`))
+    .where(inList(agents.slug, slugs))
 }
 
 /**

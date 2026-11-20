@@ -9,8 +9,9 @@
  * statement and a page holds up to 500 messages.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { agents, messageAuthor, user } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
@@ -48,7 +49,7 @@ export function messageAuthorsQuery(agentSlug: string, sessionId: string, ids: r
     .where(and(
       eq(messageAuthor.agentSlug, agentSlug),
       eq(messageAuthor.sessionId, sessionId),
-      ids ? inArray(messageAuthor.id, sql`(select value from json_each(${JSON.stringify(ids)}))`) : undefined,
+      ids ? inList(messageAuthor.id, ids) : undefined,
     ))
 }
 

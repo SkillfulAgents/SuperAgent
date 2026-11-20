@@ -11,7 +11,7 @@
  */
 
 import { db } from '@shared/lib/db'
-import { chunksWithinBoundParameters } from '@shared/lib/db/bound-parameters'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { notifications, agentAcl, user, type Notification, type NewNotification } from '@shared/lib/db/schema'
 import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
@@ -462,13 +462,10 @@ export async function deleteNotification(notificationId: string): Promise<boolea
 export async function deleteNotificationsBySessionIds(agentSlug: string, sessionIds: string[]): Promise<number> {
   if (sessionIds.length === 0) return 0
 
-  const result: Array<{ agentSlug: string; recipientUserId: string | null }> = []
-  for (const ids of chunksWithinBoundParameters(sessionIds, 1)) {
-    result.push(...await db
-      .delete(notifications)
-      .where(and(eq(notifications.agentSlug, agentSlug), inArray(notifications.sessionId, ids)))
-      .returning(changeAudience()))
-  }
+  const result = await db
+    .delete(notifications)
+    .where(and(eq(notifications.agentSlug, agentSlug), inList(notifications.sessionId, sessionIds)))
+    .returning(changeAudience())
 
   publishChanges(result)
   return result.length

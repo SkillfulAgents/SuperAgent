@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { setMaxBoundParameters } from '@shared/lib/db/bound-parameters'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
 
 const database = perTestDatabase()
@@ -72,8 +71,6 @@ describe('deleteSessionAndRecords', () => {
 })
 
 describe('deleteSessionRecords on a driver that binds at most 100 parameters a statement', () => {
-  afterEach(() => setMaxBoundParameters(undefined))
-
   /** How many parameters each statement run on the test database binds. */
   function countBoundParameters(): number[] {
     const counts: number[] = []
@@ -89,7 +86,6 @@ describe('deleteSessionRecords on a driver that binds at most 100 parameters a s
   }
 
   it('removes the records of more than 100 sessions of one agent', async () => {
-    setMaxBoundParameters(100)
     const sessionIds = Array.from({ length: 250 }, (_, i) => `retention-${i}`)
     for (const sessionId of sessionIds) {
       await database.db.insert(messageAuthor).values({

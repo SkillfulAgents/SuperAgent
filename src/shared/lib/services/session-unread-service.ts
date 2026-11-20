@@ -21,7 +21,7 @@
  */
 
 import { db } from '@shared/lib/db'
-import { chunksWithinBoundParameters } from '@shared/lib/db/bound-parameters'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { changesOf } from '@shared/lib/db/batch'
 import { sessionUnreadMarks } from '@shared/lib/db/schema'
 import { and, eq, inArray } from 'drizzle-orm'
@@ -128,14 +128,14 @@ export async function deleteSessionUnreadMarks(
   agentSlug: string,
   sessionIds: string[],
 ): Promise<number> {
-  let deleted = 0
-  for (const ids of chunksWithinBoundParameters(sessionIds, 1)) {
-    deleted += changesOf(await db
-      .delete(sessionUnreadMarks)
-      .where(and(
-        eq(sessionUnreadMarks.agentSlug, agentSlug),
-        inArray(sessionUnreadMarks.sessionId, ids),
-      )))
-  }
-  return deleted
+  if (sessionIds.length === 0) return 0
+
+  const result = await db
+    .delete(sessionUnreadMarks)
+    .where(and(
+      eq(sessionUnreadMarks.agentSlug, agentSlug),
+      inList(sessionUnreadMarks.sessionId, sessionIds),
+    ))
+
+  return changesOf(result)
 }
