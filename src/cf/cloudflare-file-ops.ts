@@ -175,9 +175,14 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
     const found = await info(rel)
     if (!found) throw new WorkspaceFileError('not-found')
     if (Array.isArray(found)) throw new WorkspaceFileError('not-a-file')
+    const size = found.size ?? 0
+    // A closed range inside the file, as a local read takes it.
+    if (range && (range.start < 0 || (range.end !== undefined && (range.end < range.start || range.end >= size)))) {
+      throw new WorkspaceFileError('invalid-path', 'Byte range out of bounds')
+    }
     const stream = await bytesStream(rel, range)
     if (!stream) throw new WorkspaceFileError('not-found')
-    return { size: found.size ?? 0, stream }
+    return { size, stream }
   }
 
   // Asleep, the change goes to the saved workspace; if the container started meanwhile, to it.
