@@ -828,6 +828,22 @@ describe.each<[string, () => UploadByteStore]>([
       expect(fs.existsSync(filePath)).toBe(false)
     })
 
+    it('gives the file its whole size before it writes, so the file never grows piece by piece', async () => {
+      await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+      const assembledDir = path.join(tempUploadsDir, 'assembled')
+      const realStream = store.stream.bind(store)
+      const sizesWhenOpened: number[] = []
+      vi.spyOn(store, 'stream').mockImplementation(async (key) => {
+        const [name] = await fs.promises.readdir(assembledDir).catch(() => [])
+        sizesWhenOpened.push(name ? (await fs.promises.stat(path.join(assembledDir, name))).size : -1)
+        return realStream(key)
+      })
+      await storeUploadChunk(chunk(1, 2, 'bb'), async ({ toFile }) => {
+        expect(await fs.promises.readFile(await toFile(), 'utf8')).toBe('aabb')
+      })
+      expect(sizesWhenOpened).toEqual([4, 4])
+    })
+
     it('removes the file when `finish` throws', async () => {
       let filePath = ''
       await expect(storeUploadChunk(chunk(0, 1, 'a'), async ({ toFile }) => {
