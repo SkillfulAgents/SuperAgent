@@ -5,7 +5,6 @@ import { setCookieCache } from 'better-auth/cookies'
 import { admin, bearer } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
 import * as schema from '@shared/lib/db/schema'
 import { createHash } from 'crypto'
 import { getOrCreateAuthSecret } from './secret'
@@ -100,6 +99,7 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         config: oauthProviders,
       })
     : null
+  const defaultRole = authSettings.defaultUserRole === 'admin' ? 'admin' : 'user'
 
   return betterAuth({
     database: drizzleAdapter(db, {
@@ -180,9 +180,7 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
       // Accepts the session token via `Authorization: Bearer` so non-browser
       // clients (desktop app, watch) can call Authenticated() routes.
       bearer(),
-      admin({
-        defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
-      }),
+      admin({ defaultRole }),
       // Run after genericOAuth's before hook so recovered discovery is checked
       // on the same request, before authorization or identity provisioning.
       ...(oauthPlugin ? [oauthPlugin, oidcIssuerPolicy()] : []),
@@ -231,8 +229,11 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         create: {
           before: async (newUser) => {
             // A member joining a platform-controlled deployment is created with
-            // their Platform role (platform-role.ts).
+            // their Platform role (platform-role.ts). Otherwise the INSERT makes
+            // the first user admin: the sign-up session already has the role,
+            // and of two sign-ups racing on an empty table only one wins.
             const role = platformJoinRole()
+              ?? (firstUserPromotionApplies() ? sql`(CASE WHEN EXISTS (SELECT 1 FROM user) THEN ${defaultRole} ELSE 'admin' END)` : undefined)
             return role ? { data: { ...newUser, role } } : undefined
           },
           after: async (createdUser) => {
@@ -240,19 +241,10 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
             // (claim-invited-user.ts), which does what this hook does for them.
             if ((createdUser as { status?: unknown }).status === 'invited') return
             try {
-              // Atomic: only promote if this is the sole user in the table.
-              // Platform-controlled deployments skip it, since members join
-              // with their Platform role, unless the platform sent none.
-              const promoted = firstUserPromotionApplies() && changesOf(await db
-                .update(schema.user)
-                .set({ role: 'admin' })
-                .where(
-                  and(
-                    eq(schema.user.id, createdUser.id),
-                    sql`(SELECT count(*) FROM user) = 1`
-                  )
-                )
-                .run()) > 0
+              // The first user is the earliest row (with an admin default role, every user is admin).
+              const promoted = firstUserPromotionApplies() && createdUser.role === 'admin'
+                && !(await db.select({ id: schema.user.id }).from(schema.user)
+                  .where(sql`rowid < (SELECT rowid FROM user WHERE id = ${createdUser.id})`).limit(1).get())
               if (promoted) {
                 console.log(`First user ${createdUser.email} promoted to admin`)
               }
