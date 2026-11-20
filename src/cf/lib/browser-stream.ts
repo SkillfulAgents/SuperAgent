@@ -49,7 +49,7 @@ export async function serveBrowserStream(request: Request, slugInUrl: string, en
 }
 
 /** Forwards in order; a binary message can arrive as a Blob, which send() would turn into "[object Blob]". */
-function relay(from: WorkerWebSocket, to: WorkerWebSocket, allow: (data: string | ArrayBuffer | Blob) => boolean, fail: () => void): void {
+export function relay(from: WorkerWebSocket, to: WorkerWebSocket, allow: (data: string | ArrayBuffer | Blob) => boolean, fail: () => void): void {
   let sending: Promise<void> = Promise.resolve()
   from.addEventListener('message', (event) => {
     const data = event.data as string | ArrayBuffer | Blob
