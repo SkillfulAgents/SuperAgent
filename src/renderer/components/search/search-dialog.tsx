@@ -3,13 +3,15 @@ import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { Bot, Search } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
-import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { AgentAvatarWithBadge } from '@renderer/components/agents/agent-avatar/agent-avatar-with-badge'
+import { WorkingDots } from '@renderer/components/agents/status-indicators'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSearch } from '@renderer/context/search-context'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { allSessionsQueryOptions } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import type { ApiSession } from '@shared/lib/types/api'
+import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
 import { cn } from '@shared/lib/utils/cn'
 import { compactAgo } from '@renderer/lib/last-run'
 import { flattenSections, getRecent, searchAll, type FlatItem, type SearchSections } from './filter'
@@ -27,7 +29,7 @@ export function SearchDialog() {
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
-  const { data: agents } = useAgents()
+  const { data: agents } = useAgents({ poll: false })
 
   const queryClient = useQueryClient()
   const sessionQueries = useQueries({
@@ -302,6 +304,17 @@ function ResultRow({
   onSelect: () => void
   onActivate: (index: number) => void
 } & Record<`data-${string}`, string>) {
+  const state = agentAvatarState(agent)
+  const avatar = (
+    <AgentAvatarWithBadge
+      agent={agent}
+      state={state}
+      size={owned ? 14 : 28}
+      fallback={state === 'working'
+        ? <WorkingDots />
+        : <Bot className={cn('text-muted-foreground', owned ? 'size-3.5' : 'size-7 p-0.5', state === 'sleeping' && 'opacity-50')} aria-hidden />}
+    />
+  )
   return (
     <button
       type="button"
@@ -316,14 +329,15 @@ function ResultRow({
       )}
       {...data}
     >
-      {!owned && (agent.avatar
-        ? <AgentAvatar agent={agent} size={28} />
-        : <Bot className="size-7 shrink-0 p-0.5 text-muted-foreground" aria-hidden />)}
+      {!owned && avatar}
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm">{title}</span>
         <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/70">
-          {owned && agent.avatar && <AgentAvatar agent={agent} size={14} />}
+          {owned && avatar}
           <span className="truncate">{subtitle}</span>
+          {(state === 'idle' || state === 'sleeping' || (state === 'working' && agent.avatar)) && (
+            <span className="sr-only">({state})</span>
+          )}
         </span>
       </span>
     </button>

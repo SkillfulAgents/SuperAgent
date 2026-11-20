@@ -1,5 +1,5 @@
 
-import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
 import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
@@ -65,8 +65,8 @@ import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useOpenCreateAgent } from '@renderer/hooks/use-open-create-agent'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
-import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
-import { agentActivity, agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { AgentAvatarWithBadge, agentAvatarBadgeKind } from '@renderer/components/agents/agent-avatar/agent-avatar-with-badge'
+import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import { formatLastRun } from '@renderer/lib/last-run'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
@@ -493,76 +493,6 @@ function AgentWorkingLine({ notableSessionsSlug, sessions, isWorking, fallback }
   return isWorking ? <span className={AGENT_SUBTITLE_CLASS}>Working…</span> : <>{fallback}</>
 }
 
-// The agent row's notification dot, pinned to the avatar's bottom-right like a
-// presence dot: orange while a session waits on the user, otherwise blue for
-// unread, or a small violet @ when it mentions
-// you. Awaiting aggregates across sessions with the same formula as the agent
-// header's AgentStatus (fresh sessions data when loaded, agent-level flags as
-// fallback), so the sidebar and the top nav never disagree. Unread is
-// suppressed when expanded: the session rows already point at the unread
-// session.
-function agentBadgeKind(agent: ApiAgent, sessions: ApiSession[] | undefined, isOpen: boolean) {
-  if (agentActivity(agent, sessions).isAwaiting) return 'awaiting'
-  if (isOpen || !agent.hasUnreadNotifications) return null
-  return agent.hasUnreadMention ? 'mention' : 'unread'
-}
-
-// Each badge sits in a 2px gap cut out of the avatar rather than a ring painted
-// in the sidebar colour, so whatever is behind the row (the glass, a hover or
-// selected fill) shows through and nothing has to match it. Every badge shares
-// one centre within the 32px avatar, 5px in from its bottom-right corner: the 6px
-// dots sit inside it, the 14px @ overhangs it by 2px. A mask also hides
-// everything outside its own box, and needs input's hop and squash carry the
-// orb past the avatar's edges, so the mask sits on a frame 12px bigger all
-// round (AvatarCutout); the centre is measured from that frame's corner.
-const AVATAR_BADGE_CUTOUT = {
-  awaiting: '[mask-image:radial-gradient(circle_at_39px_39px,transparent_4.5px,#000_5px)]',
-  unread: '[mask-image:radial-gradient(circle_at_39px_39px,transparent_4.5px,#000_5px)]',
-  mention: '[mask-image:radial-gradient(circle_at_39px_39px,transparent_6.5px,#000_7px)]',
-} as const
-
-function AvatarCutout({ cutout, children }: { cutout: string | null; children: React.ReactNode }) {
-  if (!cutout) return <>{children}</>
-  return <span className={cn('-m-3 block p-3', cutout)}>{children}</span>
-}
-
-function AgentAvatarBadge({
-  agent,
-  sessions,
-  isOpen,
-  className,
-}: {
-  agent: ApiAgent
-  sessions: ApiSession[] | undefined
-  isOpen: boolean
-  className?: string
-}) {
-  const kind = agentBadgeKind(agent, sessions, isOpen)
-  if (!kind) return null
-  const isAwaiting = kind === 'awaiting'
-  const isMention = kind === 'mention'
-  const label = isAwaiting ? 'needs input' : isMention ? 'mentioned you' : 'unread notifications'
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      title={label}
-      data-testid={`agent-avatar-badge-${agent.slug}`}
-      className={cn(
-        'pointer-events-none absolute rounded-full',
-        isMention
-          // A bare @ with no disc behind it: the cut-out alone separates it.
-          ? '-right-0.5 -bottom-0.5 flex h-3.5 w-3.5 items-center justify-center text-violet-600 dark:text-purple-400'
-          // The dots need no ring: AVATAR_BADGE_CUTOUT separates them.
-          : cn('right-0.5 bottom-0.5 h-1.5 w-1.5', isAwaiting ? 'bg-orange-500' : 'bg-blue-500'),
-        className,
-      )}
-    >
-      {isMention && <AtSign className="h-[11px] w-[11px]" strokeWidth={3} aria-hidden />}
-    </span>
-  )
-}
-
 // Agent menu item with expandable sessions
 const AgentMenuItemInner = React.forwardRef<
   HTMLLIElement,
@@ -623,8 +553,7 @@ const AgentMenuItemInner = React.forwardRef<
   const hasMore = sessionTotal > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
   const avatarState = agentAvatarState(agent, sessions)
-  const badgeKind = agentBadgeKind(agent, sessions, isOpen)
-  const avatarCutout = badgeKind ? AVATAR_BADGE_CUTOUT[badgeKind] : null
+  const badgeKind = agentAvatarBadgeKind(agent, avatarState, !isOpen)
   const preview = badgeKind && agent.notificationPreview
   const fallbackSubtitle = preview ? (
     <span className={AGENT_SUBTITLE_CLASS} data-testid={`agent-notification-preview-${agent.slug}`}>
@@ -771,7 +700,7 @@ const AgentMenuItemInner = React.forwardRef<
                 {/* The trailing slot holds the new-session control: hovering the
                     row (or focusing the button) shows a pen opening the session
                     view with an empty composer. Status lives on the avatar (its
-                    motion and AgentAvatarBadge), so the slot is otherwise empty
+                    motion and badge), so the slot is otherwise empty
                     but for the ⌘-number hint. */}
                 <span className="group/status-slot relative flex shrink-0 items-center">
                   {/* Sits above the stretched link while keeping clicks
@@ -822,19 +751,12 @@ const AgentMenuItemInner = React.forwardRef<
                   aria-expanded={isOpen}
                   className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-control outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
-                  <AvatarCutout cutout={avatarCutout}>
-                    <AgentAvatar
-                      agent={agent}
-                      state={avatarState}
-                      size={AGENT_AVATAR_SIZE}
-                      followPointer={SIDEBAR_FOLLOW_REGION}
-                      className="transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0"
-                    />
-                  </AvatarCutout>
-                  <AgentAvatarBadge
+                  <AgentAvatarWithBadge
                     agent={agent}
-                    sessions={sessions}
-                    isOpen={isOpen}
+                    state={avatarState}
+                    badge={badgeKind}
+                    size={AGENT_AVATAR_SIZE}
+                    followPointer={SIDEBAR_FOLLOW_REGION}
                     className={cn(agent.avatar && 'transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0')}
                   />
                   <ChevronRight
@@ -849,10 +771,7 @@ const AgentMenuItemInner = React.forwardRef<
                 // A div avoids SidebarMenuButton's last-span text truncation,
                 // which clips the badge overhang and the orb's animated hop.
                 <div className="pointer-events-none absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
-                  <AvatarCutout cutout={avatarCutout}>
-                    <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
-                  </AvatarCutout>
-                  <AgentAvatarBadge agent={agent} sessions={sessions} isOpen={isOpen} />
+                  <AgentAvatarWithBadge agent={agent} state={avatarState} badge={badgeKind} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
                 </div>
               )}
             </div>
