@@ -3,8 +3,7 @@ import path from 'path'
 import { LocalFileOps, errnoCode, fromFsError } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
-import { readsHostFolders } from '@shared/lib/facts/capabilities'
-import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { getServerCapabilities } from '@shared/lib/facts/server-facts'
 import { VolumeError } from './volume-error'
 import { openLocalFolder } from './local-folder-access'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
@@ -63,7 +62,7 @@ export const PICK_FOLDER_AGAIN = 'This drive’s folder has to be chosen again: 
 export async function prepareLocalVolume({ path: folder, bookmark }: LocalVolumeConfig): Promise<{ name: string; config: LocalVolumeConfig }> {
   // A server that can't read a folder by its path alone reads it through the
   // bookmark of the person's pick, which must open now and on every later launch.
-  if (!readsHostFolders(getServerFacts())) {
+  if (!getServerCapabilities().canReadHostFoldersByPath) {
     if (!bookmark) throw new VolumeError('Choose the folder in the app’s folder picker to make it a drive', 400)
     if (!openLocalFolder(bookmark, folder)) throw new VolumeError(PICK_FOLDER_AGAIN, 400)
   }

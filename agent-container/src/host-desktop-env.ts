@@ -1,13 +1,22 @@
 import * as fs from 'fs'
 
 /**
- * Whether agents get computer use and host scripts: the tools that act on the
- * desktop of the host's machine. The host answers in HOST_COMPUTER_USE. A host
- * older than that answer offered both on macOS and Windows.
+ * Whether agents get computer use: the tools that act on the desktop of the
+ * host's machine. The host answers in HOST_COMPUTER_USE. A host older than that
+ * answer offered it on macOS and Windows.
  */
 export function isComputerUseHost(): boolean {
   const answer = process.env.HOST_COMPUTER_USE
   return answer === undefined ? ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') : answer === 'true'
+}
+
+/**
+ * Whether agents get the host-script tool. The host answers in HOST_SCRIPTS; a
+ * host older than that answer offered scripts with computer use.
+ */
+export function isHostScriptsHost(): boolean {
+  const answer = process.env.HOST_SCRIPTS
+  return answer === undefined ? isComputerUseHost() : answer === 'true'
 }
 
 /**

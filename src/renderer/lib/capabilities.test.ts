@@ -20,6 +20,10 @@ import {
 } from './capabilities'
 import { _setFactsForTest } from './facts'
 import type { ServerFacts } from '@shared/lib/facts/facts-schema'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+
+/** A server of this version: its facts, with what its runtime declares. */
+const declared = (facts: Pick<ServerFacts, 'os' | 'distribution'>): ServerFacts => ({ ...facts, capabilities: runtimeCapabilities(facts) })
 
 beforeEach(() => {
   mockIsElectron.mockReturnValue(true)
@@ -63,13 +67,20 @@ describe('computerUseSupported', () => {
     ['win32', true],
     ['linux', false],
     ['other', false],
-  ] as const)('asks the agents’ machine: %s → %s', (os, supported) => {
-    withServer({ os, distribution: 'deployment' })
+  ] as const)('reads what the agents’ machine declares: a %s desktop app → %s', (os, supported) => {
+    withServer(declared({ os, distribution: 'direct' }))
     expect(computerUseSupported()).toBe(supported)
   })
 
-  it('is false when the server didn’t say', () => {
+  it('is false on a deployment, even on a Mac, since computer use is desktop-only', () => {
+    withServer(declared({ os: 'darwin', distribution: 'deployment' }))
+    expect(computerUseSupported()).toBe(false)
+  })
+
+  it('is false when the server didn’t say, or is too old to declare', () => {
     withServer(null)
+    expect(computerUseSupported()).toBe(false)
+    withServer({ os: 'darwin', distribution: 'direct' })
     expect(computerUseSupported()).toBe(false)
   })
 })
@@ -97,11 +108,11 @@ describe('what the App Sandbox leaves out', () => {
 
   function asStoreBuild() {
     setActiveTarget('local', null)
-    _setFactsForTest({ client: store, server: { os: 'darwin', distribution: 'mac-app-store' } })
+    _setFactsForTest({ client: store, server: declared({ os: 'darwin', distribution: 'mac-app-store' }) })
   }
   function asDirectBuild() {
     setActiveTarget('local', null)
-    _setFactsForTest({ client: direct, server: { os: 'darwin', distribution: 'direct' } })
+    _setFactsForTest({ client: direct, server: declared({ os: 'darwin', distribution: 'direct' }) })
   }
 
   it('has the Store build driving its own API list it, and hide each feature', () => {

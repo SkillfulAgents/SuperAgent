@@ -29,8 +29,10 @@ const SLUG = 'agent-1'
 const SESSION = 'session-1'
 const ORIGINAL_PLATFORM = process.platform
 
+/** Be the desktop app's main process on an OS: host scripts and computer use are desktop-only. */
 function onPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+  Object.defineProperty(process, 'type', { value: 'browser', configurable: true, writable: true })
 }
 
 /** Be the Mac App Store build's main process, the way Electron marks it. */
@@ -606,7 +608,7 @@ describe('ToolCalls', () => {
     })
 
     it('rejects a script type this platform cannot run', () => {
-      onPlatform('linux')
+      onPlatform('win32')
       const h = harness()
 
       h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', { script: 'x', scriptType: 'applescript' }))
@@ -614,13 +616,13 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([{
         toolUseId: 't_script',
         how: 'reject',
-        value: 'Script type "applescript" is not supported on linux. Supported types: shell',
+        value: 'Script type "applescript" is not supported on win32. Supported types: powershell',
       }])
       expect(h.open('t_script')).toBeNull()
     })
 
-    it('rejects every script on a platform with no script support', () => {
-      onPlatform('freebsd')
+    it('rejects every script on a desktop OS with no script tool', () => {
+      onPlatform('linux')
       const h = harness()
 
       h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', script))
@@ -628,7 +630,7 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([{
         toolUseId: 't_script',
         how: 'reject',
-        value: 'Host script execution is not supported on this platform (freebsd). Only macOS and Windows are supported.',
+        value: 'Host scripts are not available on this machine (linux). They need the desktop app on macOS or Windows, and are not in the Mac App Store edition.',
       }])
     })
 
@@ -641,7 +643,7 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([{
         toolUseId: 't_script',
         how: 'reject',
-        value: 'Host scripts are not available in the Mac App Store edition, whose sandbox confines what the app runs.',
+        value: 'Host scripts are not available on this machine (darwin). They need the desktop app on macOS or Windows, and are not in the Mac App Store edition.',
       }])
       expect(h.open('t_script')).toBeNull()
     })

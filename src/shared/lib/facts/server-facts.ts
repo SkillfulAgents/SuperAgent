@@ -6,9 +6,11 @@ import {
   serverDistributionSchema,
   type DesktopDistribution,
   type Os,
+  type ServerCapabilities,
   type ServerDistribution,
   type ServerFacts,
 } from './facts-schema'
+import { runtimeCapabilities } from './capabilities'
 
 /**
  * The facts of this process, read where they are decided. This is the only
@@ -47,9 +49,42 @@ function mockRunDistribution(): ServerDistribution | null {
   return parsed.success ? parsed.data : null
 }
 
-/** The facts of the server this process is: a desktop install's API, or a web deployment. */
-export function getServerFacts(): ServerFacts {
+let declaredCapabilities: ServerCapabilities | null = null
+
+/**
+ * Called once at boot, before the first `getServerCapabilities()`, by a
+ * runtime whose facts don't tell what its machine does: a deployment whose
+ * machine keeps no files or processes past a request has no git, folders or
+ * scripts. Null goes back to the runtime's row (`runtimeCapabilities()`).
+ */
+export function declareServerCapabilities(capabilities: ServerCapabilities | null): void {
+  declaredCapabilities = capabilities
+}
+
+/** What this server's machine does for agents: the one answer every gate reads. */
+export function getServerCapabilities(): ServerCapabilities {
+  return declaredCapabilities ?? mockRunCapabilities() ?? runtimeCapabilities(serverOsAndDistribution())
+}
+
+/**
+ * What a mock run declares (`E2E_MOCK=true`). It stands in for the desktop app,
+ * so it offers what the desktop app does, and its agents drive no machine, so
+ * computer use and host scripts too on any OS, for the specs that drive their
+ * cards. A faked distribution keeps its own row, so a mock Store build still
+ * withholds them.
+ */
+function mockRunCapabilities(): ServerCapabilities | null {
+  if (process.env.E2E_MOCK !== 'true' || mockRunDistribution()) return null
+  return { ...runtimeCapabilities({ os: currentOs(), distribution: 'direct' }), canUseComputer: true, canRunHostScripts: true }
+}
+
+function serverOsAndDistribution(): Pick<ServerFacts, 'os' | 'distribution'> {
   return { os: currentOs(), distribution: mockRunDistribution() ?? desktopDistribution() ?? 'deployment' }
+}
+
+/** The facts of the server this process is: a desktop install's API, or a web deployment, with what it declares it does. */
+export function getServerFacts(): ServerFacts {
+  return { ...serverOsAndDistribution(), capabilities: getServerCapabilities() }
 }
 
 /**

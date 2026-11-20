@@ -1,15 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ClientFacts, ServerDistribution, ServerFacts } from './facts-schema'
-import {
-  drivesUserChrome,
-  mayDownloadCode,
-  offersRuntime,
-  readsHostFolders,
-  runsHostGit,
-  runsInAppSandbox,
-  supportsComputerUse,
-  updatesItself,
-} from './capabilities'
+import { mayDownloadCode, offersRuntime, runsInAppSandbox, runtimeCapabilities, updatesItself } from './capabilities'
 
 const server = (distribution: ServerDistribution): ServerFacts => ({ os: 'darwin', distribution })
 const desktop = (distribution: ClientFacts['distribution']): ClientFacts => ({ shell: 'electron', os: 'darwin', distribution })
@@ -37,11 +28,15 @@ describe('the Mac App Store build', () => {
     expect(updatesItself(desktop('mac-app-store'))).toBe(false)
   })
 
-  it('withholds what reaches outside its container: the desktop, the person’s Chrome, host folders and host git', () => {
-    expect(supportsComputerUse(store)).toBe(false)
-    expect(drivesUserChrome(store)).toBe(false)
-    expect(readsHostFolders(store)).toBe(false)
-    expect(runsHostGit(store)).toBe(false)
+  it('declares nothing that reaches outside its container', () => {
+    expect(runtimeCapabilities(store)).toEqual({
+      canUseComputer: false,
+      canRunHostScripts: false,
+      canDriveUserChrome: false,
+      canReadHostFoldersByPath: false,
+      canFindHostApps: false,
+      canRunHostGit: false,
+    })
   })
 })
 
@@ -53,18 +48,37 @@ describe.each(['direct', 'windows-store', 'deployment'] as const)('a %s server',
     expect(mayDownloadCode(server(distribution))).toBe(true)
   })
 
-  it('offers the person’s Chrome, host folders and host git', () => {
-    expect(drivesUserChrome(server(distribution))).toBe(true)
-    expect(readsHostFolders(server(distribution))).toBe(true)
-    expect(runsHostGit(server(distribution))).toBe(true)
+  it('runs git and looks for installed apps on its machine', () => {
+    expect(runtimeCapabilities(server(distribution))).toMatchObject({ canRunHostGit: true, canFindHostApps: true })
   })
 })
 
-describe('supportsComputerUse', () => {
-  it('is true on a macOS or Windows server outside the sandbox, the OSes with a backend', () => {
-    expect(supportsComputerUse({ os: 'darwin', distribution: 'direct' })).toBe(true)
-    expect(supportsComputerUse({ os: 'win32', distribution: 'windows-store' })).toBe(true)
-    expect(supportsComputerUse({ os: 'linux', distribution: 'deployment' })).toBe(false)
+describe.each(['direct', 'windows-store'] as const)('the %s desktop app', (distribution) => {
+  it('declares everything that acts on the person’s computer', () => {
+    expect(runtimeCapabilities({ os: 'darwin', distribution })).toEqual({
+      canUseComputer: true,
+      canRunHostScripts: true,
+      canDriveUserChrome: true,
+      canReadHostFoldersByPath: true,
+      canFindHostApps: true,
+      canRunHostGit: true,
+    })
+  })
+
+  it('offers computer use and scripts only on macOS and Windows, the OSes with a backend', () => {
+    expect(runtimeCapabilities({ os: 'win32', distribution })).toMatchObject({ canUseComputer: true, canRunHostScripts: true })
+    expect(runtimeCapabilities({ os: 'linux', distribution })).toMatchObject({ canUseComputer: false, canRunHostScripts: false })
+  })
+})
+
+describe('a web deployment', () => {
+  it('declares no desktop-only capability, even on a Mac', () => {
+    expect(runtimeCapabilities(server('deployment'))).toMatchObject({
+      canUseComputer: false,
+      canRunHostScripts: false,
+      canDriveUserChrome: false,
+      canReadHostFoldersByPath: false,
+    })
   })
 })
 

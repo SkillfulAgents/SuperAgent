@@ -155,9 +155,13 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 const serverFacts = vi.hoisted(() => ({ distribution: 'direct' as 'direct' | 'mac-app-store' }))
-vi.mock('@shared/lib/facts/server-facts', () => ({
-  getServerFacts: () => ({ os: 'darwin', distribution: serverFacts.distribution }),
-}))
+vi.mock('@shared/lib/facts/server-facts', async () => {
+  const { runtimeCapabilities } = await import('@shared/lib/facts/capabilities')
+  return {
+    getServerFacts: () => ({ os: 'darwin', distribution: serverFacts.distribution }),
+    getServerCapabilities: () => runtimeCapabilities({ os: 'darwin', distribution: serverFacts.distribution }),
+  }
+})
 
 import { containerHost } from './container-host'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
@@ -252,13 +256,13 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
   it('tells the container whether agents get computer use, and whether the app is sandboxed', async () => {
     serverFacts.distribution = 'direct'
     await containerHost.runtime('test-agent').ensureRunning()
-    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'true', HOST_APP_SANDBOX: 'false' })
+    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'true', HOST_SCRIPTS: 'true', HOST_APP_SANDBOX: 'false' })
   })
 
   it('withholds computer use from a Mac App Store build’s agents', async () => {
     serverFacts.distribution = 'mac-app-store'
     await containerHost.runtime('test-agent').ensureRunning()
-    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'false', HOST_APP_SANDBOX: 'true' })
+    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'false', HOST_SCRIPTS: 'false', HOST_APP_SANDBOX: 'true' })
   })
 
   it('still passes non-reserved custom env vars through unchanged', async () => {

@@ -302,8 +302,7 @@ import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { readyTeamBrain } from '@shared/lib/config/team-brain-schema'
-import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
-import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { getServerCapabilities } from '@shared/lib/facts/server-facts'
 import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { computerUseDecisionSchema } from '@shared/lib/computer-use/decision-schema'
@@ -2264,10 +2263,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // The dispatch launcher's computer-use toggle: the session may list and
     // use any app without asking, and has its computer-use tools from the
     // first turn. The same grant the approval card gives, so no more than the
-    // caller could already do; refused where computer use can't run at all
-    // (the mock E2E runtime drives no machine).
+    // caller could already do; refused where computer use can't run at all.
     const computerUse = body.computerUse === true
-    if (computerUse && process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
+    if (computerUse && !getServerCapabilities().canUseComputer) {
       return c.json({ error: 'Computer use is not available on this machine' }, 400)
     }
 
@@ -6930,7 +6928,7 @@ agents.post('/:id/upload-folder', AgentUser(), async (c) => {
     const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
-    if (!readsHostFolders(getServerFacts())) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
+    if (!getServerCapabilities().canReadHostFoldersByPath) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)
@@ -6947,7 +6945,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
     const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
-    if (!readsHostFolders(getServerFacts())) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
+    if (!getServerCapabilities().canReadHostFoldersByPath) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)

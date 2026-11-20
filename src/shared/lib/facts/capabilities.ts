@@ -1,72 +1,56 @@
-import type { ClientFacts, DesktopDistribution, ServerDistribution, ServerFacts } from './facts-schema'
+import type { ClientFacts, DesktopDistribution, Os, ServerCapabilities, ServerDistribution, ServerFacts } from './facts-schema'
 
 /**
- * What an install can do, as pure functions of its facts. The server asks the
- * server ones of `getServerFacts()`; a renderer asks the same function of the
- * facts of the server it drives (`renderer/lib/capabilities.ts`), so the two
- * can't disagree.
+ * What each runtime declares its machine does for agents. A process reads its
+ * own answer with `getServerCapabilities()`; a renderer reads the same object
+ * from the facts the server sent (`renderer/lib/capabilities.ts`), so the two
+ * can't disagree. A runtime this table can't tell apart by its facts (a host
+ * that keeps nothing past a request) declares its own at boot
+ * (`declareServerCapabilities()`).
+ *
+ * Each distribution is listed, so a new one has to say what it offers.
  */
-
-/**
- * Whether agents can drive the apps on the desktop of their machine. There is a
- * backend for macOS and Windows only, and the App Sandbox forbids it: a
- * sandboxed app may not control other apps. The container offers its script
- * tool on the same answer (`HOST_COMPUTER_USE`).
- */
-export function supportsComputerUse(server: ServerFacts): boolean {
-  return (server.os === 'darwin' || server.os === 'win32') && !runsInAppSandbox(server)
+export function runtimeCapabilities(server: Pick<ServerFacts, 'os' | 'distribution'>): ServerCapabilities {
+  switch (server.distribution) {
+    case 'direct':
+    case 'windows-store':
+      return desktopCapabilities(server.os)
+    // The App Sandbox confines the app to its container. It may not control
+    // other apps or script them; macOS strips the arguments of an app it opens
+    // and Chrome aborts inside the sandbox; it reaches a folder only through
+    // the bookmark of a pick in its open panel (`local-folder-access.ts`);
+    // macOS's own git is a stub that installs the developer tools, and gh lives
+    // outside the app.
+    case 'mac-app-store':
+      return NOTHING_ON_THE_HOST
+    // A web deployment's machine is not the person's computer, so what acts on
+    // the person's desktop is off. What acts on the server's own machine stays:
+    // git for private skillsets, and looking for an installed Ollama.
+    case 'deployment':
+      return { ...NOTHING_ON_THE_HOST, canFindHostApps: true, canRunHostGit: true }
+  }
 }
 
-/**
- * Whether the server runs the scripts agents ask for on its machine, of the
- * types `VALID_SCRIPT_TYPES` lists for its OS. A script a sandboxed app runs is
- * confined to the app's container and may not script other apps.
- */
-export function runsHostScripts(server: ServerFacts): boolean {
-  return !runsInAppSandbox(server)
+/** The desktop app outside the sandbox. There is a computer-use backend, and a script tool, for macOS and Windows only. */
+function desktopCapabilities(os: Os): ServerCapabilities {
+  const desktopOs = os === 'darwin' || os === 'win32'
+  return {
+    canUseComputer: desktopOs,
+    canRunHostScripts: desktopOs,
+    canDriveUserChrome: true,
+    canReadHostFoldersByPath: true,
+    canFindHostApps: true,
+    canRunHostGit: true,
+  }
 }
 
-/**
- * Whether the server can use the person's installed Chrome: launch it with a
- * debugging port as the agents' browser, and read Apple Passwords through
- * Chrome's extension, found in the person's Chrome profiles. A sandboxed app
- * can't: macOS strips the arguments of an app it opens, Chrome aborts when
- * started inside the sandbox, and Chrome's profiles are outside the app's
- * container. Agents there browse in their built-in browser.
- */
-export function drivesUserChrome(server: ServerFacts): boolean {
-  return !runsInAppSandbox(server)
-}
-
-/**
- * Whether the server reads a folder of its machine by its path alone: one it
- * is told to copy in, or to make a drive of. A sandboxed app reaches only its
- * container, plus a folder the person picked in its open panel, through the
- * security-scoped bookmark the pick makes (`local-folder-access.ts`). So there
- * a local drive needs that bookmark, and a dropped folder uploads its files.
- */
-export function readsHostFolders(server: ServerFacts): boolean {
-  return !runsInAppSandbox(server)
-}
-
-/**
- * Whether the server can tell an app is installed on its machine by looking for
- * its files. A sandboxed app cannot see outside its container, so it could only
- * ever say it found nothing, never that the app is missing.
- */
-export function findsHostApps(server: ServerFacts): boolean {
-  return !runsInAppSandbox(server)
-}
-
-/**
- * Whether the server runs git and gh on its machine: to clone a private
- * skillset, and to publish skills and agents to one as commits and pull
- * requests. Public skillsets need neither; they download as an archive. A
- * sandboxed app can run neither: macOS's own git is a stub that installs the
- * developer tools, and gh lives outside the app.
- */
-export function runsHostGit(server: ServerFacts): boolean {
-  return !runsInAppSandbox(server)
+const NOTHING_ON_THE_HOST: ServerCapabilities = {
+  canUseComputer: false,
+  canRunHostScripts: false,
+  canDriveUserChrome: false,
+  canReadHostFoldersByPath: false,
+  canFindHostApps: false,
+  canRunHostGit: false,
 }
 
 /**
@@ -80,8 +64,8 @@ export function runsHostGit(server: ServerFacts): boolean {
  * - it can signal only the processes of its own launch, so it can't tell
  *   whether an earlier launch left something running.
  *
- * What it withholds from agents has a capability each here, and the desktop
- * app's own Mac integrations ask theirs in `renderer/lib/capabilities.ts`.
+ * What it withholds from agents is its row in `runtimeCapabilities()`, and the
+ * desktop app's own Mac integrations ask theirs in `renderer/lib/capabilities.ts`.
  * Settings lists all of it for the person (`SandboxNotice`), and the agents'
  * prompt the agents' part (`appSandbox`); a new one goes in both.
  */

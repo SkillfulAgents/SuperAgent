@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto'
-import { drivesUserChrome } from '@shared/lib/facts/capabilities'
-import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { getServerCapabilities } from '@shared/lib/facts/server-facts'
 import { ApplePasswordsProvider } from './apple-passwords-provider'
 import type {
   CredentialLookupContext,
@@ -186,5 +185,5 @@ export class CredentialBroker {
 // Apple Passwords works through the person's Chrome, which a sandboxed build
 // can't drive, so there it is not offered at all (its runtime refuses too).
 export const credentialBroker = new CredentialBroker(
-  drivesUserChrome(getServerFacts()) ? [new ApplePasswordsProvider()] : [],
+  getServerCapabilities().canDriveUserChrome ? [new ApplePasswordsProvider()] : [],
 )

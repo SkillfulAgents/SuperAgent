@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { ComputerUseTab } from './computer-use-tab'
 import { _setFactsForTest } from '@renderer/lib/facts'
 import type { Os } from '@shared/lib/facts/facts-schema'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
 
 const useSettingsMock = vi.fn()
 const useAgentsMock = vi.fn()
@@ -14,7 +15,7 @@ const mutateMock = vi.fn()
 function setServerOs(os: Os) {
   _setFactsForTest({
     client: { shell: 'electron', os: 'darwin', distribution: 'direct' },
-    server: { os, distribution: 'direct' },
+    server: { os, distribution: 'direct', capabilities: runtimeCapabilities({ os, distribution: 'direct' }) },
   })
 }
 
@@ -141,7 +142,7 @@ describe('ComputerUseTab', () => {
   it('asks the agents’ machine, not this window’s', () => {
     _setFactsForTest({
       client: { shell: 'electron', os: 'linux', distribution: 'direct' },
-      server: { os: 'win32', distribution: 'deployment' },
+      server: { os: 'win32', distribution: 'direct', capabilities: runtimeCapabilities({ os: 'win32', distribution: 'direct' }) },
     })
     render(<ComputerUseTab />)
 

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import { Hono, type MiddlewareHandler } from 'hono'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -71,6 +73,8 @@ function request(route = '', method = 'GET', body?: unknown, caller = 'alice') {
   })
 }
 beforeEach(async () => {
+  // The desktop app outside the sandbox, which makes a local drive of a folder by its path.
+  declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
   vi.stubEnv('AUTH_MODE', 'true')
   folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-api-')))
   handle = await createTestDatabase()
@@ -84,6 +88,7 @@ beforeEach(async () => {
   await handle.db.insert(agents).values({ slug: 'agent', name: 'Agent', createdAt: new Date() }).run()
 })
 afterEach(async () => {
+  declareServerCapabilities(null)
   await backgroundSettled()
   await handle.close()
   vi.unstubAllEnvs()

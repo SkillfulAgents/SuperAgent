@@ -2,6 +2,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import { Hono } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
@@ -44,6 +46,8 @@ describe('/api/volumes', () => {
   let volumeId: string
 
   beforeEach(async () => {
+    // The desktop app outside the sandbox, which makes a local drive of a folder by its path.
+    declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volumes-route-')))
     process.env.SUPERAGENT_DATA_DIR = tmpDir
     folder = path.join(tmpDir, 'notes')
@@ -56,6 +60,7 @@ describe('/api/volumes', () => {
   })
 
   afterEach(async () => {
+    declareServerCapabilities(null)
     await handle.close()
     fs.rmSync(tmpDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR

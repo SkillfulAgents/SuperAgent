@@ -7,6 +7,8 @@ import {
   zipFolderFiles,
 } from './file-utils'
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
+import { _setFactsForTest } from './facts'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
 
 /**
  * Helper to create a mock FileList from an array of partial File objects.
@@ -95,10 +97,19 @@ function createMockFileEntry(
 // getFolderFromDirectoryInput — Electron folderPath extraction
 // ============================================================================
 
+/** The desktop app outside the sandbox, which hands a folder over by its path. */
+function beDesktopApp() {
+  _setFactsForTest({
+    client: { shell: 'electron', os: 'darwin', distribution: 'direct' },
+    server: { os: 'darwin', distribution: 'direct', capabilities: runtimeCapabilities({ os: 'darwin', distribution: 'direct' }) },
+  })
+}
+
 describe('getFolderFromDirectoryInput — Electron folderPath', () => {
   let originalElectronAPI: typeof window.electronAPI
 
   beforeEach(() => {
+    beDesktopApp()
     originalElectronAPI = window.electronAPI
     // Electron resolves absolute paths via the preload's webUtils.getPathForFile
     // (File.path was removed in Electron 32). The mock reads back the `path`
@@ -197,6 +208,7 @@ describe('getItemsFromDataTransfer — Electron drag-and-drop', () => {
   let originalElectronAPI: typeof window.electronAPI
 
   beforeEach(() => {
+    beDesktopApp()
     originalElectronAPI = window.electronAPI
   })
 

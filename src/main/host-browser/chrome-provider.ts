@@ -4,8 +4,8 @@ import path from 'path'
 import net from 'net'
 import os from 'os'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { drivesUserChrome } from '@shared/lib/facts/capabilities'
-import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { runsInAppSandbox } from '@shared/lib/facts/capabilities'
+import { getServerCapabilities, getServerFacts } from '@shared/lib/facts/server-facts'
 import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -232,8 +232,9 @@ export class ChromeProvider implements HostBrowserProvider {
 
   async detect(): Promise<HostBrowserProviderStatus> {
     // Unavailable rather than absent, so Settings says why.
-    if (!drivesUserChrome(getServerFacts())) {
-      return { id: this.id, name: this.name, available: false, reason: 'Not available in the Mac App Store edition' }
+    if (!getServerCapabilities().canDriveUserChrome) {
+      const reason = runsInAppSandbox(getServerFacts()) ? 'Not available in the Mac App Store edition' : 'Not available on this server'
+      return { id: this.id, name: this.name, available: false, reason }
     }
     const candidate = BROWSER_CANDIDATES[process.platform]
     if (!candidate) {

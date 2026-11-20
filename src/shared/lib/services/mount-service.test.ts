@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
@@ -17,11 +19,14 @@ const viewer = { userId: null, admin: true }
 vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 
 beforeEach(async () => {
+  // The desktop app outside the sandbox, which makes a local drive of a folder by its path.
+  declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
   tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mount-service-test-')))
   handle = await createTestDatabase()
   await handle.db.insert(agents).values(['test-agent', 'agent-b'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
 })
 afterEach(async () => {
+  declareServerCapabilities(null)
   vi.restoreAllMocks()
   await handle.close()
   fs.rmSync(tmpDir, { recursive: true, force: true })
