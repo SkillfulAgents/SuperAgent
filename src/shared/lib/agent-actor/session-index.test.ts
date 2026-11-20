@@ -658,28 +658,119 @@ describe('SessionIndex storing activity on a wakeup', () => {
     return { files, storage, index, wakeups, due: () => index.storeRecordedActivity() }
   }
 
-  it('stores a turn\'s frames as one write when the wakeup comes, not one per frame', async () => {
+  it('stores a turn\'s first frame at once and the rest as one write when the wakeup comes, not one per frame', async () => {
     const { index, files, storage, wakeups, due } = setupWithWakeups()
     await files.putDoc(transcript('s1'), 'x')
     const seenAt = (await activityOf(index)).s1!
     const touch = vi.spyOn(storage, 'touch')
     vi.useFakeTimers({ now: seenAt + 10, toFake: ['Date'] })
 
-    for (let frame = 1; frame <= 200; frame++) {
-      index.recordActivity('s1', seenAt + 10 + frame)
-      vi.advanceTimersByTime(10)
-    }
+    // The session's first write since it was idle: stored without waiting.
+    index.recordActivity('s1', seenAt + 11)
     await backgroundSettled()
+    expect(touch.mock.calls).toEqual([[new Map([['s1', seenAt + 11]])]])
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 11)
 
-    // 2 s of frames: one wakeup arranged, an interval after the first, and nothing stored yet.
+    for (let frame = 2; frame <= 200; frame++) {
+      vi.advanceTimersByTime(10)
+      index.recordActivity('s1', seenAt + 10 + frame)
+      await backgroundSettled()
+    }
+
+    // 2 s of frames: one wakeup arranged, an interval after the first, and nothing more stored yet.
     expect(wakeups).toEqual([seenAt + 10 + ACTIVITY_STORE_INTERVAL_MS])
-    expect(touch).not.toHaveBeenCalled()
+    expect(touch).toHaveBeenCalledTimes(1)
 
     await due()
 
-    expect(touch).toHaveBeenCalledTimes(1)
-    expect(touch).toHaveBeenCalledWith(new Map([['s1', seenAt + 210]]))
+    expect(touch).toHaveBeenCalledTimes(2)
+    expect(touch).toHaveBeenLastCalledWith(new Map([['s1', seenAt + 210]]))
     expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 210)
+  })
+
+  it('stores a session\'s first write after an idle interval at once, each time it wakes up', async () => {
+    const { index, files, storage, due } = setupWithWakeups()
+    await files.putDoc(transcript('s1'), 'x')
+    const seenAt = (await activityOf(index)).s1!
+    vi.useFakeTimers({ now: seenAt + 10, toFake: ['Date'] })
+    const stored = async () => (await storage.get('s1'))!.transcript!.mtimeMs - seenAt
+
+    index.recordActivity('s1', seenAt + 10)
+    await backgroundSettled()
+    expect(await stored()).toBe(10)
+
+    // Within the interval of that store: waits for the wakeup.
+    vi.setSystemTime(seenAt + 10 + ACTIVITY_STORE_INTERVAL_MS - 1)
+    index.recordActivity('s1', seenAt + 20)
+    await backgroundSettled()
+    expect(await stored()).toBe(10)
+    await due()
+    expect(await stored()).toBe(20)
+
+    // An interval after the last store, with no wakeup having come since: at once again.
+    vi.setSystemTime(seenAt + 10 + 2 * ACTIVITY_STORE_INTERVAL_MS - 1)
+    index.recordActivity('s1', seenAt + 30)
+    await backgroundSettled()
+    expect(await stored()).toBe(30)
+  })
+
+  it('stores a session that wakes up at once while another of the agent\'s is being written to', async () => {
+    const { index, files, storage, due } = setupWithWakeups()
+    await files.putDoc(transcript('busy'), 'x')
+    await files.putDoc(transcript('dormant'), 'x')
+    const seenAt = (await activityOf(index)).busy!
+    vi.useFakeTimers({ now: seenAt + 10, toFake: ['Date'] })
+    const touch = vi.spyOn(storage, 'touch')
+
+    index.recordActivity('busy', seenAt + 10)
+    await backgroundSettled()
+    vi.setSystemTime(seenAt + 1000)
+    index.recordActivity('busy', seenAt + 1000)
+    await backgroundSettled()
+    expect(touch).toHaveBeenCalledTimes(1)
+
+    // The busy session's wakeup is on its way; the dormant one does not wait for it.
+    vi.setSystemTime(seenAt + 2000)
+    index.recordActivity('dormant', seenAt + 2000)
+    await backgroundSettled()
+    expect((await storage.get('dormant'))?.transcript?.mtimeMs).toBe(seenAt + 2000)
+    // It took the busy session's frame along, in the one write.
+    expect(touch).toHaveBeenCalledTimes(2)
+    expect(touch).toHaveBeenLastCalledWith(new Map([['busy', seenAt + 1000], ['dormant', seenAt + 2000]]))
+
+    // And is not stored write by write from then on.
+    vi.setSystemTime(seenAt + 2500)
+    index.recordActivity('dormant', seenAt + 2500)
+    index.recordActivity('busy', seenAt + 2500)
+    await backgroundSettled()
+    expect(touch).toHaveBeenCalledTimes(2)
+    await due()
+    expect(touch).toHaveBeenCalledTimes(3)
+  })
+
+  it('stores a first write again after one that failed, not on the wakeup alone', async () => {
+    const base = createInMemorySessionIndexStorage()
+    let failing = true
+    const { index, files, storage } = setupWithWakeups({
+      ...base,
+      touch: async (activity) => {
+        if (failing) throw new Error('storage unavailable')
+        return base.touch(activity)
+      },
+    })
+    await files.putDoc(transcript('s1'), 'x')
+    await index.entries()
+    const seenAt = (await storage.get('s1'))!.transcript!.mtimeMs
+
+    index.recordActivity('s1', seenAt + 100)
+    await backgroundSettled()
+    expect(backgroundFailures.splice(0)).toEqual([new Error('storage unavailable')])
+
+    // The session was not stored, so its next write is still its first.
+    failing = false
+    index.recordActivity('s1', seenAt + 200)
+    await backgroundSettled()
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 200)
   })
 
   it('arranges one wakeup per interval in which something is recorded, and none while nothing is', async () => {
@@ -747,15 +838,23 @@ describe('SessionIndex storing activity on a wakeup', () => {
     await index.entries()
     const seenAt = (await storage.get('s1'))!.transcript!.mtimeMs
 
+    // The session's first write goes out at once.
     index.recordActivity('s1', seenAt + 1)
+    await vi.waitFor(() => expect(held).toHaveLength(1))
+    // Frames keep coming while that write is out: they wait for the wakeup.
+    for (let frame = 2; frame <= 10; frame++) index.recordActivity('s1', seenAt + frame)
+    held.shift()!()
+    await backgroundSettled()
+    expect(touched).toEqual([new Map([['s1', seenAt + 1]])])
+
     const storing = due()
     await vi.waitFor(() => expect(held).toHaveLength(1))
-    // Frames keep coming while the write is out: they wait for a wakeup of their own.
-    for (let frame = 2; frame <= 20; frame++) index.recordActivity('s1', seenAt + frame)
+    // And while the wakeup's write is out: they wait for a wakeup of their own.
+    for (let frame = 11; frame <= 20; frame++) index.recordActivity('s1', seenAt + frame)
     held.shift()!()
     await storing
 
-    expect(touched).toEqual([new Map([['s1', seenAt + 1]])])
+    expect(touched).toEqual([new Map([['s1', seenAt + 1]]), new Map([['s1', seenAt + 10]])])
     expect(wakeups).toHaveLength(2)
 
     // A read that comes meanwhile still gets all of it, in one more write.
@@ -763,7 +862,7 @@ describe('SessionIndex storing activity on a wakeup', () => {
     await vi.waitFor(() => expect(held).toHaveLength(1))
     held.shift()!()
     expect(await reading).toEqual({ s1: seenAt + 20 })
-    expect(touched).toHaveLength(2)
+    expect(touched).toHaveLength(3)
   })
 
   it('a read that arrives during a write waits for it, then stores what was recorded since', async () => {
@@ -781,16 +880,18 @@ describe('SessionIndex storing activity on a wakeup', () => {
     const seenAt = (await storage.get('s1'))!.transcript!.mtimeMs
 
     index.recordActivity('s1', seenAt + 1)
-    const storing = due()
     await vi.waitFor(() => expect(held).toHaveLength(1))
     index.recordActivity('s1', seenAt + 2)
+    const storing = due()
     const reading = index.entry('s1')
+    // The first write lands; the wakeup and the read then share one more.
     held.shift()!()
-    await storing
     await vi.waitFor(() => expect(held).toHaveLength(1))
     held.shift()!()
+    await storing
 
     expect((await reading)?.transcript?.mtimeMs).toBe(seenAt + 2)
+    expect(held).toEqual([])
   })
 
   it('keeps activity a wakeup could not store, arranges another, and stores it then', async () => {
@@ -806,11 +907,15 @@ describe('SessionIndex storing activity on a wakeup', () => {
     await files.putDoc(transcript('s1'), 'x')
     await index.entries()
     const seenAt = (await storage.get('s1'))!.transcript!.mtimeMs
+    failing = false
+    index.recordActivity('s1', seenAt + 500)
+    await backgroundSettled()
+    failing = true
 
     index.recordActivity('s1', seenAt + 1000)
     await expect(due()).rejects.toThrow('storage unavailable')
     expect(wakeups).toHaveLength(2)
-    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt)
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 500)
 
     failing = false
     await due()
@@ -825,11 +930,19 @@ describe('SessionIndex storing activity on a wakeup', () => {
     vi.useFakeTimers({ now: seenAt + 10, toFake: ['Date'] })
 
     index.recordActivity('s1', seenAt + 10)
-    // The wakeup never comes: dispatch stopped, or its manager is gone.
+    await backgroundSettled()
+    // The wakeup never comes: its manager is gone. The session is written to
+    // again after an interval, which stores it, so it is not idle after that.
+    vi.setSystemTime(seenAt + 10 + ACTIVITY_STORE_INTERVAL_MS + 1000)
+    index.recordActivity('s1', seenAt + 15)
+    await backgroundSettled()
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 15)
+
+    // Still inside the time the wakeup is given to come: waits for it.
     vi.setSystemTime(seenAt + 10 + 2 * ACTIVITY_STORE_INTERVAL_MS - 1)
     index.recordActivity('s1', seenAt + 20)
     await backgroundSettled()
-    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt)
+    expect((await storage.get('s1'))?.transcript?.mtimeMs).toBe(seenAt + 15)
 
     vi.setSystemTime(seenAt + 10 + 2 * ACTIVITY_STORE_INTERVAL_MS)
     index.recordActivity('s1', seenAt + 30)
@@ -863,6 +976,8 @@ describe('SessionIndex storing activity on a wakeup', () => {
     const { index, files, storage, due } = setupWithWakeups()
     await files.putDoc(transcript('s1'), 'x')
     await index.entries()
+    index.recordActivity('s1', 8_000_000_000_000)
+    await backgroundSettled()
     const touch = vi.spyOn(storage, 'touch')
 
     index.recordActivity('s1', 9_000_000_000_000)

@@ -43,12 +43,16 @@ const storeSessionActivityTask = new StoreSessionActivityTask()
 
 /**
  * Have `store` called at about `atMs`, replacing the wakeup set before under
- * `indexId`. False when no task manager is installed (a script that opens
- * the database and nothing else): the index then stores as it records.
+ * `indexId`. True only when the wakeup will come. False when no task manager
+ * is installed (a script that opens the database and nothing else), and
+ * false once dispatch has stopped, when the manager would take the wakeup
+ * and drop it: a write recorded during shutdown (a transcript append that
+ * was in flight when the agents were released) is then stored by the index
+ * as it is recorded, not left in memory for a wakeup that never runs.
  *
- * A manager whose dispatch has stopped takes the wakeup and never runs it.
- * The index stores what is left when its actor is released at shutdown, and
- * stops waiting for a wakeup that is an interval late.
+ * A wakeup set before dispatch stopped is dropped with it. The index stores
+ * what it holds when its actor is released at shutdown, and stops waiting
+ * for a wakeup that is an interval late.
  */
 export function storeSessionActivityAt(indexId: string, atMs: number, store: () => Promise<void>): boolean {
   let manager: TaskManager
@@ -57,6 +61,7 @@ export function storeSessionActivityAt(indexId: string, atMs: number, store: () 
   } catch {
     return false
   }
+  if (!manager.accepts()) return false
   if (!manager.handles(STORE_ACTIVITY_TASK_TYPE)) manager.register(storeSessionActivityTask)
   due.set(indexId, store)
   background(

@@ -714,3 +714,23 @@ describe('LocalTaskManager', () => {
     })
   })
 })
+
+describe('LocalTaskManager.accepts', () => {
+  it('says whether a schedule made now would run: yes before and during dispatch, no once it has stopped, yes again after a start', async () => {
+    const manager = new LocalTaskManager()
+    manager.register(new ProbeTask())
+    // Installed and not started yet: what is scheduled is armed by the start.
+    expect(manager.accepts()).toBe(true)
+    await manager.start()
+    expect(manager.accepts()).toBe(true)
+
+    await manager.stop()
+    expect(manager.accepts()).toBe(false)
+    await manager.at(Date.now(), 'dropped', { taskType: 'probe', payload: {} })
+    expect(manager.scheduled()).toEqual([])
+
+    await manager.start()
+    expect(manager.accepts()).toBe(true)
+    await manager.stop()
+  })
+})

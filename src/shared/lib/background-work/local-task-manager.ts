@@ -168,6 +168,10 @@ export class LocalTaskManager extends TaskManager {
     for (const [id, run] of this.runs) run.controller.abort(new Error(`Dispatch stopped while ${id} was running`))
   }
 
+  override accepts(): boolean {
+    return !this.stopped
+  }
+
   /** What is scheduled now, for tests and diagnostics. */
   scheduled(): LocalJobInfo[] {
     return [...this.jobs.values()].map(job => ({

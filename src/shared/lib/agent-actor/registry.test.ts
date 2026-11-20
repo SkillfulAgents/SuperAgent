@@ -293,8 +293,6 @@ describe('createAgentRegistry', () => {
   })
 
   it('evictAll stores the session activity its agents recorded and had not stored yet', async () => {
-    // At shutdown dispatch has stopped, so the index's own wakeup never comes.
-    await taskManager().stop()
     const touched: Array<[string, Map<string, number>]> = []
     const sessionIndexStorage = (slug: string): SessionIndexStorage => {
       const storage = createInMemorySessionIndexStorage()
@@ -302,15 +300,19 @@ describe('createAgentRegistry', () => {
     }
     const registry = createAgentRegistry({ ...fake.deps, sessionIndexStorage } as LocalActorDeps)
     fake.recordSessionActivity.mockImplementation((store: SessionStore, sessionId: string, at: number) => store.index.recordActivity(sessionId, at))
+    // The session's first write is stored as it is recorded; the next waits for the index's wakeup.
     await registry.get('a').sessions.recordActivity('s1', 1234)
+    await backgroundSettled()
     await registry.get('a').sessions.recordActivity('s1', 2345)
     registry.get('b')
     await backgroundSettled()
-    expect(touched).toEqual([])
+    expect(touched).toEqual([['a', new Map([['s1', 1234]])]])
 
+    // Shutdown stops dispatch before it releases the agents, and the wakeup goes with it.
+    await taskManager().stop()
     await registry.evictAll()
 
-    expect(touched).toEqual([['a', new Map([['s1', 2345]])]])
+    expect(touched).toEqual([['a', new Map([['s1', 1234]])], ['a', new Map([['s1', 2345]])]])
   })
 
   it('evictAll releases every agent even when one\'s recorded activity cannot be stored', async () => {

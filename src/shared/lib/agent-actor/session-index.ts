@@ -103,22 +103,24 @@ export interface SessionIndexDeps {
   /**
    * Arrange for `storeRecordedActivity()` to be called at about `atMs` (host
    * clock), replacing whatever this index arranged before. Answers false when
-   * it cannot. Given, recorded activity is stored once per
-   * {@link ACTIVITY_STORE_INTERVAL_MS} rather than once per write; not given,
-   * or answering false, each write is stored as it is recorded. The local
-   * actor's is a task-manager wakeup; an actor that runs elsewhere gives its
-   * own alarm.
+   * it cannot, and must not answer true for a wakeup that will not come:
+   * the index leaves what it holds to the wakeup it was promised. Given,
+   * recorded activity is stored once per {@link ACTIVITY_STORE_INTERVAL_MS}
+   * rather than once per write; not given, or answering false, each write is
+   * stored as it is recorded. The local actor's is a task-manager wakeup; an
+   * actor that runs elsewhere gives its own alarm.
    */
   storeActivityLater?: (atMs: number) => boolean
 }
 
 /**
- * How long recorded activity may wait to be stored. A streaming turn records
- * a write per frame, several a second through a run of tool calls, and every
- * one would otherwise be a statement of its own. Nothing is read late for
- * it: every read stores what is recorded first. What it bounds is how much
- * of a running turn's activity a process that dies without shutting down
- * forgets.
+ * How long recorded activity may wait to be stored, once its session has
+ * been stored within as long. A streaming turn records a write per frame,
+ * several a second through a run of tool calls, and every one would
+ * otherwise be a statement of its own. Nothing is read late for it: every
+ * read stores what is recorded first. What it bounds is how far behind a
+ * running turn the stored activity is when a process dies without shutting
+ * down: one interval, never a session left where it was before the turn.
  */
 export const ACTIVITY_STORE_INTERVAL_MS = 5_000
 
@@ -217,6 +219,13 @@ export class SessionIndex {
   /** When the wakeup arranged through `storeActivityLater` is due, while one is. */
   private storeDueAtMs: number | undefined
   /**
+   * When (host clock) each session's activity was last handed to storage.
+   * A write to a session not stored within the interval is stored at once
+   * (see {@link recordActivity}); kept per session, since one of an agent's
+   * sessions can be streaming while another wakes up.
+   */
+  private readonly storedAtMs = new Map<string, number>()
+  /**
    * Activity recorded for a session whose transcript the index has not seen
    * (a send is recorded before the CLI writes): stored once reconciliation
    * finds the transcript, whose own mtime may not carry the write yet.
@@ -278,6 +287,7 @@ export class SessionIndex {
   delete(sessionIds: readonly string[]): Promise<void> {
     for (const sessionId of sessionIds) {
       this.pending.delete(sessionId)
+      this.storedAtMs.delete(sessionId)
       this.provisional.delete(sessionId)
       this.awaitingTranscript.delete(sessionId)
     }
@@ -318,8 +328,14 @@ export class SessionIndex {
   /**
    * A write reached a session's transcript. Synchronous for its callers (a
    * stream frame handler does not wait on storage): the write is stored
-   * behind them, with whatever else is recorded within
-   * {@link ACTIVITY_STORE_INTERVAL_MS}, and every read stores it first.
+   * behind them, and every read stores it first.
+   *
+   * The first write to a session after an interval without a store is
+   * stored at once: the session moves in storage as soon as it wakes up, so
+   * a process that dies a moment later has not left it where it was months
+   * ago. The writes that follow within {@link ACTIVITY_STORE_INTERVAL_MS}
+   * are stored together on the wakeup. Stored state is therefore never more
+   * than an interval behind what was recorded.
    */
   recordActivity(sessionId: string, activityAtMs: number): void {
     // The write settles a provisional record: the turn it announced is real.
@@ -327,12 +343,21 @@ export class SessionIndex {
     this.provisional.delete(sessionId)
     this.keep(this.pending, sessionId, Math.max(provisional ?? -Infinity, activityAtMs))
     const now = Date.now()
-    // A wakeup is on its way: it stores this write with the others.
-    if (this.storeDueAtMs !== undefined && now < this.storeDueAtMs + ACTIVITY_STORE_INTERVAL_MS) return
-    // One that is a whole interval late is not coming (dispatch stopped, or
-    // the manager it was set on is gone), so this write is stored now.
-    const wakeupLost = this.storeDueAtMs !== undefined
-    if (!this.storeLater(now) || wakeupLost) background(this.flush(), { name: 'session-index.store-activity' })
+    const storedAtMs = this.storedAtMs.get(sessionId)
+    const afterIdle = storedAtMs === undefined || now - storedAtMs >= ACTIVITY_STORE_INTERVAL_MS
+    const wakeupSet = this.storeDueAtMs !== undefined
+    // A wakeup is on its way, and the session was stored within the
+    // interval: the wakeup stores this write with the others.
+    const wakeupComing = wakeupSet && now < this.storeDueAtMs! + ACTIVITY_STORE_INTERVAL_MS
+    if (wakeupComing && !afterIdle) return
+    // Stored now: the session's first write after an idle interval; a write
+    // nobody can arrange a wakeup for (no task manager, or one that has
+    // stopped, as during shutdown); and one whose wakeup is a whole interval
+    // late, so is not coming.
+    const arranged = wakeupComing || this.storeLater(now)
+    if (afterIdle || !arranged || wakeupSet !== wakeupComing) {
+      background(this.flush(), { name: 'session-index.store-activity' })
+    }
   }
 
   /**
@@ -435,6 +460,11 @@ export class SessionIndex {
   private async storePending(): Promise<void> {
     const batch = this.pending
     this.pending = new Map()
+    // Marked as the pass starts, so the frames that arrive while it is out
+    // are not each a session's first write after idle; put back if it fails.
+    const startedAtMs = Date.now()
+    const storedBefore = new Map([...batch.keys()].map((sessionId) => [sessionId, this.storedAtMs.get(sessionId)]))
+    for (const sessionId of batch.keys()) this.storedAtMs.set(sessionId, startedAtMs)
     try {
       await this.inOrder(async () => {
         for (const sessionId of await this.storage.touch(batch)) {
@@ -446,6 +476,11 @@ export class SessionIndex {
     } catch (error) {
       // Kept for the next flush, under whatever was recorded meanwhile.
       for (const [sessionId, at] of batch) this.keep(this.pending, sessionId, at)
+      for (const [sessionId, before] of storedBefore) {
+        if (this.storedAtMs.get(sessionId) !== startedAtMs) continue
+        if (before === undefined) this.storedAtMs.delete(sessionId)
+        else this.storedAtMs.set(sessionId, before)
+      }
       throw error
     }
   }

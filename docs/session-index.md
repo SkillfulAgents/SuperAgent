@@ -38,14 +38,19 @@ A directory's mtime cannot tell two changes in one tick of the filesystem's cloc
 
 A session's last activity is **not** its transcript's mtime after the first sighting. Every transcript write the host knows of goes through `recordSessionActivity()` (`services/session-activity.ts`): a message sent, a stream frame received, an append, a rewrite. The index stores those behind the caller, and every read stores what is recorded first, so a read never answers with less than was recorded. A new place that writes a transcript must record it, or the session will not move up the list.
 
-Recorded activity is not stored write by write. A streaming turn records one per complete frame, several a second through a run of tool calls, and each would be a statement of its own (a round trip, on D1). The index keeps the newest time per session and stores them together when one of these comes:
+Recorded activity is not stored write by write. A streaming turn records one per complete frame, several a second through a run of tool calls, and each would be a statement of its own (a round trip, on D1). The index keeps the newest time per session and stores them together, leading edge and trailing edge:
 
-- **Its wakeup**, `ACTIVITY_STORE_INTERVAL_MS` (5 s) after the first write it has not stored. The actor arranges it (`SessionIndexDeps.storeActivityLater`): the local actor with a task-manager job per index (`session-activity-wakeup.ts`), an actor that runs elsewhere with its own alarm. An index given no way to arrange one stores each write as it is recorded.
-- **A read**, as above.
+- **A session's first write after an idle interval is stored as it is recorded.** "Idle" is per session: nothing of that session was handed to storage in the last `ACTIVITY_STORE_INTERVAL_MS` (5 s). So a session that wakes up moves in storage at once, also while another session of the agent is streaming, and a process that dies a moment later has not left it where it was months ago.
+- **The writes that follow within the interval wait for the index's wakeup**, 5 s after the first of them. The actor arranges it (`SessionIndexDeps.storeActivityLater`): the local actor with a task-manager job per index (`session-activity-wakeup.ts`), an actor that runs elsewhere with its own alarm.
+- **A read** stores first, as above.
 - **A turn's `result` frame**: the live session calls `index.storeRecordedActivity()`, so a session at rest is stored as it was last written.
-- **Shutdown**: `agentRegistry.evictAll()` stores what every index still holds, since the wakeup does not come once dispatch has stopped.
+- **Shutdown**: `agentRegistry.evictAll()` stores what every index still holds, since a wakeup set before dispatch stopped is dropped with it.
 
-One store runs at a time, and what is recorded while it runs waits for the next of these rather than following it at once. The activity of several sessions goes out as one batch. What the interval costs is bounded: a process that dies without shutting down forgets at most the last 5 s of a turn that was still running, which moves that session's last activity back by as much.
+`storeActivityLater` answers true only when the wakeup will come. It answers false when there is no task manager, and once dispatch has stopped (`taskManager().accepts()`), when the manager would take the wakeup and drop it; an index that is given no way to arrange one, or is told no, stores each write as it is recorded. That is what keeps a write recorded during shutdown: a transcript append that was in flight when the agents were released is stored when it lands, not left in memory.
+
+So what is stored is never more than one interval behind what was recorded. A process that dies without shutting down (a crash, a kill, power loss) forgets at most the last 5 s of a turn that was still running, which leaves that session's last activity early by as much; it never leaves a session that was written to where it was before.
+
+One store runs at a time, and what is recorded while it runs waits for the next of these rather than following it at once. The activity of several sessions goes out as one batch.
 
 A send is recorded provisionally before the container confirms it (`recordProvisionalSessionActivity`): it shows in what is read, is taken back if the send fails, and is stored only once a real write follows.
 

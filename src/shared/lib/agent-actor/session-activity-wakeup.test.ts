@@ -111,8 +111,11 @@ describe('a local agent\'s recorded session activity', () => {
     await pass(ACTIVITY_STORE_INTERVAL_MS)
 
     expect(frames).toBe(222)
-    // One write per frame before; now at most one per interval of the turn, and the one that closes it.
-    expect(touches.length).toBeLessThanOrEqual(Math.ceil(lastFrameAt / ACTIVITY_STORE_INTERVAL_MS) + 1)
+    // One write per frame before. Now the turn's first frame (stored as it
+    // is recorded, so a session that wakes up moves at once), at most one
+    // per interval of the turn, and the one that closes it.
+    expect(touches[0]).toEqual(['s1'])
+    expect(touches.length).toBeLessThanOrEqual(Math.ceil(lastFrameAt / ACTIVITY_STORE_INTERVAL_MS) + 2)
     expect(touches.length).toBeGreaterThan(0)
     expect(await storedActivity('s1')).toBe(lastFrameAt)
 
@@ -122,19 +125,23 @@ describe('a local agent\'s recorded session activity', () => {
     expect(touches).toHaveLength(before)
   })
 
-  it('stores nothing sooner than the interval, and everything by the end of it', async () => {
+  it('stores a session\'s first frame at once, nothing more before the interval, and everything by the end of it', async () => {
     await createSession('s1', '2026-01-01T00:00:00.000Z')
     await store.index.entries()
     startTurn()
 
     frame('s1')
+    await pass(0)
+    expect(touches).toEqual([['s1']])
+    expect(await storedActivity('s1')).toBe(0)
+
     await pass(1000)
     frame('s1')
     await pass(ACTIVITY_STORE_INTERVAL_MS - 1001)
-    expect(touches).toEqual([])
+    expect(touches).toEqual([['s1']])
 
     await pass(1)
-    expect(touches).toEqual([['s1']])
+    expect(touches).toEqual([['s1'], ['s1']])
     expect(await storedActivity('s1')).toBe(1000)
   })
 
@@ -147,8 +154,11 @@ describe('a local agent\'s recorded session activity', () => {
     const { lastFrameAt } = await toolHeavyTurn('s1', 's2')
     await pass(ACTIVITY_STORE_INTERVAL_MS)
 
-    expect(touches.length).toBeLessThanOrEqual(Math.ceil(lastFrameAt / ACTIVITY_STORE_INTERVAL_MS) + 1)
-    expect(touches.every((sessionIds) => sessionIds.length === 2)).toBe(true)
+    // Each session's first frame is stored as it is recorded, a write each;
+    // every write after those carries both sessions.
+    expect(touches.slice(0, 2)).toEqual([['s1'], ['s2']])
+    expect(touches.slice(2).every((sessionIds) => sessionIds.length === 2)).toBe(true)
+    expect(touches.length).toBeLessThanOrEqual(Math.ceil(lastFrameAt / ACTIVITY_STORE_INTERVAL_MS) + 3)
     expect(await storedActivity('s1')).toBe(lastFrameAt)
     expect(await storedActivity('s2')).toBe(lastFrameAt)
   })
@@ -188,19 +198,38 @@ describe('a local agent\'s recorded session activity', () => {
     expect(sessions.map((session) => session.id)).toEqual(['older', 'newer'])
   })
 
-  it('stores what is recorded when it is told to, after dispatch has stopped at shutdown', async () => {
+  it('stores each write as it is recorded once dispatch has stopped at shutdown', async () => {
     await createSession('s1', '2026-01-01T00:00:00.000Z')
     await store.index.entries()
     startTurn()
     await taskManager().stop()
 
+    // A stopped manager would take a wakeup and drop it, so none is claimed.
     frame('s1')
     await pass(1000)
     frame('s1')
-    await pass(3 * ACTIVITY_STORE_INTERVAL_MS)
-    // No wakeup comes from a stopped manager.
-    expect(touches).toEqual([])
+    await pass(500)
+    frame('s1')
+    await pass(0)
 
+    expect(touches).toEqual([['s1'], ['s1'], ['s1']])
+    expect(await storedActivity('s1')).toBe(1500)
+  })
+
+  it('stores what a wakeup set before dispatch stopped would have, when the index is told to at the release', async () => {
+    await createSession('s1', '2026-01-01T00:00:00.000Z')
+    await store.index.entries()
+    startTurn()
+
+    frame('s1')
+    await pass(1000)
+    frame('s1')
+    await taskManager().stop()
+    await pass(3 * ACTIVITY_STORE_INTERVAL_MS)
+    // The wakeup went with dispatch.
+    expect(await storedActivity('s1')).toBe(0)
+
+    // What `agentRegistry.evictAll()` does for every agent.
     await store.index.storeRecordedActivity()
     expect(await storedActivity('s1')).toBe(1000)
   })
