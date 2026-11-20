@@ -35,6 +35,34 @@ jobs:
       - name: Run typecheck
         run: npm run typecheck
 
+
+  # The Cloudflare Worker: the unit tests run src/cf on Node, so only this builds it the way
+  # Cloudflare loads it. A dry run bundles and checks the config; it needs no account and no image.
+  cloudflare-worker:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the Worker's server code
+        run: node src/cf/build/build-worker.mjs
+
+      - name: Bundle the Worker (dry run)
+        run: |
+          mkdir -p dist/renderer
+          npx --yes wrangler@4.161.0 deploy --dry-run --containers-rollout none --config src/cf/wrangler.jsonc --outdir "$RUNNER_TEMP/cf-worker"
   lint:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
