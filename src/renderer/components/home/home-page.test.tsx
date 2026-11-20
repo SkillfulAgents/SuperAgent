@@ -650,6 +650,35 @@ describe('HomePage AgentCard', () => {
     )
   })
 
+  it('renders no agent card again while one is dragged across the board', () => {
+    const slugs = ['alpha', 'beta', 'gamma', 'delta']
+    mockAgentsData.mockReturnValue({
+      data: slugs.map((slug) => makeAgent({ slug, displaySlug: slug, name: slug })),
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+    const widget = document.querySelector('[data-widget-id="alpha"]')
+    expect(widget).not.toBeNull()
+
+    fireEvent.pointerDown(widget!, { button: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 20, clientY: 20 })
+    expect(screen.getByTestId('widget-drop-preview')).toBeInTheDocument()
+    // Every AgentCard render calls this hook once.
+    const cardRenders = mockUseNotableSessions.mock.calls.length
+    expect(cardRenders).toBeGreaterThanOrEqual(slugs.length)
+
+    // 40 pointermoves crossing several cells and rows (cells are 232 x 256 here).
+    for (let i = 1; i <= 40; i++) fireEvent.pointerMove(window, { clientX: 20 + i * 20, clientY: 20 + i * 10 })
+
+    expect(mockUseNotableSessions.mock.calls.length).toBe(cardRenders)
+
+    fireEvent.pointerUp(window)
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ homeGridLayout: expect.objectContaining({ alpha: expect.any(Object) }) }),
+      expect.any(Object),
+    )
+  })
+
   it('stages app-card visibility until Done and restores it on Cancel', () => {
     mockUserSettingsData.mockReturnValue({ hiddenAppCards: [] })
     mockAgentsData.mockReturnValue({
