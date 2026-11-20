@@ -65,4 +65,11 @@ describe('list_models', () => {
     expect(mockCallHost).toHaveBeenCalledWith('models', {}, listModelsResultSchema, { callerSessionId: 'caller-session' })
     expect(result.content[0].text).toContain('"alias": "gpt-astra"')
   })
+
+  it('says there is nothing to list when no accounts come back', async () => {
+    mockCallHost.mockResolvedValue({ accounts: [] })
+    const { makeListModelsTool } = await import('./list-models')
+    const result = await (makeListModelsTool(() => 'caller-session') as { handler: (args: unknown) => Promise<{ content: { text: string }[] }> }).handler({})
+    expect(result.content[0].text).toBe('No model accounts to list.')
+  })
 })

@@ -352,7 +352,6 @@ xAgent.post('/models', zValidator('json', z.object({ _callerSessionId: z.string(
   const callerSlug = getCallerSlug(c)
   const { _callerSessionId: sessionId } = c.req.valid('json')
   const settings = await getSettings()
-  if (!settings.llmDefault) return c.json({ accounts: [] })
   const meta = sessionId ? await agentRegistry.get(callerSlug).sessions.metadata(sessionId) : null
   const triggering = isAuthMode() && sessionId ? await getLatestMessageAuthorUserId(callerSlug, sessionId) : undefined
   const userId = await attributedUser(callerSlug, triggering, meta?.createdByUserId)

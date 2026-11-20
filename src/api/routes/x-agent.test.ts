@@ -675,10 +675,18 @@ describe('/create', () => {
 // ============================================================================
 
 describe('/models', () => {
-  it('lists no accounts without a connections setup', async () => {
-    const res = await authedFetch('/x-agent/models', {})
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ accounts: [] })
+  it('lists nothing, without failing, when no account or default is set up', async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    const rows = vi.spyOn(connections, 'selectableConnectionRows').mockResolvedValue([])
+    const prefs = vi.spyOn(preferences, 'readAgentPreferences').mockResolvedValue({} as never)
+    try {
+      const res = await authedFetch('/x-agent/models', {})
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ accounts: [] })
+    } finally {
+      ;[rows, prefs].forEach((spy) => spy.mockRestore())
+    }
   })
 
   it("marks the app's default account when the agent saved none", async () => {
