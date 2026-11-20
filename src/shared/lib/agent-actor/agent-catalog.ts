@@ -101,16 +101,14 @@ export async function resolveAgentRecordWithRole(input: string, userId: string):
 }
 
 /**
- * Which of these slugs are agents. The slugs travel as one JSON array read
- * with `json_each`, not as an `IN (?, ?, …)` list: Cloudflare D1 allows 100
- * bound parameters per statement, and a display slug names two candidates.
+ * Which of these slugs are agents. A display slug can name two candidates.
  * Exported for the test that pins the parameter count.
  */
 export function existingAgentSlugsQuery(slugs: readonly string[]) {
   return db
     .select({ slug: agents.slug })
     .from(agents)
-    .where(inList(agents.slug, slugs))
+    .where(inList(agents.slug, slugs, { otherParams: 0 }))
 }
 
 /**

@@ -15,9 +15,6 @@ export type SessionParticipant = ReturnType<typeof toUserProfile>
 
 /** Exported for tests of the statement's shape. */
 export function sessionParticipantsQuery(agentSlug: string, ids: ReadonlySet<string>) {
-  // One statement and at most two bound parameters however many sessions there
-  // are (Cloudflare D1 allows 100 per statement): the ids travel as one JSON
-  // array read with `json_each` (`inList`).
   const named = ids.size <= MAX_SESSION_IDS_IN_STATEMENT
   // Grouped before the join, so a user is looked up once per session they
   // wrote in, not once per message.
@@ -30,7 +27,7 @@ export function sessionParticipantsQuery(agentSlug: string, ids: ReadonlySet<str
     .from(messageAuthor)
     .where(and(
       eq(messageAuthor.agentSlug, agentSlug),
-      named ? inList(messageAuthor.sessionId, [...ids]) : undefined,
+      named ? inList(messageAuthor.sessionId, [...ids], { otherParams: 1 }) : undefined,
       isNotNull(messageAuthor.userId),
     ))
     .groupBy(messageAuthor.sessionId, messageAuthor.userId)

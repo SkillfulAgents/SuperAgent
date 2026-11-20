@@ -134,7 +134,7 @@ export async function deleteSessionUnreadMarks(
     .delete(sessionUnreadMarks)
     .where(and(
       eq(sessionUnreadMarks.agentSlug, agentSlug),
-      inList(sessionUnreadMarks.sessionId, sessionIds),
+      inList(sessionUnreadMarks.sessionId, sessionIds, { otherParams: 1 }),
     ))
 
   return changesOf(result)

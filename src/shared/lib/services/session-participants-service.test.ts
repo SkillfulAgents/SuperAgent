@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { and, asc, eq, inArray, isNotNull, min, sql } from 'drizzle-orm'
+import { setMaxBoundParameters } from '@shared/lib/db/bound-parameters'
 import * as schema from '../db/schema'
 import type { AppDatabase } from '../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
@@ -106,6 +107,7 @@ describe('getSessionParticipants', () => {
   })
 
   afterEach(async () => {
+    setMaxBoundParameters(undefined)
     await handle.close()
   })
 
@@ -202,10 +204,12 @@ describe('getSessionParticipants', () => {
     expect(shape(result)).toEqual(shape(await participantsBeforeSingleRead('agent-a', ids)))
   })
 
-  // Cloudflare D1 allows 100 bound parameters per statement.
-  it.each([1, 100])('binds the agent and one JSON array for %i session ids', (count) => {
+  it.each([1, 99, 100])('reserves the agent bind for %i session ids on D1', (count) => {
+    setMaxBoundParameters(100)
     const ids = Array.from({ length: count }, (_, i) => `s-${i}`)
-    expect(sessionParticipantsQuery('agent-a', new Set(ids)).toSQL().params).toEqual(['agent-a', JSON.stringify(ids)])
+    expect(sessionParticipantsQuery('agent-a', new Set(ids)).toSQL().params).toEqual([
+      'agent-a', ...(count <= 99 ? ids : [JSON.stringify(ids)]),
+    ])
   })
 
   it.each([101, 5000])('binds only the agent for %i session ids', (count) => {

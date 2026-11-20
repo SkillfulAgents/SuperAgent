@@ -37,7 +37,7 @@ export async function deleteSessionAndRecords(agentSlug: string, sessionId: stri
 export async function deleteSessionRecords(agentSlug: string, sessionIds: string[]): Promise<void> {
   if (sessionIds.length === 0) return
   // Message author records: people (auth mode) and integrations (every mode).
-  await db.delete(messageAuthor).where(and(eq(messageAuthor.agentSlug, agentSlug), inList(messageAuthor.sessionId, sessionIds)))
+  await db.delete(messageAuthor).where(and(eq(messageAuthor.agentSlug, agentSlug), inList(messageAuthor.sessionId, sessionIds, { otherParams: 1 })))
 
   // Notification rows in BOTH modes (they are stored regardless of auth mode;
   // userId is nullable), so deleting a session never leaves stale

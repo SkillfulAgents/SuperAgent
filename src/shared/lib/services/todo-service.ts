@@ -297,17 +297,17 @@ export async function deleteTodo(userId: string, id: string): Promise<boolean> {
  * Scoped to the agent because a session id is unique only within one.
  */
 export function unlinkSessionStatements(agentSlug: string, sessionIds?: string[]) {
-  const linked = sessionIds
-    ? and(eq(todos.agentSlug, agentSlug), inList(todos.sessionId, sessionIds))
+  const linked = (otherParams: number) => sessionIds
+    ? and(eq(todos.agentSlug, agentSlug), inList(todos.sessionId, sessionIds, { otherParams }))
     : and(eq(todos.agentSlug, agentSlug), isNotNull(todos.sessionId))
   const now = new Date()
   return [
     db.update(todos)
       .set({ status: 'draft', sessionId: null, startedAt: null, updatedAt: now })
-      .where(and(linked, eq(todos.status, 'active'))),
+      .where(and(linked(6), eq(todos.status, 'active'))), // Four SET values, agent, status.
     db.update(todos)
       .set({ sessionId: null, updatedAt: now })
-      .where(linked),
+      .where(linked(3)), // Two SET values and agent.
   ] as const
 }
 

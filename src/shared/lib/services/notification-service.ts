@@ -464,7 +464,7 @@ export async function deleteNotificationsBySessionIds(agentSlug: string, session
 
   const result = await db
     .delete(notifications)
-    .where(and(eq(notifications.agentSlug, agentSlug), inList(notifications.sessionId, sessionIds)))
+    .where(and(eq(notifications.agentSlug, agentSlug), inList(notifications.sessionId, sessionIds, { otherParams: 1 })))
     .returning(changeAudience())
 
   publishChanges(result)

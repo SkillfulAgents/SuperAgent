@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { eq, type SQL } from 'drizzle-orm'
+import { setMaxBoundParameters } from '@shared/lib/db/bound-parameters'
 import * as schema from '@shared/lib/db/schema'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -41,6 +42,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  setMaxBoundParameters(undefined)
   if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = previousDataDir
   await handle.close()
@@ -424,8 +426,22 @@ describe('reading rows', () => {
       expect(select).not.toHaveBeenCalled()
     })
 
-    it('binds one parameter however many slugs are asked about', () => {
-      const slugs = Array.from({ length: 200 }, (_, i) => `slug-${i}`)
+    it('matches the same stored text on either side of the limit', async () => {
+      await insertRow('slug-\uFFFD', 'Stored')
+      const slugs = ['slug-\uD800', 'missing']
+      const expected = [{ slug: 'slug-\uFFFD' }]
+      expect(await existingAgentSlugsQuery(slugs).all()).toEqual(expected)
+      setMaxBoundParameters(1)
+      expect(await existingAgentSlugsQuery(slugs).all()).toEqual(expected)
+    })
+
+    it('uses the active driver limit when binding slugs', () => {
+      const slugs = Array.from({ length: 101 }, (_, i) => `slug-${i}`)
+      expect(existingAgentSlugsQuery(slugs).toSQL().params).toEqual(slugs)
+
+      setMaxBoundParameters(100)
+      expect(existingAgentSlugsQuery([]).toSQL().params).toEqual([])
+      expect(existingAgentSlugsQuery(slugs.slice(0, 100)).toSQL().params).toEqual(slugs.slice(0, 100))
       expect(existingAgentSlugsQuery(slugs).toSQL().params).toEqual([JSON.stringify(slugs)])
     })
   })

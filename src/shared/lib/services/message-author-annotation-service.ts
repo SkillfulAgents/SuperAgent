@@ -3,10 +3,8 @@
  * in one statement: an integration's card (`integration`) and, when asked for,
  * the person's profile (`sender`) or the calling agent (`agentSender`).
  *
- * The statement binds a fixed number of parameters however many messages the
- * response holds. The ids travel as one JSON array read with `json_each`, not
- * as an `IN (?, ?, …)` list: Cloudflare D1 allows 100 bound parameters per
- * statement and a page holds up to 500 messages.
+ * A page holds up to 500 messages. The ID filter shares the driver’s
+ * parameter budget with the agent slug and session ID.
  */
 
 import { and, eq } from 'drizzle-orm'
@@ -30,7 +28,7 @@ function parseDisplay(json: string | null): IntegrationMessageDisplay | null {
 
 /**
  * The one read: the session's author rows, each with its user's profile
- * fields. `ids` narrows it to those messages; it is bound as one parameter.
+ * fields. An ID list narrows the read to those messages.
  * Exported for the test that pins the parameter count.
  */
 export function messageAuthorsQuery(agentSlug: string, sessionId: string, ids: readonly string[] | null) {
@@ -49,7 +47,7 @@ export function messageAuthorsQuery(agentSlug: string, sessionId: string, ids: r
     .where(and(
       eq(messageAuthor.agentSlug, agentSlug),
       eq(messageAuthor.sessionId, sessionId),
-      ids ? inList(messageAuthor.id, ids) : undefined,
+      ids ? inList(messageAuthor.id, ids, { otherParams: 2 }) : undefined,
     ))
 }
 
