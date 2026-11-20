@@ -22,7 +22,7 @@ vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: async () => {} },
   sessions: { create: runtime.create, register: async () => {}, updateMetadata: async () => {}, markActive: () => {},
     attach: async () => {},
-    live: async () => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: true, openRequests: [], runtime: null }) },
+    live: async () => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: true, openRequests: [], runtime: null, actingMessageUuid: null }) },
   messages: {
     subscribe: async () => new ReadableStream(),
     deliver: async (request: { sessionId: string; content: string; uuid?: string }) => {

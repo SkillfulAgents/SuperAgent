@@ -7592,7 +7592,7 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(424)
     expect(await res.json()).toMatchObject({ code: 'provider_reconnect_required' })
-    expect(mockLiveSessions.markSending).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(mockLiveSessions.markSending).toHaveBeenCalledWith('test-agent', 'sess-1', expect.any(String))
     expect(mockLiveSessions.rollbackSend).toHaveBeenCalledExactlyOnceWith('test-agent', 'sess-1')
   })
 

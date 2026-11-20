@@ -216,6 +216,10 @@ export class LiveSession {
   isRecovering: boolean
   /** Messages sent while recovering, delivered with their uuids once it is done. */
   coalescedUserMessages: CoalescedUserMessage[] | undefined
+  /** The uuid of the message the session acts on: the send that started its turn, or the queued one the runtime started last. */
+  private actingUuid: string | null
+  /** Messages this host sent that the runtime has not started, dropped or discarded yet: only these can become acting. */
+  private readonly pendingUuids: Set<string>
   /**
    * The runtime publishes its session state (idle/running), so it decides
    * when the session settles: a result alone doesn't, since queued messages
@@ -302,6 +306,8 @@ export class LiveSession {
     this.isAwaitingInput = prior?.isAwaitingInput ?? false
     this.isRecovering = prior?.isRecovering ?? false
     this.coalescedUserMessages = prior?.coalescedUserMessages
+    this.actingUuid = prior?.actingUuid ?? null
+    this.pendingUuids = prior?.pendingUuids ?? new Set()
     this.stateEventsAuthority = prior?.stateEventsAuthority ?? false
     this.lastResultSubtype = prior?.lastResultSubtype ?? null
     this.lastResultCleanSuccess = prior?.lastResultCleanSuccess ?? false
@@ -470,6 +476,7 @@ export class LiveSession {
       this.response.messageQueued()
     } else {
       // Turn-scoped.
+      this.actingUuid = null
       this.subagents.clear()
       this.stream.newTurn()
       this.response.newTurn()
@@ -491,6 +498,36 @@ export class LiveSession {
     // The boundary settled the last turn's parked requests, so this picks up
     // only waits that survive a new message: a review or re-auth card.
     this.syncAwaiting()
+  }
+
+  /**
+   * Who a call acts for is read from the message this returns. Only uuids this
+   * host sent are adopted, and only while the session is active.
+   */
+  actingMessageUuid(): string | null {
+    return this.isActive ? this.actingUuid : null
+  }
+
+  /**
+   * A message was sent: one that starts the turn acts from now, a queued one
+   * once the runtime starts it. A send that names no message starts a turn
+   * acting on none.
+   */
+  messageSent(uuid: string | undefined, queued: boolean): void {
+    if (queued) {
+      if (uuid) this.pendingUuids.add(uuid)
+      return
+    }
+    this.pendingUuids.clear()
+    this.actingUuid = uuid ?? null
+    // Kept until the runtime starts it, which it reports only if it queued it after all.
+    if (uuid) this.pendingUuids.add(uuid)
+  }
+
+  /** The message did not go. */
+  messageWithdrawn(uuid: string): void {
+    this.pendingUuids.delete(uuid)
+    if (this.actingUuid === uuid) this.actingUuid = null
   }
 
   /**
@@ -675,6 +712,8 @@ export class LiveSession {
     this.quietTurn = false
     this.abandonHostRuns()
     this.stream.stop()
+    // The messages queued in the runtime went with it.
+    this.pendingUuids.clear()
     this.isAwaitingInput = false
     this.subagents.clear()
     // Its background tasks went with it.
@@ -749,6 +788,8 @@ export class LiveSession {
     if (!text) return true
     const entry: CoalescedUserMessage = { uuid: message.uuid, text }
     if (message.shouldQuery === false) entry.shouldQuery = false
+    // Recovery sends it straight to the runtime: it acts once the runtime starts it.
+    else this.pendingUuids.add(message.uuid)
     this.coalescedUserMessages = [...(this.coalescedUserMessages ?? []), entry]
     return true
   }
@@ -764,6 +805,7 @@ export class LiveSession {
     if (!this.coalescedUserMessages) return false
     const next = this.coalescedUserMessages.filter((message) => message.uuid !== uuid)
     if (next.length === this.coalescedUserMessages.length) return false
+    this.pendingUuids.delete(uuid)
     this.coalescedUserMessages = next.length > 0 ? next : undefined
     return true
   }
@@ -773,6 +815,8 @@ export class LiveSession {
    * idle, a stop and a lost runtime.
    */
   private finalizeIdle(): void {
+    // Settled: no message is waiting to start, so no later frame may adopt one.
+    this.pendingUuids.clear()
     const outcome = this.isInterrupted ? 'cancelled' : this.lastResultCleanSuccess ? 'completed' : undefined
     // Truly settled: persist a clean success as the automation's outcome.
     // (A failure was persisted at its result; a stop never sets the flag.)
@@ -1110,6 +1154,7 @@ export class LiveSession {
         // renderer joins terminal states back to its optimistic ghosts.
         const lifecycle = parseCommandLifecycle(content)
         if (!lifecycle) return
+        this.commandLifecycle(lifecycle.commandUuid, lifecycle.state)
         this.ctx.emit({ type: 'command_lifecycle', commandUuid: lifecycle.commandUuid, state: lifecycle.state })
         // A discarded message never ran, so whoever it tagged is not told.
         if (lifecycle.state === 'discarded') {
@@ -1388,6 +1433,27 @@ export class LiveSession {
     this.announceTurn()
   }
 
+  /** The runtime's word on a message it queued; only uuids this host sent count. */
+  private commandLifecycle(uuid: string, state: string): void {
+    if (!this.pendingUuids.has(uuid)) return
+    switch (state) {
+      case 'queued':
+        // The send was taken as starting the turn, but the runtime queued it: it acts once started.
+        if (this.actingUuid === uuid) this.actingUuid = null
+        return
+      case 'started':
+      case 'completed':
+        // The message it replaces, and this one, can no longer be adopted by a replayed frame.
+        if (this.actingUuid) this.pendingUuids.delete(this.actingUuid)
+        this.pendingUuids.delete(uuid)
+        this.actingUuid = uuid
+        return
+      case 'cancelled':
+      case 'discarded':
+        this.pendingUuids.delete(uuid)
+    }
+  }
+
   /**
    * A turn we didn't start (a queued message picked up after an out-of-order
    * idle, a quiet turn that showed output): heal. The prior result guard
@@ -1395,6 +1461,8 @@ export class LiveSession {
    * and clearing it would leave the session active until disconnect.
    */
   private announceTurn(): void {
+    // A turn the runtime started on its own after the session settled acts on no message.
+    if (!this.isActive) this.actingUuid = null
     this.quietTurn = false
     this.isActive = true
     this.response.newTurn()

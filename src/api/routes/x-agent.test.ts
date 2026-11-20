@@ -174,6 +174,7 @@ function expectBoundedSyncWait(sessionId: string): void {
   expect(opts.timeoutMs).toBeLessThanOrEqual(120_000)
 }
 const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
+const mockActingMessageUuid = vi.fn((_agentSlug?: string, _sessionId?: string): string | null => null)
 const mockActiveIds = vi.fn((_agentSlug: string): string[] => [])
 const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]): Promise<'idle' | 'timeout'> => 'idle')
@@ -197,6 +198,7 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
       return { queued, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
     isActive: (agentSlug, sessionId) => mockIsSessionActive(agentSlug, sessionId),
+    actingMessageUuid: (agentSlug, sessionId) => mockActingMessageUuid(agentSlug, sessionId),
     activeIds: (agentSlug) => mockActiveIds(agentSlug),
     isAwaitingInput: (agentSlug, sessionId) => mockIsSessionAwaitingInput(agentSlug, sessionId),
     waitForIdle: (...args) => mockWaitForIdle(...args),
@@ -306,6 +308,11 @@ function authedFetch(path: string, body: unknown, token = CALLER_TOKEN) {
   })
 }
 
+/** The caller session acts on the message `uuid` (see `LiveSession.actingMessageUuid`). */
+function callerActsOn(callerSessionId: string, uuid: string) {
+  mockActingMessageUuid.mockImplementation((slug, sessionId) => (slug === CALLER_SLUG && sessionId === callerSessionId ? uuid : null))
+}
+
 async function grantCallerOwnerTargetAccess() {
   await testDb.insert(schema.agentAcl).values({
     id: randomUUID(),
@@ -412,6 +419,7 @@ beforeEach(async () => {
   xAgentReviewRequests.length = 0
   vi.clearAllMocks()
   mockIsSessionActive.mockReturnValue(false)
+  mockActingMessageUuid.mockReturnValue(null)
   mockIsSessionAwaitingInput.mockReturnValue(false)
   mockWaitForIdle.mockResolvedValue('idle')
   mockSessionIsKnown.mockResolvedValue(true)
@@ -785,7 +793,7 @@ describe('/invoke', () => {
     // The id no longer needs claiming: markSessionActive creates the state
     // under a key that already carries the target agent, so it cannot collide
     // with another agent's session of the same id.
-    expect(mockMarkSessionActive).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
+    expect(mockMarkSessionActive).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id', undefined)
     expect(mockRegisterSession).toHaveBeenCalledWith(
       expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
@@ -963,11 +971,13 @@ describe('/invoke', () => {
     )
   })
 
-  it('attributes a new invoked message to the latest sender in a shared caller session', async () => {
+  it('attributes a new invoked message to the sender of the message the caller acts on, not a newer queued one', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
     const callerSessionId = 'shared-caller-session'
     await grantCallerOwnerTargetAccess()
+    // The owner's message runs; the other member's, written later, is queued behind it.
+    callerActsOn(callerSessionId, 'owner-message')
     await testDb.insert(schema.messageAuthor).values([
       {
         id: 'owner-message',
@@ -987,7 +997,8 @@ describe('/invoke', () => {
     mockGetSessionMetadata.mockResolvedValue({
       name: 'Shared session',
       createdAt: new Date().toISOString(),
-      createdByUserId: OWNER_USER_ID,
+      // Neither the creator nor the newest sender: only the acting message names the owner.
+      createdByUserId: OTHER_USER_ID,
     })
 
     const res = await authedFetch('/x-agent/invoke', {
@@ -1009,22 +1020,96 @@ describe('/invoke', () => {
         agentSlug: TARGET_SLUG,
         userId: null,
         authorAgentSlug: CALLER_SLUG,
-        billedUserId: OTHER_USER_ID,
+        billedUserId: OWNER_USER_ID,
       }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
       expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
-      expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
+      expect.objectContaining({ createdByUserId: OWNER_USER_ID }),
     )
   })
 
-  it('falls back to the session creator when no message author is recorded', async () => {
+  it('attributes to the newest sender, as before, when no message is acting', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'idle-caller-session'
+    await grantCallerOwnerTargetAccess()
+    await testDb.insert(schema.messageAuthor).values({
+      id: 'other-message', sessionId: callerSessionId, agentSlug: CALLER_SLUG, userId: OTHER_USER_ID, createdAt: new Date(),
+    })
+    mockGetSessionMetadata.mockResolvedValue({
+      name: 'Idle session',
+      createdAt: new Date().toISOString(),
+      createdByUserId: OWNER_USER_ID,
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'from a script after the turn',
+      _callerSessionId: callerSessionId,
+    })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: null, billedUserId: OTHER_USER_ID })])
+  })
+
+  it('attributes to the newest sender when the caller session cannot be read', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'unreadable-caller-session'
+    await grantCallerOwnerTargetAccess()
+    mockActingMessageUuid.mockImplementation(() => { throw new Error('session state unavailable') })
+    await testDb.insert(schema.messageAuthor).values({
+      id: 'other-message', sessionId: callerSessionId, agentSlug: CALLER_SLUG, userId: OTHER_USER_ID, createdAt: new Date(),
+    })
+    mockGetSessionMetadata.mockResolvedValue({ name: 'Session', createdAt: new Date().toISOString(), createdByUserId: OWNER_USER_ID })
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', _callerSessionId: callerSessionId })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: null, billedUserId: OTHER_USER_ID })])
+  })
+
+  it('attributes to the newest sender when the acting message names no person', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'integration-caller-session'
+    await grantCallerOwnerTargetAccess()
+    callerActsOn(callerSessionId, 'integration-message-with-no-person')
+    await testDb.insert(schema.messageAuthor).values([
+      { id: 'other-message', sessionId: callerSessionId, agentSlug: CALLER_SLUG, userId: OTHER_USER_ID, createdAt: new Date('2026-01-01T00:00:00.000Z') },
+      // The acting message came through an integration: its record names no person.
+      { id: 'integration-message-with-no-person', sessionId: callerSessionId, agentSlug: CALLER_SLUG, integrationId: 'slack-1', display: '{}', createdAt: new Date('2026-01-01T00:00:01.000Z') },
+    ])
+    mockGetSessionMetadata.mockResolvedValue({ name: 'Integration session', createdAt: new Date().toISOString(), createdByUserId: OWNER_USER_ID })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'from a slack message',
+      _callerSessionId: callerSessionId,
+    })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb
+      .select()
+      .from(schema.messageAuthor)
+      .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: null, billedUserId: OTHER_USER_ID })])
+  })
+
+  it('falls back to the session creator when the acting message has no author record', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
     const callerSessionId = 'legacy-caller-session'
     await grantCallerOwnerTargetAccess()
+    callerActsOn(callerSessionId, 'message-with-no-author-row')
     mockGetSessionMetadata.mockResolvedValue({
       name: 'Legacy shared session',
       createdAt: new Date().toISOString(),
@@ -1119,6 +1204,7 @@ describe('/invoke', () => {
     reviewDecisions.push('allow')
     const callerSessionId = 'shared-caller-session'
     await grantCallerOwnerTargetAccess()
+    callerActsOn(callerSessionId, 'other-message')
     await testDb.insert(schema.messageAuthor).values({
       id: 'other-message',
       sessionId: callerSessionId,
@@ -3008,8 +3094,10 @@ describe('cross-agent authorization decision table', () => {
       // An unknown session ends the request right after it is authorized.
       mockSessionIsKnown.mockResolvedValue(false)
       const body = { slug: DISPLAY_SLUG, prompt: 'hi', sessionId: 'unknown-session', _callerSessionId: 'caller-session' }
+      const acting = randomUUID()
+      callerActsOn('caller-session', acting)
       await testDb.insert(schema.messageAuthor).values({
-        id: randomUUID(), sessionId: 'caller-session', agentSlug: CALLER_SLUG, userId: OWNER_USER_ID, createdAt: new Date(),
+        id: acting, sessionId: 'caller-session', agentSlug: CALLER_SLUG, userId: OWNER_USER_ID, createdAt: new Date(),
       })
       expect(await tablesRead('invoke', body))
         .toEqual({ status: 404, tables: ['agent_acl', 'agents', 'message_author', 'x_agent_policies'] })
