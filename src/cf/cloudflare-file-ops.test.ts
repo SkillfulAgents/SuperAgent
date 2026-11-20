@@ -306,6 +306,27 @@ describe('Cloudflare file ops while the container runs', () => {
   })
 })
 
+describe('Cloudflare file ops while the container runs, against its file routes', () => {
+  it('sends the mode a write asks for, and maps the container 409 codes to the file errors', async () => {
+    const calls: string[] = []
+    const call = async (path: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? 'GET'} ${path}`)
+      if (path.startsWith('/files/notes/upload')) return Response.json({ error: 'Destination is not a regular file', code: 'not-a-file' }, { status: 409 })
+      if (path === '/files/report.md/attachments/mkdir') return Response.json({ error: 'A file is in the way', code: 'not-a-directory' }, { status: 409 })
+      return Response.json({ success: true })
+    }
+    const files = createCloudflareFileOps(call, unused)
+
+    await files.putDoc('bin/tool', '#!/bin/sh\n', { mode: 0o755 })
+    await files.write('bin/other', new TextEncoder().encode('x'), { mode: 0o700 })
+    await files.putDoc('bin/plain', 'x')
+    expect(calls).toEqual(['POST /files/bin/tool/upload?mode=755', 'POST /files/bin/other/upload?mode=700', 'POST /files/bin/plain/upload'])
+
+    await expect(files.putDoc('notes', 'x')).rejects.toMatchObject({ code: 'not-a-file' })
+    await expect(files.mkdir('report.md/attachments')).rejects.toMatchObject({ code: 'not-a-directory' })
+  })
+})
+
 describe('Cloudflare file ops while the container is asleep', () => {
   it('reads, writes and deletes the saved workspace, without calling the container', async () => {
     const container = fakeContainer()

@@ -33,6 +33,8 @@ const OPEN_WHOLE_BYTES = 1024 * 1024
 const CHUNK_BYTES = 64 * 1024
 
 const encodePath = (rel: string) => rel.split('/').map(encodeURIComponent).join('/')
+/** The upload's `mode` query, as the container's file routes take it: permission bits in octal. */
+const modeQuery = (mode?: number) => (mode === undefined ? '' : `?mode=${(mode & 0o777).toString(8).padStart(3, '0')}`)
 const toBytes = (bytes: Uint8Array | string) => (typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes)
 
 /** The workspace path of a file to write: the root is a folder, never a file. */
@@ -46,6 +48,17 @@ async function failed(response: Response, rel: string): Promise<never> {
   if (response.status === 404) throw new WorkspaceFileError('not-found')
   if (response.status === 403) throw new WorkspaceFileError('outside-workspace')
   const body = await response.text().catch(() => '')
+  // A file or folder in the way: the container names which.
+  if (response.status === 409) {
+    const code = (() => {
+      try {
+        return (JSON.parse(body) as { code?: unknown }).code
+      } catch {
+        return undefined
+      }
+    })()
+    if (code === 'not-a-file' || code === 'not-a-directory') throw new WorkspaceFileError(code)
+  }
   throw new Error(`Container file API ${response.status} for ${rel || '/'}: ${body.slice(0, 200)}`)
 }
 
@@ -201,11 +214,10 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
     throw new Error(`The container for ${rel || '/'} kept starting and stopping`)
   }
 
-  // The container's upload takes no mode: a mode asked for is kept only while the agent sleeps.
   const upload = (rel: string, bytes: Uint8Array, mode?: number) =>
     change(
       rel,
-      () => awake(`/files/${encodePath(rel)}/upload`, { method: 'POST', body: bytes as Uint8Array<ArrayBuffer> }),
+      () => awake(`/files/${encodePath(rel)}/upload${modeQuery(mode)}`, { method: 'POST', body: bytes as Uint8Array<ArrayBuffer> }),
       () => sleeping.write(rel, bytes, mode),
     )
 
@@ -267,7 +279,7 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
           controller.enqueue(chunk)
         },
       }))
-      const response = await callContainer(`/files/${encodePath(rel)}/upload`, { method: 'POST', body: counted })
+      const response = await callContainer(`/files/${encodePath(rel)}/upload${modeQuery(options?.mode)}`, { method: 'POST', body: counted })
       if (response && !(response.status === 503 && response.headers.get(ASLEEP_HEADER) === '1')) {
         if (!response.ok) await failed(response, rel)
         return { size }
