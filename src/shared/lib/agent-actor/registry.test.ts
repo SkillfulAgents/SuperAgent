@@ -316,16 +316,28 @@ describe('createAgentRegistry', () => {
   })
 
   it('evictAll releases every agent even when one\'s recorded activity cannot be stored', async () => {
-    await taskManager().stop()
-    const sessionIndexStorage = (): SessionIndexStorage => ({
-      ...createInMemorySessionIndexStorage(),
-      touch: async () => { throw new Error('database closed') },
-    })
+    let closed = false
+    const sessionIndexStorage = (): SessionIndexStorage => {
+      const storage = createInMemorySessionIndexStorage()
+      return {
+        ...storage,
+        touch: async (activity) => {
+          if (closed) throw new Error('database closed')
+          return storage.touch(activity)
+        },
+      }
+    }
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const registry = createAgentRegistry({ ...fake.deps, sessionIndexStorage } as LocalActorDeps)
     fake.recordSessionActivity.mockImplementation((store: SessionStore, sessionId: string, at: number) => store.index.recordActivity(sessionId, at))
     const a = registry.get('a')
+    // The first write is stored as it is recorded; the second is what the release finds.
     await a.sessions.recordActivity('s1', 1234)
+    await backgroundSettled()
+    await a.sessions.recordActivity('s1', 2345)
+    await backgroundSettled()
+    closed = true
+    await taskManager().stop()
 
     await expect(registry.evictAll()).resolves.toBeUndefined()
 
