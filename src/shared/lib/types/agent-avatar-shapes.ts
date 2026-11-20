@@ -13,10 +13,9 @@ import type { AgentAvatarShape } from './agent-avatar'
 
 type Point = readonly [number, number]
 
-export type OrbShapeName = AgentAvatarShape
-
 export interface OrbShape {
-  name: OrbShapeName
+  /** Identifies a rendered shape, including ones no agent can pick. */
+  name: string
   label: string
   /** Outline, unit space. */
   points: readonly Point[]
@@ -27,6 +26,11 @@ export interface OrbShape {
   /** How a change of gaze moves: duration (ms) and cubic-bézier control points. */
   duration: number
   ease: readonly [number, number, number, number]
+}
+
+export interface AvatarShape extends OrbShape {
+  /** Stable persisted key; renames require a data migration. */
+  name: AgentAvatarShape
 }
 
 export const FREE_EASE = [0.34, 0.7, 0.2, 1] as const
@@ -69,7 +73,7 @@ function arc(cx: number, cy: number, radius: number, from: number, to: number, c
 
 const signedPow = (value: number, exponent: number) => Math.sign(value) * Math.abs(value) ** exponent
 
-export const ORB_SHAPES: readonly OrbShape[] = [
+export const ORB_SHAPES: readonly AvatarShape[] = [
   {
     name: 'circle', label: 'Circle', duration: 850, ease: FREE_EASE,
     points: polar(128, t => [0.96 * Math.cos(t), 0.96 * Math.sin(t)]),
@@ -112,8 +116,46 @@ export const ORB_SHAPES: readonly OrbShape[] = [
   },
 ]
 
-export const orbShape = (name: OrbShapeName | undefined): OrbShape =>
+export const orbShape = (name: AgentAvatarShape | undefined): AvatarShape =>
   ORB_SHAPES.find(shape => shape.name === name) ?? ORB_SHAPES[0]
+
+/**
+ * Lucide's `brain` icon, filled: the outer arcs of its 24-unit grid (right
+ * half; the left mirrors), so the two small lobes on top and the notches at
+ * the fissure's ends match the sidebar's nav icon. The lobes chain round the
+ * centre without covering it, so every ray from it meets one, and the
+ * farthest meeting is the outline. A blur along the outline softens where
+ * lobes meet, so it reads as one form rather than a cluster.
+ */
+const BRAIN_LOBES = ([[15, 5, 3], [17, 9, 4], [18, 14, 4], [16, 18, 4]] as const)
+  .flatMap(([x, y, r]) => [[x, y, r], [24 - x, y, r]])
+  .map(([x, y, r]) => [(x - 12) / 10, (y - 12) / 10, r / 10] as const)
+
+function brainOutline(): Point[] {
+  const count = 240
+  const blur = 4 // samples, ≈6°
+  const reaches = polar(count, t => [Math.cos(t), Math.sin(t)]).map(([fx, fy]) =>
+    Math.max(...BRAIN_LOBES.map(([cx, cy, r]) => {
+      const along = cx * fx + cy * fy
+      const disc = along * along - (cx * cx + cy * cy) + r * r
+      return disc < 0 ? 0 : along + Math.sqrt(disc)
+    })))
+  const kernel = Array.from({ length: blur * 6 + 1 }, (_, j) => Math.exp(-((j - blur * 3) ** 2) / (2 * blur * blur)))
+  const weight = kernel.reduce((sum, w) => sum + w, 0)
+  const outline = reaches.map((_, i): Point => {
+    const t = (i / count) * Math.PI * 2
+    const r = kernel.reduce((sum, w, j) => sum + w * reaches[(i + j - blur * 3 + count) % count], 0) / weight
+    return [r * Math.cos(t), r * Math.sin(t)]
+  })
+  const extent = Math.max(...outline.flat().map(Math.abs))
+  return outline.map(([x, y]): Point => [(0.96 * x) / extent, (0.96 * y) / extent])
+}
+
+/** Team Brain's own shape: never on offer in the picker, never an agent's own look. */
+export const BRAIN_SHAPE: OrbShape = {
+  name: 'brain', label: 'Brain', duration: 950, ease: FREE_EASE,
+  points: brainOutline(),
+}
 
 /** CSS `path()` data for the outline at `size` px. */
 export function shapePath(shape: OrbShape, size: number): string {

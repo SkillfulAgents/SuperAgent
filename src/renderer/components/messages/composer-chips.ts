@@ -2,6 +2,7 @@ import type { ComponentType, ForwardRefExoticComponent, ReactNode, RefAttributes
 import type { DOMOutputSpec } from 'prosemirror-model'
 import type { QueryClient } from '@tanstack/react-query'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
+import type { ApiAgent } from '@shared/lib/types/api'
 import { appendMentions, parseMentions, type Mention } from '@shared/lib/utils/mentions'
 import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
@@ -23,6 +24,7 @@ export interface ChipAgent {
   displaySlug: string
   name: string
   avatar?: AgentAvatar | null
+  teamBrain?: ApiAgent['teamBrain']
 }
 
 /** What the composer knows about its agent, for kinds whose referent can go away. */

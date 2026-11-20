@@ -23,7 +23,7 @@ const AVATAR_SIZE = 18
 
 // Plain objects, so React Query keeps the result when a refetch (an agent's status) changes nothing here.
 function toChipAgents(agents: ApiAgent[]): ChipAgent[] {
-  return agents.map((agent) => ({ slug: agent.slug, displaySlug: agent.displaySlug, name: agent.name, avatar: agent.avatar }))
+  return agents.map((agent) => ({ slug: agent.slug, displaySlug: agent.displaySlug, name: agent.name, avatar: agent.avatar, teamBrain: agent.teamBrain }))
 }
 
 /** The people and agents mentions can name, as `ChipContext` carries them. */
@@ -44,7 +44,7 @@ export function agentForSlug(agents: ReadonlyMap<string, ChipAgent> | undefined,
 }
 
 function AgentIcon({ agent }: { agent: ChipAgent | undefined }) {
-  return agent?.avatar
+  return agent?.avatar || agent?.teamBrain
     ? <AgentAvatar agent={agent} size={AVATAR_SIZE} />
     : <Bot className="size-4 shrink-0" aria-hidden />
 }

@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DEFAULT_ORBS } from '@shared/lib/types/agent-avatar-orbs'
 import { OrbAvatar, type AvatarMotionState } from './orb-avatar'
-import { orbShape, shapePath, type OrbShapeName } from '@shared/lib/types/agent-avatar-shapes'
+import { AgentAvatar } from './agent-avatar'
+import type { AgentAvatarShape } from '@shared/lib/types/agent-avatar'
+import { orbShape, shapePath } from '@shared/lib/types/agent-avatar-shapes'
 
 const layer = (name: string) => document.querySelector(`[data-orb-layer="${name}"]`) as HTMLElement
 const body = () => layer('glow').parentElement as HTMLElement
@@ -29,7 +31,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const orb = (state: AvatarMotionState, shape: OrbShapeName = 'circle', followPointer?: string) => (
+const orb = (state: AvatarMotionState, shape: AgentAvatarShape = 'circle', followPointer?: string) => (
   <div data-testid="region" data-follow="">
     <OrbAvatar orb={DEFAULT_ORBS[0]} shape={orbShape(shape)} diameter={28} restingPhi={-90} state={state} followPointer={followPointer} />
   </div>
@@ -331,5 +333,16 @@ describe('OrbAvatar visibility', () => {
     // 24 display frames over 192ms: every other one paints.
     expect(paints.mock.calls.length).toBeGreaterThan(6)
     expect(paints.mock.calls.length).toBeLessThanOrEqual(13)
+  })
+})
+
+describe('AgentAvatar for Team Brain', () => {
+  it("draws Team Brain's own orb whatever its agent's persisted avatar", () => {
+    const { container } = render(
+      <AgentAvatar agent={{ slug: 'brain', avatar: { color: 'tonal-red', shape: 'circle' }, teamBrain: { volumeId: 'v1' } }} size={28} />,
+    )
+    const root = container.querySelector('[data-avatar-orb]')!
+    expect(root.getAttribute('data-avatar-orb')).toBe('team-brain')
+    expect(root.getAttribute('data-avatar-shape')).toBe('brain')
   })
 })

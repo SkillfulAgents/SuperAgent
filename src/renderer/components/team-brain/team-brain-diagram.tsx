@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Folder, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { AgentAvatar, AvatarView } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { OFFERED_ORBS } from '@shared/lib/types/agent-avatar-orbs'
+import { TEAM_BRAIN_AVATAR } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { ambientAnimationAllowed, subscribeToAmbientAnimationAllowed, subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { teamBrainSource } from '@renderer/lib/team-brain/team-brain-sources'
 import { TEAM_BRAIN_SOURCE_IDS } from '@renderer/lib/team-brain/team-brain-schema'
-import { TeamBrainMark } from './team-brain-mark'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 
 /**
@@ -424,7 +424,7 @@ export function TeamBrainDiagram({ className }: { className?: string }) {
           }}
         />
         <span className="absolute z-10" style={{ left: BRAIN.x - BRAIN.half, top: BRAIN.y - BRAIN.half }}>
-          <TeamBrainMark size="lg" className="shadow-md" />
+          <AvatarView source={TEAM_BRAIN_AVATAR} size={BRAIN.half * 2} />
         </span>
 
         <div
