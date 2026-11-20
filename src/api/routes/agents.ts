@@ -4167,7 +4167,7 @@ agents.post(
     const credential = retrieved.credential
     // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
     const filledSite = siteOfOrigin(retrieved.expectedOrigin)
-    if (filledSite) beginSignInStep(agentSlug, { site: filledSite, username: credential.username || null, accountId: null })
+    if (filledSite) await beginSignInStep(agentSlug, { site: filledSite, username: credential.username || null, accountId: null })
 
     const actor = agentRegistry.get(agentSlug)
     const fillResponse = await actor.container.fetch('/browser/fill-credential', {
@@ -4556,7 +4556,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // The site as it is before the step, for the watch after it: only when the
     // step can be an account's, from where it signs that account in.
     const watched = (account !== null || saving) && await watchesStep({ agentSlug, sessionId, site, context, username: identity })
-    beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
+    await beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
     const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: { site, origin: account?.origin ?? context.origin } }) : null
     let filled: Awaited<ReturnType<typeof fillLoginInContainer>>
     try {
@@ -4677,7 +4677,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // an account not saved: then nothing the site holds next is saved, to
     // this account or one before it (beginSignInStep, above).
     if (wentIn.some(Boolean) && usedAccount && (!identity || usernameKey(identity) === usernameKey(usedAccount.username))) {
-      watchSignIn({ agentSlug, sessionId, account: usedAccount, baseline })
+      await watchSignIn({ agentSlug, sessionId, account: usedAccount, baseline })
       askForRequestedMethod(agentSlug, sessionId, usedAccount)
     }
     trackServerEvent('login_request_filled', {
@@ -4779,7 +4779,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
       }
     }
     // The site before the agent goes to the provider, from a sign-in's first page only (session-host).
-    beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
+    await beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
     const baseline = isFirstSignInPage(context) ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
     const answered = await answerLoginRequest(agentSlug, body.toolUseId, {
       type: 'via',
@@ -4792,7 +4792,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
     claimed = null
     // The site's own session, once the provider sends the agent back signed in.
-    watchSignIn({ agentSlug, sessionId, account, baseline })
+    await watchSignIn({ agentSlug, sessionId, account, baseline })
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
@@ -4854,7 +4854,7 @@ agents.post(
     const shown = noteUsername(identity)
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
     // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
-    if (site) beginSignInStep(agentSlug, { site, username: credential.username || null, accountId: null })
+    if (site) await beginSignInStep(agentSlug, { site, username: credential.username || null, accountId: null })
     const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, site
       ? { ...(shown ? { username: shown } : {}), site, source: 'user', saved: saving, held: [] }
       : undefined)
@@ -4969,7 +4969,7 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
     claimed = null
     // The user had the browser while the card was open (session-host): signed
     // in by hand, it is as a hand-over done there; declined, done nowhere.
-    watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: body.action === 'manual' ? site : null })
+    await watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: body.action === 'manual' ? site : null })
     if (body.action === 'decline') {
       // As with a browser hand-off: stop the turn so the user can talk to the agent.
       await actor.messages.stop(sessionId, { scope: 'turn' })
@@ -5032,7 +5032,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
       const sessionId = c.req.param('sessionId')
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
-      watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: null })
+      await watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: null })
 
       // Stop the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
@@ -5067,7 +5067,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
     // A step the user did by hand may have finished a sign-in (a passkey, a phone prompt): on the page it was asked on.
     const handedOver = claim.request.kind === 'browser_input' ? claim.request.payload.browserContext?.url : undefined
-    watchAfterHandOver({ agentSlug, sessionId: c.req.param('sessionId'), viewer: getViewerUserId(c), site: handedOver ? siteOfOrigin(handedOver) : null })
+    await watchAfterHandOver({ agentSlug, sessionId: c.req.param('sessionId'), viewer: getViewerUserId(c), site: handedOver ? siteOfOrigin(handedOver) : null })
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)

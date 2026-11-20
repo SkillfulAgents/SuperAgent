@@ -39,9 +39,20 @@ const container = vi.hoisted(() => ({
   passkeyState: { armed: false, onActiveTab: false, mode: null as string | null, credentialIds: [] as string[] },
 }))
 
+/** The agent's sign-in watches, held as its actor's state holds them. */
+const signIns = vi.hoisted(() => ({
+  module: null as typeof import('./sign-in-watches') | null,
+  watches: null as import('./sign-in-watches').AgentSignInWatches | null,
+}))
+const withSignIns = vi.hoisted(() => <T extends import('./sign-in-watches').SignInWatchReach>(reach: T) => {
+  const { AgentSignInWatches, signInOps } = signIns.module!
+  signIns.watches ??= new AgentSignInWatches('agent-a')
+  return { ...reach, signIns: signInOps(signIns.watches, reach) }
+})
+
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
-    get: () => ({
+    get: () => withSignIns({
       inputs: {
         get: async () => container.request,
         enrich: async () => false,
@@ -105,7 +116,7 @@ const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, save
 const { totpCode } = await import('./totp')
 const { heldLoginKey, holdLoginValues, heldLoginFor, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
 const { heldSessionVersion, readAccountSession, saveAccountSession } = await import('./session-service')
-const { resetSessionWatches } = await import('./session-host')
+signIns.module = await import('./sign-in-watches')
 
 const field = (kind: LoginContext['fields'][number]['kind'], label: string, inputType = 'text') =>
   ({ kind, label, inputType, inputMode: '', autocomplete: '', maxLength: -1 })
@@ -156,7 +167,8 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  resetSessionWatches()
+  signIns.watches?.dispose()
+  signIns.watches = null
   await handle.close()
 })
 

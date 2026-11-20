@@ -78,6 +78,7 @@ import type { ComputerUseRun, HostRunOutcome, ScriptRun } from './host-runs'
 import type { WidgetRefreshOutcome } from '@shared/lib/widgets/agent-widget-refreshes'
 import type { McpProxySession } from '@shared/lib/mcp/agent-mcp-sessions'
 import type { VolumeUploadOutcome } from '@shared/lib/volumes/volume-upload-guard'
+import type { SessionAccount, SignInBaseline, SignInStep } from '@shared/lib/browser-vault/sign-in-watches'
 
 /** The agent's directory-name slug. Not the URL `displaySlug`. */
 export type AgentSlug = string
@@ -113,6 +114,7 @@ export const ACTOR_GROUPS = [
   'widgets',
   'mcpSessions',
   'volumeUploads',
+  'signIns',
 ] as const
 
 export interface AgentActor {
@@ -133,6 +135,7 @@ export interface AgentActor {
   readonly widgets: WidgetOps
   readonly mcpSessions: McpSessionOps
   readonly volumeUploads: VolumeUploadOps
+  readonly signIns: SignInOps
 }
 
 /**
@@ -198,6 +201,22 @@ export interface VolumeUploadOps {
   end(key: string, upload: number, outcome: VolumeUploadOutcome): Promise<void>
   /** Whether a delete of `key` may go ahead. A refusal consumes what one unfinished upload left. */
   allowDelete(key: string): Promise<boolean>
+}
+
+/**
+ * The agent's watches on sign-ins in its browser (see `AgentSignInWatches`):
+ * the session a sign-in step leaves is saved to its account. They run where
+ * the actor runs, so they outlive the request that started them.
+ */
+export interface SignInOps {
+  /** A sign-in step is about to go into the agent's browser: the sign-ins it ends stop. */
+  beginStep(step: SignInStep): Promise<void>
+  /** A step for the account went in: its site is watched from the baseline, three minutes. */
+  watch(input: { sessionId: string; account: SessionAccount; baseline: SignInBaseline | null }): Promise<void>
+  /** The user is done with the session's browser, on the page of `site` (null: declined). */
+  afterHandOver(input: { sessionId: string; viewer: string | null; site: string | null }): Promise<void>
+  /** Stop saving the account's sessions from this agent's browser. */
+  stopAccount(accountId: string): Promise<void>
 }
 
 /** The agent's persistent memories. Paths are relative to its memory directory. */

@@ -639,7 +639,7 @@ async function holdPasskeys(input: PasskeyHold): Promise<'armed' | 'held' | null
     const state = passkeyStateSchema.safeParse(await (await container.fetch('/browser/passkey/state')).json().catch(() => null))
     if (state.success && state.data.armed && state.data.onActiveTab && passkeys.some((held) => state.data.credentialIds.includes(held.credentialId))) return 'held'
     const watched = await watchesStep({ agentSlug, sessionId, site, context, username: account.username })
-    beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
+    await beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
     const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
     const armed = await container.fetch('/browser/passkey/arm', {
       method: 'POST',
@@ -649,7 +649,7 @@ async function holdPasskeys(input: PasskeyHold): Promise<'armed' | 'held' | null
     if (!armed.ok) return null
     await rememberSignInIdentity(agentSlug, sessionId, site, account.username)
     await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password: false, by: 'vault', passkey: true })
-    watchSignIn({ agentSlug, sessionId, account, baseline })
+    await watchSignIn({ agentSlug, sessionId, account, baseline })
   } catch (error) {
     console.error('[login-request] Holding the passkey failed:', error instanceof Error ? error.message : error)
     return null
@@ -750,14 +750,14 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   // agent is told which provider account to use.
   if (account?.via && !asksCode && !fillsWithoutPassword(account, context.fields)) {
     const via = { site: account.via.site, username: account.via.username, name: providerName(account.via.site) }
-    beginSignInStep(agentSlug, { site: account.site, username: account.username, accountId: account.id })
+    await beginSignInStep(agentSlug, { site: account.site, username: account.username, accountId: account.id })
     // Watched only from a sign-in's first page: elsewhere the browser may be
     // signed in as another account, which is not this one's to save.
     const baseline = firstPage ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
     if (await answerLoginRequest(agentSlug, toolUseId, { type: 'via', site, username: account.username, provider: via, saved: true })) {
       await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password: false, by: 'vault' })
       // The site's own session, once the provider sends the agent back signed in.
-      watchSignIn({ agentSlug, sessionId, account, baseline })
+      await watchSignIn({ agentSlug, sessionId, account, baseline })
       return { action: 'settled' }
     }
     return ask({ mode: 'ask', username: account.username }, context)
@@ -809,7 +809,7 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   // Nothing watched before the step watches what it leaves; the site as it is
   // before the step is what the watch after it compares with.
   const watched = account !== null && await watchesStep({ agentSlug, sessionId, site, context, username: identity })
-  beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
+  await beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
   const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
   // Made last, so it has most of its period left when the page sends it.
   const code = totp ? await freshTotpCode(totp) : null
@@ -862,7 +862,7 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
       by: fromHeld.includes('password') ? 'user' : 'vault',
       ...(codeWentIn ? { code: true as const } : {}),
     })
-    watchSignIn({ agentSlug, sessionId, account, baseline })
+    await watchSignIn({ agentSlug, sessionId, account, baseline })
     askForRequestedMethod(agentSlug, sessionId, account)
   }
   return { action: 'settled' }

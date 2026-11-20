@@ -3,7 +3,7 @@
  * user-input requests, the reviews and re-auth waits parked on them, its
  * computer-use grants, and what the host's per-agent work keeps between
  * requests (locks, widget refreshes, the MCP proxy's sessions, volume
- * uploads, sessions waiting for a human to name them).
+ * uploads, sign-in watches, sessions waiting for a human to name them).
  *
  * Created with the agent's actor and released with it, so `agentRegistry.evict`
  * is the one operation that ends everything an agent held in this process.
@@ -23,6 +23,7 @@ import { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
 import { AgentWidgetRefreshes } from '@shared/lib/widgets/agent-widget-refreshes'
 import { AgentMcpSessions } from '@shared/lib/mcp/agent-mcp-sessions'
 import { VolumeUploadGuard } from '@shared/lib/volumes/volume-upload-guard'
+import { AgentSignInWatches } from '@shared/lib/browser-vault/sign-in-watches'
 import { AgentLocks } from './agent-locks'
 import { LiveSessions, type LiveSessionsDeps } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
@@ -49,6 +50,7 @@ export interface AgentState {
   readonly widgetRefreshes: AgentWidgetRefreshes
   readonly mcpSessions: AgentMcpSessions
   readonly volumeUploads: VolumeUploadGuard
+  readonly signIns: AgentSignInWatches
   /** Sessions opened by a notice, to be named from the first message a person sends. */
   readonly deferredNaming: Set<string>
 }
@@ -112,6 +114,7 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
     widgetRefreshes: new AgentWidgetRefreshes(),
     mcpSessions: new AgentMcpSessions(),
     volumeUploads: new VolumeUploadGuard(),
+    signIns: new AgentSignInWatches(slug),
     deferredNaming: new Set(),
   }
 }
@@ -156,5 +159,6 @@ export function releaseAgentState(state: AgentState): void {
   state.locks.dispose()
   state.widgetRefreshes.dispose()
   state.mcpSessions.clear()
+  state.signIns.dispose()
   state.deferredNaming.clear()
 }

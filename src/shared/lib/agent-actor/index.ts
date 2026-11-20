@@ -67,6 +67,7 @@ export type {
   ReviewOps,
   SessionLiveState,
   SessionOps,
+  SignInOps,
   StartSessionRequest,
   StopSessionOptions,
   StopSessionResult,

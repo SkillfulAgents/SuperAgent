@@ -31,6 +31,7 @@ import { exportSessionMetadata, ingestSessionMetadataFile } from '@shared/lib/se
 import { transcriptPath, type SessionStore } from './session-store'
 import { sessionEvents, sessionFrames } from './session-streams'
 import type { UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
+import { signInOps } from '@shared/lib/browser-vault/sign-in-watches'
 import type {
   AccountReauthOps,
   AgentActor,
@@ -49,6 +50,7 @@ import type {
   MemoryOps,
   ReviewOps,
   SessionOps,
+  SignInOps,
   UsageOps,
   VolumeUploadOps,
   WidgetOps,
@@ -122,6 +124,7 @@ export class LocalAgentActor implements AgentActor {
   readonly widgets: WidgetOps
   readonly mcpSessions: McpSessionOps
   readonly volumeUploads: VolumeUploadOps
+  readonly signIns: SignInOps
   /** Where this agent's sessions are: the files, the config documents, the transcripts directory. */
   readonly store: SessionStore
   /**
@@ -168,6 +171,7 @@ export class LocalAgentActor implements AgentActor {
     this.widgets = createWidgetOps(this.state)
     this.mcpSessions = createMcpSessionOps(this.state)
     this.volumeUploads = createVolumeUploadOps(this.state)
+    this.signIns = signInOps(this.state.signIns, this)
     this.listing = () => listingLimit(async () => {
       const [sessions, artifacts] = await Promise.all([
         this.sessions.summary(),

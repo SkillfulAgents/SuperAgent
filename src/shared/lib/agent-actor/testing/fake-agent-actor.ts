@@ -44,6 +44,7 @@ export type FakeAgentActor = {
   readonly widgets: FakeOps<AgentActor['widgets']>
   readonly mcpSessions: FakeOps<AgentActor['mcpSessions']>
   readonly volumeUploads: FakeOps<AgentActor['volumeUploads']>
+  readonly signIns: FakeOps<AgentActor['signIns']>
 }
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends Fn ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] }
@@ -109,6 +110,7 @@ export function createFakeAgentActor(slug: AgentSlug, overrides: FakeActorOverri
     widgets: fakeGroup(overrides.widgets as Record<string, unknown>) as FakeAgentActor['widgets'],
     mcpSessions: fakeGroup(overrides.mcpSessions as Record<string, unknown>) as FakeAgentActor['mcpSessions'],
     volumeUploads: fakeGroup(overrides.volumeUploads as Record<string, unknown>) as FakeAgentActor['volumeUploads'],
+    signIns: fakeGroup(overrides.signIns as Record<string, unknown>) as FakeAgentActor['signIns'],
   }
 }
 

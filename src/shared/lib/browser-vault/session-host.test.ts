@@ -12,9 +12,23 @@ const container = vi.hoisted(() => ({
   calls: [] as Array<{ agent: string; path: string; body?: Record<string, unknown> }>,
 }))
 
+/** Each agent's sign-in watches, held as its actor's state holds them, and reached through its `signIns` group. */
+const signIns = vi.hoisted(() => {
+  type Module = typeof import('./sign-in-watches')
+  type Reach = import('./sign-in-watches').SignInWatchReach
+  const held = { module: null as Module | null, byAgent: new Map<string, InstanceType<Module['AgentSignInWatches']>>() }
+  const withSignIns = <T extends Reach>(agentSlug: string, reach: T) => {
+    const { AgentSignInWatches, signInOps } = held.module!
+    let watches = held.byAgent.get(agentSlug)
+    if (!watches) held.byAgent.set(agentSlug, (watches = new AgentSignInWatches(agentSlug)))
+    return { ...reach, signIns: signInOps(watches, reach) }
+  }
+  return { held, withSignIns }
+})
+
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
-    get: (agent: string) => ({
+    get: (agent: string) => signIns.withSignIns(agent, {
       container: {
         fetch: async (url: string, init?: RequestInit) => {
           const body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -56,11 +70,11 @@ vi.mock('./session-service', () => ({
 }))
 vi.mock('./vault-service', () => ({ recordAccountUse: vi.fn() }))
 
+signIns.held.module = await import('./sign-in-watches')
 const sessions = await import('./session-service')
 const vault = await import('./vault-service')
 const {
   beginSignInStep,
-  resetSessionWatches,
   restoreSavedSession,
   sessionBaseline,
   stopSessionWatches,
@@ -82,9 +96,9 @@ const advance = (ms: number) => vi.advanceTimersByTimeAsync(ms)
 /** A step for `account` goes in on its site, whose state reads `before` first: the other sign-ins end, then it is watched. */
 async function step(account: typeof ACCOUNT, before: string, agentSlug = 'agent-a') {
   container.states = [before]
-  beginSignInStep(agentSlug, { site: account.site, username: null, accountId: account.id })
+  await beginSignInStep(agentSlug, { site: account.site, username: null, accountId: account.id })
   const baseline = await sessionBaseline({ agentSlug, sessionId: 's-1', scope: { site: account.site, origin: account.origin } })
-  watchSignIn({ agentSlug, sessionId: 's-1', account, baseline })
+  await watchSignIn({ agentSlug, sessionId: 's-1', account, baseline })
   return baseline
 }
 
@@ -103,7 +117,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  resetSessionWatches()
+  for (const watches of signIns.held.byAgent.values()) watches.dispose()
+  signIns.held.byAgent.clear()
   vi.useRealTimers()
 })
 
@@ -163,7 +178,7 @@ describe('the sign-in watch', () => {
     expect(captureCalls()).toHaveLength(2)
     // Nor does a hand-over finish it later: the browser it was in is gone.
     container.states = ['signed-in-in-another-browser']
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
     await advance(0)
     expect(captureCalls()).toHaveLength(2)
 
@@ -191,7 +206,7 @@ describe('the sign-in watch', () => {
     container.calls = []
     container.browser = { active: true, sessionId: 's-other', location: 'container' }
     expect(await sessionBaseline({ agentSlug: 'agent-a', sessionId: 's-1', scope: SCOPE })).toBeNull()
-    watchSignIn({ agentSlug: 'agent-a', sessionId: 's-1', account: { ...ACCOUNT, id: 'acc-2' }, baseline: null })
+    await watchSignIn({ agentSlug: 'agent-a', sessionId: 's-1', account: { ...ACCOUNT, id: 'acc-2' }, baseline: null })
     container.browser = { active: true, sessionId: 's-1', location: 'container' }
     container.states = ['signed-in']
     await advance(60_000)
@@ -209,12 +224,12 @@ describe('the sign-in watch', () => {
 
   it('saves nothing more once a step for another account, or for none, went in on the site', async () => {
     await step(ACCOUNT, 'signed-out')
-    beginSignInStep('agent-a', { site: 'github.com', username: 'someone', accountId: null })
+    await beginSignInStep('agent-a', { site: 'github.com', username: 'someone', accountId: null })
     container.states = ['someone-else']
     await advance(60_000)
     expect(saved).toEqual([])
     // Nor does a hand-over bring it back.
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
     await advance(0)
     expect(saved).toEqual([])
   })
@@ -223,7 +238,7 @@ describe('the sign-in watch', () => {
     await step({ ...ACCOUNT, id: 'acc-acme', site: 'acme.slack.com', origin: 'https://acme.slack.com' }, 'signed-out')
     await step({ ...ACCOUNT, id: 'acc-other', site: 'other.example', origin: 'https://other.example' }, 'signed-out', 'agent-b')
     // A step on beta.slack.com rewrites the .slack.com cookies acme.slack.com's watch reads.
-    beginSignInStep('agent-a', { site: 'beta.slack.com', username: 'bob', accountId: 'acc-bob' })
+    await beginSignInStep('agent-a', { site: 'beta.slack.com', username: 'bob', accountId: 'acc-bob' })
     container.calls = []
     container.states = ['bob']
     await advance(60_000)
@@ -235,15 +250,15 @@ describe('the sign-in watch', () => {
     const GOOGLE = { id: 'acc-google', site: 'accounts.google.com', username: 'me@gmail.com', label: null }
     const app = { ...ACCOUNT, id: 'acc-app', site: 'app.example', origin: 'https://app.example', via: GOOGLE }
     await step(app, 'signed-out')
-    beginSignInStep('agent-a', { site: 'accounts.google.com', username: null, accountId: 'acc-google' })
-    beginSignInStep('agent-a', { site: 'accounts.google.com', username: ' Me@Gmail.com', accountId: null })
+    await beginSignInStep('agent-a', { site: 'accounts.google.com', username: null, accountId: 'acc-google' })
+    await beginSignInStep('agent-a', { site: 'accounts.google.com', username: ' Me@Gmail.com', accountId: null })
     container.states = ['signed-in-through-google']
     await advance(2_000)
     expect(saved.map((entry) => entry.accountId)).toEqual(['acc-app'])
 
     // Another Google account signs the app in as someone else.
     await step(app, 'signed-out')
-    beginSignInStep('agent-a', { site: 'accounts.google.com', username: 'someone@gmail.com', accountId: null })
+    await beginSignInStep('agent-a', { site: 'accounts.google.com', username: 'someone@gmail.com', accountId: null })
     container.states = ['someone-else']
     await advance(60_000)
     expect(saved).toHaveLength(1)
@@ -254,7 +269,7 @@ describe('the sign-in watch', () => {
     container.browser = { ...container.browser, generation: 2 }
     container.states = ['signed-out-after-relaunch']
     await advance(60_000)
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
     container.browser = { ...container.browser, generation: 1 }
     await advance(60_000)
     expect(saved).toEqual([])
@@ -269,7 +284,7 @@ describe('the sign-in watch', () => {
     expect(captureCalls()).toEqual([])
     container.open = []
     container.states = ['owner-signed-in']
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
     await advance(0)
     expect(saved.map((entry) => entry.who)).toEqual(['owner-signed-in'])
 
@@ -281,7 +296,7 @@ describe('the sign-in watch', () => {
       container.states = ['u-2-signed-in']
       await advance(30_000)
       container.open = []
-      watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-2', site })
+      await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-2', site })
       await advance(3 * 60_000)
       expect(saved).toEqual([])
     }
@@ -290,8 +305,8 @@ describe('the sign-in watch', () => {
   it('goes on after the owner\'s hand-over or decline elsewhere, without looking for it', async () => {
     await step({ ...ACCOUNT, ownerId: 'u-1' }, 'signed-out')
     container.calls = []
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'captcha.example' })
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: null })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'captcha.example' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: null })
     await advance(0)
     expect(captureCalls()).toEqual([])
     container.states = ['signed-in']
@@ -305,23 +320,23 @@ describe('the sign-in watch', () => {
     container.calls = []
     container.states = ['passkey-done']
 
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
     await advance(0)
     expect(captureCalls()[0].body).toMatchObject({ unlessHash: 'signed-out' })
     expect(saved).toEqual([{ agentSlug: 'agent-a', accountId: 'acc-1', browserType: 'container', who: 'passkey-done' }])
 
     // A hand-over that changed nothing (a CAPTCHA) saves nothing.
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
     await advance(0)
     expect(saved).toHaveLength(1)
   })
 
   it('ends the sign-in when someone else finishes a hand-over: who they signed in as is not the account\'s', async () => {
     await step({ ...ACCOUNT, ownerId: 'u-1' }, 'signed-out')
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-2', site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-2', site: 'github.com' })
     container.states = ['someone-else']
     await advance(60_000)
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: 'u-1', site: 'github.com' })
     await advance(60_000)
     expect(saved).toEqual([])
   })
@@ -329,12 +344,12 @@ describe('the sign-in watch', () => {
   it('does not look again after a hand-over long after the sign-in, nor a later one for the hand-overs between', async () => {
     await step(ACCOUNT, 'signed-out')
     await advance(20 * 60_000)
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
     await advance(11 * 60_000)
     container.calls = []
     container.states = ['changed']
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
-    watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-2', viewer: null, site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-1', viewer: null, site: 'github.com' })
+    await watchAfterHandOver({ agentSlug: 'agent-a', sessionId: 's-2', viewer: null, site: 'github.com' })
     await advance(0)
     expect(captureCalls()).toEqual([])
   })
@@ -343,13 +358,22 @@ describe('the sign-in watch', () => {
     await step(ACCOUNT, 'signed-out', 'agent-a')
     await step(ACCOUNT, 'signed-out', 'agent-b')
     container.calls = []
-    stopSessionWatches('acc-1', 'agent-a')
+    await stopSessionWatches('acc-1', ['agent-a'])
     await advance(15_000)
     expect(captureCalls().map((call) => call.agent)).toEqual(['agent-b'])
-    stopSessionWatches('acc-1')
+    await stopSessionWatches('acc-1', ['agent-a', 'agent-b'])
     container.calls = []
     await advance(60_000)
     expect(captureCalls()).toEqual([])
+  })
+
+  it('lives in the agent\'s state: evicting the agent ends its watches, and no other agent\'s', async () => {
+    await step(ACCOUNT, 'signed-out', 'agent-a')
+    await step(ACCOUNT, 'signed-out', 'agent-b')
+    container.calls = []
+    signIns.held.byAgent.get('agent-a')!.dispose()
+    await advance(15_000)
+    expect(captureCalls().map((call) => call.agent)).toEqual(['agent-b'])
   })
 })
 
