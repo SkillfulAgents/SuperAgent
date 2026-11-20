@@ -1,0 +1,8 @@
+[TEST_FAIL]
+[REASON] Sent "Open a browser and go to https://example.com. Tell me the page title." to QA-20261120-010522-ut2n and checked that the reply mentions "Example Domain". The reply passed; one minor composer inconsistency was found along the way.
+[BUG_FOUND] Pressing Enter in the agent home composer inserts a newline instead of sending. The placeholder says "Press cmd+enter to send", but the session composer shows "↵ Send / ⇧↵ New line". Expected: the keyboard hint and the key behaviour agree. Actual: the two composers disagree on which key sends.
+[STEP] Step 1: Navigated to http://localhost:47891 — Gamut home page loaded with "Your Agents" listing QA-20261120-010522-ut2n and QA-20261120-010521-5cxz. Screenshot step1-home.png.
+[STEP] Step 2: Clicked QA-20261120-010522-ut2n in the sidebar — agent page opened (URL /agents/qa-20261120-010522-ut2n-8sd68a9cag), status idle, message composer visible. Screenshot step2-agent-open.png.
+[STEP] Step 3: Typed the message into the composer and pressed Enter — Enter inserted a newline and the message was not sent (see BUG_FOUND). Removed the stray newline with Backspace, then clicked the Send message button. The session "Browser Page Title Check" was created, the message appeared in the thread, and the agent went to "working". Screenshot step3-sent.png.
+[STEP] Step 4: Waited up to 3 minutes for "Example Domain" — response appeared in about 5 seconds, and the agent returned to idle.
+[STEP] Step 5: Verified the response reads 'The page title is "Example Domain". The browser is closed now.' and that it reflects 3 tool calls. Screenshot step5-response.png.
