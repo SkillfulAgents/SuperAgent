@@ -1,5 +1,6 @@
 import { readNotifications } from '@renderer/lib/notification-read-cache'
 import { apiFetch } from '@renderer/lib/api'
+import { useStreamBackedPollMs } from '@renderer/lib/notification-stream-health'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiNotification } from '@shared/lib/types/api'
 import {
@@ -27,6 +28,8 @@ export function useNotifications(
   options: { types?: readonly NotificationTypeName[]; enabled?: boolean } = {},
 ) {
   const types = options.types?.join(',')
+  // Every write to the inbox is announced on the notifications stream, as for the counts below.
+  const refetchInterval = useStreamBackedPollMs(30_000)
   return useQuery<PaginatedNotifications>({
     queryKey: ['notifications', limit, offset, types ?? 'all'],
     queryFn: async () => {
@@ -37,12 +40,17 @@ export function useNotifications(
       return res.json()
     },
     enabled: options.enabled ?? true,
-    refetchInterval: 30000,
+    refetchInterval,
   })
 }
 
 /** Badge counts and per-type totals share one query for every notification surface. */
 export function useUnreadNotificationCount() {
+  // The notifications stream refreshes the counts as they change: a new row is
+  // an os_notification, a read or a delete notifications_changed, a mention
+  // taken back session_mention_withdrawn. While it delivers, the poll only
+  // catches an event that was never sent; without it, the poll is the feed.
+  const refetchInterval = useStreamBackedPollMs(60_000)
   // `mentions`: the unread ones that tag you, drawn as an @ (auth mode).
   return useQuery<NotificationCounts>({
     queryKey: ['notifications', 'unread-count'],
@@ -51,9 +59,7 @@ export function useUnreadNotificationCount() {
       if (!res.ok) throw new Error('Failed to fetch unread count')
       return notificationCountsSchema.parse(await res.json())
     },
-    // The notifications stream refreshes the counts as they change (os_notification,
-    // notifications_changed); the poll only catches an event that stream missed.
-    refetchInterval: 60_000,
+    refetchInterval,
     meta: { refetchWhenHidden: true },
   })
 }

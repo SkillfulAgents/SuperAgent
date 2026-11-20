@@ -66,6 +66,7 @@ import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+import { noteNotificationStreamDown, noteNotificationStreamFrame } from '@renderer/lib/notification-stream-health'
 import { takePreopenedNotificationStream } from './notification-stream'
 import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
@@ -297,6 +298,8 @@ export function GlobalNotificationHandler() {
     const handleFrame = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
+        // Every frame, pings too: the fallback polls slow down while they keep arriving.
+        noteNotificationStreamFrame(data.type)
 
         switch (data.type) {
           case 'connected':
@@ -794,6 +797,8 @@ export function GlobalNotificationHandler() {
     }
     es.onmessage = handleFrame
     preopened?.frames.forEach(handleFrame)
+    // A greeting replayed from a stream that has dropped since says nothing about now.
+    if (es.readyState !== EventSource.OPEN) noteNotificationStreamDown()
 
     // Opening is not the time to refetch: the server may still be setting up
     // what the stream follows. `connected` is (see above).
@@ -805,6 +810,7 @@ export function GlobalNotificationHandler() {
       // Network errors reconnect in the browser. Fatal close is the watcher.
       // The browser asks again after this, so the next connect counts from here.
       streamRequestedAt = Date.now()
+      noteNotificationStreamDown()
     }
 
     const disposeLiveness = watchStreamLiveness(es, () => {
@@ -821,6 +827,7 @@ export function GlobalNotificationHandler() {
 
     return () => {
       disposeLiveness()
+      noteNotificationStreamDown()
       confirmations.flush()
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null

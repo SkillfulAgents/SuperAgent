@@ -92,13 +92,16 @@ platformNotificationsRouter.get('/', async (c) => {
 platformNotificationsRouter.get('/unread-count', async (c) => {
   const caller = await platformCaller()
   if (!caller) {
-    return c.json({ count: 0 })
+    // `connected: false` lets a client stop polling: connecting is announced
+    // on the notifications stream (`platform_notifications_changed`).
+    return c.json({ count: 0, connected: false })
   }
   try {
     const list = await listPlatformNotifications({ status: 'unread', limit: 1 }, caller.memberId, caller.token)
-    return c.json({ count: list.unread_count })
+    return c.json({ count: list.unread_count, connected: true })
   } catch (error) {
     // Same offline degradation as the list route: a zero badge, not a 502.
+    // No `connected`: only the next poll can find the platform reachable again.
     console.error('Failed to fetch platform unread count:', error)
     return c.json({ count: 0 })
   }

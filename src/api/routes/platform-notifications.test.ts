@@ -135,7 +135,7 @@ describe('GET /api/platform-notifications/unread-count', () => {
     mockListNotifications.mockResolvedValue({ ...LIST_RESPONSE, unread_count: 7 })
     const res = await makeApp().request('/api/platform-notifications/unread-count')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ count: 7 })
+    expect(await res.json()).toEqual({ count: 7, connected: true })
     expect(mockListNotifications).toHaveBeenCalledWith(
       { status: 'unread', limit: 1 },
       'sub_member_1',
@@ -147,7 +147,20 @@ describe('GET /api/platform-notifications/unread-count', () => {
     mockListNotifications.mockRejectedValue(new Error('fetch failed'))
     const res = await makeApp().request('/api/platform-notifications/unread-count')
     expect(res.status).toBe(200)
+    // Not `connected: false`: a client that read that would stop polling, and
+    // only a poll finds the platform reachable again.
     expect(await res.json()).toEqual({ count: 0 })
+  })
+
+  it('says so when there is no platform connection, so a client can stop polling', async () => {
+    mockToken = null
+    const res = await makeApp().request('/api/platform-notifications/unread-count')
+    expect(await res.json()).toEqual({ count: 0, connected: false })
+    mockToken = 'pk_test'
+    mockProxyUrl = null
+    const unconfigured = await makeApp().request('/api/platform-notifications/unread-count')
+    expect(await unconfigured.json()).toEqual({ count: 0, connected: false })
+    expect(mockListNotifications).not.toHaveBeenCalled()
   })
 })
 
