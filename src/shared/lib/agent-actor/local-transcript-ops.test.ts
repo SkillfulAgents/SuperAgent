@@ -2,7 +2,11 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { copyDerivedSessionFiles, listSubagents, readSubagentTranscript } from './local-transcript-ops'
+import { copyDerivedSessionFiles, listSubagents, readSubagentTranscript, subagentTranscriptFile } from './local-transcript-ops'
+import { getTranscriptMessagesDelta, getTranscriptMessagesPage } from '@shared/lib/services/session-service'
+import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
+import { transformMessages } from '@shared/lib/utils/message-transform'
+import type { JsonlEntry, JsonlMessageEntry } from '@shared/lib/types/agent'
 import { WorkspaceFileError } from './workspace-path'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
@@ -179,5 +183,94 @@ describe('copyDerivedSessionFiles — fork subagents', () => {
 
     expect((await lines(COPY, forkFile))[0]).toBe(unmapped)
     expect(await fs.promises.readFile(path.join(sessionsDir, COPY, 'subagents', 'agent-plain.jsonl'), 'utf8')).toBe(plain)
+  })
+})
+
+describe('subagent transcript pages', () => {
+  let dataDir: string
+  let previousDataDir: string | undefined
+  let subagentsDir: string
+  let forkId: string
+  let inheritedIds: string[]
+
+  const userOrAssistant = (item: { type: string }) => item.type === 'user' || item.type === 'assistant'
+
+  beforeEach(async () => {
+    dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'transcript-ops-pages-'))
+    previousDataDir = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+    subagentsDir = path.join(sessionsDirOf(dataDir, AGENT), SESSION, 'subagents')
+    await fs.promises.mkdir(subagentsDir, { recursive: true })
+    const name = (await fs.promises.readdir(path.join(FORK_FIXTURE, 'fs-snapshot'))).find((file) => file.endsWith('.jsonl'))!
+    forkId = name.slice('agent-'.length, -'.jsonl'.length)
+    const body = await fs.promises.readFile(path.join(FORK_FIXTURE, 'fs-snapshot', name), 'utf8')
+    await fs.promises.writeFile(path.join(subagentsDir, name), body)
+    const rows = body.trim().split('\n').map((line) => JSON.parse(line) as JsonlEntry)
+    const own = new Set(subagentOwnEntries(rows))
+    inheritedIds = rows.filter((row) => !own.has(row)).map((row) => (row as { uuid?: string }).uuid).filter((id): id is string => !!id)
+  })
+
+  afterEach(async () => {
+    if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = previousDataDir
+    await fs.promises.rm(dataDir, { recursive: true, force: true })
+  })
+
+  /** What the subagent messages route served before pages: every own row, transformed. */
+  async function wholeTranscriptItems(store: ReturnType<typeof createLocalSessionStore>) {
+    const entries = subagentOwnEntries(await readSubagentTranscript(store, SESSION, forkId)).filter(userOrAssistant)
+    return transformMessages(entries as JsonlMessageEntry[]).map((item) => item.id)
+  }
+
+  it("a fork's trailing page holds the items of the whole read and none of the inherited rows", async () => {
+    const store = createLocalSessionStore(AGENT)
+    const file = await subagentTranscriptFile(store, SESSION, { subagentId: forkId })
+    const page = await getTranscriptMessagesPage(store, file, { limit: 300 })
+
+    expect(inheritedIds.length).toBeGreaterThan(0)
+    expect(page.messages.filter(userOrAssistant).map((item) => item.id)).toEqual(await wholeTranscriptItems(store))
+    expect(page.messages.some((item) => inheritedIds.includes(item.id))).toBe(false)
+    expect(page.nextCursor).toBeNull()
+  })
+
+  it("walking a fork's pages one item at a time ends at its own first row", async () => {
+    const store = createLocalSessionStore(AGENT)
+    const file = await subagentTranscriptFile(store, SESSION, { subagentId: forkId })
+    const seen: string[] = []
+    let page = await getTranscriptMessagesPage(store, file, { limit: 1 })
+    seen.unshift(...page.messages.map((item) => item.id))
+    for (let hops = 0; page.nextCursor && hops < 100; hops++) {
+      page = await getTranscriptMessagesPage(store, file, { limit: 1, cursor: page.nextCursor })
+      seen.unshift(...page.messages.map((item) => item.id))
+    }
+
+    expect(page.nextCursor).toBeNull()
+    expect(seen.filter((id) => !inheritedIds.includes(id))).toEqual(seen)
+    expect(new Set(seen)).toEqual(new Set((await getTranscriptMessagesPage(store, file, { limit: 300 })).messages.map((item) => item.id)))
+  })
+
+  it("a fork's delta after its first item holds no inherited rows", async () => {
+    const store = createLocalSessionStore(AGENT)
+    const file = await subagentTranscriptFile(store, SESSION, { subagentId: forkId })
+    const page = await getTranscriptMessagesPage(store, file, { limit: 300 })
+    const delta = await getTranscriptMessagesDelta(store, file, { after: page.messages[0]!.id })
+
+    expect(delta.resync).toBeUndefined()
+    expect(delta.messages.length).toBeGreaterThan(0)
+    expect(delta.messages.some((item) => inheritedIds.includes(item.id))).toBe(false)
+  })
+
+  it("a workflow agent's transcript pages from its run's directory", async () => {
+    const runDir = path.join(subagentsDir, 'workflows', 'wf_run-1')
+    await fs.promises.mkdir(runDir, { recursive: true })
+    const row = (uuid: string, text: string) => JSON.stringify({ type: 'user', uuid, timestamp: '2026-11-20T12:00:00.000Z', message: { role: 'user', content: text } })
+    await fs.promises.writeFile(path.join(runDir, 'agent-w1.jsonl'), [row('u-1', 'first task'), row('u-2', 'second task')].join('\n') + '\n')
+    const store = createLocalSessionStore(AGENT)
+
+    const file = await subagentTranscriptFile(store, SESSION, { subagentId: 'w1', workflowRunId: 'wf_run-1' })
+    const page = await getTranscriptMessagesPage(store, file, { limit: 300 })
+
+    expect(page.messages.map((item) => item.id)).toEqual(['u-1', 'u-2'])
+    expect(await codeOf(subagentTranscriptFile(store, SESSION, { subagentId: 'w1', workflowRunId: '../../..' }))).toBe('invalid-path')
   })
 })

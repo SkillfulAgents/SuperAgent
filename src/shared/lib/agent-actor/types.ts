@@ -598,13 +598,13 @@ export interface MessageOps {
   transcriptView(sessionId: string, opts: { fullTranscript?: boolean; limit?: number }): Promise<TranscriptView>
   /** `findDeliveredFile`: one delivered file of the transcript, found in one streaming pass. */
   findDeliveredFile(sessionId: string, deliveryId: string): Promise<ResolvedDeliveredAgentFile | undefined>
-  /** `getSessionMessagesPage` */
+  /** `getSessionMessagesPage`; with `subagent`, the page of that subagent's transcript. */
   page(
     sessionId: string,
-    opts: { limit: number; cursor?: string; signal?: AbortSignal; byteBudget?: number; media?: 'ref' },
+    opts: { limit: number; cursor?: string; signal?: AbortSignal; byteBudget?: number; media?: 'ref'; subagent?: SubagentTranscriptRef },
   ): Promise<SessionMessagesPage>
-  /** `getSessionMessagesDelta` */
-  delta(sessionId: string, opts: { after: string; signal?: AbortSignal; media?: 'ref' }): Promise<SessionMessagesDelta>
+  /** `getSessionMessagesDelta`; with `subagent`, the delta of that subagent's transcript. */
+  delta(sessionId: string, opts: { after: string; signal?: AbortSignal; media?: 'ref'; subagent?: SubagentTranscriptRef }): Promise<SessionMessagesDelta>
   /**
    * `findLastSessionEntry`: the last transcript entry `query` names, read
    * from the tail. `endOffset` stops the search at that byte of the transcript.
@@ -625,7 +625,7 @@ export interface MessageOps {
   /** The transcript file's bytes for the debug view, or null when there is no transcript. */
   rawLog(sessionId: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** `openMediaBlob` (session-media) — one media item referenced from the transcript, or undefined when it is gone. */
-  media(sessionId: string, ref: MediaRef, signal?: AbortSignal): Promise<MediaBlob | undefined>
+  media(sessionId: string, ref: MediaRef, signal?: AbortSignal, subagent?: SubagentTranscriptRef): Promise<MediaBlob | undefined>
 
   // Fan-out and recovery — the agent's `LiveSessions`.
 
@@ -934,6 +934,12 @@ export interface SubagentRef {
   id: string
   /** The Task tool call that launched it, when the sidecar recorded one. */
   toolUseId?: string
+}
+
+/** A transcript inside a session: a subagent's, or, with `workflowRunId`, one agent's of that workflow run. */
+export interface SubagentTranscriptRef {
+  subagentId: string
+  workflowRunId?: string
 }
 
 /** One media item from a transcript, ready to serve. */

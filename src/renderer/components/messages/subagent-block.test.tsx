@@ -9,9 +9,32 @@ import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 
 // Mock useSubagentMessages
 let mockSubMessages: any[] = []
-vi.mock('@renderer/hooks/use-messages', () => ({
-  useSubagentMessages: () => ({ data: mockSubMessages }),
-}))
+// When set, older pages exist and every older-page request fails. The hook's
+// state changes keep their real order: fetching is set, then the failure and
+// the end of the fetch land together, before fetchOlder resolves.
+let olderPagesFail = false
+let olderPageRequests = 0
+vi.mock('@renderer/hooks/use-messages', async () => {
+  const { useCallback, useState } = await import('react')
+  return {
+    useSubagentMessages: () => {
+      const [isFetchingOlder, setIsFetchingOlder] = useState(false)
+      const [olderFailed, setOlderFailed] = useState(false)
+      const fetchOlder = useCallback(async () => {
+        olderPageRequests++
+        setIsFetchingOlder(true)
+        setOlderFailed(false)
+        await Promise.resolve()
+        setOlderFailed(true)
+        setIsFetchingOlder(false)
+        return false
+      }, [])
+      return olderPagesFail
+        ? { data: mockSubMessages, hasOlder: true, isFetchingOlder, olderFailed, fetchOlder }
+        : { data: mockSubMessages }
+    },
+  }
+})
 
 // Mock ToolCallItem
 vi.mock('./tool-call-item', () => ({
@@ -37,6 +60,8 @@ vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
 describe('SubAgentBlock', () => {
   beforeEach(() => {
     mockSubMessages = []
+    olderPagesFail = false
+    olderPageRequests = 0
   })
 
   it('renders completed subagent with stats', () => {
@@ -251,6 +276,33 @@ describe('SubAgentBlock', () => {
 
     expect(screen.getByText('I found the config file.')).toBeInTheDocument()
     expect(screen.getByTestId('sub-tool-Read')).toBeInTheDocument()
+  })
+
+  it('stops "Show all" after a failed older page and retries on the next click', async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({
+      name: 'Task',
+      input: { subagent_type: 'Explore', description: 'Search' },
+      result: 'Done',
+      subagent: { agentId: 'sub-1', status: 'completed' },
+    })
+    mockSubMessages = [createAssistantMessage({ id: 'sub-msg-1', content: { text: 'Last page.' } })]
+    olderPagesFail = true
+
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByText('Explore'))
+
+    await user.click(screen.getByText('Show all (1+ items)'))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(olderPageRequests).toBe(1)
+
+    await user.click(screen.getByText('Show all (1+ items)'))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(olderPageRequests).toBe(2)
   })
 
   it('passes isSessionActive to in-flight subagent tools so they show running, not cancelled', () => {

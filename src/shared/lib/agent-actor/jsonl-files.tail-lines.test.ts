@@ -267,6 +267,35 @@ describe('readTailLines — differential against a full read', () => {
   })
 })
 
+describe('readTailLines — maxBytes', () => {
+  it('stops at maxBytes before maxLines on rows of inline images', async () => {
+    // 40 rows of ~100 KB: a 128-row tail would read all 4 MB.
+    const rows = Array.from({ length: 40 }, (_, i) => row(i, 100 * 1024))
+    const filePath = writeFixture('image-rows.jsonl', `${rows.join('\n')}\n`)
+    const maxBytes = 256 * 1024
+
+    const realOpen = fs.promises.open.bind(fs.promises)
+    let bytesRead = 0
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof realOpen>))
+      const realRead = handle.read.bind(handle)
+      handle.read = (async (...readArgs: unknown[]) => {
+        const result = await realRead(...(readArgs as Parameters<typeof realRead>))
+        bytesRead += result.bytesRead
+        return result
+      }) as typeof handle.read
+      return handle
+    })
+
+    const result = await readTailLines(files, rel(filePath), 128, undefined, maxBytes)
+
+    expect(bytesRead).toBeLessThanOrEqual(maxBytes)
+    expect(result.reachedStart).toBe(false)
+    expect(result.lines.map((l) => JSON.parse(l.toString('utf-8')).i)).toEqual([38, 39])
+    expectOffsetsAddressTheirLines(filePath, result)
+  })
+})
+
 describe('readTailLines — file shrinking under the walk', () => {
   it('serves the cleanly read suffix instead of splicing across a rewrite', async () => {
     const rows = Array.from({ length: 200 }, (_, i) => row(i, 800))

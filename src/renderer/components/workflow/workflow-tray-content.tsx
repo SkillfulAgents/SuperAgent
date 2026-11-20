@@ -387,6 +387,10 @@ function WorkflowAgentRow({
   const messages = useWorkflowAgentMessages(sessionId, agentSlug, runId, expanded ? agent.agentId : null, {
     isRunning,
   })
+  const media = useMemo(
+    () => ({ agentSlug, sessionId, subagent: { subagentId: agent.agentId, workflowRunId: runId } }),
+    [agentSlug, sessionId, agent.agentId, runId],
+  )
 
   return (
     <div className="border border-border/70 rounded-card overflow-hidden">
@@ -460,7 +464,17 @@ function WorkflowAgentRow({
               </span>
             </div>
           )}
-          <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} />
+          {messages.hasOlder && (
+            <button
+              type="button"
+              onClick={() => void messages.fetchOlder()}
+              disabled={messages.isFetchingOlder}
+              className="text-xs text-foreground hover:text-foreground/70 font-medium transition-colors py-1 disabled:opacity-50"
+            >
+              Show earlier messages
+            </button>
+          )}
+          <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} media={media} />
         </div>
       )}
     </div>

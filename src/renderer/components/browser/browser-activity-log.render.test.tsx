@@ -50,6 +50,8 @@ interface ServerMessage {
 const server = {
   messages: [] as ServerMessage[],
   subagents: {} as Record<string, ServerMessage[]>,
+  /** A subagent's page before its trailing one, served for `?cursor=older`. */
+  olderSubagents: {} as Record<string, ServerMessage[]>,
   /** Answer `?after=` with a delta window instead of a plain trailing page. */
   deltas: false,
 }
@@ -61,16 +63,17 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (url: string) => {
     fetched.push(url)
     const subagent = url.match(/subagent\/([^/]+)\/messages/)
-    let body: unknown
-    if (subagent) {
-      body = clone(server.subagents[subagent[1]] ?? [])
-    } else {
-      const after = new URL(url, 'http://test').searchParams.get('after')
-      const from = after ? server.messages.findIndex((m) => m.id === after) : -1
-      body = server.deltas && after && from >= 0
-        ? { messages: clone(server.messages.slice(from)), anchor: after }
-        : { messages: clone(server.messages), nextCursor: null }
+    const params = new URL(url, 'http://test').searchParams
+    const older = subagent ? server.olderSubagents[subagent[1]] : undefined
+    if (older && params.get('cursor') === 'older') {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ messages: clone(older), nextCursor: null }) })
     }
+    const messages = subagent ? server.subagents[subagent[1]] ?? [] : server.messages
+    const after = params.get('after')
+    const from = after ? messages.findIndex((m) => m.id === after) : -1
+    const body = server.deltas && after && from >= 0
+      ? { messages: clone(messages.slice(from)), anchor: after }
+      : { messages: clone(messages), nextCursor: older ? 'older' : null }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
   },
 }))
@@ -187,6 +190,7 @@ beforeEach(() => {
   sessionId = `session-${++sessionCounter}`
   server.messages = []
   server.subagents = {}
+  server.olderSubagents = {}
   server.deltas = false
   fetched.length = 0
   MockEventSource.instances = []
@@ -355,9 +359,25 @@ describe('BrowserActivityLog renders', () => {
     ]
     expect(rowLabels().map((label) => label?.replace('tool', ''))).toEqual(expected)
     expect(fetched.filter((url) => url.includes('/subagent/')).sort()).toEqual([
-      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-1/messages`,
-      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-2/messages`,
+      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-1/messages?limit=300&media=ref`,
+      `/api/agents/${AGENT}/sessions/${sessionId}/subagent/sub-2/messages?limit=300&media=ref`,
     ])
+  })
+
+  it('offers a subagent\'s earlier browser activity when its trailing page has none', async () => {
+    server.messages = [task('m-task', 'sub-1')]
+    server.olderSubagents['sub-1'] = [assistant('s-0', [browserCall('sub-early')])]
+    server.subagents['sub-1'] = [assistant('s-1', [{ id: 'r', name: 'Read', input: { marker: 'r' } }])]
+    await mount()
+
+    const showEarlier = await screen.findByText('Show earlier activity')
+    expect(screen.queryByText('No browser activity yet')).toBeNull()
+    await act(async () => {
+      fireEvent.click(showEarlier)
+    })
+
+    await waitFor(() => expect(rowLabels().some((label) => label?.includes('sub-early'))).toBe(true))
+    expect(screen.queryByText('Show earlier activity')).toBeNull()
   })
 
   it('shows a subagent\'s streaming browser tool, renders only that row per input delta, and scrolls once', async () => {

@@ -180,6 +180,9 @@ async function openOrNull(files: StoreFileOps, path: string): Promise<OpenFile |
  * tens of MB and a caller whose HTTP client already hung up must be able to
  * stop paying for the rest of the file. Throws the abort reason.
  *
+ * `maxBytes` caps the bytes read, so a few rows of inline images cannot pull
+ * megabytes into memory: the walk stops there, short of `maxLines`.
+ *
  * Reads start at READ_CHUNK_MIN and double up to READ_CHUNK_MAX.
  */
 export async function readTailLines(
@@ -187,6 +190,7 @@ export async function readTailLines(
   path: string,
   maxLines: number,
   signal?: AbortSignal,
+  maxBytes = Infinity,
 ): Promise<{ lines: Buffer[]; offsets: number[]; reachedStart: boolean }> {
   signal?.throwIfAborted()
   if (maxLines <= 0) return { lines: [], offsets: [], reachedStart: true }
@@ -203,14 +207,16 @@ export async function readTailLines(
     let newlineCount = 0
     let truncated = false
     let chunk = READ_CHUNK_MIN
+    let readBytes = 0
 
-    while (pos > 0 && newlineCount <= maxLines) {
+    while (pos > 0 && newlineCount <= maxLines && readBytes < maxBytes) {
       // Check BEFORE each read (an abort landing during open or a prior
       // iteration must not start another read) and AFTER it (an abort
       // landing while the FINAL chunk is in flight has no next iteration to
       // observe it, and would otherwise still pay for the line scan).
       signal?.throwIfAborted()
-      const chunkSize = Math.min(chunk, pos)
+      const chunkSize = Math.min(chunk, pos, maxBytes - readBytes)
+      readBytes += chunkSize
       chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
       const chunkStart = pos - chunkSize
       const buf = asBuffer(await file.readAt(chunkStart, chunkSize, signal))

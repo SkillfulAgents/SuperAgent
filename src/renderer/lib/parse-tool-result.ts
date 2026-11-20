@@ -22,6 +22,8 @@ interface ContentBlock {
 export interface ToolResultMediaContext {
   agentSlug: string
   sessionId: string
+  /** The result is in this subagent's transcript, or a workflow agent's with `workflowRunId`. */
+  subagent?: { subagentId: string; workflowRunId?: string }
 }
 
 export interface ParsedToolResultImage {
@@ -95,9 +97,15 @@ const PDF_MIME = 'application/pdf'
  * fetched. */
 function mediaRefSrc(block: ContentBlock, media?: ToolResultMediaContext): string | null {
   if (!media || typeof block.id !== 'string' || !MEDIA_ID_PATTERN.test(block.id)) return null
+  const { subagent } = media
+  const inside = !subagent
+    ? ''
+    : subagent.workflowRunId
+      ? `/workflows/${encodeURIComponent(subagent.workflowRunId)}/agents/${encodeURIComponent(subagent.subagentId)}`
+      : `/subagent/${encodeURIComponent(subagent.subagentId)}`
   const path =
     `/api/agents/${encodeURIComponent(media.agentSlug)}` +
-    `/sessions/${encodeURIComponent(media.sessionId)}/media/${block.id}`
+    `/sessions/${encodeURIComponent(media.sessionId)}${inside}/media/${block.id}`
   return `${getApiBaseUrl()}${path}`
 }
 
