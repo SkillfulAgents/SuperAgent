@@ -28,6 +28,18 @@ async function connected(socket: WorkerWebSocket, make: () => WebSocket = () => 
 describe('ws shim', () => {
   afterEach(() => void vi.unstubAllGlobals())
 
+  it('makes the upgrade request with the fetch it is given, not the global one', async () => {
+    const global = vi.fn(); vi.stubGlobal('fetch', global)
+    const { socket } = fakeSocket()
+    const upgrade = vi.fn(async (_url: string, _init: RequestInit) => ({ status: 101, headers: new Headers(), webSocket: socket }) as unknown as Response)
+    const ws = new WebSocket('ws://container/sessions/session-1/stream', { headers: { 'x-superagent-host-token': 'token-1' }, fetch: upgrade })
+    await new Promise<void>((resolve) => ws.on('open', () => resolve()))
+
+    expect(upgrade.mock.calls[0][0]).toBe('http://container/sessions/session-1/stream')
+    expect(new Headers(upgrade.mock.calls[0][1].headers).get('x-superagent-host-token')).toBe('token-1')
+    expect(global).not.toHaveBeenCalled()
+  })
+
   it('runs listeners in the async context the socket was made in', async () => {
     const owner = new AsyncLocalStorage<string>()
     const { socket, deliver } = fakeSocket()

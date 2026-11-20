@@ -9,7 +9,8 @@ import { Buffer } from 'node:buffer'
 import type { WorkerWebSocket } from 'cloudflare:workers'
 
 type Listener = (...args: any[]) => void
-type ClientOptions = { headers?: Record<string, string> }
+/** `fetch` makes the upgrade request; the global one unless the caller reaches the server another way. */
+type ClientOptions = { headers?: Record<string, string>; fetch?: (url: string, init: RequestInit) => Promise<Response> }
 
 export class WebSocket {
   static readonly CONNECTING = 0
@@ -35,16 +36,16 @@ export class WebSocket {
   constructor(url: string | URL, protocols?: string | string[] | ClientOptions, options?: ClientOptions) {
     const named = typeof protocols === 'string' || Array.isArray(protocols) ? protocols : undefined
     // ws takes (url, options) or (url, protocols, options); protocols may be passed as undefined.
-    const headers = (named || protocols === undefined ? options : (protocols as ClientOptions))?.headers ?? {}
-    void this.connect(String(url), named, headers)
+    const given = named || protocols === undefined ? options : (protocols as ClientOptions)
+    void this.connect(String(url), named, given?.headers ?? {}, given?.fetch ?? fetch)
   }
 
-  private async connect(url: string, protocols: string | string[] | undefined, headers: Record<string, string>): Promise<void> {
+  private async connect(url: string, protocols: string | string[] | undefined, headers: Record<string, string>, upgrade: NonNullable<ClientOptions['fetch']>): Promise<void> {
     try {
       const requestHeaders = new Headers(headers)
       requestHeaders.set('Upgrade', 'websocket')
       if (protocols) requestHeaders.set('Sec-WebSocket-Protocol', [protocols].flat().join(', '))
-      const response = await fetch(url.replace(/^ws/, 'http'), { headers: requestHeaders })
+      const response = await upgrade(url.replace(/^ws/, 'http'), { headers: requestHeaders })
       const socket = (response as Response & { webSocket?: WorkerWebSocket | null }).webSocket
       if (!socket) throw new Error(`WebSocket upgrade refused with status ${response.status}`)
       socket.accept()
