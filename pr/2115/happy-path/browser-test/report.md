@@ -1,8 +1,9 @@
-[TEST_FAIL]
-[REASON] Sent a browser task to agent QA-20261120-005140-4u84 and checked that the reply reports the example.com title as "Example Domain". The reply was correct; one transient sidebar status error was observed.
-[BUG_FOUND] Immediately after sending the message from QA-20261120-005140-4u84, the sidebar showed the other agent, QA-20261120-005139-eck6, as "Working on New Session", while QA-20261120-005140-4u84 showed "Never active". The agent doing the work was 005140, so the sidebar status was attached to the wrong agent. It corrected itself within a few seconds (005140 then showed "Working on Check Example.com page title", and 005139 showed idle). Reproduced once, so intermittent. Expected: only the agent receiving the message shows as working.
-[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the "Your Agents" list containing QA-20261120-005140-4u84 and QA-20261120-005139-eck6 (screenshot step1-home.png).
-[STEP] Step 2: Clicked QA-20261120-005140-4u84 in the sidebar — its agent page opened at /agents/qa-20261120-005140-4u84-hz80phsbxq with an empty message box and status "idle".
-[STEP] Step 3: Typed "Open a browser and go to https://example.com. Tell me the page title." into the message box (screenshot step3-typed.png), then sent it with Meta+Enter. The page moved to a new session ("Check Example.com page title") and the message appeared in the chat. The sidebar status bug above was seen here (screenshot step3-sent.png).
-[STEP] Step 4: Waited up to 180 seconds for "Example Domain" to appear. It appeared within that window. The agent ran three tool calls (ToolSearch, then a browser open action to https://example.com) and the status moved from "Working..." to idle. Mid-run, the browser preview panel showed a URL bar of "about:blank" while the action log said "Open Browser https://example.com". This was only seen in one snapshot, so I did not record it as a bug.
-[STEP] Step 5: Verified the final reply: "The page title at https://example.com is "Example Domain". I've closed the browser." It contains "Example Domain". The browser preview panel was gone from the final view, consistent with the session ending. Screenshot saved as step5-response.png.
+[TEST_PASS]
+[REASON] Sent a browser task to agent QA-20261120-010131-6zgk and verified the reply reports the example.com page title as "Example Domain".
+[STEP] Step 1: Navigated to http://localhost:47891. The Gamut home page loaded with the sidebar listing "QA-20261120-010131-6zgk" under Your Agents.
+[STEP] Step 2: Clicked the "QA-20261120-010131-6zgk" agent in the sidebar. The agent page opened at /agents/qa-20261120-010131-6zgk-syu0tmn89z, showing status "idle" and an empty message box.
+[STEP] Step 3: Typed "Open a browser and go to https://example.com. Tell me the page title." and clicked Send. A new session "Check Example.com Page Title" opened, the message appeared in the chat, and the agent status changed to "working".
+[STEP] Step 4: Waited up to 3 minutes for a response. The "Example Domain" text appeared in the chat, the agent returned to "idle", and the run showed "Worked for 5s · 3 tool calls".
+[STEP] Step 5: The response reads: "The page title of https://example.com is "Example Domain". The page loaded normally, and I've closed the browser." The text "Example Domain" is present, so the check passed. Screenshot taken of the response.
+
+No bugs found.

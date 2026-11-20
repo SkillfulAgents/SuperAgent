@@ -1,8 +1,9 @@
 [TEST_PASS]
-[REASON] Opened agent QA-20261120-005139-eck6, confirmed it was idle, sent "Hello! What is 2+2?" and checked the reply contains 4.
-[STEP] Step 1: Navigated to http://localhost:47891 — Gamut home loaded with the sidebar listing both agents, no errors.
-[STEP] Step 2: Clicked QA-20261120-005139-eck6 in the sidebar — agent page opened at /agents/qa-20261120-005139-eck6-t2rfwq9uk5. Screenshot saved as step2-agent-selected.png.
-[STEP] Step 3: Checked agent status — indicator reads "idle", which is an accepted state.
-[STEP] Step 4: Typed "Hello! What is 2+2?" into the message box and clicked Send — the app opened a new session ("Basic Arithmetic Question") and the message appeared in the chat.
-[STEP] Step 5: Waited for a response — "2 + 2 = 4." was already in the message list when first checked, well inside the 3-minute window. Status returned to "idle".
-[STEP] Step 6: Verified the reply mentions 4 — it does. Screenshot saved as step6-response.png.
+[REASON] Sent "Hello! What is 2+2?" to agent QA-20261120-010130-ice0 and verified the reply contains "4".
+[STEP] Navigated to http://localhost:47891 — the Gamut home page loaded with both agents listed in the sidebar and in "Your Agents" cards.
+[STEP] Clicked QA-20261120-010130-ice0 in the sidebar — its agent page opened at /agents/qa-20261120-010130-ice0-19mghup7jl.
+[STEP] Verified agent status — the header status indicator reads "idle", which is an accepted status.
+[STEP] Typed "Hello! What is 2+2?" into the agent message input — the text appeared in the input and the send button became enabled.
+[STEP] Clicked Send — the page navigated to a new session ("Simple Arithmetic Question") and the message appeared in the chat.
+[STEP] Waited for a response — none was needed. The assistant reply "2 + 2 = 4." was already in the message list when the page was next checked, well within the 3-minute limit.
+[STEP] Verified the response and took a screenshot — the reply "2 + 2 = 4." contains "4", and the header shows "idle".
