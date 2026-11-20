@@ -7,6 +7,7 @@ import { useFinishedSetup } from '@renderer/hooks/use-finished-setup'
 import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
 import type { IntegrationSetupProvider } from '@renderer/components/agent-integrations/setup-types'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { cn } from '@shared/lib/utils/cn'
 import { useAgentIntegrations, useAvailableAgentIntegrationProviders } from '@renderer/hooks/use-agent-integrations'
 
 const featured = integrationSetupProviders.filter(p => p.slug === 'platform-email' || p.slug === 'slack')
@@ -55,13 +56,11 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
     // later, an arrow for a connection left halfway, a check when done.
     const icon = configured ? <Check aria-hidden /> : later ? <Clock3 aria-hidden /> : setupTarget.integrationId ? <ArrowRight aria-hidden /> : <Plus aria-hidden />
     return <div key={provider.slug} className={CHANNEL_TILE_CLASS}>
-      {/* The mark on a chip, as Agent Home's integrations panel draws it
-          (home-agent-integrations.tsx): hairline border, light in both
-          themes so black marks read, which is also why the mark keeps its
-          own colours here (no dark-mode invert) and a plain glyph (Inbox,
-          Meetings) stays dark on it. */}
-      <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground shadow-sm dark:bg-zinc-200 dark:text-zinc-900" aria-hidden>
-        <ServiceIcon slug={provider.slug} fallback="mcp" className="size-4" />
+      {/* The mark on a soft grey square, Agent Home's size (28px, a 16px
+          mark), with no border or shadow: the fill is its edge. Black marks
+          (GitHub, Linear) invert in dark mode, as everywhere on grey. */}
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground" aria-hidden>
+        <ServiceIcon slug={provider.slug} fallback="mcp" className={cn('size-4', provider.iconClassName)} />
       </span>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{title}</p>
