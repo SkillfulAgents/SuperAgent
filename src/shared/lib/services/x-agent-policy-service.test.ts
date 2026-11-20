@@ -23,6 +23,7 @@ vi.mock('../db', async () => {
 
 import {
   evaluate,
+  evaluatorForTarget,
   setPolicy,
   getPolicy,
   listPoliciesForCaller,
@@ -187,6 +188,121 @@ describe('x-agent-policy-service', () => {
       expect(await evaluate('caller', 'invoke', 'elsewhere')).toBe('review')
       expect(select).toHaveBeenCalledTimes(3)
       select.mockRestore()
+    })
+  })
+
+  describe('evaluatorForTarget (every caller of one target)', () => {
+    /** Every shape a caller's rows take; the caller's index picks one. */
+    async function seedCallers(count: number): Promise<string[]> {
+      const callers = Array.from({ length: count }, (_, i) => `caller-${i}`)
+      for (const [i, caller] of callers.entries()) {
+        const shape = i % 8
+        if (shape === 0) await setPolicy(caller, 'invoke', 'target', 'allow')
+        if (shape === 1) await setPolicy(caller, 'invoke', null, 'allow')
+        if (shape === 2) await setPolicy(caller, 'invoke', 'target', 'block')
+        // A specific row older than the global one still wins.
+        if (shape === 3) { await setPolicy(caller, 'invoke', 'target', 'review'); await setPolicy(caller, 'invoke', null, 'allow') }
+        if (shape === 4) { await setPolicy(caller, 'invoke', null, 'block'); await setPolicy(caller, 'invoke', 'target', 'allow') }
+        // Rows that must not answer: another target, another operation.
+        if (shape === 5) { await setPolicy(caller, 'invoke', 'elsewhere', 'block'); await setPolicy(caller, 'read', 'target', 'block'); await setPolicy(caller, 'read', null, 'block') }
+        if (shape === 6) await setPolicy(caller, 'invoke', null, 'review')
+        // shape 7: nothing stored.
+      }
+      return callers
+    }
+
+    it('gives every caller what evaluate() gives it, for each operation', async () => {
+      const callers = [...await seedCallers(24), 'never-seen', 'target']
+      for (const operation of ['invoke', 'read'] as const) {
+        for (const target of ['target', 'elsewhere', 'nobody']) {
+          const decide = evaluatorForTarget(operation, target)
+          for (const caller of callers) {
+            expect(await decide(caller), `${caller} ${operation} ${target}`).toBe(await evaluate(caller, operation, target))
+          }
+        }
+      }
+      // The mix really holds all three decisions.
+      const decide = evaluatorForTarget('invoke', 'target')
+      expect(new Set(await Promise.all(callers.map(decide)))).toEqual(new Set(['allow', 'review', 'block']))
+    })
+
+    it('reads once however many callers are asked about, and not before the first one', async () => {
+      const callers = await seedCallers(120)
+      const select = vi.spyOn(testDb, 'select')
+      try {
+        for (const count of [1, 5, 50, 120]) {
+          select.mockClear()
+          const decide = evaluatorForTarget('invoke', 'target')
+          expect(select).not.toHaveBeenCalled()
+          // All at once, as the inbound list asks, and again one by one.
+          const together = await Promise.all(callers.slice(0, count).map(decide))
+          for (const [i, caller] of callers.slice(0, count).entries()) expect(await decide(caller)).toBe(together[i])
+          expect(select).toHaveBeenCalledTimes(1)
+        }
+      } finally {
+        select.mockRestore()
+      }
+    })
+
+    it('names no caller in the statement: two parameters for any number of callers', async () => {
+      const all = vi.fn(async () => [])
+      const where = vi.fn((_filter: unknown) => ({ orderBy: () => ({ all }) }))
+      const select = vi.spyOn(testDb, 'select').mockReturnValue({ from: () => ({ where }) } as never)
+      try {
+        const decide = evaluatorForTarget('invoke', 'target')
+        await Promise.all(Array.from({ length: 300 }, (_, i) => decide(`caller-${i}`)))
+        expect(where).toHaveBeenCalledTimes(1)
+      } finally {
+        select.mockRestore()
+      }
+      const { SQLiteSyncDialect } = await import('drizzle-orm/sqlite-core')
+      expect(new SQLiteSyncDialect().sqlToQuery(where.mock.calls[0][0] as never).params).toEqual(['invoke', 'target'])
+    })
+
+    it('works out the Team Brain default once, and only for a caller with no row', async () => {
+      vi.mocked(getTeamBrain).mockResolvedValue({ agentSlug: 'brain', volumeId: 'team-drive' })
+      try {
+        const time = new Date()
+        await testDb.insert(volumeDefinitions).values({
+          id: 'team-drive', name: 'Team Brain', type: 'local', config: '{}',
+          visibility: 'public', globalAccess: 'read', createdAt: time, updatedAt: time,
+        }).run()
+        await setPolicy('blocked', 'invoke', 'brain', 'block')
+        await setPolicy('reviewed-everywhere', 'invoke', null, 'review')
+        const callers = ['blocked', 'reviewed-everywhere', 'new-a', 'new-b', 'new-c']
+        const select = vi.spyOn(testDb, 'select')
+        vi.mocked(getTeamBrain).mockClear()
+
+        const decide = evaluatorForTarget('invoke', 'brain')
+        expect(await decide('blocked')).toBe('block')
+        expect(getTeamBrain).not.toHaveBeenCalled()
+        expect(await Promise.all(callers.map(decide))).toEqual(['block', 'review', 'allow', 'allow', 'allow'])
+        // The policy rows, then the Team Brain drive: once each for three callers without a row.
+        expect(select).toHaveBeenCalledTimes(2)
+        expect(getTeamBrain).toHaveBeenCalledTimes(1)
+        select.mockRestore()
+
+        for (const caller of callers) {
+          expect(await evaluate(caller, 'invoke', 'brain')).toBe(await decide(caller))
+          // Reading the brain's sessions and invoking another agent take no default from it.
+          expect(await evaluatorForTarget('read', 'brain')(caller)).toBe(await evaluate(caller, 'read', 'brain'))
+          expect(await evaluatorForTarget('invoke', 'other')(caller)).toBe(await evaluate(caller, 'invoke', 'other'))
+        }
+        await testDb.update(volumeDefinitions).set({ globalAccess: null }).run()
+        expect(await evaluatorForTarget('invoke', 'brain')('new-a')).toBe('review')
+      } finally {
+        vi.mocked(getTeamBrain).mockResolvedValue(null)
+      }
+    })
+
+    it('fails every caller when the read fails', async () => {
+      const select = vi.spyOn(testDb, 'select').mockImplementation(() => { throw new Error('database is gone') })
+      try {
+        const decide = evaluatorForTarget('invoke', 'target')
+        await expect(Promise.all(['a', 'b'].map(decide))).rejects.toThrow('database is gone')
+      } finally {
+        select.mockRestore()
+      }
     })
   })
 

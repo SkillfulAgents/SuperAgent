@@ -9,6 +9,7 @@ import type { InboundXAgentDetails, InboundXAgentSession } from '@shared/lib/typ
 import { listAgentsWithStatus } from './agent-service'
 import {
   evaluate as evaluateXAgentPolicy,
+  evaluatorForTarget,
   type XAgentDecision,
 } from './x-agent-policy-service'
 
@@ -134,6 +135,8 @@ export async function getInboundXAgentDetails(
         .where(inArray(agentAcl.agentSlug, agentSlugs))
     : []
 
+  // One policy read for every caller, not one per other agent.
+  const evaluatePolicy = evaluatorForTarget('invoke', targetSlug)
   return buildInboundXAgentDetails({
     targetSlug,
     metadata,
@@ -142,5 +145,6 @@ export async function getInboundXAgentDetails(
     viewerUserId: options.viewerUserId,
     viewerCanAccessAll: options.viewerCanAccessAll,
     aclRows,
+    evaluatePolicy: (callerSlug) => evaluatePolicy(callerSlug),
   })
 }

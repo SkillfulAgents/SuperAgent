@@ -241,6 +241,11 @@ export async function evaluate(
     .limit(1)
     .all()
   if (rows[0]) return rows[0].decision
+  return decisionWithoutPolicy(operation, targetSlug)
+}
+
+/** Steps 3 and 4 of `evaluate`: what applies to a caller with no stored row. The same for every caller. */
+async function decisionWithoutPolicy(operation: XAgentOperation, targetSlug: string): Promise<XAgentDecision> {
   // The workspace default also applies to agents created after Team Brain was configured.
   if (operation === 'invoke') {
     const brain = await getTeamBrain()
@@ -251,6 +256,49 @@ export async function evaluate(
     }
   }
   return 'review'
+}
+
+/**
+ * `evaluate(caller, operation, target)` for many callers of one target: the
+ * returned function gives each caller the decision `evaluate` would. Every
+ * caller's rows for the target are read in one statement, on the first call,
+ * so a list of N callers costs one statement instead of N; the statement
+ * names no caller, so it binds two parameters however many there are. What
+ * applies without a row is the same for every caller and is worked out once,
+ * and only when some caller has none.
+ *
+ * It answers from that one read: build one per request, do not keep it.
+ */
+export function evaluatorForTarget(
+  operation: XAgentOperation,
+  targetSlug: string,
+): (callerSlug: string) => Promise<XAgentDecision> {
+  let stored: Promise<Map<string, XAgentDecision>> | undefined
+  let withoutPolicy: Promise<XAgentDecision> | undefined
+  return async (callerSlug) => {
+    stored ??= storedDecisionsForTarget(operation, targetSlug)
+    return (await stored).get(callerSlug) ?? (withoutPolicy ??= decisionWithoutPolicy(operation, targetSlug))
+  }
+}
+
+async function storedDecisionsForTarget(operation: XAgentOperation, targetSlug: string): Promise<Map<string, XAgentDecision>> {
+  const rows = await db
+    .select({ callerSlug: xAgentPolicies.callerAgentSlug, decision: xAgentPolicies.decision })
+    .from(xAgentPolicies)
+    .where(
+      and(
+        eq(xAgentPolicies.operation, operation),
+        or(eq(xAgentPolicies.targetAgentSlug, targetSlug), isNull(xAgentPolicies.targetAgentSlug)),
+      ),
+    )
+    // The order `evaluate` reads one caller's rows in, so each caller's first row is the one it picks.
+    .orderBy(sql`${xAgentPolicies.targetAgentSlug} is null`, desc(xAgentPolicies.updatedAt))
+    .all()
+  const decisions = new Map<string, XAgentDecision>()
+  for (const row of rows) {
+    if (!decisions.has(row.callerSlug)) decisions.set(row.callerSlug, row.decision)
+  }
+  return decisions
 }
 
 /**
