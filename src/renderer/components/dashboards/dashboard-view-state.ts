@@ -23,7 +23,11 @@ export type DashboardViewState =
     }
   | { kind: 'crashed'; message: string }
   | { kind: 'missing'; message: string }
+  | { kind: 'load-failed'; message: string }
   | { kind: 'ready' }
+
+/** What the last check of the loaded page found: served, not served and loading again, or not served and given up. */
+export type DashboardFrameLoad = 'ok' | 'retrying' | 'failed'
 
 export type DashboardViewStateInput = {
   agentRunning: boolean
@@ -32,6 +36,14 @@ export type DashboardViewStateInput = {
   canStart: boolean
   startFailed: boolean
   waitElapsedMs: number
+  frameLoad: DashboardFrameLoad
+}
+
+// What a proxy answers when the dashboard is not being served. Any other status is the dashboard's own, such as a 405 to HEAD.
+const UNAVAILABLE_STATUSES = new Set([502, 503, 504])
+
+export function isDashboardUnavailable(status: number): boolean {
+  return UNAVAILABLE_STATUSES.has(status)
 }
 
 function waiting(slow: boolean, pollFast: boolean): Extract<DashboardViewState, { kind: 'waiting' }> {
@@ -54,6 +66,7 @@ export function resolveDashboardViewState(input: DashboardViewStateInput): Dashb
     canStart,
     startFailed,
     waitElapsedMs,
+    frameLoad,
   } = input
 
   if (!agentRunning) {
@@ -101,7 +114,10 @@ export function resolveDashboardViewState(input: DashboardViewStateInput): Dashb
   }
 
   if (dashboard.status === 'running') {
-    return { kind: 'ready' }
+    if (frameLoad === 'failed') {
+      return { kind: 'load-failed', message: 'Dashboard failed to load.' }
+    }
+    return frameLoad === 'retrying' ? waiting(false, false) : { kind: 'ready' }
   }
 
   if (
