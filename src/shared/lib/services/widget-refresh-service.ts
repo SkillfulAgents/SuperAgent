@@ -113,7 +113,7 @@ class WidgetRefreshService {
   private async startRefresh(
     agentSlug: string,
     widgetSlug: string,
-    opts: { wake: boolean; reason: RefreshReason },
+    opts: { wake: boolean; reason: RefreshReason; prestart?: boolean },
   ): Promise<void> {
     const token = await agentRegistry.get(agentSlug).widgets.beginRefresh(widgetSlug)
     if (token) background(this.runRefresh(agentSlug, widgetSlug, token, opts), { name: 'widget-refresh.refresh-widget' })
@@ -124,7 +124,7 @@ class WidgetRefreshService {
     agentSlug: string,
     widgetSlug: string,
     token: string,
-    opts: { wake: boolean; reason: RefreshReason },
+    opts: { wake: boolean; reason: RefreshReason; prestart?: boolean },
   ): Promise<RefreshOutcome> {
     const outcome = await this.doRefresh(agentSlug, widgetSlug, opts)
       .catch((error: unknown): RefreshOutcome => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
@@ -135,7 +135,7 @@ class WidgetRefreshService {
   private async doRefresh(
     agentSlug: string,
     widgetSlug: string,
-    opts: { wake: boolean; reason: RefreshReason },
+    opts: { wake: boolean; reason: RefreshReason; prestart?: boolean },
   ): Promise<RefreshOutcome> {
     if (!opts.wake && (await agentRegistry.get(agentSlug).container.status()).status !== 'running') {
       return { ok: false, error: 'Agent is not running', skipped: true }
@@ -148,7 +148,7 @@ class WidgetRefreshService {
     })
     try {
       const actor = agentRegistry.get(agentSlug)
-      if (opts.wake) await actor.container.start()
+      if (opts.wake) await (opts.prestart ? actor.container.start({ prestart: true }) : actor.container.start())
       const response = await actor.container.fetch(`/artifacts/${encodeURIComponent(widgetSlug)}/widget/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -199,7 +199,7 @@ class WidgetRefreshService {
    */
   async refreshStale(
     agentSlug: string,
-    opts: { wake: boolean; force?: boolean },
+    opts: { wake: boolean; force?: boolean; prestart?: boolean },
   ): Promise<{ refreshing: string[] }> {
     const claimed = await agentRegistry.get(agentSlug).widgets.claimStaleSweep(opts.force ? 0 : STALE_SWEEP_THROTTLE_MS)
     if (!claimed) {
@@ -209,7 +209,7 @@ class WidgetRefreshService {
     const widgets = await listWidgetsFromFilesystem(agentSlug)
     const stale = widgets.filter((w) => w.isStale)
     for (const widget of stale) {
-      await this.startRefresh(agentSlug, widget.slug, { wake: opts.wake, reason: 'stale' })
+      await this.startRefresh(agentSlug, widget.slug, { wake: opts.wake, reason: 'stale', prestart: opts.prestart })
     }
     return { refreshing: await this.refreshingSlugs(agentSlug) }
   }

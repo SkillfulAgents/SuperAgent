@@ -782,8 +782,11 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     const client = newClient()
     await client.start()
     sendMock.mockClear()
-    await client.start()
+    const onAlreadyRunning = vi.fn()
+    await client.start({ onAlreadyRunning })
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    // The runtime must not count an adopted VM as a wake it caused.
+    expect(onAlreadyRunning).toHaveBeenCalledOnce()
   })
 
   it('start replaces a RUNNING VM that fails /health instead of adopting it', async () => {

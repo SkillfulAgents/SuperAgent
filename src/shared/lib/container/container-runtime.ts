@@ -36,6 +36,7 @@ import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { firstCopies, listVolumes, remounted } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
@@ -89,6 +90,9 @@ export interface RuntimeHost {
    */
   afterForceStop(slug: string): void
 }
+
+/** How long a container woken ahead of use (a pre-start) may sit untouched before it sleeps. */
+export const PRESTART_IDLE_MS = 5 * 60_000
 
 /** The auto-sleep timeout in `settings`, in ms; zero or less disables. */
 export function autoSleepTimeoutMsFrom(settings: Pick<AppSettings, 'app'>): number {
@@ -144,11 +148,19 @@ export class ContainerRuntime {
    * read is out share it) and at every fire.
    */
   readonly idleAlarm = new IdleAlarm({
-    timeoutMs: async () => autoSleepTimeoutMsFrom(await getSettings()),
+    timeoutMs: async () => this.idleTimeoutFrom(autoSleepTimeoutMsFrom(await getSettings())),
     lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
     sleep: (timeoutMs) => this.sleepIdle(timeoutMs),
   })
+  /**
+   * Set when a pre-start begins waking the container, so a person's use
+   * during the boot still counts. Until the wake settles it is provisional:
+   * a clear then only records itself. Reset whenever the container stops.
+   */
+  private prestart: { at: number; settled: boolean; clearedBy: 'keep_alive' | 'session_activity' | null } | null = null
+  /** The idle alarm's own stop is under way: a stop it completes ends a tagged wake as expired. */
+  private sleepingIdle = false
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
   /** The fatal result a deferred recovery is to report, until it does. */
@@ -419,6 +431,13 @@ export class ContainerRuntime {
     if (status === 'stopped') {
       this.stale = false
       this.webhookRelayAtStart = null
+      const tag = this.prestart
+      this.prestart = null
+      if (tag?.settled) {
+        const msSinceStart = Date.now() - tag.at
+        if (this.sleepingIdle) trackServerEvent('prestart_expired', { agent_key: this.slug, ms_since_start: msSinceStart })
+        else trackServerEvent('prestart_cleared', { agent_key: this.slug, cleared_by: 'stopped', ms_since_start: msSinceStart })
+      }
     }
   }
 
@@ -646,7 +665,7 @@ export class ContainerRuntime {
   //
   // Note: User secrets are stored in the .env file in the workspace,
   // not passed as env vars. Only connected account tokens are injected.
-  async ensureRunning(): Promise<ContainerClient> {
+  async ensureRunning(options?: { prestart?: boolean }): Promise<ContainerClient> {
     const slug = this.slug
     this.assertNotStopping('start')
     if (this.starting) return this.starting
@@ -687,10 +706,54 @@ export class ContainerRuntime {
       this.assertNotStopping('start')
       if (this.starting) return this.starting
 
-      await this.trackStart(this.doStartContainer(client))
+      // Set before the start's first await, so a person's use during the boot clears it.
+      const tag = options?.prestart ? { at: Date.now(), settled: false, clearedBy: null } : null
+      this.prestart = tag
+      try {
+        await this.trackStart(this.doStartContainer(client))
+      } catch (error) {
+        if (tag && this.prestart === tag) this.prestart = null
+        if (tag) trackServerEvent('prestart_failed', { agent_key: this.slug })
+        throw error
+      }
+      if (tag && this.prestart === tag) await this.settlePrestart(tag)
+    } else if (options?.prestart && this.prestart && !this.prestart.clearedBy) {
+      // Agent home opened again while the wake is unused: the short window restarts, the wake time stays.
+      this.activity.keepAlive()
+      this.idleAlarm.schedule()
     }
 
     return client
+  }
+
+  /** The tagged start woke the container: report it, or drop the tag when nothing is left to shorten. */
+  private async settlePrestart(tag: NonNullable<ContainerRuntime['prestart']>): Promise<void> {
+    // Bookkeeping only: a settings read that fails drops the tag rather than fail a start that worked.
+    if (autoSleepTimeoutMsFrom(await getSettings().catch(() => ({ app: { autoSleepTimeoutMinutes: 0 } }))) <= 0) {
+      if (this.prestart === tag) this.prestart = null
+      return
+    }
+    if (this.prestart !== tag) return
+    tag.settled = true
+    trackServerEvent('prestart_triggered', { agent_key: this.slug })
+    if (tag.clearedBy) this.clearPrestart(tag.clearedBy)
+  }
+
+  /** A person used the container: it keeps the auto-sleep timeout from now on. */
+  private clearPrestart(by: 'keep_alive' | 'session_activity'): void {
+    const tag = this.prestart
+    if (!tag) return
+    if (!tag.settled) {
+      tag.clearedBy ??= by
+      return
+    }
+    this.prestart = null
+    trackServerEvent('prestart_cleared', { agent_key: this.slug, cleared_by: by, ms_since_start: Date.now() - tag.at })
+  }
+
+  /** The auto-sleep timeout, shortened while an unused pre-start is tagged. Off stays off. */
+  private idleTimeoutFrom(timeoutMs: number): number {
+    return this.prestart && !this.prestart.clearedBy && timeoutMs > 0 ? Math.min(PRESTART_IDLE_MS, timeoutMs) : timeoutMs
   }
 
   private async doStartContainer(client: ContainerClient): Promise<ContainerClient> {
@@ -830,7 +893,11 @@ export class ContainerRuntime {
       settings,
       volumes,
       onVolumesDropped: () => { volumesDropped = true },
-      onAlreadyRunning: () => { alreadyRunning = true },
+      onAlreadyRunning: () => {
+        alreadyRunning = true
+        // Found running from earlier use: nothing was woken ahead of use.
+        if (this.prestart && !this.prestart.settled) this.prestart = null
+      },
     })
 
     // Stop won the race: do not cache/broadcast running for a port about to die.
@@ -898,6 +965,7 @@ export class ContainerRuntime {
 
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
   keepAlive(): void {
+    this.clearPrestart('keep_alive')
     this.activity.keepAlive()
     this.idleAlarm.schedule()
   }
@@ -908,6 +976,8 @@ export class ContainerRuntime {
    * clock follows the sessions without anyone re-reading their metadata.
    */
   noteSessionActivity(at: number = Date.now()): void {
+    // A write stamped before the wake (a transcript refresh) is not use of it.
+    if (this.prestart && at > this.prestart.at) this.clearPrestart('session_activity')
     this.activity.sessionActivity(at)
     this.idleAlarm.schedule()
   }
@@ -954,14 +1024,19 @@ export class ContainerRuntime {
   /** What the idle alarm runs: stop without ever force-stopping the shared VM. */
   private async sleepIdle(timeoutMs: number): Promise<void> {
     console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMs / 60_000}m, stopping...`)
-    await this.stopContainer({
-      stopTimeoutMs: 60_000,
-      killTimeoutMs: 30_000,
-      // Never force-stop the shared VM to reclaim one idle container — it would
-      // kill every running agent. If stop+kill time out, leave it running; the
-      // alarm retries.
-      escalateToForceStop: false,
-    })
+    this.sleepingIdle = true
+    try {
+      await this.stopContainer({
+        stopTimeoutMs: 60_000,
+        killTimeoutMs: 30_000,
+        // Never force-stop the shared VM to reclaim one idle container — it would
+        // kill every running agent. If stop+kill time out, leave it running; the
+        // alarm retries.
+        escalateToForceStop: false,
+      })
+    } finally {
+      this.sleepingIdle = false
+    }
   }
 
   /**

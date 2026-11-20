@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { invalidateAgentWidgets, patchAgentWidget } from '@renderer/lib/agent-cache'
 import type { ApiAgentWidget, WidgetScheme } from '@shared/lib/widgets/widget-schema'
 
@@ -52,13 +53,14 @@ export function useWidgetHtml(agentSlug: string, widget: ApiAgentWidget, scheme:
 
 /**
  * The Agent Home mount trigger: ask the host to refresh every stale widget of
- * this agent. Fire-and-forget on the server; results come back as SSE.
+ * this agent and to start an agent that has a dashboard ahead of it opening,
+ * as a pre-start. Fire-and-forget on the server; results come back as SSE.
  */
 export function useRefreshStaleWidgets() {
   return useMutation({
     mutationFn: async (agentSlug: string) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/widgets/refresh-stale`, {
-        method: 'POST',
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prestart: true }),
       })
       if (!res.ok) throw new Error('Failed to refresh widgets')
       return res.json() as Promise<{ refreshing: string[] }>
@@ -66,19 +68,25 @@ export function useRefreshStaleWidgets() {
   })
 }
 
-/** Refresh once per Agent Home visit, independent of whether its widget panel is visible. */
-export function useRefreshWidgetsOnVisit(agentSlug: string | null) {
+/**
+ * Once per Agent Home visit, by someone who can use the agent, once the
+ * runtime is ready: refresh its stale widgets, and start it if it has a
+ * dashboard. Independent of whether its widget panel is visible.
+ */
+export function useRefreshWidgetsOnVisit(agentSlug: string | null, hasDashboards: boolean) {
   const { data: widgets } = useAgentWidgets(agentSlug)
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const isReady = runtimeStatus?.runtimeReadiness?.status === 'READY'
   const { mutate: refreshStale } = useRefreshStaleWidgets()
   const triggeredFor = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!agentSlug || !widgets?.length || triggeredFor.current === agentSlug) return
+    if (!agentSlug || !isReady || (!widgets?.length && !hasDashboards) || triggeredFor.current === agentSlug) return
     triggeredFor.current = agentSlug
     // Re-read staleness on the server: a cached listing may still look fresh
     // after its snapshot expires. Later SSE changes must not repeat the visit.
     refreshStale(agentSlug)
-  }, [agentSlug, widgets, refreshStale])
+  }, [agentSlug, isReady, widgets, hasDashboards, refreshStale])
 }
 
 /** Explicit refresh of one widget (the card's refresh button). */

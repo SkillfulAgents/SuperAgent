@@ -1013,6 +1013,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       // tells it apart. Adopting it would make every restart reuse the dead VM.
       if (await this.answersHealth(info.port)) {
         this.rememberRunningPort(info.port)
+        options?.onAlreadyRunning?.()
         return info
       }
       console.warn(

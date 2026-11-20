@@ -1994,6 +1994,8 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     const actor = agentRegistry.get(slug)
 
     await actor.container.start()
+    // A person asked for it: a wake tagged as a pre-start now keeps the normal auto-sleep timeout.
+    await actor.container.keepAlive()
     if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
     // Read the agent again: a rename or delete can land while the container starts, and a
@@ -7715,10 +7717,23 @@ agents.get('/:id/widgets', AgentRead(), async (c) => {
 // AgentUser, not AgentRead: this can start a container, which is what
 // POST /:id/start requires. Reading a widget stays free — the listing, the
 // snapshot document and the PNG never touch the container.
+const visitBodySchema = z.object({ prestart: z.boolean().optional() })
+
 agents.post('/:id/widgets/refresh-stale', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const result = await widgetRefreshService.refreshStale(slug, { wake: true })
+    // Desktop and web send `prestart` (iOS and older clients do not): a wake this visit causes is
+    // ahead of use, so it sleeps after a short idle until someone uses it. An agent with a
+    // dashboard is started now, ahead of the dashboard opening, while auto-sleep is on: the short
+    // idle is auto-sleep's timer, so with it off nothing would undo the start.
+    const json = await readLimitedJsonBody(c.req.raw, START_AGENT_BODY_MAX_BYTES).catch(() => null)
+    const prestart = visitBodySchema.safeParse(json).data?.prestart === true
+    const settings = prestart ? await getSettings().catch(() => null) : null
+    const warmStart = settings !== null && (settings.app?.autoSleepTimeoutMinutes ?? 30) > 0
+    if (warmStart && (await listArtifactsFromFilesystem(slug)).length > 0) {
+      background(agentRegistry.get(slug).container.start({ prestart: true }), { name: 'agents-route.prestart' })
+    }
+    const result = await widgetRefreshService.refreshStale(slug, { wake: true, prestart })
     return c.json(result)
   } catch (error) {
     console.error('Failed to refresh stale widgets:', error)
@@ -7735,7 +7750,15 @@ agents.post('/:id/artifacts/:artifactSlug/widget/refresh', AgentUser(), async (c
   if (!widgetPath(artifactSlug)) return c.json({ error: 'Invalid artifact slug' }, 400)
   const widget = await readWidgetFromFilesystem(slug, artifactSlug)
   if (!widget) return c.json({ error: 'Artifact has no widget' }, 404)
-  const outcome = await widgetRefreshService.refreshWidget(slug, artifactSlug, { wake: true, reason: 'manual' })
+  // A person asked for it: keep the container awake now, and again once the refresh settles,
+  // since the start it joins may be a pre-start that tags the container meanwhile.
+  await agentRegistry.get(slug).container.keepAlive()
+  let outcome
+  try {
+    outcome = await widgetRefreshService.refreshWidget(slug, artifactSlug, { wake: true, reason: 'manual' })
+  } finally {
+    await agentRegistry.get(slug).container.keepAlive()
+  }
   if (!outcome.ok) return c.json({ ok: false, error: outcome.error }, 502)
   return c.json({ ok: true, snapshot: outcome.snapshot })
 })

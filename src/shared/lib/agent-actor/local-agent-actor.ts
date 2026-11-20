@@ -209,8 +209,8 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
   const runtime = () => deps.containerHost.runtime(slug)
   const client = () => runtime().getClient()
   return {
-    start: async () => {
-      await runtime().ensureRunning()
+    start: async (...args) => {
+      await runtime().ensureRunning(...args)
     },
     stop: (...args) => runtime().stopContainer(...args),
     keepAlive: async () => runtime().keepAlive(),

@@ -61,7 +61,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const showSessionParticipants = isAuthMode && agentMemberCount(agent.slug) > 1
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
-  useRefreshWidgetsOnVisit(isOwner ? agent.slug : null)
+  useRefreshWidgetsOnVisit(isViewOnly ? null : agent.slug, Array.isArray(agent.dashboards) && agent.dashboards.length > 0)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [allSessions, setAllSessions] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
