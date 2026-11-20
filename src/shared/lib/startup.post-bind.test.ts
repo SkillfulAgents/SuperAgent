@@ -346,16 +346,29 @@ describe('initializeServices post-bind critical path', () => {
     expect(staleUploads.startStaleUploadCleanup).toHaveBeenCalledOnce()
   })
 
-  it('leaves the stale-upload sweep to afterBindInitialize, not to importing this module or initializing services', async () => {
+  it('does not start the stale-upload sweep from importing this module', async () => {
+    await import('./startup')
+    expect(staleUploads.startStaleUploadCleanup).not.toHaveBeenCalled()
+  })
+
+  // A deployment can start the shared services without the HTTP entry's after-bind step.
+  it('starts the stale-upload sweep from initializing services alone', async () => {
     const { initializeServices } = await import('./startup')
     await initializeServices()
-    expect(staleUploads.startStaleUploadCleanup).not.toHaveBeenCalled()
+    expect(staleUploads.startStaleUploadCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('starts the stale-upload sweep once when an entry also runs afterBindInitialize', async () => {
+    const { afterBindInitialize, initializeServices } = await import('./startup')
+    await initializeServices()
+    await afterBindInitialize()
+    expect(staleUploads.startStaleUploadCleanup).toHaveBeenCalledOnce()
   })
 
   it('starts the stale-upload sweep even when an auth gate fails init', async () => {
     validateAuth.mockRejectedValueOnce(new Error('platform unreachable'))
-    const { afterBindInitialize } = await import('./startup')
-    await afterBindInitialize()
+    const { initializeServices } = await import('./startup')
+    await expect(initializeServices()).rejects.toThrow('platform unreachable')
     expect(initializeAgents).not.toHaveBeenCalled()
     expect(staleUploads.startStaleUploadCleanup).toHaveBeenCalledOnce()
   })

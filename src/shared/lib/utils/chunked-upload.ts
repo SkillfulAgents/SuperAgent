@@ -514,7 +514,7 @@ const staleUploadSweepTask = new PassTask('uploads.stale-sweep', async () => swe
 
 /**
  * Sweeps now and then every 30 minutes, until `stopStaleUploadCleanup`. Called
- * from `afterBindInitialize`, once AppState is initialized, so that importing the
+ * from `initializeServices`, once AppState is initialized, so that importing the
  * routes starts no timers. A second start changes nothing.
  */
 export function startStaleUploadCleanup(): void {

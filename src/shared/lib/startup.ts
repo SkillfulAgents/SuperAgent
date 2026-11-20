@@ -196,9 +196,6 @@ export type AfterBindInitOptions = {
 /** Mark bound → init services → emit boot_timing. Shared by web / Electron / Vite. */
 export async function afterBindInitialize(options: AfterBindInitOptions = {}): Promise<void> {
   markBoot('bound')
-  // Ahead of the services and outside their try: a failed auth gate or discovery
-  // leaves a server still taking uploads, whose abandoned bytes must still go.
-  startStaleUploadCleanup()
   try {
     await initializeServices()
   } catch (error) {
@@ -247,6 +244,10 @@ export async function prepareDeployment(): Promise<void> {
 }
 
 async function initializeServicesInner() {
+  // First, before anything that can fail: a failed auth gate or discovery
+  // leaves a server still taking uploads, whose abandoned bytes must still go.
+  startStaleUploadCleanup()
+
   // The entry point started error reporting (main/index.ts, web/server.ts). Re-attaching the
   // tenant identity is harmless, and gives it to a reporter started before the database opened.
   if (process.env.NODE_ENV === 'production') {
