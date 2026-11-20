@@ -16,6 +16,7 @@ import { ContainerNotFoundError } from '@shared/lib/container/types'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 import { ProviderRefreshUnavailableError } from '@shared/lib/agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
+import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 
 /** A thrown error as data. */
 export interface ActorErrorData {
@@ -78,6 +79,8 @@ const REVIVERS: Record<string, Reviver> = {
   LlmProviderNotFoundError: () => new LlmProviderNotFoundError(),
   ProviderReconnectRequiredError: (_f, message, cause) => new ProviderReconnectRequiredError(message, { cause }),
   ProviderRefreshUnavailableError: (_f, message, cause) => new ProviderRefreshUnavailableError(message, { cause }),
+  // A write too large to take: upload routes answer it as 413, with its message.
+  UploadTooLargeError: (f) => new UploadTooLargeError(f.size as number, f.maxBytes as number),
 }
 
 const OMIT = Symbol('omit')
