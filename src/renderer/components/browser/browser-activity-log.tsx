@@ -1,9 +1,9 @@
-import { useMemo, useEffect, useRef, useState } from 'react'
+import { memo, useMemo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Loader2, ChevronRight, ChevronDown } from 'lucide-react'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, type UseQueryResult } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { getToolRenderer } from '@shared/lib/tools/renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
@@ -19,14 +19,31 @@ interface FlatItem {
   toolCall: ApiToolCall
 }
 
+interface StreamingTool {
+  id: string
+  name: string
+  partialInput: string
+}
+
+const NO_STREAMING_TOOLS: StreamingTool[] = []
+
 interface BrowserActivityLogProps {
   sessionId: string
   agentSlug: string
 }
 
+// Only each transcript's data, so the result keeps its identity until a
+// transcript's content changes: without `combine`, useQueries returns a new
+// array on every render and a fetch starting or ending re-renders the log.
+function subagentTranscripts(results: UseQueryResult<ApiMessageOrBoundary[]>[]) {
+  return results.map((result) => result.data)
+}
+
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
   const { data: messages } = useMessages(sessionId, agentSlug)
-  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug, ['streamingToolUses', 'activeSubagents'])
+  // Reported by StreamingBrowserToolsWatcher, which takes the stream's
+  // per-token re-renders in this component's place.
+  const [streamingBrowserTools, setStreamingBrowserTools] = useState(NO_STREAMING_TOOLS)
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
 
   // Collect ALL subagent IDs from the session messages
@@ -47,7 +64,7 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
   }, [messages])
 
   // Fetch messages for ALL subagents in parallel
-  const subagentQueries = useQueries({
+  const transcripts = useQueries({
     queries: subagentIds.map((subId) => ({
       queryKey: ['subagent-messages', sessionId, agentSlug, subId],
       queryFn: async () => {
@@ -59,6 +76,7 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
       },
       refetchInterval: false as const,
     })),
+    combine: subagentTranscripts,
   })
 
   // Extract browser tool calls from all sources, deduplicated and in message order
@@ -84,64 +102,106 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
     extractBrowserTools(messages)
 
     // Then add any browser tools from subagents that aren't already included
-    for (const query of subagentQueries) {
-      extractBrowserTools(query.data)
+    for (const transcript of transcripts) {
+      extractBrowserTools(transcript)
     }
 
     return items.slice(-MAX_ENTRIES)
-  }, [messages, subagentQueries])
+  }, [messages, transcripts])
 
   // Streaming browser tool (from active subagent or main agent)
   const streamingBrowserTool = useMemo(() => {
-    for (const tool of streamingToolUses) {
-      if (tool.name.startsWith(BROWSER_TOOL_PREFIX)) {
-        const persisted = flatItems.some(i => i.toolCall.id === tool.id)
-        if (!persisted) return tool
-      }
-    }
-    for (const sub of activeSubagents ?? []) {
-      if (sub.streamingToolUse?.name.startsWith(BROWSER_TOOL_PREFIX)) {
-        const persisted = flatItems.some(i => i.toolCall.id === sub.streamingToolUse!.id)
-        if (!persisted) return sub.streamingToolUse
-      }
+    for (const tool of streamingBrowserTools) {
+      const persisted = flatItems.some(i => i.toolCall.id === tool.id)
+      if (!persisted) return tool
     }
     return null
-  }, [streamingToolUses, activeSubagents, flatItems])
+  }, [streamingBrowserTools, flatItems])
 
+  // By id: the tool's object is replaced with every delta of its input, and
+  // each replacement would start another smooth scroll.
+  const streamingBrowserToolId = streamingBrowserTool?.id
   useEffect(() => {
     bottomSentinelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [flatItems.length, streamingBrowserTool])
+  }, [flatItems.length, streamingBrowserToolId])
 
-  if (flatItems.length === 0 && !streamingBrowserTool) {
-    return (
-      <div className="flex-1 min-h-0 flex items-center justify-center px-4 py-4">
-        <span className="text-xs text-muted-foreground">No browser activity yet</span>
-      </div>
-    )
-  }
-
+  // One position for the watcher in both states below: remounting it would drop what it last reported.
   return (
-    <ScrollArea className="flex-1 min-h-0">
-      <div className="px-4 py-2 space-y-2.5">
-        {flatItems.map((item) => (
-          <CompactToolCall key={item.key} toolCall={item.toolCall} />
-        ))}
-        {streamingBrowserTool && (
-          <CompactStreamingTool name={streamingBrowserTool.name} partialInput={streamingBrowserTool.partialInput} />
-        )}
-        <div ref={bottomSentinelRef} />
-      </div>
-    </ScrollArea>
+    <>
+      <StreamingBrowserToolsWatcher sessionId={sessionId} agentSlug={agentSlug} onChange={setStreamingBrowserTools} />
+      {flatItems.length === 0 && !streamingBrowserTool ? (
+        <div className="flex-1 min-h-0 flex items-center justify-center px-4 py-4">
+          <span className="text-xs text-muted-foreground">No browser activity yet</span>
+        </div>
+      ) : (
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="px-4 py-2 space-y-2.5">
+            {flatItems.map((item) => (
+              <CompactToolCall key={item.key} toolCall={item.toolCall} />
+            ))}
+            {streamingBrowserTool && (
+              <CompactStreamingTool name={streamingBrowserTool.name} partialInput={streamingBrowserTool.partialInput} />
+            )}
+            <div ref={bottomSentinelRef} />
+          </div>
+        </ScrollArea>
+      )}
+    </>
   )
 }
 
-function CompactToolCall({ toolCall }: { toolCall: ApiToolCall }) {
+const STREAMING_TOOL_FIELDS = ['streamingToolUses', 'activeSubagents'] as const
+
+function sameStreamingTools(a: StreamingTool[], b: StreamingTool[]): boolean {
+  return a.length === b.length && a.every((tool, i) =>
+    tool.id === b[i].id && tool.name === b[i].name && tool.partialInput === b[i].partialInput)
+}
+
+/**
+ * Renders nothing. The stream replaces `activeSubagents` on every token a
+ * subagent streams, which is most of the time a browser is open, so whoever
+ * subscribes to it re-renders per token. This component is that subscriber;
+ * the log hears from it only when the browser tools being streamed (the main
+ * agent's first, then each subagent's) actually change.
+ */
+function StreamingBrowserToolsWatcher({ sessionId, agentSlug, onChange }: BrowserActivityLogProps & {
+  onChange: (tools: StreamingTool[]) => void
+}) {
+  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug, STREAMING_TOOL_FIELDS)
+  const reported = useRef(NO_STREAMING_TOOLS)
+
+  // Before paint, so the log never shows a frame without a tool that has started.
+  useLayoutEffect(() => {
+    const tools: StreamingTool[] = []
+    for (const tool of streamingToolUses) {
+      if (tool.name.startsWith(BROWSER_TOOL_PREFIX)) tools.push(tool)
+    }
+    for (const sub of activeSubagents ?? []) {
+      if (sub.streamingToolUse?.name.startsWith(BROWSER_TOOL_PREFIX)) tools.push(sub.streamingToolUse)
+    }
+    if (sameStreamingTools(reported.current, tools)) return
+    reported.current = tools
+    onChange(tools.length > 0 ? tools : NO_STREAMING_TOOLS)
+  }, [streamingToolUses, activeSubagents, onChange])
+
+  return null
+}
+
+// Memoized on the tool call's identity, which the query layer's structural
+// sharing keeps across refetches until that call's own data changes.
+const CompactToolCall = memo(function CompactToolCall({ toolCall }: { toolCall: ApiToolCall }) {
   const [expanded, setExpanded] = useState(false)
   const renderer = getToolRenderer(toolCall.name)
   const Icon = renderer?.icon
   const summary = renderer?.getSummary?.(toolCall.input)
-  const parsed = parseToolResult(toolCall.result)
-  const hasDetail = !!(parsed.text || toolCall.input)
+  // Parsing tries JSON.parse on the whole result, and a page snapshot is
+  // large. A closed row needs it only to learn whether it has anything to open.
+  const needsResult = expanded || !toolCall.input
+  const resultText = useMemo(
+    () => (needsResult ? parseToolResult(toolCall.result).text : null),
+    [needsResult, toolCall.result],
+  )
+  const hasDetail = !!(resultText || toolCall.input)
 
   const isError = toolCall.isError
 
@@ -171,19 +231,19 @@ function CompactToolCall({ toolCall }: { toolCall: ApiToolCall }) {
           </span>
         )}
       </button>
-      {expanded && parsed.text && (
+      {expanded && resultText && (
         <pre className={cn(
           'ml-5 mt-0.5 mb-1 text-2xs leading-snug whitespace-pre-wrap break-words rounded p-1.5 max-h-32 overflow-y-auto',
           isError
             ? 'bg-red-50/50 text-red-700/70 dark:bg-red-950/30 dark:text-red-300/70'
             : 'bg-muted/30 text-muted-foreground/70'
         )}>
-          {parsed.text}
+          {resultText}
         </pre>
       )}
     </div>
   )
-}
+})
 
 function CompactStreamingTool({ name, partialInput }: { name: string; partialInput: string }) {
   const renderer = getToolRenderer(name)
