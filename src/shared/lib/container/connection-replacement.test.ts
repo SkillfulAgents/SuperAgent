@@ -60,6 +60,7 @@ describe('connection replacement notification', () => {
         content: expect.stringMatching(/^\[SYSTEM\] Connection to "Slack" was replaced\./),
         uuid: expect.any(String),
         options: { shouldQuery: true },
+        context: { sender: { type: 'automated', id: 'connection-replacement' } },
       })
     }
     const message = mocks.deliver.mock.calls[0][0].content as string

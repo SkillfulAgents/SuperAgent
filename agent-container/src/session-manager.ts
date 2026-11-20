@@ -5,6 +5,7 @@ import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { mergeSessionContext, messageContextSchema, type MessageContext, type SessionContext } from './session-context';
 import { globalInstructionsSchema } from './global-instructions';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
 import { SessionPersistence, type SessionUpdate } from './session-persistence';
@@ -271,6 +272,8 @@ export class SessionManager extends EventEmitter {
     }
 
     const tempSessionId = uuidv4();
+    const sessionContext = mergeSessionContext(undefined, messageContextSchema.parse(request.message_context));
+    const metadata = sessionContext ? { ...request.metadata, session_context: sessionContext } : request.metadata;
     // All sessions share the same working directory
     const workingDirectory = request.workingDirectory || this.baseWorkingDirectory;
 
@@ -404,7 +407,7 @@ export class SessionManager extends EventEmitter {
       id: sessionId,
       createdAt: new Date(),
       lastActivity: new Date(),
-      metadata: request.metadata,
+      metadata,
       workingDirectory,
       envVars: request.envVars,
       systemPrompt: request.systemPrompt,
@@ -494,7 +497,7 @@ export class SessionManager extends EventEmitter {
       preloadToolsets: knownPreloadToolsets(request.preloadToolsets),
       capabilityPolicies,
       globalInstructions,
-      metadata: request.metadata,
+      metadata,
     });
 
     this.sessions.set(sessionId, sessionData);
@@ -825,6 +828,17 @@ export class SessionManager extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
+  /**
+   * The session's context for tools, hints and hooks: what its messages said,
+   * and whether it is automated. Advisory: billing and attribution are the host's.
+   */
+  getSessionContext(sessionId: string): (SessionContext & { type: 'interactive' | 'automated' }) | null {
+    const metadata = this.sessions.get(sessionId)?.session.metadata ?? this.persistence.getSession(sessionId)?.metadata;
+    if (!metadata) return null;
+    const stored = messageContextSchema.safeParse(metadata.session_context);
+    return { ...(stored.success ? stored.data : undefined), type: metadata.isAutomated ? 'automated' : 'interactive' };
+  }
+
   async getSession(sessionId: string): Promise<Session | null> {
     const releasing = this.releasing.get(sessionId);
     if (releasing) await releasing;
@@ -950,7 +964,7 @@ export class SessionManager extends EventEmitter {
         // but drop the automation class so idle eviction and runtime class
         // match a user session, not the scheduled/webhook/x-agent parent.
         metadata: source.metadata
-          ? { ...source.metadata, isAutomated: undefined }
+          ? { ...source.metadata, isAutomated: undefined, session_context: undefined }
           : undefined,
       });
     } catch (error) {
@@ -997,7 +1011,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
+    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; messageContext?: MessageContext; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
   ): Promise<void> {
     const releasing = this.releasing.get(sessionId);
     if (releasing) await releasing;
@@ -1031,6 +1045,12 @@ export class SessionManager extends EventEmitter {
     if (expectsResponse && !options?.isAutomated && sessionData.session.metadata?.isAutomated) {
       console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
       sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
+      persisted.metadata = sessionData.session.metadata;
+    }
+    // Merged as the message arrives (session-context.ts).
+    if (options?.messageContext) {
+      const session_context = mergeSessionContext(sessionData.session.metadata?.session_context, options.messageContext);
+      sessionData.session.metadata = { ...sessionData.session.metadata, session_context };
       persisted.metadata = sessionData.session.metadata;
     }
 

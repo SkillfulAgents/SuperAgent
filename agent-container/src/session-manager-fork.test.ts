@@ -85,8 +85,8 @@ describe('SessionManager.forkSession', () => {
     expect(persisted.get('src-1')).toEqual(source) // source untouched
   })
 
-  it('does not inherit isAutomated from the source', async () => {
-    persisted.set('src-1', { ...source, metadata: { isAutomated: true, other: 'keep' } })
+  it('does not inherit isAutomated or the session context from the source', async () => {
+    persisted.set('src-1', { ...source, metadata: { isAutomated: true, other: 'keep', session_context: { session_trigger: 'scheduled' } } })
     sdkFork.mockResolvedValue({ sessionId: 'fork-1' })
 
     const id = await manager.forkSession('src-1')
@@ -94,6 +94,7 @@ describe('SessionManager.forkSession', () => {
     expect(id).toBe('fork-1')
     const record = persisted.get('fork-1')!
     expect((record.metadata as { isAutomated?: boolean; other?: string }).isAutomated).toBeUndefined()
+    expect((record.metadata as { session_context?: unknown }).session_context).toBeUndefined()
     expect((record.metadata as { other?: string }).other).toBe('keep')
     expect((persisted.get('src-1')!.metadata as { isAutomated?: boolean }).isAutomated).toBe(true)
   })

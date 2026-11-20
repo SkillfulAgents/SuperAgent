@@ -11,6 +11,7 @@
  * harm, and a record still pending is never left without one.
  */
 
+import { automatedSender } from '@shared/lib/container/types'
 import pLimit from 'p-limit'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { AgentActor } from '@shared/lib/agent-actor'
@@ -324,6 +325,7 @@ class TaskScheduler implements Service {
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: task.name || 'Scheduled Task',
+      context: { sender: automatedSender(task.id, task.name) },
       metadata: {
         isScheduledExecution: true,
         scheduledTaskId: task.id,

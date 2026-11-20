@@ -1,3 +1,4 @@
+import { automatedSender } from '@shared/lib/container/types'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { getSettings } from '@shared/lib/config/settings'
@@ -194,6 +195,7 @@ async function startRepairSession(
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: 'Invoked to fix widget',
+      context: { sender: automatedSender(widgetSlug) },
       metadata: {
         isWidgetRepair: true,
         widgetRepairSlug: widgetSlug,

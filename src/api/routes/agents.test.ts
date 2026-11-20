@@ -4740,6 +4740,9 @@ describe('folder upload — POST /:id/upload-folder', () => {
 // Message Author Attribution Tests
 // ============================================================================
 
+/** The context an app message carries to the container. */
+const fromApp = expect.objectContaining({ channel: 'ui', session_trigger: 'user', sender: expect.objectContaining({ type: 'human' }) })
+
 describe('message author attribution — POST /:id/sessions/:sessionId/messages', () => {
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
@@ -4756,7 +4759,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
   // What the route hands the container client besides the runtime options:
   // the metadata it read (none here) and the fields it is about to store.
   const sent = (options: Record<string, unknown> = {}, metadataUpdates: Record<string, unknown> = {}) =>
-    ({ ...options, sessionMetadata: null, metadataUpdates })
+    ({ ...options, messageContext: fromApp, sessionMetadata: null, metadataUpdates })
 
   it('generates a server uuid, returns it, and skips messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
@@ -4810,7 +4813,11 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(typeof insertedValues.id).toBe('string')
 
     // sendMessage and the response both carry the same server uuid
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, sent({}, { alertDeviceId: null }))
+    // The container is told who sent it, with their role on the agent, and where.
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, {
+      ...sent({}, { alertDeviceId: null }),
+      messageContext: { channel: 'ui', session_trigger: 'user', sender: { type: 'human', id: 'test-user-id', name: 'Test User', role: 'owner' } },
+    })
     const body = await res.json()
     expect(body.uuid).toBe(insertedValues.id)
   })
@@ -4842,7 +4849,11 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     try {
       const res = await postJson(app, URL, { content: 'what is the launch status' })
       expect(res.status).toBe(201)
-      expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'what is the launch status', (await res.json()).uuid, sent({}, { alertDeviceId: null }))
+      // A meeting bot relays whoever spoke: the context names no person and the meeting as the channel.
+      expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'what is the launch status', (await res.json()).uuid, {
+        ...sent({}, { alertDeviceId: null }),
+        messageContext: { channel: 'recall', session_trigger: 'user', sender: { type: 'human' } },
+      })
     } finally {
       mockAuthUser = SIGNED_IN_USER
       mockMeetingParticipant.value = null
@@ -4924,7 +4935,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body).toMatchObject({ success: true, queued: false })
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false, preserveRuntime: true })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false, preserveRuntime: true, messageContext: fromApp })
     // No turn starts, so the session must not be left looking busy, and an
     // append is never "queued" behind one: the agent reads it with its next turn.
     expect(mockLiveSessions.isActive).not.toHaveBeenCalled()
@@ -5092,6 +5103,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       expect(mockLiveSessions.promoteAutomated).toHaveBeenCalledWith('test-agent', 'sess-1', stored)
       expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'again', expect.any(String), {
         effort: 'low',
+        messageContext: fromApp,
         sessionMetadata: stored,
         metadataUpdates: { effort: 'low' },
       })
@@ -7444,6 +7456,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     expect(mockLiveSessions.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
       uuid: expect.any(String),
       text: '\\[Test User]: keep going',
+      messageContext: fromApp,
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
@@ -7459,6 +7472,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
       uuid: expect.any(String),
       text: '\\[Test User]: note',
       shouldQuery: false,
+      messageContext: fromApp,
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
@@ -7469,7 +7483,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'note', shouldQuery: false })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '\\[Test User]: note', (await res.json()).uuid, { shouldQuery: false, preserveRuntime: true })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '\\[Test User]: note', (await res.json()).uuid, { shouldQuery: false, preserveRuntime: true, messageContext: fromApp })
   })
 
   it('does not broadcast user_message in non-auth mode', async () => {
@@ -7507,7 +7521,7 @@ describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sess
     expect(res.status).toBe(201)
     const { uuid } = await res.json()
 
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', content, uuid, { shouldQuery: false, preserveRuntime: true })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', content, uuid, { shouldQuery: false, preserveRuntime: true, messageContext: fromApp })
     expect(mockLiveSessions.markActive).not.toHaveBeenCalled()
     expect(triggerSessionMention).toHaveBeenCalledWith({
       sessionId: 'sess-1',

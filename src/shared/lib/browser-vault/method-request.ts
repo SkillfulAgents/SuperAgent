@@ -77,6 +77,7 @@ async function deliverRequest(input: Asking & { again: boolean }) {
     coalesce: true,
     // Every window draws it at once, the owner's too: no window sent it.
     echo: { content },
+    context: { sender: { type: 'human', ...(account.ownerId ? { id: account.ownerId } : {}) } },
   })
 }
 

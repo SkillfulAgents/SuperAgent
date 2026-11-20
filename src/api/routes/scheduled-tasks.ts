@@ -1,3 +1,4 @@
+import { automatedSender } from '@shared/lib/container/types'
 import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 /**
@@ -318,6 +319,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: task.name || 'Scheduled Task (Run Now)',
+      context: { sender: automatedSender(task.id, task.name) },
       metadata: {
         isScheduledExecution: true,
         scheduledTaskId: task.id,

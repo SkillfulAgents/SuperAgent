@@ -281,7 +281,7 @@ async function deliverCoalescedMessages(
     try {
       // An append coalesced during recovery stays an append: it must not
       // become a turn of its own now.
-      await client.sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true })
+      await client.sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true, messageContext: message.messageContext })
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'runtime.recovery.deliverCoalesced' },

@@ -1,6 +1,6 @@
 import type { RuntimeOptions } from './runtime-options'
 import type { ContainerVolume } from '@shared/lib/types/mount'
-import type { SessionMetadata } from '@shared/lib/types/agent'
+import type { SessionMetadata, SessionOrigin } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import type { AppSettings } from '@shared/lib/config/settings'
 
@@ -12,6 +12,39 @@ export class ContainerNotFoundError extends Error {
   }
 }
 
+/** Who sent a message, as the container's session context holds it. */
+export interface MessageSender {
+  /** The user id, agent slug, or task or trigger id. Absent for a person reached through an integration. */
+  id?: string
+  /** Absent where none is known (local mode's one person). */
+  name?: string
+  /** The person's role on the agent, when the sender is a member. */
+  role?: 'owner' | 'user' | 'viewer'
+  type: 'human' | 'agent' | 'automated'
+}
+
+/**
+ * Facts about a message that change how its session behaves, sent with it to
+ * the container. Partial: a send carries what it knows, and the container
+ * merges it onto the session's context. Advisory there: who is billed or
+ * attributed is decided on the host.
+ */
+export interface MessageContext {
+  /** What started the session, re-sent with every message. */
+  session_trigger?: SessionOrigin
+  sender?: MessageSender
+  /** Where the conversation happens: `ui`, or the integration's provider (`slack`, `telegram`, ...). */
+  channel?: string
+}
+
+/** What a caller knows about its message: who sent it, always, and where. The delivery adds what started the session. */
+export type MessageOrigin = { sender: MessageSender; channel?: string }
+
+/** A run with no person behind it: a task, trigger or widget, by its id. */
+export function automatedSender(id: string, name?: string | null): MessageSender {
+  return { type: 'automated', id, ...(name ? { name } : {}) }
+}
+
 export interface SendMessageOptions extends RuntimeOptions {
   /** false appends the message to the transcript without starting a turn. */
   shouldQuery?: boolean
@@ -19,6 +52,7 @@ export interface SendMessageOptions extends RuntimeOptions {
   preserveRuntime?: boolean
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
+  messageContext?: MessageContext
   /**
    * The session's metadata entry as the caller just read it (null: it has
    * none). The send binds its provider from it instead of reading it again.
@@ -139,6 +173,7 @@ export interface CreateSessionOptions extends RuntimeOptions {
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: string // Optional UUID for message author attribution
+  messageContext?: MessageContext // The first message's context
   browserModel?: string // Model for browser subagent
   dashboardBuilderModel?: string // Model for the dashboard-builder subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)

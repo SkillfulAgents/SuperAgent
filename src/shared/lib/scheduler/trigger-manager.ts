@@ -8,6 +8,7 @@
  * Events for the same trigger in one delivery are batched into one session.
  */
 
+import { automatedSender } from '@shared/lib/container/types'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
@@ -334,6 +335,7 @@ class TriggerManager implements Service {
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: trigger.name || `Webhook: ${trigger.triggerType}`,
+      context: { sender: automatedSender(trigger.id, trigger.name) },
       metadata: {
         isWebhookExecution: true,
         webhookTriggerId: trigger.id,

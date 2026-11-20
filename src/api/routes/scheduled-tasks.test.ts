@@ -276,6 +276,7 @@ describe('scheduled-tasks route', () => {
       browserModel: 'claude-browser',
       dashboardBuilderModel: undefined,
       effort: 'low',
+      messageContext: { session_trigger: 'scheduled', sender: expect.objectContaining({ type: 'automated' }) },
     })
     // Registered as a scheduled execution in one write, then attached with that metadata.
     const registered = { isScheduledExecution: true, scheduledTaskId: 'task-1', scheduledTaskName: 'Daily report', model: 'claude-agent', effort: 'low' }

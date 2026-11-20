@@ -81,6 +81,7 @@ export interface CreateSessionRequest {
   availableEnvVars?: string[]; // List of env var names available to the agent
   initialMessage: string; // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: UUID; // Optional UUID for message author attribution
+  message_context?: unknown; // The first message's context (session-context.ts)
   model?: string; // Claude model to use for this session
   browserModel?: string; // Model for browser subagent
   dashboardBuilderModel?: string; // Model for the dashboard-builder subagent
@@ -125,6 +126,7 @@ export interface SendMessageRequest {
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
   isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
+  message_context?: unknown; // Who sent it and where (session-context.ts)
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
   globalInstructions?: string; // Current org-wide guidance; a change triggers interrupt+restart (it lives in the prompt)
 }

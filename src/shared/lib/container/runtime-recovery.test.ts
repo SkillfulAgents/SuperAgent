@@ -191,6 +191,16 @@ describe('recoverFromUnexpectedDeath', () => {
     })
   })
 
+  it('delivers a held message with the context it was sent with', async () => {
+    const messageContext = { session_trigger: 'user' as const, channel: 'ui', sender: { type: 'human' as const, id: 'u-ben' } }
+    const deps = createDeps({
+      takeCoalescedUserMessages: (id) => (id === 'sess-1' ? [{ uuid: TEST_MESSAGE_UUID, text: 'keep going', messageContext }] : []),
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue({ action: 'ignore' })
+    await recoverFromUnexpectedDeath(deps)
+    expect(deps.sendMessage).toHaveBeenCalledWith('sess-1', 'keep going', TEST_MESSAGE_UUID, { shouldQuery: true, messageContext })
+  })
+
   it('settles only the sessions the runtime did not report as live', async () => {
     const recovering = new Set(['sess-1', 'sess-2'])
     const deps = createDeps({
