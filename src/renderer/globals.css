@@ -455,6 +455,26 @@ html[data-keyboard-open] [data-composer-footer] {
   min-width: 0 !important;
 }
 
+/* The list item keeps its place in the tree while its button occupies the
+   reserved row between the scroller and Settings. */
+[data-sidebar="content"]:has(.desktop-show-less[data-pinned]) {
+  anchor-name: --session-scroller;
+  margin-bottom: 1.75rem;
+}
+
+.desktop-show-less[data-pinned] {
+  anchor-name: --session-toggle-row;
+}
+
+.desktop-show-less[data-pinned] > button {
+  position: fixed;
+  position-anchor: --session-scroller;
+  top: anchor(bottom);
+  left: anchor(--session-toggle-row left);
+  right: anchor(--session-toggle-row right);
+  width: auto;
+}
+
 /* Electron vibrancy (macOS) / acrylic (Windows) - transparent backgrounds to let native blur show through */
 .electron-vibrancy,
 .electron-vibrancy body {

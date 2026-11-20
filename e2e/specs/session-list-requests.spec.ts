@@ -41,9 +41,16 @@ test.describe('Session list requests', () => {
     expect(listReads.length).toBeGreaterThan(0)
     expect(listReads.filter((search) => !new URLSearchParams(search).has('limit'))).toEqual([])
 
-    await showAll.click()
+    await showAll.press('Enter')
     await expect(rows).toHaveCount(7)
     expect(listReads.some((search) => !new URLSearchParams(search).has('limit'))).toBe(true)
+    const showLess = page.getByRole('button', { name: 'Show less', exact: true })
+    await expect(showLess).toBeFocused()
+    const overlay = page.locator('[data-sidebar="menu-sub"] > li').filter({ has: showLess })
+    await expect(overlay).toHaveCSS('position', 'sticky')
+    expect(await overlay.evaluate(row => getComputedStyle(row, '::before').backgroundImage)).toContain('linear-gradient')
+    await page.keyboard.press('Space')
+    await expect(rows).toHaveCount(5)
   })
 
   test('the agent home reads the full list for the row, and leaving it keeps the newest rows', async ({ page, request }, testInfo) => {

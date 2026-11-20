@@ -176,6 +176,13 @@ const THIN_SCROLLBAR =
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
   '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20'
 
+// On web the sticky row covers the tree gutter and its upper edge fades over the sessions.
+const WEB_SHOW_LESS_OVERLAY =
+  '!sticky bottom-0 z-10 -ml-2 mt-4 bg-sidebar pl-2 after:!hidden ' +
+  'before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 ' +
+  'before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm ' +
+  'before:![mask-image:linear-gradient(to_top,black,transparent)]'
+
 // Sensor options MUST be referentially stable. `useSensor` memoizes on the
 // options object, so an inline literal here mints new sensor descriptors on
 // every AppSidebar render — which makes DndContext rebuild its activators,
@@ -861,7 +868,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-12')}>
+              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && !isElectron() && '[&_a]:scroll-mb-12')}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -885,9 +892,8 @@ const AgentMenuItemInner = React.forwardRef<
                       />
                     ))}
                     {hasMore && (
-                      // `!` beats the tree connectors' `[&>li]` rules; pinned, the row covers their gutter and its ::before becomes a blurred fade.
                       <SidebarMenuSubItem
-                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 mt-4 bg-sidebar pl-2 after:!hidden before:!absolute before:!inset-x-0 before:!-top-4 before:!h-4 before:!w-auto before:!border-0 before:!bg-gradient-to-t before:!from-sidebar before:!to-transparent before:!backdrop-blur-sm before:![mask-image:linear-gradient(to_top,black,transparent)]')}
+                        className={cn(showAll && (isElectron() ? 'desktop-show-less h-7' : WEB_SHOW_LESS_OVERLAY))}
                       >
                         <SidebarMenuSubButton
                           asChild
@@ -895,6 +901,10 @@ const AgentMenuItemInner = React.forwardRef<
                         >
                           <button
                             onClick={toggleShowAll}
+                            onKeyDown={event => {
+                              // The parent agent row uses these keys to start a drag.
+                              if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+                            }}
                             aria-expanded={showAll}
                             className="w-full focus-visible:ring-inset"
                           >
@@ -1222,6 +1232,32 @@ export function AppSidebar() {
   const { openSearch } = useSearch()
   const isMobile = useIsMobile()
   const { setOpenMobile } = useSidebar()
+  const [desktopScroller, setDesktopScroller] = useState<HTMLDivElement | null>(null)
+  const footerRef = useRef<HTMLDivElement>(null)
+  React.useLayoutEffect(() => {
+    const footer = footerRef.current
+    if (!desktopScroller || !footer) return
+
+    // The footer's top stays put when the scroller gives up a row. Measure the
+    // row in its natural position; CSS moves only the button inside it.
+    const update = () => {
+      const rows = desktopScroller.querySelectorAll('.desktop-show-less')
+      if (!rows.length) return
+      const bottom = footer.getBoundingClientRect().top
+      for (const row of rows) {
+        const list = row.parentElement!
+        const pinned = list.getBoundingClientRect().top < bottom && row.getBoundingClientRect().bottom > bottom
+        row.toggleAttribute('data-pinned', pinned)
+      }
+    }
+    const resize = new ResizeObserver(update)
+    for (const block of [desktopScroller, footer, ...desktopScroller.children]) resize.observe(block)
+    desktopScroller.addEventListener('scroll', update, { passive: true })
+    return () => {
+      resize.disconnect()
+      desktopScroller.removeEventListener('scroll', update)
+    }
+  }, [desktopScroller])
   // On mobile the sidebar is an off-canvas Sheet that doesn't auto-close on
   // navigation. Collapse it whenever the location changes (pathname OR search,
   // so selecting a session also closes it) — desktop is unaffected.
@@ -1853,6 +1889,7 @@ export function AppSidebar() {
             the nav rows travel with the agent list rather than pinning above
             it, so a short window gives the list the full height. */}
         <SidebarContent
+          ref={isElectron() ? setDesktopScroller : undefined}
           className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
           data-testid="agent-list-scroll"
         >
@@ -2059,7 +2096,7 @@ export function AppSidebar() {
           theirs: the user's avatar starts where the agent avatars do (in
           UserMenu), and the version ends 12px in, where the rows' status
           icons end (a 10px icon centred in a 16px slot 8px in). */}
-      <SidebarFooter className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
+      <SidebarFooter ref={footerRef} className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-between gap-2">
           <UserMenu onOpenSettings={() => openSettings()} />
           {isCloud && versionState.showPair && versionState.cloudVersion ? (
