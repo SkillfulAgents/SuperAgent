@@ -3,8 +3,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { apiFetch } = vi.hoisted(() => ({
+const { apiFetch, isDeliberateSignOut } = vi.hoisted(() => ({
   apiFetch: vi.fn(),
+  isDeliberateSignOut: vi.fn(),
 }))
 
 vi.mock('@renderer/lib/api', () => ({
@@ -12,6 +13,7 @@ vi.mock('@renderer/lib/api', () => ({
   // redirect-stash helpers used by the email/OAuth sign-in handlers.
   consumeRedirectStash: () => null,
   peekRedirectStash: () => '/',
+  isDeliberateSignOut,
 }))
 
 import { AuthPage } from './auth-page'
@@ -278,5 +280,57 @@ describe('AuthPage', () => {
     } finally {
       window.history.replaceState(null, '', '/')
     }
+  })
+
+  describe('when the only option is one provider', () => {
+    const onlyPlatform = (available = true) => apiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        signupMode: 'closed', allowLocalAuth: false, allowSocialAuth: false,
+        providers: [{
+          id: 'platform', type: 'oidc', displayName: 'Platform', icon: null, enabled: true, available,
+          readiness: available ? { ok: true, reasons: [] } : { ok: false, reasons: ['Missing client ID'] },
+        }],
+        passwordMinLength: 8, passwordRequireComplexity: false, requireAdminApproval: false, hasUsers: true,
+      }),
+    })
+
+    it('starts the provider sign-in without a click', async () => {
+      onlyPlatform()
+      render(<AuthPage />)
+
+      await waitFor(() => expect(signIn.social).toHaveBeenCalledTimes(1))
+      expect(signIn.social).toHaveBeenCalledWith(expect.objectContaining({ provider: 'platform' }))
+      expect(screen.getByTestId('auth-provider-platform')).toBeDisabled()
+    })
+
+    it('waits for a click after a deliberate sign-out', async () => {
+      onlyPlatform()
+      isDeliberateSignOut.mockReturnValue(true)
+      render(<AuthPage />)
+
+      await waitFor(() => expect(screen.getByTestId('auth-provider-platform')).not.toBeDisabled())
+      expect(signIn.social).not.toHaveBeenCalled()
+    })
+
+    it('waits for a click when the OAuth round-trip came back with an error', async () => {
+      window.history.replaceState(null, '', '/?error=invalid_code')
+      onlyPlatform()
+      try {
+        render(<AuthPage />)
+        await waitFor(() => expect(screen.getByTestId('auth-provider-platform')).not.toBeDisabled())
+        expect(signIn.social).not.toHaveBeenCalled()
+      } finally {
+        window.history.replaceState(null, '', '/')
+      }
+    })
+
+    it('does not start a provider that is not available', async () => {
+      onlyPlatform(false)
+      render(<AuthPage />)
+
+      await waitFor(() => expect(screen.getByTestId('auth-provider-platform')).toBeInTheDocument())
+      expect(signIn.social).not.toHaveBeenCalled()
+    })
   })
 })

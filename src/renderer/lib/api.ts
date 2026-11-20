@@ -96,6 +96,10 @@ export function clearDeliberateSignOut(): void {
   deliberateSignOut = false
 }
 
+export function isDeliberateSignOut(): boolean {
+  return deliberateSignOut
+}
+
 export { isSafeInternalPath }
 
 /**
