@@ -8,8 +8,16 @@ export const WORKSPACE_ROOT = '/workspace'
 
 type WorkspaceFileStatus = 400 | 403 | 404 | 409 | 416
 
+/** Set when the status alone does not tell the host which case it is. */
+export type WorkspaceFileErrorCode = 'not-a-file' | 'not-a-directory'
+
 export class WorkspaceFileError extends Error {
-  constructor(message: string, readonly status: WorkspaceFileStatus, readonly headers: Record<string, string> = {}) {
+  constructor(
+    message: string,
+    readonly status: WorkspaceFileStatus,
+    readonly headers: Record<string, string> = {},
+    readonly code?: WorkspaceFileErrorCode,
+  ) {
     super(message)
     this.name = 'WorkspaceFileError'
   }
@@ -44,6 +52,8 @@ export interface WriteWorkspaceFileOptions {
   signal?: AbortSignal
   overwrite?: boolean
   collisionSafe?: boolean
+  /** Permission bits for the written file. Without it, an overwritten file keeps its mode. */
+  mode?: number
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -235,7 +245,7 @@ async function canonicalDestinationParent(
     }
     const stats = await fs.promises.stat(canonicalCandidate)
     if (!stats.isDirectory()) {
-      throw new WorkspaceFileError('Destination parent is not a directory', 400)
+      throw new WorkspaceFileError('Destination parent is not a directory', 409, {}, 'not-a-directory')
     }
     parent = canonicalCandidate
   }
@@ -292,6 +302,7 @@ export async function writeWorkspaceFile(
     const output = tempHandle.createWriteStream({ autoClose: true })
     await pipeline(readableSource(source), output, { signal: options.signal })
     tempHandle = undefined
+    if (options.mode !== undefined) await fs.promises.chmod(tempPath, options.mode)
 
     for (let attempt = 0; attempt < (collisionSafe ? 1000 : 1); attempt++) {
       options.signal?.throwIfAborted()
@@ -304,8 +315,8 @@ export async function writeWorkspaceFile(
       if (overwrite) {
         const existing = await lstatIfPresent(destination)
         if (existing?.isSymbolicLink()) throw new WorkspaceFileError('Destination must not be a symbolic link', 400)
-        if (existing && !existing.isFile()) throw new WorkspaceFileError('Destination is not a regular file', 400)
-        if (existing) await fs.promises.chmod(tempPath, existing.mode & 0o7777)
+        if (existing && !existing.isFile()) throw new WorkspaceFileError('Destination is not a regular file', 409, {}, 'not-a-file')
+        if (existing && options.mode === undefined) await fs.promises.chmod(tempPath, existing.mode & 0o7777)
         await fs.promises.rename(tempPath, destination)
       } else {
         // The exclusive create is the collision check, then the staged file

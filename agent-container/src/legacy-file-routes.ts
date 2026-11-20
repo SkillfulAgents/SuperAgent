@@ -7,6 +7,17 @@ import {
   WorkspaceFileError, writeWorkspaceFile,
 } from './workspace-file-transfer'
 
+/** An optional octal `mode` query parameter, such as `0755`. */
+function requestedMode(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (!/^0?[0-7]{3}$/.test(value)) throw new WorkspaceFileError('Invalid file mode', 400)
+  return parseInt(value, 8)
+}
+
+function errorBody(error: WorkspaceFileError): { error: string; code?: string } {
+  return { error: error.message, code: error.code }
+}
+
 function routePath(url: string): string {
   try {
     return decodeURIComponent(new URL(url).pathname.slice('/files/'.length))
@@ -67,9 +78,12 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
             size: entry.isFile() ? entry.size : undefined, modifiedAt: entry.mtime }
         })))
       }
-      return c.json({ name: path.posix.basename(filePath), path: filePath, type: 'file', size: stats.size, modifiedAt: stats.mtime })
+      return c.json({
+        name: path.posix.basename(filePath), path: filePath, type: 'file', size: stats.size, modifiedAt: stats.mtime,
+        mode: stats.mode & 0o777,
+      })
     } catch (error) {
-      if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status, error.headers)
+      if (error instanceof WorkspaceFileError) return c.json(errorBody(error), error.status, error.headers)
       console.error('Error accessing file:', error)
       return c.json({ error: 'Failed to access file' }, 500)
     }
@@ -82,14 +96,20 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
       // so a pattern like /files/*/mkdir never saw a nested folder.
       if (filePath.endsWith('/mkdir')) {
         const folder = normalizeWorkspaceFilePath(filePath.slice(0, -'/mkdir'.length), workspaceRoot)
-        await fs.promises.mkdir(folder.localPath, { recursive: true })
+        await fs.promises.mkdir(folder.localPath, { recursive: true }).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'EEXIST' || error.code === 'ENOTDIR') {
+            throw new WorkspaceFileError('A file is in the way', 409, {}, 'not-a-directory')
+          }
+          throw error
+        })
         return c.json({ success: true, path: folder.relativePath })
       }
       if (!filePath.endsWith('/upload')) return next()
-      const file = await writeWorkspaceFile(filePath.slice(0, -'/upload'.length), c.req.raw.body, { workspaceRoot })
+      const mode = requestedMode(c.req.query('mode'))
+      const file = await writeWorkspaceFile(filePath.slice(0, -'/upload'.length), c.req.raw.body, { workspaceRoot, mode })
       return c.json({ success: true, path: file.relativePath })
     } catch (error) {
-      if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
+      if (error instanceof WorkspaceFileError) return c.json(errorBody(error), error.status)
       console.error('Error uploading file:', error)
       return c.json({ error: 'Failed to upload file' }, 500)
     }
