@@ -1,9 +1,10 @@
-[TEST_FAIL]
-[REASON] Sent "Hello! What is 2+2?" to agent QA-20261120-215012-38l4 and checked the reply contains "4".
-[BUG_FOUND] On the agent landing page, pressing Enter after typing the first message did not send it. The text stayed in the input, the URL did not change, and the send button became enabled. The placeholder reads "Press cmd+enter to send", but the chat view's hint reads "↵ Send", so the send key is inconsistent between the two views. Expected: Enter (or the documented shortcut) submits the first message and navigates to the new session. Actual: nothing was sent until the Send button was clicked.
-[STEP] 1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261120-215012-e04n and QA-20261120-215012-38l4.
-[STEP] 2. Clicked QA-20261120-215012-38l4 in the sidebar — its agent page opened at /agents/qa-20261120-215012-38l4-jp6c8ns5te.
-[STEP] 3. Verified status — the header status indicator reads "idle", which satisfies the running-or-idle check.
-[STEP] 4. Typed "Hello! What is 2+2?" into the landing input and pressed Enter — the text remained unsent. Clicked the Send button — the view navigated to a new session, "Basic Arithmetic Question", and the message appeared in the list.
-[STEP] 5. Waited for a response — none was needed. The reply "2 + 2 = 4." was already rendered when checked, the activity indicator was gone, and the input was re-enabled.
-[STEP] 6. Verified the response mentions "4" — "2 + 2 = 4." contains "4", so this passes. Took a screenshot of the chat showing the user message and the reply.
+[TEST_PASS]
+[REASON] Opened agent QA-20261120-215821-f42s, confirmed it was idle, sent "Hello! What is 2+2?", and verified the reply contains "4".
+[STEP] 1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261120-215822-6jmg and QA-20261120-215821-f42s.
+[STEP] 2. Clicked the QA-20261120-215821-f42s agent in the sidebar — its agent page opened at /agents/qa-20261120-215821-f42s-1s0x48ergj (screenshot step1-navigate.png).
+[STEP] 3. Verified status — the header and sidebar both show "idle", which satisfies the running-or-idle requirement.
+[STEP] 4. Typed "Hello! What is 2+2?" into the message box and clicked Send — the app opened a new session (Basic Arithmetic Greeting) and the message appeared in the chat (screenshot step4-message-sent.png).
+[STEP] 5. Waited for a response — the reply "2 + 2 = 4." was already rendered on the first check after sending, so no wait was needed.
+[STEP] 6. Verified the response mentions "4" — it reads "2 + 2 = 4." The screenshot step4-message-sent.png shows the user message and the reply.
+
+Minor observation (not counted as a bug): right after sending, the session header breadcrumb read "New Session" while the sidebar already showed the session as "Basic Arithmetic Greeting". This may just be a title that hadn't refreshed yet; I did not re-check it.

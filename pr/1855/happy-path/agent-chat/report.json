@@ -1,26 +1,24 @@
 {
   "storyId": "agent-chat",
-  "passed": false,
-  "reason": "Sent \"Hello! What is 2+2?\" to agent QA-20261120-215012-38l4 and checked the reply contains \"4\".\n  Bugs found:\n    - On the agent landing page, pressing Enter after typing the first message did not send it. The text stayed in the input, the URL did not change, and the send button became enabled. The placeholder reads \"Press cmd+enter to send\", but the chat view's hint reads \"↵ Send\", so the send key is inconsistent between the two views. Expected: Enter (or the documented shortcut) submits the first message and navigates to the new session. Actual: nothing was sent until the Send button was clicked.",
+  "passed": true,
+  "reason": "Opened agent QA-20261120-215821-f42s, confirmed it was idle, sent \"Hello! What is 2+2?\", and verified the reply contains \"4\".",
   "steps": [
-    "1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261120-215012-e04n and QA-20261120-215012-38l4.",
-    "2. Clicked QA-20261120-215012-38l4 in the sidebar — its agent page opened at /agents/qa-20261120-215012-38l4-jp6c8ns5te.",
-    "3. Verified status — the header status indicator reads \"idle\", which satisfies the running-or-idle check.",
-    "4. Typed \"Hello! What is 2+2?\" into the landing input and pressed Enter — the text remained unsent. Clicked the Send button — the view navigated to a new session, \"Basic Arithmetic Question\", and the message appeared in the list.",
-    "5. Waited for a response — none was needed. The reply \"2 + 2 = 4.\" was already rendered when checked, the activity indicator was gone, and the input was re-enabled.",
-    "6. Verified the response mentions \"4\" — \"2 + 2 = 4.\" contains \"4\", so this passes. Took a screenshot of the chat showing the user message and the reply."
+    "1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261120-215822-6jmg and QA-20261120-215821-f42s.",
+    "2. Clicked the QA-20261120-215821-f42s agent in the sidebar — its agent page opened at /agents/qa-20261120-215821-f42s-1s0x48ergj (screenshot step1-navigate.png).",
+    "3. Verified status — the header and sidebar both show \"idle\", which satisfies the running-or-idle requirement.",
+    "4. Typed \"Hello! What is 2+2?\" into the message box and clicked Send — the app opened a new session (Basic Arithmetic Greeting) and the message appeared in the chat (screenshot step4-message-sent.png).",
+    "5. Waited for a response — the reply \"2 + 2 = 4.\" was already rendered on the first check after sending, so no wait was needed.",
+    "6. Verified the response mentions \"4\" — it reads \"2 + 2 = 4.\" The screenshot step4-message-sent.png shows the user message and the reply."
   ],
-  "bugs": [
-    "On the agent landing page, pressing Enter after typing the first message did not send it. The text stayed in the input, the URL did not change, and the send button became enabled. The placeholder reads \"Press cmd+enter to send\", but the chat view's hint reads \"↵ Send\", so the send key is inconsistent between the two views. Expected: Enter (or the documented shortcut) submits the first message and navigates to the new session. Actual: nothing was sent until the Send button was clicked."
-  ],
-  "durationMs": 45175,
-  "sessionId": "3f26ce57-52c1-4db4-8dc4-1a8a6c31270b",
+  "bugs": [],
+  "durationMs": 33879,
+  "sessionId": "613362cd-317d-4ef3-8b1e-e55b87b907e9",
   "cost": {
-    "inputTokens": 7838,
-    "outputTokens": 8234,
-    "cacheCreationTokens": 153424,
-    "cacheReadTokens": 563857,
+    "inputTokens": 7690,
+    "outputTokens": 4682,
+    "cacheCreationTokens": 49268,
+    "cacheReadTokens": 490883,
     "model": "claude-haiku-5-5",
-    "totalCostUsd": 0.297174
+    "totalCostUsd": 0.141773
   }
 }
