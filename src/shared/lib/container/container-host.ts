@@ -40,6 +40,7 @@ import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { PassTask, taskManager } from '@shared/lib/background-work'
+import type { AgentIdleAlarms } from './idle-alarm'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -97,6 +98,23 @@ export class ContainerHost {
     this.agentSessions = access
   }
 
+  /** The agents' idle alarms, attached by the agent registry when it is created. */
+  private agentIdleAlarms: AgentIdleAlarms | null = null
+
+  /**
+   * Give runtimes the way to their agents' idle alarms, which the actors own.
+   * Called once by the agent registry; before that (only in a test without a
+   * registry) no container is put to sleep.
+   */
+  attachAgentIdleAlarms(access: AgentIdleAlarms | null): void {
+    this.agentIdleAlarms = access
+  }
+
+  /** The auto-sleep timeout in the settings, in ms; zero or less disables. */
+  async autoSleepTimeoutMs(): Promise<number> {
+    return autoSleepTimeoutMsFrom(await getSettings())
+  }
+
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
 
@@ -118,6 +136,9 @@ export class ContainerHost {
       },
       get onBeforeContainerStop() {
         return self.onBeforeContainerStop
+      },
+      get agentIdleAlarms() {
+        return self.agentIdleAlarms
       },
       afterForceStop: (slug: string) => self.afterForceStop(slug),
     }
@@ -189,39 +210,6 @@ export class ContainerHost {
       }
     }
     return false
-  }
-
-  /** Orders the re-arms' timeout reads: only the newest one to start re-arms. */
-  private idleRearms = 0
-
-  /**
-   * The auto-sleep timeout changed: every runtime re-arms its idle alarm
-   * against the new value, read once for all of them. `timeoutMs`, when the
-   * caller has the value its write committed, is used as is; otherwise the
-   * timeout is read here, after the write, and never joined to a read an
-   * alarm started before it (see `IdleAlarm.rearm`). Returns before the
-   * alarms are armed when it reads.
-   */
-  rearmIdleAlarms(timeoutMs?: number): void {
-    const rearm = ++this.idleRearms
-    if (timeoutMs !== undefined) {
-      for (const runtime of this.runtimes.values()) runtime.idleAlarm.rearm(timeoutMs)
-      return
-    }
-    if (this.runtimes.size === 0) return
-    background((async () => {
-      let read: number
-      try {
-        read = autoSleepTimeoutMsFrom(await getSettings())
-      } catch (error) {
-        // Each alarm keeps what it armed; its next mark or fire reads again.
-        console.error('[ContainerHost] Could not read the auto-sleep timeout to re-arm the idle alarms:', error)
-        return
-      }
-      // A later re-arm started meanwhile decides instead.
-      if (rearm !== this.idleRearms) return
-      for (const runtime of this.runtimes.values()) runtime.idleAlarm.rearm(read)
-    })(), { name: 'container-host.rearm-idle-alarms' })
   }
 
   // Get list of running agent slugs (uses cached status)

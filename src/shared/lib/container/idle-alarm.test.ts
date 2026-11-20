@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IDLE_ALARM_RETRY_MS, IdleAlarm, MAX_TIMER_MS, idleLongerThan } from './idle-alarm'
+import { IDLE_ALARM_RETRY_MS, IdleAlarm, MAX_TIMER_MS, idleLongerThan, type IdleTimer } from './idle-alarm'
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE
@@ -380,5 +380,44 @@ describe('IdleAlarm', () => {
     await vi.advanceTimersByTimeAsync(TIMEOUT - IDLE_ALARM_RETRY_MS + 1)
     expect(sleep).toHaveBeenCalledTimes(1)
     consoleError.mockRestore()
+  })
+
+  it("waits with the host's timer: one set per arm, the fire it gets sleeps the container, and a stop clears it", async () => {
+    const calls: string[] = []
+    let goOff: (() => void) | undefined
+    const timer: IdleTimer = {
+      set: (ms, fire) => {
+        calls.push(`set ${ms / MINUTE} min`)
+        goOff = fire
+      },
+      clear: () => void calls.push('clear'),
+    }
+    const state = { lastActivityAt: undefined as number | undefined }
+    const sleep = vi.fn(async () => {
+      state.lastActivityAt = undefined
+    })
+    const alarm = new IdleAlarm({ timeoutMs: async () => TIMEOUT, lastActivityAt: () => state.lastActivityAt, isBusy: () => false, sleep, timer: () => timer })
+
+    state.lastActivityAt = Date.now()
+    alarm.schedule()
+    await settle()
+    vi.setSystemTime(T0 + 10 * MINUTE)
+    state.lastActivityAt = Date.now()
+    alarm.schedule()
+    await settle()
+    // Each arm replaces the wait: a timer kept in storage pays one write per arm.
+    expect(calls).toEqual(['set 30 min', 'set 30 min'])
+    expect(vi.getTimerCount()).toBe(0)
+
+    vi.setSystemTime(T0 + 41 * MINUTE)
+    goOff!()
+    await settle()
+    expect(sleep).toHaveBeenCalledOnce()
+
+    state.lastActivityAt = Date.now()
+    alarm.schedule()
+    await settle()
+    alarm.cancel()
+    expect(calls.slice(2)).toEqual(['set 30 min', 'clear'])
   })
 })

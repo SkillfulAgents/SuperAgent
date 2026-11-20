@@ -100,12 +100,17 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAge
 vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }), remounted: async () => {} }))
 
 import { containerHost } from './container-host'
-import { NO_LIVE_SESSIONS } from './agent-sessions-access'
+import { createAgentRegistry } from '@shared/lib/agent-actor/registry'
+import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
+import type { LocalActorDeps, LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
 
-// The agent's live sessions, as the runtime asks them whether it is busy.
-containerHost.attachAgentSessions({
-  peek: () => ({ ...NO_LIVE_SESSIONS, hasActive: () => mockHasActive(), hasAwaitingInput: () => mockHasAwaiting() }),
-})
+// The agents' actors own their idle alarms; the registry hands the runtimes the way to them.
+// The routers over the actors' stores take no part here.
+const routers = { userInputRequestManager: {}, reviewManager: {}, accountReauthManager: {}, mcpReauthManager: {}, computerUsePermissionManager: {} }
+const registry = createAgentRegistry({ containerHost, ...routers } as unknown as LocalActorDeps)
+// A start reads no display name here.
+containerHost.attachAgentWorkspaces(null)
+const alarmOf = (slug: string) => (registry.get(slug) as LocalAgentActor).state.idleAlarm
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE
@@ -113,11 +118,12 @@ const T0 = new Date('2026-03-01T12:00:00Z').getTime()
 const SLUG = 'agent-alarm'
 
 // ============================================================================
-// The runtime sleeps itself
+// The actor sleeps its container
 //
-// Every mark on the activity clock (start, keep-alive, session write) arms the
-// idle alarm for the auto-sleep timeout; the alarm stops the container through
-// the runtime's own stop, never escalating to a force-stop of the shared VM.
+// Every mark on the runtime's activity clock (start, keep-alive, session
+// write) arms the agent's idle alarm, which its actor owns, for the auto-sleep
+// timeout; the alarm stops the container through the runtime's own stop,
+// never escalating to a force-stop of the shared VM.
 // ============================================================================
 
 describe('ContainerRuntime idle alarm', () => {
@@ -129,12 +135,15 @@ describe('ContainerRuntime idle alarm', () => {
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4001 })
     mockHasActive.mockReturnValue(false)
     mockHasAwaiting.mockReturnValue(false)
-    containerHost.dropRuntime(SLUG)
+    // The agent's live sessions, as its alarm asks them whether it is busy.
+    vi.spyOn(LiveSessions.prototype, 'hasActive').mockImplementation(() => mockHasActive())
+    vi.spyOn(LiveSessions.prototype, 'hasAwaitingInput').mockImplementation(() => mockHasAwaiting())
+    await registry.evict(SLUG)
     vi.spyOn(console, 'log').mockImplementation(() => {})
   })
 
-  afterEach(() => {
-    containerHost.dropRuntime(SLUG)
+  afterEach(async () => {
+    await registry.evict(SLUG)
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -152,7 +161,7 @@ describe('ContainerRuntime idle alarm', () => {
 
   it('a start arms the alarm, and the alarm stops the container one timeout later without force-stopping', async () => {
     const runtime = await startRuntime()
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    expect(alarmOf(SLUG).isArmed()).toBe(true)
     expect(runtime.idleSince()).toBe(T0)
 
     await vi.advanceTimersByTimeAsync(TIMEOUT)
@@ -162,7 +171,7 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).toHaveBeenCalledTimes(1)
     expect(mockStop.mock.calls[0][0]).toMatchObject({ escalateToForceStop: false, stopTimeoutMs: 60_000, killTimeoutMs: 30_000 })
     expect(runtime.getCachedInfo().status).toBe('stopped')
-    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
     expect(runtime.idleSince()).toBeNull()
   })
 
@@ -185,7 +194,7 @@ describe('ContainerRuntime idle alarm', () => {
     expect(runtime.idleSince()).toBeNull()
     await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
     expect(mockStop).not.toHaveBeenCalled()
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    expect(alarmOf(SLUG).isArmed()).toBe(true)
 
     mockHasActive.mockReturnValue(false)
     mockHasAwaiting.mockReturnValue(true)
@@ -199,8 +208,8 @@ describe('ContainerRuntime idle alarm', () => {
 
   it('never sleeps while auto-sleep is disabled', async () => {
     settings.app.autoSleepTimeoutMinutes = 0
-    const runtime = await startRuntime()
-    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    await startRuntime()
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
     await vi.advanceTimersByTimeAsync(3 * TIMEOUT)
     expect(mockStop).not.toHaveBeenCalled()
   })
@@ -209,7 +218,7 @@ describe('ContainerRuntime idle alarm', () => {
     await startRuntime()
     await vi.advanceTimersByTimeAsync(10 * MINUTE)
     settings.app.autoSleepTimeoutMinutes = 5
-    containerHost.rearmIdleAlarms()
+    registry.rearmIdleAlarms()
     await vi.advanceTimersByTimeAsync(0)
     expect(mockStop).toHaveBeenCalledTimes(1)
   })
@@ -221,13 +230,13 @@ describe('ContainerRuntime idle alarm', () => {
     await vi.advanceTimersByTimeAsync(10 * MINUTE)
     settings.app.autoSleepTimeoutMinutes = 15
     readSettings.mockClear()
-    containerHost.rearmIdleAlarms()
+    registry.rearmIdleAlarms()
     await settle()
     expect(readSettings).toHaveBeenCalledTimes(1)
     // Every one of them now sleeps 15 minutes after its start, not 30.
     await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
     expect(mockStop).toHaveBeenCalledTimes(slugs.length)
-    for (const slug of slugs) containerHost.dropRuntime(slug)
+    for (const slug of slugs) await registry.evict(slug)
   })
 
   it('a re-arm after a write uses a read made after it, not a mark\'s read already in flight', async () => {
@@ -240,7 +249,7 @@ describe('ContainerRuntime idle alarm', () => {
     runtime.noteSessionActivity()
     // The write commits 5 minutes; the route re-arms after it.
     settings.app.autoSleepTimeoutMinutes = 5
-    containerHost.rearmIdleAlarms()
+    registry.rearmIdleAlarms()
     await settle()
     landOldRead()
     await settle()
@@ -252,7 +261,7 @@ describe('ContainerRuntime idle alarm', () => {
     await startRuntime()
     settings.app.autoSleepTimeoutMinutes = 5
     readSettings.mockClear()
-    containerHost.rearmIdleAlarms(5 * MINUTE)
+    registry.rearmIdleAlarms(5 * MINUTE)
     await settle()
     expect(readSettings).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
@@ -291,26 +300,26 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).toHaveBeenCalledTimes(1)
     // Still running: the alarm is armed for a retry, not forgotten.
     expect(runtime.getCachedInfo().status).toBe('running')
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    expect(alarmOf(SLUG).isArmed()).toBe(true)
 
     await vi.advanceTimersByTimeAsync(MINUTE)
     expect(mockStop).toHaveBeenCalledTimes(2)
     expect(runtime.getCachedInfo().status).toBe('stopped')
-    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
   })
 
   it('a session write to a stopped agent marks the clock but arms nothing, and the next start is unaffected', async () => {
     const runtime = containerHost.runtime(SLUG)
     // Deleting a message or appending to a transcript offline records activity.
     runtime.noteSessionActivity()
-    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
     expect(runtime.idleSince()).toBeNull()
     await vi.advanceTimersByTimeAsync(2 * TIMEOUT)
     expect(mockStop).not.toHaveBeenCalled()
 
     await runtime.ensureRunning()
     await settle()
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    expect(alarmOf(SLUG).isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
     expect(mockStop).toHaveBeenCalledTimes(1)
   })
@@ -324,8 +333,8 @@ describe('ContainerRuntime idle alarm', () => {
     expect(runtime.isStarting()).toBe(true)
 
     runtime.noteSessionActivity(T0 - TIMEOUT - MINUTE)
-    expect(runtime.idleAlarm.isArmed()).toBe(false)
-    await runtime.idleAlarm.fire()
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
+    await alarmOf(SLUG).fire()
     expect(mockStop).not.toHaveBeenCalled()
 
     finishStart({ status: 'running', port: 4001 })
@@ -333,7 +342,7 @@ describe('ContainerRuntime idle alarm', () => {
     await settle()
     expect(runtime.getCachedInfo().status).toBe('running')
     // The start is the newest mark: a full window from now, not the stale one.
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    expect(alarmOf(SLUG).isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(TIMEOUT)
     expect(mockStop).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
@@ -347,8 +356,8 @@ describe('ContainerRuntime idle alarm', () => {
     mockGetInfoFromRuntime.mockResolvedValueOnce({ status: 'stopped', port: null })
     await runtime.syncAgentStatus()
     expect(runtime.getCachedInfo().status).toBe('stopped')
-    expect(runtime.idleAlarm.isArmed()).toBe(false)
-    await runtime.idleAlarm.fire()
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
+    await alarmOf(SLUG).fire()
     await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
     expect(mockStop).not.toHaveBeenCalled()
 
@@ -362,6 +371,15 @@ describe('ContainerRuntime idle alarm', () => {
     expect(runtime.getCachedInfo().status).toBe('stopped')
   })
 
+  it('a container a sync finds running gets an alarm, though no actor was held for it', async () => {
+    // As after a restart: the runtime exists, nothing has asked for the agent's actor yet.
+    await containerHost.runtime(SLUG).syncAgentStatus()
+    await settle()
+    expect(alarmOf(SLUG).isArmed()).toBe(true)
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
   it('a periodic sync that keeps seeing the container running does not push the alarm out', async () => {
     const runtime = await startRuntime()
     await vi.advanceTimersByTimeAsync(20 * MINUTE)
@@ -372,10 +390,15 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).toHaveBeenCalledTimes(1)
   })
 
-  it('dropping the runtime disarms it', async () => {
-    const runtime = await startRuntime()
+  it('dropping the runtime disarms the alarm, and so does evicting the actor', async () => {
+    await startRuntime()
     containerHost.dropRuntime(SLUG)
-    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
+    await startRuntime()
+    const alarm = alarmOf(SLUG)
+    expect(alarm.isArmed()).toBe(true)
+    await registry.evict(SLUG)
+    expect(alarm.isArmed()).toBe(false)
     await vi.advanceTimersByTimeAsync(2 * TIMEOUT)
     expect(mockStop).not.toHaveBeenCalled()
   })

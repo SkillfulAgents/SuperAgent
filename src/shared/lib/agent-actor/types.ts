@@ -86,6 +86,15 @@ export interface AgentRegistry {
   /** Never fails and never does I/O; creates the handle on first use. */
   get(slug: AgentSlug): AgentActor
   /**
+   * The auto-sleep timeout changed: every held agent re-arms its idle alarm
+   * against the new value, read once for all of them. `timeoutMs`, when the
+   * caller has the value its write committed, is used as is; otherwise the
+   * timeout is read here, after the write, and never joined to a read an
+   * alarm started before it (see `IdleAlarm.rearm`). Returns before the
+   * alarms are armed when it reads.
+   */
+  rearmIdleAlarms(timeoutMs?: number): void
+  /**
    * Drop the handle and forget its container runtime, releasing everything
    * the handle owns: parked reviews and re-auth waits are rejected, open
    * input requests are settled as invalidated, in-memory grants and what

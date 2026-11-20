@@ -1,9 +1,10 @@
 /**
  * The in-memory state one agent owns: its live sessions, its pending
  * user-input requests, the reviews and re-auth waits parked on them, its
- * computer-use grants, and what the host's per-agent work keeps between
- * requests (locks, widget refreshes, the MCP proxy's sessions, volume
- * uploads, sessions waiting for a human to name them).
+ * computer-use grants, the alarm that puts its idle container to sleep, and
+ * what the host's per-agent work keeps between requests (locks, widget
+ * refreshes, the MCP proxy's sessions, volume uploads, sessions waiting for a
+ * human to name them).
  *
  * Created with the agent's actor and released with it, so `agentRegistry.evict`
  * is the one operation that ends everything an agent held in this process.
@@ -23,6 +24,7 @@ import { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
 import { AgentWidgetRefreshes } from '@shared/lib/widgets/agent-widget-refreshes'
 import { AgentMcpSessions } from '@shared/lib/mcp/agent-mcp-sessions'
 import { VolumeUploadGuard } from '@shared/lib/volumes/volume-upload-guard'
+import { IdleAlarm, type IdleAlarmDeps } from '@shared/lib/container/idle-alarm'
 import { AgentLocks } from './agent-locks'
 import { LiveSessions, type LiveSessionsDeps } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
@@ -51,11 +53,20 @@ export interface AgentState {
   readonly volumeUploads: VolumeUploadGuard
   /** Sessions opened by a notice, to be named from the first message a person sends. */
   readonly deferredNaming: Set<string>
+  /**
+   * Puts the agent's container to sleep once it has been idle for the
+   * auto-sleep timeout. The container runtime arms it from its activity marks
+   * and cancels it when the container stops; the agent is busy while one of
+   * its live sessions is active or awaiting input.
+   */
+  readonly idleAlarm: IdleAlarm
 }
 
 export interface AgentStateHooks {
   /** What the agent's live sessions reach outside the agent. */
   sessions: Pick<LiveSessionsDeps, 'store' | 'host' | 'runtime' | 'capture'>
+  /** What the agent's idle alarm reads and does outside the agent; whether it is busy is the state's own. */
+  idle: Omit<IdleAlarmDeps, 'isBusy'>
 }
 
 export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): AgentState {
@@ -113,6 +124,7 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
     mcpSessions: new AgentMcpSessions(),
     volumeUploads: new VolumeUploadGuard(),
     deferredNaming: new Set(),
+    idleAlarm: new IdleAlarm({ ...hooks.idle, isBusy: () => live.hasActive() || live.hasAwaitingInput() }),
   }
 }
 
@@ -140,8 +152,9 @@ export function settleStoppedSession(state: AgentState, sessionId: string): void
  * every open request so its listeners hear the end of it, then drop the
  * sessions' streams and timers. The requests go first, so their resolved
  * events still reach the sessions' listeners. Waiters on a lock are turned
- * away and joiners of a widget refresh hear it will not end here; the rest
- * of the host's per-agent memory is dropped with the state. The persisted
+ * away, joiners of a widget refresh hear it will not end here, and the idle
+ * alarm is disarmed (the container is not stopped); the rest of the host's
+ * per-agent memory is dropped with the state. The persisted
  * computer-use grants are left where they are; they belong to the agent's
  * settings entry, not to the process.
  */
@@ -157,4 +170,5 @@ export function releaseAgentState(state: AgentState): void {
   state.widgetRefreshes.dispose()
   state.mcpSessions.clear()
   state.deferredNaming.clear()
+  state.idleAlarm.cancel()
 }

@@ -8,11 +8,12 @@
  * quiet but marked more recently than the timeout, in which case it waits the
  * remainder; or idle past the timeout, in which case it sleeps.
  *
- * This is the local form of what a remote actor does with its own alarm: the
- * activity and the decision are known where the container is, and nothing
+ * Each agent's actor owns its alarm, in every deployment; only what the alarm
+ * waits with differs (`IdleTimer`). The container runtime reports the marks
+ * and the container's starts and stops to it (`AgentIdleAlarms`), and nothing
  * central has to poll. The timeout is a setting, read fresh for every arm and
  * again at every fire, so a change made anywhere applies no later than the
- * next fire, a change made here applies when the host re-arms the running
+ * next fire, a change made here applies when the registry re-arms the held
  * alarms (with one read for all of them), and zero disables.
  *
  * Reading the timeout is asynchronous. The marks themselves are recorded by
@@ -53,6 +54,36 @@ export interface IdleAlarmDeps {
   sleep(timeoutMs: number): Promise<void>
   /** The clock to read time from; `Date.now` unless a test says otherwise. */
   now?(): number
+  /**
+   * What the alarm waits with, read once at its first arm; this process's
+   * timer unless the deployment gives one that outlives the process (see
+   * `IdleTimer`).
+   */
+  timer?(): IdleTimer
+}
+
+/**
+ * What an idle alarm waits with. `set` replaces what was set before; `clear`
+ * drops it. A timer may go off earlier than asked: every fire checks the clock
+ * again and arms for the rest. A deployment whose process can end while the
+ * container runs keeps the wait somewhere that outlives the process, and when
+ * it goes off there, runs the alarm's `fire()` on the new process.
+ */
+export interface IdleTimer {
+  set(ms: number, fire: () => void): void
+  clear(): void
+}
+
+/**
+ * The way from the container layer to the agents' idle alarms, which their
+ * actors own. Attached to the container host by the agent registry, like
+ * `AgentSessionsAccess`.
+ */
+export interface AgentIdleAlarms {
+  /** The agent's alarm, from an actor made if none is held: a running container always has one. */
+  get(slug: string): IdleAlarm
+  /** The agent's alarm when its actor is held. A stop or a drop never makes an actor. */
+  peek(slug: string): IdleAlarm | undefined
 }
 
 /** How long a sleep that did not complete waits before the alarm tries again. */
@@ -75,8 +106,29 @@ export function idleLongerThan(idleSince: number | null, timeoutMs: number, now:
   return idleSince !== null && now - idleSince > timeoutMs
 }
 
+/** This process's timer: a wait longer than `MAX_TIMER_MS` goes off at that, and an armed timer never keeps the process alive. */
+export function processIdleTimer(): IdleTimer {
+  let timer: NodeJS.Timeout | null = null
+  const clear = () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+  }
+  return {
+    set(ms, fire) {
+      clear()
+      timer = setTimeout(() => {
+        timer = null
+        fire()
+      }, Math.min(ms, MAX_TIMER_MS))
+      timer.unref?.()
+    },
+    clear,
+  }
+}
+
 export class IdleAlarm {
-  private timer: NodeJS.Timeout | null = null
+  private armed = false
+  private waiting: IdleTimer | undefined
   private firing = false
   /**
    * Bumped by every schedule, re-arm, fire and cancel. A fire's decision
@@ -116,7 +168,7 @@ export class IdleAlarm {
   }
 
   /**
-   * Arm now from a timeout the caller read: the host re-arming every alarm
+   * Arm now from a timeout the caller read: the registry re-arming every alarm
    * after the timeout setting changed, with one read made after the change
    * (or the value the change committed). A schedule's read in flight, which
    * may have started before the change, is detached and arms nothing.
@@ -136,7 +188,7 @@ export class IdleAlarm {
    * still reads afresh before it puts anything to sleep.
    */
   ensureArmed(timeoutMs?: number): void {
-    if (this.timer || this.pendingRead) return
+    if (this.armed || this.pendingRead) return
     if (timeoutMs === undefined) this.schedule()
     else this.rearm(timeoutMs)
   }
@@ -149,7 +201,7 @@ export class IdleAlarm {
   }
 
   isArmed(): boolean {
-    return this.timer !== null
+    return this.armed
   }
 
   /**
@@ -186,7 +238,7 @@ export class IdleAlarm {
       // A completed stop reset the clock. Anything still on it means the
       // container is up (the stop did not complete, or a mark landed during
       // it and the mark's own re-arm was lost to the reset): try again soon.
-      if (this.deps.lastActivityAt() !== undefined && !this.timer) this.armIn(IDLE_ALARM_RETRY_MS)
+      if (this.deps.lastActivityAt() !== undefined && !this.armed) this.armIn(IDLE_ALARM_RETRY_MS)
     } finally {
       this.firing = false
     }
@@ -205,12 +257,10 @@ export class IdleAlarm {
     this.armFrom(timeoutMs)
   }
 
-  /** Arm for `timeoutMs` counted from the clock as it stands now. */
+  /** Arm for `timeoutMs` counted from the clock as it stands now. The new wait replaces the old one; nothing to wait for clears it. */
   private armFrom(timeoutMs: number): void {
-    this.clearTimer()
-    if (timeoutMs <= 0) return
-    const last = this.deps.lastActivityAt()
-    if (last === undefined) return
+    const last = timeoutMs > 0 ? this.deps.lastActivityAt() : undefined
+    if (last === undefined) return this.clearTimer()
     this.armIn(Math.max(0, last + timeoutMs - this.now()))
   }
 
@@ -225,7 +275,7 @@ export class IdleAlarm {
       return await this.deps.timeoutMs()
     } catch (error) {
       console.error('[IdleAlarm] Could not read the auto-sleep timeout; will retry:', error)
-      if (current() && !this.timer && this.deps.lastActivityAt() !== undefined) {
+      if (current() && !this.armed && this.deps.lastActivityAt() !== undefined) {
         this.armIn(IDLE_ALARM_RETRY_MS)
       }
       return null
@@ -233,19 +283,21 @@ export class IdleAlarm {
   }
 
   private clearTimer(): void {
-    if (this.timer) {
-      clearTimeout(this.timer)
-      this.timer = null
-    }
+    if (!this.armed) return
+    this.armed = false
+    this.timer().clear()
   }
 
   private armIn(ms: number): void {
-    this.timer = setTimeout(() => {
-      this.timer = null
+    this.armed = true
+    this.timer().set(ms, () => {
+      this.armed = false
       background(this.fire(), { name: 'idle-alarm.sleep-if-idle' })
-    }, Math.min(ms, MAX_TIMER_MS))
-    // An armed alarm is not a reason to keep the process alive.
-    this.timer.unref?.()
+    })
+  }
+
+  private timer(): IdleTimer {
+    return (this.waiting ??= this.deps.timer?.() ?? processIdleTimer())
   }
 
   private now(): number {

@@ -110,6 +110,14 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
+import { createAgentRegistry } from '@shared/lib/agent-actor/registry'
+import type { LocalActorDeps } from '@shared/lib/agent-actor/local-agent-actor'
+
+// The agents' actors own their idle alarms; the registry hands the runtimes the way to them.
+const routers = { userInputRequestManager: {}, reviewManager: {}, accountReauthManager: {}, mcpReauthManager: {}, computerUsePermissionManager: {} }
+createAgentRegistry({ containerHost, ...routers } as unknown as LocalActorDeps)
+// A start reads no display name here.
+containerHost.attachAgentWorkspaces(null)
 
 const SLUG = 'agent-runner'
 

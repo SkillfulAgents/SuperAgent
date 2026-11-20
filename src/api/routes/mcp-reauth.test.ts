@@ -25,6 +25,7 @@ vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
     attachAgentWorkspaces: () => {},
     attachAgentSessions: () => {},
+    attachAgentIdleAlarms: () => {},
     clearRuntimes: () => {},
     runtime: () => ({
       slug: 'shared-agent',

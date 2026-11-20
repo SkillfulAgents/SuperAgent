@@ -57,7 +57,7 @@ import {
   getWebProvider,
   resolveEffectiveWebVendorFrom,
 } from '@shared/lib/web-provider'
-import { containerHost } from '@shared/lib/agent-actor'
+import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { offersRuntime } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
@@ -512,7 +512,7 @@ settings.put(
 
       // A new auto-sleep timeout applies to the containers already up.
       if (body.app?.autoSleepTimeoutMinutes !== undefined) {
-        containerHost.rearmIdleAlarms()
+        agentRegistry.rearmIdleAlarms()
       }
 
       // If account provider settings changed, re-register providers

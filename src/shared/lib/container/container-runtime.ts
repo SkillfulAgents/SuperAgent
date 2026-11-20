@@ -11,7 +11,7 @@
 import { z } from 'zod'
 import { createContainerClient } from './client-factory'
 import { ActivityClock } from './activity-clock'
-import { IdleAlarm } from './idle-alarm'
+import type { AgentIdleAlarms, IdleAlarm } from './idle-alarm'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -88,6 +88,8 @@ export interface RuntimeHost {
    * readiness so the VM restarts.
    */
   afterForceStop(slug: string): void
+  /** The agents' idle alarms, on their actors. Null only before the agent registry attached it. */
+  readonly agentIdleAlarms: AgentIdleAlarms | null
 }
 
 /** The auto-sleep timeout in `settings`, in ms; zero or less disables. */
@@ -132,23 +134,10 @@ export class ContainerRuntime {
   private cached: CachedContainerStatus | null = null
   /**
    * When this container was last busy: its start, the last keep-alive, the
-   * last session activity. Every mark re-arms the idle alarm; nothing here
-   * touches the filesystem.
+   * last session activity. Every mark re-arms the agent's idle alarm, which
+   * its actor owns; nothing here touches the filesystem.
    */
   private readonly activity = new ActivityClock()
-  /**
-   * Puts the container to sleep once it has been idle for the auto-sleep
-   * timeout. Armed from the marks above, cancelled when the container stops
-   * or the runtime is dropped; the host re-arms it when the timeout changes.
-   * The timeout is read from the settings for every arm (marks made while a
-   * read is out share it) and at every fire.
-   */
-  readonly idleAlarm = new IdleAlarm({
-    timeoutMs: async () => autoSleepTimeoutMsFrom(await getSettings()),
-    lastActivityAt: () => this.sleepableSince(),
-    isBusy: () => this.isBusy(),
-    sleep: (timeoutMs) => this.sleepIdle(timeoutMs),
-  })
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
   /** The fatal result a deferred recovery is to report, until it does. */
@@ -395,7 +384,7 @@ export class ContainerRuntime {
     } finally {
       // A later start that replaced this one clears and arms for itself when it settles.
       if (this.starting === startPromise) this.starting = null
-      if (this.starting === null) this.idleAlarm.schedule()
+      if (this.starting === null) this.idleAlarm()?.schedule()
     }
   }
 
@@ -452,7 +441,7 @@ export class ContainerRuntime {
   markAsStopped(): void {
     this.updateCachedStatus('stopped', null)
     this.activity.reset()
-    this.idleAlarm.cancel()
+    this.heldIdleAlarm()?.cancel()
   }
 
   /**
@@ -578,12 +567,12 @@ export class ContainerRuntime {
       // and the marks it would have re-armed from are still on the clock.
       // An alarm still armed is left as it is: every mark re-armed it, and
       // its fire reads the timeout again.
-      this.idleAlarm.ensureArmed(sweep?.idleTimeoutMs)
+      this.idleAlarm()?.ensureArmed(sweep?.idleTimeoutMs)
     } else {
       // Nothing to sleep while the container is not observed running. The
       // marks stay: if the report was a transient failure, the next running
       // sync arms from them again rather than from a fresh floor.
-      this.idleAlarm.cancel()
+      this.heldIdleAlarm()?.cancel()
     }
 
     // Broadcast if status changed (e.g., container was stopped externally)
@@ -899,7 +888,7 @@ export class ContainerRuntime {
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
   keepAlive(): void {
     this.activity.keepAlive()
-    this.idleAlarm.schedule()
+    this.idleAlarm()?.schedule()
   }
 
   /**
@@ -909,7 +898,7 @@ export class ContainerRuntime {
    */
   noteSessionActivity(at: number = Date.now()): void {
     this.activity.sessionActivity(at)
-    this.idleAlarm.schedule()
+    this.idleAlarm()?.schedule()
   }
 
   /**
@@ -939,9 +928,19 @@ export class ContainerRuntime {
    * would stop a container that is not there — or, worse, one that a later
    * start is in the middle of bringing up.
    */
-  private sleepableSince(): number | undefined {
+  sleepableSince(): number | undefined {
     if (this.starting || this.stopping || this.getCachedInfo().status !== 'running') return undefined
     return this.activity.lastActivityAt()
+  }
+
+  /** The agent's idle alarm, made with its actor if none is held: arming it needs one. */
+  private idleAlarm(): IdleAlarm | undefined {
+    return this.host.agentIdleAlarms?.get(this.slug)
+  }
+
+  /** The agent's idle alarm when its actor is held: a cancel never makes one. */
+  private heldIdleAlarm(): IdleAlarm | undefined {
+    return this.host.agentIdleAlarms?.peek(this.slug)
   }
 
   private isBusy(): boolean {
@@ -952,7 +951,7 @@ export class ContainerRuntime {
   }
 
   /** What the idle alarm runs: stop without ever force-stopping the shared VM. */
-  private async sleepIdle(timeoutMs: number): Promise<void> {
+  async sleepIdle(timeoutMs: number): Promise<void> {
     console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMs / 60_000}m, stopping...`)
     await this.stopContainer({
       stopTimeoutMs: 60_000,
@@ -976,7 +975,7 @@ export class ContainerRuntime {
     this.clientRunner = null
     this.cached = null
     this.activity.reset()
-    this.idleAlarm.cancel()
+    this.heldIdleAlarm()?.cancel()
     this.healthWarnings = []
     this.stopping = false
     this.starting = null
