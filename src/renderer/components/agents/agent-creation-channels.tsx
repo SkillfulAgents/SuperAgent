@@ -13,8 +13,12 @@ import { useAgentIntegrations, useAvailableAgentIntegrationProviders } from '@re
 const featured = integrationSetupProviders.filter(p => p.slug === 'platform-email' || p.slug === 'slack')
 const moreChannels = integrationSetupProviders.filter(provider => !featured.includes(provider))
 
-/** Two columns from `sm`, one on phones. */
-const CHANNEL_GRID_CLASS = 'grid grid-cols-1 gap-2 sm:grid-cols-2'
+/**
+ * Two columns from `sm`, one on phones, and every row as tall as the
+ * tallest (auto-rows-fr): the tiles are one size whether a description
+ * takes one line or two.
+ */
+const CHANNEL_GRID_CLASS = 'grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2'
 /** A channel tile: the add-ons cards' border and fill, one per channel. */
 const CHANNEL_TILE_CLASS = 'flex items-start gap-2.5 rounded-card border bg-card/50 py-3 pl-3 pr-2.5'
 
@@ -62,9 +66,12 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
       <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground" aria-hidden>
         <ServiceIcon slug={provider.slug} fallback="mcp" className={cn('size-4', provider.iconClassName)} />
       </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{title}</p>
-        <p className="text-xs text-muted-foreground">{provider.description}</p>
+      {/* The name at the top, the description sitting on the tile's bottom
+          edge: with every tile one height, the spare room of a one-line
+          description falls between the two instead of below. */}
+      <div className="flex min-w-0 flex-1 flex-col gap-1 self-stretch">
+        <p className="text-sm font-normal">{title}</p>
+        <p className="mt-auto text-xs text-muted-foreground">{provider.description}</p>
       </div>
       <ChannelAction action={action} title={title} reason={reason} onSetup={() => setTarget(setupTarget)} iconOnly icon={icon}
         quiet={configured || later}
@@ -87,7 +94,9 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
         step stronger than the section headers; its chevron turns down once
         open (aria-expanded says so to a screen reader). */}
     <button type="button" aria-expanded={expanded} aria-controls={moreId} aria-label="More channels"
-      className="mt-2 flex min-h-8 items-center gap-1 rounded-control text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      // The negative margin keeps "More" on the cards' edge while its focus
+      // ring gets room around the words.
+      className="-ml-1.5 mt-2 flex min-h-8 items-center gap-1 rounded-control px-1.5 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={() => setExpanded(open => !open)}>
       More
       <ChevronRight aria-hidden className={`size-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />

@@ -61,8 +61,9 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   }
 
   return (
-    // 4px either side for focus rings at the column's edge: a scroller clips sideways too.
-    <div className="-mx-1 h-full overflow-y-auto px-1" data-testid="agent-addons-step">
+    // 8px either side for focus rings at the column's edge (More's sits 6px
+    // out, plus its 2px ring): a scroller clips sideways too.
+    <div className="-mx-2 h-full overflow-y-auto px-2" data-testid="agent-addons-step">
       <div className="flex min-h-full w-full flex-col justify-center py-8">
         {header}
         <TooltipProvider delayDuration={200}>
@@ -126,7 +127,7 @@ function Row({ title, description, icon, checked, onChange, disabled, reason }: 
     className={`flex items-center gap-3 px-4 py-3 ${inactive ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
     <Icon>{icon}</Icon>
     <span className="min-w-0 flex-1">
-      <span className="block text-sm font-medium">{title}</span>
+      <span className="block text-sm font-normal">{title}</span>
       <span className="block text-xs text-muted-foreground">{description}</span>
     </span>
     {reason && checked && <span aria-hidden className="text-sm font-medium">On</span>}
