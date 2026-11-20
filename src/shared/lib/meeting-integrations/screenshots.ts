@@ -1,4 +1,4 @@
-import { PNG } from 'pngjs'
+import { PNG } from 'pngjs/browser'
 import { agentRegistry } from '../agent-actor'
 import type { FileOps } from '../agent-actor/types'
 import { background } from '../background'

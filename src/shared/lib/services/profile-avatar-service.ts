@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import { PNG } from 'pngjs'
+import { PNG } from 'pngjs/browser'
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
@@ -41,7 +41,7 @@ export function prepareAvatar(input: Buffer): Buffer {
     const decoded = PNG.sync.read(input, { checkCRC: true })
     const clean = new PNG({ width: decoded.width, height: decoded.height })
     clean.data = decoded.data
-    return PNG.sync.write(clean)
+    return Buffer.from(PNG.sync.write(clean))
   } catch {
     throw new InvalidAvatarError('This photo could not be read. Choose another image.')
   }

@@ -18,7 +18,7 @@
  * turns into a point with one multiplication.
  */
 
-import { PNG } from 'pngjs'
+import { PNG } from 'pngjs/browser'
 
 /** An area of the screen in points, as agent-desktop reports window and display bounds. */
 export interface ScreenArea {
@@ -376,7 +376,7 @@ function resample(image: Rgba, region: PixelRect, width: number, height: number)
 function encode(data: Uint8Array, width: number, height: number): Buffer {
   const png = new PNG({ width, height })
   png.data = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
-  return PNG.sync.write(png)
+  return Buffer.from(PNG.sync.write(png))
 }
 
 function windowLabel(window: WindowCandidate): string {
