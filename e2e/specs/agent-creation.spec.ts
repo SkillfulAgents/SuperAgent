@@ -317,7 +317,7 @@ test('deferred channels survive reload, reopen from Agent Home, and dismiss inde
   await page.getByRole('button', { name: 'Set up Slack' }).click()
   await dialog.getByRole('button', { name: 'Set this up later' }).click()
   await expect(dialog).toBeHidden()
-  await expect(page.getByRole('button', { name: 'Finish setup Slack' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Set up Slack, saved for later' })).toBeEnabled()
   await page.getByRole('button', { name: 'More channels' }).click()
   await page.getByRole('button', { name: 'Set up Telegram' }).click()
   await dialog.getByRole('button', { name: 'Set this up later' }).click()
@@ -369,7 +369,7 @@ test('the defer action stays visible beneath long Slack instructions on a small 
   await expect(defer).toBeInViewport({ ratio: 1 })
   await defer.click()
   await expect(dialog).toBeHidden()
-  await expect(page.getByRole('button', { name: 'Finish setup Slack' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Set up Slack, saved for later' })).toBeEnabled()
 })
 
 for (const surface of ['the wizard', 'Agent Home']) {

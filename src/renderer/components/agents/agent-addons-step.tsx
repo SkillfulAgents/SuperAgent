@@ -3,7 +3,6 @@ import { Brain, NotebookPen, TrendingUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@renderer/components/ui/switch'
 import { AgentCreationChannels } from './agent-creation-channels'
-import { ADDON_CARD_CLASS } from './create-agent-layout'
 import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -101,14 +100,14 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
 }
 
 /**
- * A titled group of add-ons. Its rows go in the card; `bare` hands the
- * children the whole area instead, for a section that also puts something
- * under its card (Channels' Show more).
+ * A titled group of add-ons. Its rows go in a card; `bare` hands the
+ * children the whole area instead, for a section laid out its own way
+ * (Channels' grid of tiles and its More).
  */
 function Section({ title, bare = false, children }: { title: string; bare?: boolean; children: ReactNode }) {
   return <section>
     <h3 className="mb-2 text-xs font-normal text-muted-foreground/70">{title}</h3>
-    {bare ? children : <div className={ADDON_CARD_CLASS}>{children}</div>}
+    {bare ? children : <div className="divide-y rounded-card border bg-card/50">{children}</div>}
   </section>
 }
 

@@ -16,7 +16,4 @@ export const CREATE_STEP_BOTTOM_SPACER: CSSProperties = { flex: '1 1 0%' }
  * render it: two live elements with one name cancel the transition. Its
  * timing is in globals.css.
  */
-/** An add-ons section's card: its rows, divided. */
-export const ADDON_CARD_CLASS = 'divide-y rounded-card border bg-card/50'
-
 export const CREATE_AGENT_ORB_TRANSITION = { viewTransitionName: 'create-agent-orb' } as CSSProperties
