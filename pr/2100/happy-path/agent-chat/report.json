@@ -1,0 +1,24 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Opened the app, selected agent QA-20261120-084353-sxlh, confirmed it was idle, sent \"Hello! What is 2+2?\", and verified the reply contains \"4\".",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing \"Your Agents\".",
+    "Step 2: Clicked the QA-20261120-084353-sxlh entry in the sidebar — the agent page opened at /agents/qa-20261120-084353-sxlh-ekpgt0qe7p.",
+    "Step 3: Verified agent status — the header status indicator reads \"idle\", which satisfies the running-or-idle requirement.",
+    "Step 4: Typed \"Hello! What is 2+2?\" into the message input. Pressing Enter only inserted a newline, because the input hint says \"Press cmd+enter to send\". I then clicked the Send message button, and the app navigated to a new session (\"Basic Arithmetic Question Check\") with the user message shown in the message list.",
+    "Step 5: Waited for the response — the assistant reply \"2 + 2 = 4.\" appeared in the message list without a noticeable delay, well within the 3-minute window.",
+    "Step 6: Verified the response mentions \"4\" — it reads \"2 + 2 = 4.\". The screenshot taken after sending shows the user message and this reply. I did not take a separate screenshot after the reply arrived."
+  ],
+  "bugs": [],
+  "durationMs": 38871,
+  "sessionId": "2ec0fc9b-584b-4fd8-acb1-25cf090dde0d",
+  "cost": {
+    "inputTokens": 7902,
+    "outputTokens": 6256,
+    "cacheCreationTokens": 159666,
+    "cacheReadTokens": 366806,
+    "model": "claude-haiku-5-5",
+    "totalCostUsd": 0.275445
+  }
+}
