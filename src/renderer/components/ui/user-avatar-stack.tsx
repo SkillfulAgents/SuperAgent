@@ -1,4 +1,4 @@
-import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { AgentFace } from '@renderer/components/agents/agent-face'
 import type { MemberAgent } from '@shared/lib/types/agent-sharing'
 import { cn } from '@shared/lib/utils/cn'
 import type { UserSummary } from '@shared/lib/user-profile-schema'
@@ -49,7 +49,7 @@ export function UserAvatarStack({ users, agents = [], count = users.length + age
         const next = i < faces.length - 1 ? v.face : remaining > 0 ? v.count : 0
         const style = next ? cutout(v.face, v.overlap, next, v.gap) : undefined
         return 'slug' in face
-          ? <span key={`agent:${face.slug}`} className={overlap} style={style}><AgentAvatar agent={face} size={v.face} still /></span>
+          ? <AgentFace key={`agent:${face.slug}`} agent={face} size={v.face} className={overlap} style={style} />
           : <UserAvatar key={face.id} user={face} size={v.face} className={overlap} style={style} />
       })}
       {/* When the faces don't fit, the last circle gives the whole count
