@@ -239,7 +239,7 @@ test.describe('agent widgets', () => {
     expect(png.status()).toBe(404)
   })
 
-  test('App Home tiles the widget, shows it in place of its own dashboard, and never refreshes', async ({
+  test('App Home shows one widget tile for its dashboard and refreshes only on request', async ({
     page,
     request,
   }, testInfo) => {
@@ -261,7 +261,7 @@ test.describe('agent widgets', () => {
       })
       .toBe('nutrition:true|nutrition,other-dash')
 
-    // Every widget refresh request the page makes from here on — there must be none.
+    // Loading App Home must leave even a stale widget alone.
     const refreshRequests: string[] = []
     page.on('request', (req) => {
       if (/\/widgets\/refresh-stale$|\/widget\/refresh$/.test(req.url())) refreshRequests.push(req.url())
@@ -304,6 +304,17 @@ test.describe('agent widgets', () => {
     expect(refreshRequests).toEqual([])
     expect((await listWidgets(request, agent.slug))[0]).toMatchObject({ isStale: true, refreshing: false })
     expect(fs.existsSync(path.join(artifactsDir(agent.slug), 'nutrition', 'snapshots', 'snapshot.json'))).toBe(false)
+
+    await tile.getByRole('button', { name: 'Refresh Artifact nutrition' }).click()
+    await expect.poll(async () => (await listWidgets(request, agent.slug))[0].isStale).toBe(false)
+    await expect(page).toHaveURL('/')
+
+    const dashboardUrl = `/agents/${agent.slug}/dashboards/nutrition`
+    await tile.getByText('Open app', { exact: true }).click()
+    await expect(page).toHaveURL(dashboardUrl)
+    await page.goBack()
+    await link.click()
+    await expect(page).toHaveURL(dashboardUrl)
   })
 
   test('a failed refresh keeps the previous snapshot, surfaces the error, and asks the agent to fix it', async ({

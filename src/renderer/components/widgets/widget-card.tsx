@@ -85,36 +85,7 @@ export function WidgetCard({
     </>
   )
 
-  const actions = (
-    <div
-      className={cn(
-        'absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 opacity-0 transition-opacity duration-200 group-hover/card:opacity-100 focus-within:opacity-100',
-        variant === 'fill' ? 'p-2.5' : 'p-3',
-      )}
-    >
-      <button
-        type="button"
-        aria-label={`Refresh ${widget.name}`}
-        disabled={refreshing}
-        onClick={(event) => {
-          // Sits above the card's link overlay, so nothing to preventDefault;
-          // the grid below still must not see the click as a drag.
-          event.stopPropagation()
-          refresh.mutate({ agentSlug, widgetSlug: widget.slug })
-        }}
-        className="inline-flex h-6 w-6 items-center justify-center rounded-control border border-input bg-background text-muted-foreground shadow-sm hover:text-foreground disabled:opacity-50 [&_svg]:size-3.5"
-      >
-        <RefreshCw className={cn(refreshing && 'animate-spin')} />
-      </button>
-      {widget.hasDashboard && (
-        <span className="inline-flex h-6 items-center gap-1 rounded-control border border-input bg-background px-2 text-xs font-medium shadow-sm [&_svg]:size-3.5">
-          Open app
-          <ArrowUpRight />
-        </span>
-      )}
-    </div>
-  )
-
+  const actionVisibility = 'opacity-0 transition-opacity duration-200 group-hover/card:opacity-100 group-focus-within/card:opacity-100'
   const frameClass = cn(
     'group/card relative block h-full w-full overflow-hidden rounded-card border bg-card text-left shadow-sm transition-[box-shadow,border-color] duration-150 hover:border-accent-foreground/20',
     className,
@@ -132,8 +103,18 @@ export function WidgetCard({
       draggable={false}
       data-widget-drag-surface=""
       aria-label={`Open ${widget.name}`}
-      className="absolute inset-0 z-10"
-    />
+      className={cn('absolute inset-0 z-10 flex items-end justify-end', variant === 'fill' ? 'p-2.5' : 'p-3')}
+    >
+      <span
+        className={cn(
+          'inline-flex h-6 items-center gap-1 rounded-control border border-input bg-background px-2 text-xs font-medium shadow-sm [&_svg]:size-3.5',
+          actionVisibility,
+        )}
+      >
+        Open app
+        <ArrowUpRight />
+      </span>
+    </AppLink>
   ) : variant === 'fill' ? (
     <AppLink
       to="/agents/$slug"
@@ -155,7 +136,22 @@ export function WidgetCard({
     >
       {surface}
       {link}
-      {actions}
+      <button
+        type="button"
+        aria-label={`Refresh ${widget.name}`}
+        disabled={refreshing}
+        onClick={(event) => {
+          event.stopPropagation()
+          refresh.mutate({ agentSlug, widgetSlug: widget.slug })
+        }}
+        className={cn(
+          'absolute z-20 inline-flex h-6 w-6 items-center justify-center rounded-control border border-input bg-background text-muted-foreground shadow-sm hover:text-foreground [&_svg]:size-3.5',
+          variant === 'fill' ? 'bottom-2.5 left-2.5' : 'bottom-3 left-3',
+          actionVisibility,
+        )}
+      >
+        <RefreshCw className={cn(refreshing && 'animate-spin opacity-50')} />
+      </button>
     </div>
   )
 }
