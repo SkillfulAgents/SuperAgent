@@ -336,7 +336,9 @@ function ResultRow({
           {owned && avatar}
           <span className="truncate">{subtitle}</span>
           {(state === 'idle' || state === 'sleeping' || (state === 'working' && agent.avatar)) && (
-            <span className="sr-only">({state})</span>
+            <span className={cn('sr-only', state === 'working' && 'motion-reduce:not-sr-only motion-reduce:shrink-0')}>
+              ({state})
+            </span>
           )}
         </span>
       </span>

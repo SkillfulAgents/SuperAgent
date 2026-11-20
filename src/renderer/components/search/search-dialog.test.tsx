@@ -32,6 +32,7 @@ it('updates recent and filtered avatars from the shared agents query while searc
       for (const kind of kinds) {
         const row = within(screen.getByTestId(`search-${kind}-row`))
         expect(row.getByTestId('orb')).toHaveAttribute('data-state', state)
+        if (state === 'working') expect(row.getByText('(working)')).toHaveClass('motion-reduce:not-sr-only')
         if (badge) expect(row.getByRole('img')).toHaveAccessibleName(badge)
         else expect(row.queryByRole('img')).toBeNull()
       }
