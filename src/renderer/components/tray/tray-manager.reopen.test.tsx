@@ -56,8 +56,13 @@ vi.mock('@shared/lib/tools/request-browser-input/use-browser-input-actions', () 
   }),
 }))
 const historyMessages: ApiMessage[] = []
-vi.mock('@renderer/hooks/use-messages', () => ({ useMessages: () => ({ data: historyMessages }) }))
-const mockApiFetch = vi.fn((_url: string) => Promise.resolve({ ok: true, json: () => Promise.resolve([]) }))
+vi.mock('@renderer/hooks/use-messages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-messages')>()),
+  useMessages: () => ({ data: historyMessages }),
+}))
+const mockApiFetch = vi.fn((_url: string) =>
+  Promise.resolve({ ok: true, json: () => Promise.resolve({ messages: [], nextCursor: null }) }),
+)
 vi.mock('@renderer/lib/api', () => ({ apiFetch: (url: string) => mockApiFetch(url) }))
 vi.mock('@shared/lib/tools/renderers', () => ({ getToolRenderer: () => undefined }))
 vi.mock('@renderer/components/file-preview/file-preview-tray-content', () => ({ FilePreviewTrayContent: () => null }))
