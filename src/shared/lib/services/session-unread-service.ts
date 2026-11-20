@@ -21,6 +21,7 @@
  */
 
 import { db } from '@shared/lib/db'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { changesOf } from '@shared/lib/db/batch'
 import { sessionUnreadMarks } from '@shared/lib/db/schema'
 import { and, eq, inArray } from 'drizzle-orm'
@@ -133,7 +134,7 @@ export async function deleteSessionUnreadMarks(
     .delete(sessionUnreadMarks)
     .where(and(
       eq(sessionUnreadMarks.agentSlug, agentSlug),
-      inArray(sessionUnreadMarks.sessionId, sessionIds),
+      inList(sessionUnreadMarks.sessionId, sessionIds),
     ))
 
   return changesOf(result)

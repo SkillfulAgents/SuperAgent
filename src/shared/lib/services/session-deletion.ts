@@ -1,6 +1,7 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { deleteNotificationsBySessionIds } from './notification-service'
 import { cancelPendingWakeForSession } from './scheduled-task-service'
@@ -36,7 +37,7 @@ export async function deleteSessionAndRecords(agentSlug: string, sessionId: stri
 export async function deleteSessionRecords(agentSlug: string, sessionIds: string[]): Promise<void> {
   if (sessionIds.length === 0) return
   // Message author records: people (auth mode) and integrations (every mode).
-  await db.delete(messageAuthor).where(and(eq(messageAuthor.agentSlug, agentSlug), inArray(messageAuthor.sessionId, sessionIds)))
+  await db.delete(messageAuthor).where(and(eq(messageAuthor.agentSlug, agentSlug), inList(messageAuthor.sessionId, sessionIds)))
 
   // Notification rows in BOTH modes (they are stored regardless of auth mode;
   // userId is nullable), so deleting a session never leaves stale

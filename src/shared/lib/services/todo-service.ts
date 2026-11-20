@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, notExists, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { todos, type TodoRow } from '@shared/lib/db/schema'
 import {
   TODO_TRANSITIONS,
@@ -297,7 +298,7 @@ export async function deleteTodo(userId: string, id: string): Promise<boolean> {
  */
 export function unlinkSessionStatements(agentSlug: string, sessionIds?: string[]) {
   const linked = sessionIds
-    ? and(eq(todos.agentSlug, agentSlug), inArray(todos.sessionId, sessionIds))
+    ? and(eq(todos.agentSlug, agentSlug), inList(todos.sessionId, sessionIds))
     : and(eq(todos.agentSlug, agentSlug), isNotNull(todos.sessionId))
   const now = new Date()
   return [

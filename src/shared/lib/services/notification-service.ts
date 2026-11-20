@@ -11,6 +11,7 @@
  */
 
 import { db } from '@shared/lib/db'
+import { inList } from '@shared/lib/db/bound-parameters'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { notifications, agentAcl, user, type Notification, type NewNotification } from '@shared/lib/db/schema'
 import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
@@ -463,7 +464,7 @@ export async function deleteNotificationsBySessionIds(agentSlug: string, session
 
   const result = await db
     .delete(notifications)
-    .where(and(eq(notifications.agentSlug, agentSlug), inArray(notifications.sessionId, sessionIds)))
+    .where(and(eq(notifications.agentSlug, agentSlug), inList(notifications.sessionId, sessionIds)))
     .returning(changeAudience())
 
   publishChanges(result)
