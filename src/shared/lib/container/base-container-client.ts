@@ -1248,7 +1248,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // stale-cache liveness check), and a container that died with its port
       // forward left half-open would accept the TCP connect but never respond,
       // hanging the fetch — and the caller — indefinitely without this.
-      return await fetch(`${this.getBaseUrl(port)}/health`, {
+      return await this.request(`${this.getBaseUrl(port)}/health`, {
         signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
         headers,
       })
@@ -1298,6 +1298,20 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Sends one HTTP request to the container: every request this client makes
+   * goes through here. A runtime whose containers are not reached over the
+   * network overrides it, together with `openWebSocket`.
+   */
+  protected request(url: string, init?: RequestInit): Promise<Response> {
+    return fetch(url, init)
+  }
+
+  /** Opens a WebSocket to the container, as `request` sends a request. */
+  protected openWebSocket(url: string, headers: Record<string, string>): WebSocket {
+    return new WebSocket(url, { headers })
+  }
+
+  /**
    * The host as this client's containers reach it. Docker, Apple Container,
    * Lima and WSL2 all name it host.docker.internal; a runtime that names it
    * otherwise overrides this (Podman), so the client's own runtime decides
@@ -1334,7 +1348,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const hostAuthHeaders = await this.getHostAuthHeaders()
 
     try {
-      return await fetch(url, {
+      return await this.request(url, {
         ...init,
         headers: { ...hostAuthHeaders, ...(init?.headers as Record<string, string> | undefined) },
       })
@@ -1455,7 +1469,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         signal: controller.signal,
       }
       requestStarted = true
-      const response = await fetch(url, request)
+      const response = await this.request(url, request)
 
       clearTimeout(timeoutId)
 
@@ -1660,7 +1674,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-      const response = await fetch(
+      const response = await this.request(
         `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`,
         {
           method: 'POST',
@@ -1874,10 +1888,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         this.closeTrackedWebSocket(sessionId)
       }
 
-      const ws = new WebSocket(
-        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`,
-        { headers }
-      )
+      const ws = this.openWebSocket(`${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`, headers)
 
       socket = ws
       this.wsReadyRejectors.set(ws, rejectReady)
