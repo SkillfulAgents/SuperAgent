@@ -5,7 +5,7 @@ container per agent. The entry point is `src/cf`; `src/cf/wrangler.jsonc` is its
 
 ## What you need
 
-- A Cloudflare account on the Workers Paid plan (Durable Objects, Containers, and a Worker of this size need it).
+- A Cloudflare account on the Workers Paid plan, because Cloudflare Containers are not on the Free plan (Workers for Platforms is not needed), with R2 enabled: the deploy creates R2 buckets and fails without it.
 - Node 22 and this repository with `npm ci` done.
 - Docker running: the deploy builds the agent image from `agent-container/Dockerfile`, adds the Cloudflare layer (`src/cf/container/Dockerfile`), and pushes it to Cloudflare. The first build takes a while.
 
@@ -18,13 +18,13 @@ npx wrangler secret put BETTER_AUTH_SECRET --config src/cf/wrangler.jsonc     # 
 npm run deploy:cf
 ```
 
-`wrangler secret put` offers to create the Worker when it does not exist yet; accept. The deploy
-creates the D1 database and the R2 buckets and writes their ids into `wrangler.jsonc`. Keep that
-change: the next deploy uses the same database and buckets.
+`wrangler secret put` offers to create the Worker when it does not exist yet; accept. The first
+deploy creates the D1 database and the R2 buckets; later deploys find them again by the Worker's
+and the bindings' names, so `wrangler.jsonc` needs no ids.
 
 Open the URL the deploy prints. The first request migrates the database, which takes a few
 seconds; a request that arrives before it is done fails, so reload once. The first person who
-signs up becomes the admin.
+signs up becomes the admin, so sign up right after the first deploy, before you share the URL.
 
 Keep `SUPERAGENT_VAULT_KEY`: saved browser logins are sealed with it, and a Worker cannot make a new one.
 
@@ -41,6 +41,7 @@ Pull, then `npm run deploy:cf` again. The new code migrates the database when it
 | `SEED_SETTINGS` | variable | Settings a new org starts from, as JSON. Applied once. |
 | `AGENT_INSTANCE_TYPE` | variable | The instance type of each agent's container. Unset: `standard-3` (2 vCPU). |
 | `CONTAINER_SNAPSHOT` | variable | A container snapshot agents start from, as JSON (`id`, `name`, `size`). Unset: the image. |
+| `HOST_PUBLIC_URL` | variable | The public URL meeting providers call back, for example `https://agents.example.com`. Without it, meetings are not offered. |
 | `DEPLOY_TOKEN` | secret | Lets a deploy script call `POST /_deploy/prepare` with `Authorization: Bearer <token>` right after an upload, so the database is migrated before the new code serves a request. The call answers 503 while Cloudflare still runs the previous code; call it again. |
 | `AUTH_PROVIDERS_JSON`, `PLATFORM_TOKEN` | secrets | Only for a deployment that Gamut Platform manages. |
 
