@@ -1,0 +1,24 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Opened agent QA-20261120-005139-eck6, confirmed it was idle, sent \"Hello! What is 2+2?\" and checked the reply contains 4.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Gamut home loaded with the sidebar listing both agents, no errors.",
+    "Step 2: Clicked QA-20261120-005139-eck6 in the sidebar — agent page opened at /agents/qa-20261120-005139-eck6-t2rfwq9uk5. Screenshot saved as step2-agent-selected.png.",
+    "Step 3: Checked agent status — indicator reads \"idle\", which is an accepted state.",
+    "Step 4: Typed \"Hello! What is 2+2?\" into the message box and clicked Send — the app opened a new session (\"Basic Arithmetic Question\") and the message appeared in the chat.",
+    "Step 5: Waited for a response — \"2 + 2 = 4.\" was already in the message list when first checked, well inside the 3-minute window. Status returned to \"idle\".",
+    "Step 6: Verified the reply mentions 4 — it does. Screenshot saved as step6-response.png."
+  ],
+  "bugs": [],
+  "durationMs": 38121,
+  "sessionId": "d97bb375-19a0-440d-a872-8d7bdaa8e9d1",
+  "cost": {
+    "inputTokens": 7540,
+    "outputTokens": 4318,
+    "cacheCreationTokens": 164484,
+    "cacheReadTokens": 445237,
+    "model": "claude-haiku-5-5",
+    "totalCostUsd": 0.279259
+  }
+}
