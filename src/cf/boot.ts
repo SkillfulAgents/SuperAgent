@@ -29,7 +29,8 @@ import { CloudflareImageService } from './cloudflare-image-service'
 import { createCloudflareErrorReporter } from './lib/cloudflare-error-reporting'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './objects/cloudflare-task-manager'
-import { containerCalls } from './cloudflare-container-control'
+import { agentContainers } from './cloudflare-container-control'
+import { installCloudflareContainers } from '@shared/lib/container/cloudflare-container-runtime'
 import { seedSettings } from './lib/seed-settings'
 import type { Env } from './index'
 
@@ -128,8 +129,9 @@ export async function migrateDatabase(env: Env): Promise<void> {
 
 async function start(env: Env): Promise<void> {
   startErrorReporting()
-  // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
-  installFetch(env)
+  // Before anything can start a container: how SuperAgent's cloudflare-container runner reaches agents here.
+  installCloudflareContainers(agentContainers(env.AGENT))
+  installFetch()
   // A Worker's disk does not outlive a request: blobs and the bytes of uploads in progress live in R2.
   setBlobStore(new CloudflareBlobStore(env.HOST_FILES))
   setUploadByteStore(new CloudflareUploadByteStore(env.HOST_FILES))
@@ -149,16 +151,13 @@ async function start(env: Env): Promise<void> {
 }
 
 /**
- * The one place this isolate's fetch is replaced. A call to the container runner's host is answered
- * here (cloudflare-container-control.ts); every other call goes out. Both go through errorOnRedirect.
+ * The one place this isolate's fetch is replaced, so every call goes through errorOnRedirect.
  * The platform attribution that the process setup installs later wraps this fetch.
  */
-function installFetch(env: Env): void {
+function installFetch(): void {
   if (fetchInstalled) return
   fetchInstalled = true
-  const outside = globalThis.fetch
-  const toContainers = containerCalls(env.AGENT)
-  globalThis.fetch = errorOnRedirect((input, init) => toContainers(input, init) ?? outside(input, init))
+  globalThis.fetch = errorOnRedirect(globalThis.fetch)
 }
 
 /**

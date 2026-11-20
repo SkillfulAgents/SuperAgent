@@ -1,15 +1,15 @@
 /**
  * Serves SuperAgent's cloudflare-container runner in this isolate. A Worker cannot dial a
- * container's port, so the runner calls CLOUDFLARE_CONTAINER_URL (http://agent-container.internal)
- * and these calls are answered here, in front of fetch (boot.ts): `_control/<agentId>[/start|/stop|/stopped]`
- * drives the agent's AgentDurableObject, and `<agentId>/<path>` (WebSocket upgrades too) goes to
- * its container's API. The agent reaches the host at CLOUDFLARE_CONTAINER_HOST_URL
- * (http://host.internal), which AgentDurableObject routes back to the Worker.
+ * container's port, so the boot installs agentContainers as how the runner reaches its agents
+ * (installCloudflareContainers): `_control/<agentId>[/start|/stop|/stopped]` drives the agent's
+ * AgentDurableObject, and `<agentId>/<path>` (WebSocket upgrades too) goes to its container's API.
+ * The agent reaches the host at http://host.internal, which AgentDurableObject routes back to the Worker.
  */
 import type { DurableObjectNamespace } from 'cloudflare:workers'
+import { CLOUDFLARE_CONTAINER_ORIGIN, type CloudflareContainers } from '@shared/lib/container/cloudflare-container-runtime'
 import type { AgentDurableObject } from './objects/cloudflare-agent'
 
-const CONTAINER_HOST = 'agent-container.internal'
+const CONTAINER_HOST = new URL(CLOUDFLARE_CONTAINER_ORIGIN).hostname
 const CONTAINER_PORT = 3000
 
 type AgentObjects = DurableObjectNamespace<AgentDurableObject>
@@ -61,18 +61,11 @@ export function sleepingStore(agents: AgentObjects, agentId: string): SleepingSt
 }
 
 /**
- * Sets the runner's configuration and returns what answers its calls in this isolate: a Response
- * for a call to the runner's host, null for a call to anywhere else. The boot puts it in front of
- * fetch, before SuperAgent first starts a container; the token only has to match within this isolate.
+ * How the runner reaches the agents' containers in this isolate. Only the runner's own calls come
+ * here, never the global fetch, so a control call needs no token.
  */
-export function containerCalls(agents: AgentObjects): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> | null {
-  const token = crypto.randomUUID()
-  process.env.CLOUDFLARE_CONTAINER_URL = `http://${CONTAINER_HOST}`
-  process.env.CLOUDFLARE_CONTAINER_HOST_URL = 'http://host.internal'
-  process.env.CLOUDFLARE_CONTAINER_TOKEN = token
-
+export function agentContainers(agents: AgentObjects): CloudflareContainers {
   const control = async (request: Request, agentId: string, action: string): Promise<Response> => {
-    if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })
     const agent = agents.getByName(agentId)
     if (request.method === 'GET' && action === '') return Response.json({ running: await agent.agentRunning() })
     if (request.method === 'GET' && action === 'stopped') return Response.json({ stopped: await agent.containerStopped() })
@@ -89,12 +82,15 @@ export function containerCalls(agents: AgentObjects): (input: RequestInfo | URL,
     return new Response('not found', { status: 404 })
   }
 
-  return (input, init) => {
-    const url = new URL(input instanceof Request ? input.url : String(input))
-    if (url.hostname !== CONTAINER_HOST) return null
-    const [, first, ...rest] = url.pathname.split('/')
-    if (first === '_control') return control(new Request(input, init), decodeURIComponent(rest[0] ?? ''), rest[1] ?? '')
-    const target = `http://127.0.0.1:${CONTAINER_PORT}/${rest.join('/')}${url.search}`
-    return agents.getByName(decodeURIComponent(first)).fetch(new Request(target, new Request(input, init)))
+  return {
+    hostUrl: 'http://host.internal',
+    fetch: async (input, init) => {
+      const url = new URL(input)
+      if (url.hostname !== CONTAINER_HOST) throw new Error(`Not a call to an agent's container: ${url.origin}`)
+      const [, first, ...rest] = url.pathname.split('/')
+      if (first === '_control') return control(new Request(input, init), decodeURIComponent(rest[0] ?? ''), rest[1] ?? '')
+      const target = `http://127.0.0.1:${CONTAINER_PORT}/${rest.join('/')}${url.search}`
+      return agents.getByName(decodeURIComponent(first)).fetch(new Request(target, new Request(input, init)))
+    },
   }
 }

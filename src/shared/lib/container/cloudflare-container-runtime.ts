@@ -1,41 +1,42 @@
 /**
- * Runs each agent in a Cloudflare Container. The deployment that hosts the app on
- * Cloudflare serves this HTTP contract at CLOUDFLARE_CONTAINER_URL, the way the
- * MicroVM controller serves the MicroVM runtime:
+ * Runs each agent in a Cloudflare Container. The deployment that hosts the app on Cloudflare
+ * installs how this process reaches its agents' containers (installCloudflareContainers), the way the
+ * MicroVM controller serves the MicroVM runtime. Every call this client makes goes there, at
+ * CLOUDFLARE_CONTAINER_ORIGIN:
  *
- * - `GET  {url}/_control/{agentId}`: `{ "running": boolean }`
- * - `POST {url}/_control/{agentId}/start` with `{ "env": {...} }`: starts the container
- * - `POST {url}/_control/{agentId}/stop`: stops it; with `{ "discard": true }`, without saving its workspace
- * - `{url}/{agentId}/{path}`: the agent's container API, HTTP and WebSocket
- *
- * Control calls carry `authorization: Bearer {CLOUDFLARE_CONTAINER_TOKEN}`.
- * The agent reaches the host at CLOUDFLARE_CONTAINER_HOST_URL.
+ * - `GET  /_control/{agentId}`: `{ "running": boolean }`
+ * - `POST /_control/{agentId}/start` with `{ "env": {...} }`: starts the container
+ * - `POST /_control/{agentId}/stop`: stops it; with `{ "discard": true }`, without saving its workspace
+ * - `/{agentId}/{path}`: the agent's container API, HTTP and WebSocket
  */
+import WebSocket from 'ws'
 import { captureException } from '@shared/lib/error-reporting'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT, withVolumesEnv } from './base-container-client'
 import type { ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
 
 const START_TIMEOUT_MS = 120_000
 
-interface CloudflareContainerConfig {
-  url: string
-  hostUrl: string
-  token: string
+/** The origin of the calls in the contract above. They never go out: the installed `fetch` answers them. */
+export const CLOUDFLARE_CONTAINER_ORIGIN = 'http://agent-container.internal'
+
+/** How this process reaches its agents' containers. */
+export interface CloudflareContainers {
+  /** Answers a call of the contract above; only these calls are sent to it. */
+  fetch(url: string, init?: RequestInit): Promise<Response>
+  /** Where an agent's container reaches the host. */
+  readonly hostUrl: string
 }
 
-function cloudflareContainerConfig(): CloudflareContainerConfig | null {
-  const url = process.env.CLOUDFLARE_CONTAINER_URL?.trim().replace(/\/+$/, '')
-  const hostUrl = process.env.CLOUDFLARE_CONTAINER_HOST_URL?.trim().replace(/\/+$/, '')
-  const token = process.env.CLOUDFLARE_CONTAINER_TOKEN?.trim()
-  return url && hostUrl && token ? { url, hostUrl, token } : null
+let installed: CloudflareContainers | null = null
+
+/** Set once at boot by the deployment, before the first container starts; null removes it. */
+export function installCloudflareContainers(containers: CloudflareContainers | null): void {
+  installed = containers
 }
 
-function requireConfig(): CloudflareContainerConfig {
-  const config = cloudflareContainerConfig()
-  if (!config) {
-    throw new Error('Set CLOUDFLARE_CONTAINER_URL, CLOUDFLARE_CONTAINER_HOST_URL and CLOUDFLARE_CONTAINER_TOKEN to run agents in Cloudflare Containers')
-  }
-  return config
+function containers(): CloudflareContainers {
+  if (!installed) throw new Error('No Cloudflare containers are installed in this process (installCloudflareContainers)')
+  return installed
 }
 
 export class CloudflareContainerRuntimeClient extends BaseContainerClient {
@@ -46,7 +47,7 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
   private lastKnownInfo: ContainerInfo = { status: 'stopped', port: null }
 
   static isEligible(): boolean {
-    return cloudflareContainerConfig() !== null
+    return installed !== null
   }
 
   static async isAvailable(): Promise<boolean> {
@@ -62,7 +63,7 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
   }
 
   protected getBaseUrl(_port: number): string {
-    return `${requireConfig().url}/${encodeURIComponent(this.config.agentId)}`
+    return `${CLOUDFLARE_CONTAINER_ORIGIN}/${encodeURIComponent(this.config.agentId)}`
   }
 
   public getWebSocketBaseUrl(port: number): string {
@@ -70,7 +71,17 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
   }
 
   public getHostApiBaseUrl(): string {
-    return requireConfig().hostUrl
+    return containers().hostUrl
+  }
+
+  protected override request(url: string, init?: RequestInit): Promise<Response> {
+    return containers().fetch(url, init)
+  }
+
+  // The Worker build's `ws` makes its upgrade request with the `fetch` it is given (src/cf/build/shims/ws.ts).
+  protected override openWebSocket(url: string, headers: Record<string, string>): WebSocket {
+    const options = { headers, fetch: (target: string, init: RequestInit) => containers().fetch(target, init) }
+    return new WebSocket(url, options as WebSocket.ClientOptions)
   }
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
@@ -146,14 +157,10 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
   }
 
   private async control(method: 'GET' | 'POST', action: '' | '/start' | '/stop' | '/stopped', body?: unknown): Promise<Response> {
-    const { url, token } = requireConfig()
     const path = `/_control/${encodeURIComponent(this.config.agentId)}${action}`
-    const response = await fetch(`${url}${path}`, {
+    const response = await containers().fetch(`${CLOUDFLARE_CONTAINER_ORIGIN}${path}`, {
       method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
+      headers: body === undefined ? {} : { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     if (!response.ok) {

@@ -10,30 +10,19 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ app: {}, enableToolSearch: true }),
 }))
 
-import { CloudflareContainerRuntimeClient } from './cloudflare-container-runtime'
-
-const ENV = {
-  CLOUDFLARE_CONTAINER_URL: 'http://agent-container.internal/',
-  CLOUDFLARE_CONTAINER_HOST_URL: 'http://host.internal',
-  CLOUDFLARE_CONTAINER_TOKEN: 'control-token',
-}
+import { CloudflareContainerRuntimeClient, installCloudflareContainers } from './cloudflare-container-runtime'
 
 /** The deployment's side of the contract, in memory: one container per agent. */
 function fakeDeployment(options: { running?: boolean; startStatus?: number; bootFails?: boolean } = {}) {
   const state = { running: options.running ?? false, controlDown: false }
   const calls: string[] = []
   const bodies: unknown[] = []
-  vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
+  installCloudflareContainers({ hostUrl: 'http://host.internal', fetch: vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input)
     const method = init?.method ?? 'GET'
     calls.push(`${method} ${url.pathname}`)
     if (init?.body) bodies.push(JSON.parse(String(init.body)))
-    if (url.pathname.startsWith('/_control/')) {
-      if ((init?.headers as Record<string, string>)?.authorization !== 'Bearer control-token') {
-        return new Response('unauthorized', { status: 401 })
-      }
-      if (state.controlDown) return new Response('bad gateway', { status: 502 })
-    }
+    if (url.pathname.startsWith('/_control/') && state.controlDown) return new Response('bad gateway', { status: 502 })
     if (url.pathname === '/_control/agent-1') return Response.json({ running: state.running })
     if (url.pathname === '/_control/agent-1/stopped') return Response.json({ stopped: !state.running })
     if (url.pathname === '/_control/agent-1/start') {
@@ -49,27 +38,27 @@ function fakeDeployment(options: { running?: boolean; startStatus?: number; boot
       return state.running ? Response.json({ status: 'ok' }) : new Response(null, { status: 503 })
     }
     return new Response(null, { status: 404 })
-  }))
+  }) })
   return { state, calls, bodies }
 }
 
+// The global fetch never reaches a container: every call goes to the installed containers.
 beforeEach(() => {
-  Object.assign(process.env, ENV)
+  vi.stubGlobal('fetch', vi.fn(async () => {
+    throw new Error('the global fetch was called')
+  }))
 })
 
 afterEach(() => {
-  for (const key of Object.keys(ENV)) delete process.env[key]
+  installCloudflareContainers(null)
   vi.unstubAllGlobals()
 })
 
 describe('CloudflareContainerRuntimeClient', () => {
-  it('is eligible only when both URLs and the control token are set', () => {
+  it('is eligible only while the deployment has installed its containers', () => {
+    expect(CloudflareContainerRuntimeClient.isEligible()).toBe(false)
+    fakeDeployment()
     expect(CloudflareContainerRuntimeClient.isEligible()).toBe(true)
-    delete process.env.CLOUDFLARE_CONTAINER_TOKEN
-    expect(CloudflareContainerRuntimeClient.isEligible()).toBe(false)
-    process.env.CLOUDFLARE_CONTAINER_TOKEN = ENV.CLOUDFLARE_CONTAINER_TOKEN
-    delete process.env.CLOUDFLARE_CONTAINER_HOST_URL
-    expect(CloudflareContainerRuntimeClient.isEligible()).toBe(false)
   })
 
   it('starts a stopped agent with its env, then waits for /health', async () => {
@@ -132,7 +121,8 @@ describe('CloudflareContainerRuntimeClient', () => {
     await expect(client.getInfoFromRuntime()).resolves.toEqual({ status: 'running', port: 3000 })
   })
 
-  it('reaches the container and the host at the configured URLs', () => {
+  it('reaches the container and the host at the installed URLs', () => {
+    fakeDeployment()
     const client = new CloudflareContainerRuntimeClient({ agentId: 'agent-1' })
     expect(client.getWebSocketBaseUrl(3000)).toBe('ws://agent-container.internal/agent-1')
     expect(client.getHostApiBaseUrl()).toBe('http://host.internal')
