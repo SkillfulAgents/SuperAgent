@@ -107,6 +107,9 @@ const LIVE_CONNECTION_ROUTES = [
   // A sign-in the user makes from a login card: its session is then watched for minutes, on
   // timers that a request's isolate does not keep after the answer.
   /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/(fill-login|login-via)$/,
+  // A platform sign-in or sign-out: it tells the relay, the notifications and the triggers that
+  // the account changed, and only the copies in this object are running.
+  /^\/api\/platform-auth\/(complete|revoke)$/,
 ]
 
 export function needsLiveConnections(pathname: string): boolean {
