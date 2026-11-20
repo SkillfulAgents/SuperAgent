@@ -1,11 +1,7 @@
 [TEST_PASS]
-[REASON] Sent the "Open a browser and go to https://example.com. Tell me the page title." prompt to agent QA-20261120-182427-lbrv and confirmed the reply names "Example Domain".
-[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut app loaded with the sidebar listing QA-20261120-182427-lbrv and QA-20261120-182426-dhau.
-[STEP] Step 2: Clicked the QA-20261120-182427-lbrv agent in the sidebar — its agent page opened (idle, with the message input). Screenshot saved as step2-agent-opened.png.
-[STEP] Step 3: Typed the prompt into the message box and pressed Enter. The text stayed in the box unsent, so I clicked the Send button. The session "Check Example.com Page Title" started and the status changed to "working". Screenshot saved as step3-message-sent.png.
-[STEP] Step 4: Waited up to 180 seconds for "Example Domain" to appear. It appeared within that window. The agent reported "Worked for 5s · 3 tool calls" and the status returned to idle.
-[STEP] Step 5: The reply reads: "The page title of https://example.com is "Example Domain". I've closed the browser." Screenshot saved as step5-response-verified.png.
-
-Observations (not counted as bugs):
-- Pressing Enter in the home message box did not send the message. The placeholder reads "Press cmd+enter to send", so this may be by design, but the same box's ↵ Send hint behaves differently in the session view.
-- The tool-call summary in the chat showed a "ToolSearch" entry and a collapsed "3 tool calls" line. I did not expand it, so I could not confirm the individual browser_* tool cards or the live browser preview panel.
+[REASON] Sent the "Open a browser and go to https://example.com" prompt to agent QA-20261120-183749-wgkq and confirmed the reply names the page title "Example Domain".
+[STEP] Navigated to http://localhost:47891 — Gamut home loaded with the "Your Agents" sidebar listing QA-20261120-183749-wgkq and QA-20261120-183748-aq0k (screenshot: step1-navigate-home.png).
+[STEP] Clicked QA-20261120-183749-wgkq in the sidebar — agent page opened at /agents/qa-20261120-183749-wgkq-m0kuzzlfxi, status "idle", with an empty message box.
+[STEP] Typed the message into the message box and pressed Enter — Enter did not send. The text stayed in the box with an extra empty line, and I then clicked the Send button. The message posted and a new session "Check Example.com Page Title" started with status "working" (screenshot: step3-message-sent.png). The placeholder reads "Press cmd+enter to send", so Enter inserting a newline appears to be intended behaviour, not a bug.
+[STEP] Waited up to 180 seconds for "Example Domain" to appear — it appeared well within the limit. The turn showed "Worked for 5s · 3 tool calls · 163,070 tokens", and the agent went back to "idle".
+[STEP] Verified the response text: "The title of https://example.com is "Example Domain". I've closed the browser." — the expected string is present. Took a screenshot showing the response (screenshot: step5-response-verified.png).
