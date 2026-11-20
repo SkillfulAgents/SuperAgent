@@ -61,6 +61,18 @@ async function signedInBrowser() {
   return { token, cookie: cookiesOf(response) }
 }
 
+async function signUp(email: string): Promise<string> {
+  const response = await request('sign-up/email', { email, password: PASSWORD, name: email })
+  expect(response.status).toBe(200)
+  return cookiesOf(response)
+}
+
+async function sessionRole(cookie: string): Promise<string> {
+  const response = await request('get-session', undefined, { cookie })
+  expect(response.status).toBe(200)
+  return (await response.json() as { user: { role: string } }).user.role
+}
+
 async function sessionUserEmail(cookie: string): Promise<string | null> {
   const response = await request('get-session', undefined, { cookie })
   expect(response.status).toBe(200)
@@ -106,6 +118,37 @@ describe('session cookie cache', () => {
     await testDb.delete(authSession).where(eq(authSession.token, browser.token))
 
     expect(await sessionUserEmail(browser.cookie)).toBe('cookie-cache@example.com')
+  })
+
+  it('gives the first user the admin role in the session made at sign-up', async () => {
+    auth.sessionCookieCacheSeconds = 60
+    const first = await signUp('first-user@example.com')
+    const second = await signUp('second-user@example.com')
+
+    expect(await sessionRole(first)).toBe('admin')
+    expect(await sessionRole(second)).toBe('user')
+  })
+
+  it('keeps only the earlier insert as admin when two sign-ups both find no user', async () => {
+    auth.sessionCookieCacheSeconds = 60
+    const adapter = (await (await getAuth()).$context).adapter
+    const create = adapter.create.bind(adapter)
+    let later: Promise<string> | undefined
+    vi.spyOn(adapter, 'create').mockImplementation(async (input) => {
+      // The other sign-up finishes between this one's check for a user and its insert.
+      if (input.model === 'user' && !later) await (later = signUp('earlier-insert@example.com'))
+      return create(input)
+    })
+
+    const loser = await signUp('later-insert@example.com')
+    const winner = await later!
+
+    expect(await testDb.select({ email: user.email, role: user.role }).from(user).all()).toEqual([
+      { email: 'earlier-insert@example.com', role: 'admin' },
+      { email: 'later-insert@example.com', role: 'user' },
+    ])
+    expect(await sessionRole(winner)).toBe('admin')
+    expect(await sessionRole(loser)).toBe('user')
   })
 
   it.each([false, true])('refreshes the password-change flag with revokeOtherSessions=%s', async (revokeOtherSessions) => {
