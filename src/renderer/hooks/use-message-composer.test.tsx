@@ -148,6 +148,16 @@ function defaultOptions() {
 }
 
 import { useMessageComposer } from './use-message-composer'
+import { _setFactsForTest } from '@renderer/lib/facts'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+
+/** The desktop app outside the sandbox, which hands a folder over by its path. */
+function beDesktopApp() {
+  _setFactsForTest({
+    client: { shell: 'electron', os: 'darwin', distribution: 'direct' },
+    server: { os: 'darwin', distribution: 'direct', capabilities: runtimeCapabilities({ os: 'darwin', distribution: 'direct' }) },
+  })
+}
 
 describe('useMessageComposer', () => {
   beforeEach(() => {
@@ -795,6 +805,7 @@ describe('useMessageComposer', () => {
   it('shows mount dialog when folders are received on Electron', () => {
     // Simulate Electron environment
     ;(window as any).electronAPI = {}
+    beDesktopApp()
 
     const opts = defaultOptions()
     const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
@@ -815,6 +826,7 @@ describe('useMessageComposer', () => {
 
   it('mount dialog upload choice adds folders', () => {
     ;(window as any).electronAPI = {}
+    beDesktopApp()
 
     const opts = defaultOptions()
     const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
@@ -833,6 +845,7 @@ describe('useMessageComposer', () => {
 
   it('mount dialog mount choice adds mounts', () => {
     ;(window as any).electronAPI = {}
+    beDesktopApp()
 
     const opts = defaultOptions()
     const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
@@ -851,6 +864,7 @@ describe('useMessageComposer', () => {
 
   it('mount dialog mount choice falls back to upload for folders without a resolved path', () => {
     ;(window as any).electronAPI = {}
+    beDesktopApp()
 
     const opts = defaultOptions()
     const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
@@ -871,6 +885,7 @@ describe('useMessageComposer', () => {
 
   it('mount dialog cancel choice does nothing', () => {
     ;(window as any).electronAPI = {}
+    beDesktopApp()
 
     const opts = defaultOptions()
     const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })

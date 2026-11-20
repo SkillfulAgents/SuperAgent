@@ -42,6 +42,27 @@ export const serverDistributionSchema = z.enum([...desktopDistributionSchema.opt
 export type ServerDistribution = z.infer<typeof serverDistributionSchema>
 
 /**
+ * What the server's machine does for agents, as its runtime declares it
+ * (`capabilities.ts`). The routes, the tool handlers, the agent container's
+ * tool list and the renderer all read this one object.
+ */
+export const serverCapabilitiesSchema = z.object({
+  /** Drive the apps on the machine's desktop. */
+  canUseComputer: z.boolean(),
+  /** Run the scripts agents ask for (AppleScript, shell, PowerShell) on the machine. */
+  canRunHostScripts: z.boolean(),
+  /** Launch the person's installed Chrome and read Apple Passwords through it. */
+  canDriveUserChrome: z.boolean(),
+  /** Read a folder of the machine by its path alone, to copy it in or make a drive of it. */
+  canReadHostFoldersByPath: z.boolean(),
+  /** Tell an app is installed on the machine by looking for its files. */
+  canFindHostApps: z.boolean(),
+  /** Run git and gh on the machine, for private skillsets and publishing to them. */
+  canRunHostGit: z.boolean(),
+})
+export type ServerCapabilities = z.infer<typeof serverCapabilitiesSchema>
+
+/**
  * Sent to renderers: inlined into the web build's HTML, and fetched by the
  * desktop app from a cloud workspace (`GET /api/server-facts`). Both are public,
  * since the login page is the same HTML, so only facts safe for an anonymous
@@ -53,6 +74,8 @@ export type ServerDistribution = z.infer<typeof serverDistributionSchema>
 export const serverFactsSchema = z.object({
   os: osSchema,
   distribution: serverDistributionSchema,
+  /** Always sent by this version's server; absent from an older one's. */
+  capabilities: serverCapabilitiesSchema.optional(),
 })
 export type ServerFacts = z.infer<typeof serverFactsSchema>
 

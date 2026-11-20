@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 
 // Pins the disk-growth guardrails on Chrome's launch arg list: automation
 // profiles must never download the on-device Gemini Nano model (4 GB per
@@ -148,6 +150,14 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 import { ChromeProvider } from './chrome-provider'
+
+// The desktop app outside the sandbox: the only server that drives the person's Chrome.
+beforeEach(() => {
+  declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
+})
+afterEach(() => {
+  declareServerCapabilities(null)
+})
 
 const originalPlatform = process.platform
 

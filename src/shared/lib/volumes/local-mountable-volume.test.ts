@@ -2,6 +2,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { LocalMountableVolume, PICK_FOLDER_AGAIN, prepareLocalVolume } from './local-mountable-volume'
@@ -483,9 +485,11 @@ describe('LocalMountableVolume', () => {
 describe('prepareLocalVolume', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
+    declareServerCapabilities(null)
   })
 
-  it('names a picked folder after itself', async () => {
+  it('names a picked folder after itself, in the desktop app outside the sandbox', async () => {
+    declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
     const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'local-volume-'))
     try {
       const real = fs.realpathSync(folder)
@@ -493,6 +497,11 @@ describe('prepareLocalVolume', () => {
     } finally {
       fs.rmSync(folder, { recursive: true, force: true })
     }
+  })
+
+  it('refuses a folder given only by its path on a web deployment, whose machine is not the person’s', async () => {
+    // A test process is a deployment.
+    await expect(prepareLocalVolume({ path: os.tmpdir() })).rejects.toMatchObject({ name: 'VolumeError', status: 400 })
   })
 
   describe('in the Mac App Store edition, which reads a folder only through its pick’s bookmark', () => {

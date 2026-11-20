@@ -33,6 +33,8 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { HostToolResult } from '../host-port'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import { MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import * as toolRegistry from '@shared/lib/tools/registry'
@@ -1509,9 +1511,14 @@ describe('capability review lifecycle', () => {
 
 describe('Script run request detection', () => {
   beforeEach(() => {
+    // Host scripts are desktop-only: be a desktop app that runs them.
+    declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
     // Awaiting is derived and gated on an active turn — mark active as the
     // real message send would before any request event arrives.
     sessions().markActive(SESSION_ID)
+  })
+  afterEach(() => {
+    declareServerCapabilities(null)
   })
 
   // Use existing simulateToolUse helper (already defined above in awaiting input tests)

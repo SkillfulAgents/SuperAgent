@@ -4,6 +4,7 @@ import {
   serverFactsSchema,
   type ClientFacts,
   type Facts,
+  type ServerCapabilities,
   type ServerFacts,
 } from '@shared/lib/facts/facts-schema'
 import type { ApiTarget } from '@shared/lib/api-target'
@@ -67,6 +68,14 @@ export function clientFacts(): ClientFacts {
 /** The machine running the API this renderer drives, or null when it didn't say. */
 export function serverFacts(): ServerFacts | null {
   return read().server
+}
+
+/**
+ * What the machine running the API does for agents, as its runtime declared it,
+ * or null when the server didn't say: an older one, or one not heard from yet.
+ */
+export function serverCapabilities(): ServerCapabilities | null {
+  return read().server?.capabilities ?? null
 }
 
 /** Test seam: settles the facts directly, as boot would. */

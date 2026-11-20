@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -19,11 +21,14 @@ vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 beforeEach(async () => {
   folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-access-')))
   vi.stubEnv('SUPERAGENT_DATA_DIR', folder)
+  // The desktop app outside the sandbox, which makes a local drive of a folder by its path.
+  declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
   handle = await createTestDatabase()
   await handle.db.insert(user).values(['alice', 'bob', 'admin'].map(id => ({ id, name: id, email: `${id}@example.com` }))).run()
   await handle.db.insert(agents).values({ slug: 'agent', name: 'Agent', createdAt: new Date() }).run()
 })
 afterEach(async () => {
+  declareServerCapabilities(null)
   vi.restoreAllMocks()
   await removeGithubSync('github-volume')
   await handle.close()
@@ -179,6 +184,7 @@ describe('choosing a local drive’s folder again', () => {
     // The bookmarks that open their folder; any other refuses, as the sandbox does a dead one.
     let opening: Set<string>
     beforeEach(() => {
+      declareServerCapabilities(null)
       vi.stubEnv('E2E_MOCK', 'true')
       vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
       vi.spyOn(console, 'warn').mockImplementation(() => {})

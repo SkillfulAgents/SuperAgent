@@ -17,8 +17,7 @@ import { Readable } from 'stream'
 import yaml from 'js-yaml'
 import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
-import { runsHostGit } from '@shared/lib/facts/capabilities'
-import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { getServerCapabilities } from '@shared/lib/facts/server-facts'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   readFileOrNull,
@@ -781,7 +780,7 @@ export const HOST_GIT_UNAVAILABLE = 'This needs git, which the Mac App Store edi
 export async function isGitAvailable(): Promise<boolean> {
   // Not even probed in the sandbox, where macOS's git stub would offer to
   // install the developer tools.
-  if (!runsHostGit(getServerFacts())) return false
+  if (!getServerCapabilities().canRunHostGit) return false
   try {
     await execFileAsync('git', ['--version'], { timeout: 5000 })
     return true
@@ -791,7 +790,7 @@ export async function isGitAvailable(): Promise<boolean> {
 }
 
 export async function ensureGitInstalled(): Promise<void> {
-  if (!runsHostGit(getServerFacts())) {
+  if (!getServerCapabilities().canRunHostGit) {
     throw new Error(HOST_GIT_UNAVAILABLE)
   }
   if (!(await isGitAvailable())) {

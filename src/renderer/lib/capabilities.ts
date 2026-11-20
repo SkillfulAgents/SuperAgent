@@ -1,7 +1,7 @@
-import { readsHostFolders, runsHostGit, runsInAppSandbox, supportsComputerUse, updatesItself } from '@shared/lib/facts/capabilities'
+import { runsInAppSandbox, updatesItself } from '@shared/lib/facts/capabilities'
 import { targetIsRemote } from './api-target'
 import { isElectron } from './env'
-import { clientFacts, serverFacts } from './facts'
+import { clientFacts, serverCapabilities, serverFacts } from './facts'
 
 /**
  * What this window may offer, asked by name. Each answer is about one side:
@@ -51,12 +51,11 @@ export function canUseHostFeatures(): boolean {
 }
 
 /**
- * Whether the agents' machine can run computer use: the same rule the server
- * applies before it runs a computer-use tool. Unknown server facts read as no.
+ * Whether the agents' machine can run computer use: the same answer the server
+ * gates its computer-use tools on. A server that didn't say reads as no.
  */
 export function computerUseSupported(): boolean {
-  const server = serverFacts()
-  return server !== null && supportsComputerUse(server)
+  return serverCapabilities()?.canUseComputer === true
 }
 
 /**
@@ -104,8 +103,7 @@ export function offersLauncherComputerUse(): boolean {
  * picked one still becomes a drive (`localVolumeSetup`).
  */
 export function usesHostFolderPaths(): boolean {
-  const server = serverFacts()
-  return canUseHostFeatures() && server !== null && readsHostFolders(server)
+  return canUseHostFeatures() && serverCapabilities()?.canReadHostFoldersByPath === true
 }
 
 /**
@@ -113,8 +111,7 @@ export function usesHostFolderPaths(): boolean {
  * server runs git. A server that didn't say is an older deployment, which did.
  */
 export function offersPrivateSkillsets(): boolean {
-  const server = serverFacts()
-  return server === null || runsHostGit(server)
+  return serverCapabilities()?.canRunHostGit ?? true
 }
 
 /*

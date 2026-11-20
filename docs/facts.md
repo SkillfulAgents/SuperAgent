@@ -15,7 +15,7 @@ in two halves (`src/shared/lib/facts/facts-schema.ts`):
 | Half | Describes | Fields |
 | --- | --- | --- |
 | `ClientFacts` | the app the person is looking at, and its computer | `shell` (`electron` / `browser`), `os` (null in a browser), `distribution` (null in a browser) |
-| `ServerFacts` | the machine running the API and the agents | `os`, `distribution` (adds `deployment` for a web deployment) |
+| `ServerFacts` | the machine running the API and the agents | `os`, `distribution` (adds `deployment` for a web deployment), `capabilities` (what the server's runtime declares it does, below) |
 
 | Configuration | Client | Server |
 | --- | --- | --- |
@@ -54,11 +54,22 @@ the first fetch after connecting).
 
 ## Rules
 
-- **Combine facts only in a capability.** `src/shared/lib/facts/capabilities.ts`
-  holds pure functions of server facts, asked by the server of
-  `getServerFacts()` and by a renderer of `serverFacts()`, so both sides apply
-  one rule. `src/renderer/lib/capabilities.ts` holds the renderer's, including
-  `canUseHostFeatures()`. Each capability says which half it asks about.
+- **What the server's machine does for agents is one declared object.**
+  `ServerCapabilities` (`canUseComputer`, `canRunHostScripts`,
+  `canDriveUserChrome`, `canReadHostFoldersByPath`, `canFindHostApps`,
+  `canRunHostGit`) has a row per distribution in `runtimeCapabilities()`
+  (`src/shared/lib/facts/capabilities.ts`). A runtime its facts can't tell apart
+  declares its own at boot (`declareServerCapabilities()`). The server gates on
+  `getServerCapabilities()`, sends the same object in its facts, the container
+  gets it as `HOST_COMPUTER_USE` and `HOST_SCRIPTS`, and a renderer reads it with
+  `serverCapabilities()`, null when the server didn't say. What acts on the
+  person's desktop is desktop-only, so a deployment declares it `false`. A mock
+  run (`E2E_MOCK`) stands in for the desktop app and drives no machine, so it
+  offers every desktop feature, computer use and scripts on any OS, unless it
+  fakes a distribution.
+- **Combine client facts only in a capability.** `src/renderer/lib/capabilities.ts`
+  holds the renderer's, including `canUseHostFeatures()`. Each says which half
+  it asks about.
 - **Reading one fact to choose *how* is fine,** for example which setup steps to
   show for the server's OS. Deciding *whether* a feature exists is a capability.
 - **Read a fact only where it is decided.** `process.mas` and
@@ -84,12 +95,12 @@ it, the renderer hides it, and the agents are never told about it.
 
 | Feature | Capability | Where it is withheld |
 | --- | --- | --- |
-| Computer use | `supportsComputerUse()` | the container's tools and prompt (`HOST_COMPUTER_USE`), the tool call, the Computer Use tab (`offersComputerUseSettings()`), the dispatch launcher's computer-use toggle (`offersLauncherComputerUse()`) and the session create that asks for it |
-| Host scripts | `runsHostScripts()`; the container's script tool follows `HOST_COMPUTER_USE` | the tool call |
-| The person's Chrome: CDP launch, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the Apple Passwords runtime |
-| A folder by its path alone: copying a dropped folder in, or a drive of one | `readsHostFolders()`, `usesHostFolderPaths()` | the upload-folder routes, the mount offer on a drop (the folder uploads its files instead), and `prepareLocalVolume()` for a folder without its pick's bookmark |
-| Private skillsets, publishing to GitHub | `runsHostGit()`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
-| Telling a stopped Ollama from a missing one (it looks for the app and the binary) | `findsHostApps()` | `getOllamaStatus()`, which says "not found" instead of "stopped" |
+| Computer use | `canUseComputer` | the container's tools and prompt (`HOST_COMPUTER_USE`), the tool call, the Computer Use tab (`offersComputerUseSettings()`), the dispatch launcher's computer-use toggle (`offersLauncherComputerUse()`) and the session create that asks for it |
+| Host scripts | `canRunHostScripts` | the container's script tool (`HOST_SCRIPTS`), the tool call |
+| The person's Chrome: CDP launch, Apple Passwords | `canDriveUserChrome` | `ChromeProvider.detect()` (the Browser tab shows why), the Apple Passwords runtime |
+| A folder by its path alone: copying a dropped folder in, or a drive of one | `canReadHostFoldersByPath`, `usesHostFolderPaths()` | the upload-folder routes, the mount offer on a drop (the folder uploads its files instead), and `prepareLocalVolume()` for a folder without its pick's bookmark |
+| Private skillsets, publishing to GitHub | `canRunHostGit`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
+| Telling a stopped Ollama from a missing one (it looks for the app and the binary) | `canFindHostApps` | `getOllamaStatus()`, which says "not found" instead of "stopped" |
 | Keep Awake, Add to Dock, recent files, music control | `keepsMacAwake()`, `addsToDock()`, `listsRecentFiles()`, `userMusicSupported()` | the settings and menus that offer them, and main's handlers |
 
 Local drives stay. The Store build's folder picker returns a security-scoped

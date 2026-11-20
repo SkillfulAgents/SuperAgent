@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SERVER_FACTS_REVISION_PLACEHOLDER, serverFactsSchema, type ServerFacts } from './facts-schema'
-import { currentOs, desktopDistribution, getServerFacts, withServerFacts, withServerFactsRevision } from './server-facts'
+import { SERVER_FACTS_REVISION_PLACEHOLDER, serverFactsSchema, type ServerCapabilities, type ServerFacts } from './facts-schema'
+import { runtimeCapabilities } from './capabilities'
+import {
+  currentOs,
+  desktopDistribution,
+  declareServerCapabilities,
+  getServerCapabilities,
+  getServerFacts,
+  withServerFacts,
+  withServerFactsRevision,
+} from './server-facts'
 
 /** Pretend to be a given process, the way Electron sets these. */
 function stubProcess(props: { platform?: string; type?: string; mas?: boolean; windowsStore?: boolean }) {
@@ -52,14 +61,37 @@ describe('desktopDistribution', () => {
 })
 
 describe('getServerFacts', () => {
-  it('is a web deployment outside Electron', () => {
+  it('is a web deployment outside Electron, with what a deployment declares', () => {
     stubProcess({ type: undefined, platform: 'linux' })
-    expect(getServerFacts()).toEqual({ os: 'linux', distribution: 'deployment' })
+    expect(getServerFacts()).toEqual({
+      os: 'linux',
+      distribution: 'deployment',
+      capabilities: runtimeCapabilities({ os: 'linux', distribution: 'deployment' }),
+    })
   })
 
   it('is the desktop install when Electron main hosts the API', () => {
     stubProcess({ type: 'browser', platform: 'darwin', mas: true })
-    expect(getServerFacts()).toEqual({ os: 'darwin', distribution: 'mac-app-store' })
+    expect(getServerFacts()).toMatchObject({ os: 'darwin', distribution: 'mac-app-store' })
+    expect(getServerFacts().capabilities).toEqual(runtimeCapabilities({ os: 'darwin', distribution: 'mac-app-store' }))
+  })
+
+  describe('a runtime that declares its own capabilities', () => {
+    const NOTHING_KEPT: ServerCapabilities = {
+      ...runtimeCapabilities({ os: 'linux', distribution: 'deployment' }),
+      canRunHostGit: false,
+      canFindHostApps: false,
+    }
+    afterEach(() => declareServerCapabilities(null))
+
+    it('is the one answer the server gates on and sends to renderers', () => {
+      stubProcess({ type: undefined, platform: 'linux' })
+      expect(getServerCapabilities().canRunHostGit).toBe(true)
+
+      declareServerCapabilities(NOTHING_KEPT)
+      expect(getServerCapabilities()).toEqual(NOTHING_KEPT)
+      expect(serverFactsSchema.parse(getServerFacts()).capabilities).toEqual(NOTHING_KEPT)
+    })
   })
 
   describe('a faked distribution', () => {
@@ -71,7 +103,20 @@ describe('getServerFacts', () => {
       stubProcess({ type: undefined, platform: 'darwin' })
       vi.stubEnv('E2E_MOCK', 'true')
       vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
-      expect(getServerFacts()).toEqual({ os: 'darwin', distribution: 'mac-app-store' })
+      expect(getServerFacts()).toMatchObject({ os: 'darwin', distribution: 'mac-app-store' })
+      expect(getServerCapabilities().canRunHostGit).toBe(false)
+    })
+
+    it('lets a mock run offer what the desktop app does, and computer use and scripts on any OS, since its agents drive no machine', () => {
+      stubProcess({ type: undefined, platform: 'linux' })
+      expect(getServerCapabilities()).toMatchObject({ canReadHostFoldersByPath: false, canDriveUserChrome: false })
+      vi.stubEnv('E2E_MOCK', 'true')
+      expect(getServerCapabilities()).toEqual({
+        canUseComputer: true, canRunHostScripts: true, canDriveUserChrome: true,
+        canReadHostFoldersByPath: true, canFindHostApps: true, canRunHostGit: true,
+      })
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+      expect(getServerCapabilities()).toMatchObject({ canUseComputer: false, canRunHostScripts: false })
     })
 
     it('is ignored outside a mock run, and when it names no distribution', () => {

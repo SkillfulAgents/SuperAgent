@@ -6,6 +6,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import { Hono } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agentAcl, agents, proxyTokens, user } from '@shared/lib/db/schema'
@@ -57,6 +59,8 @@ describe('/api/volumes: whose volume an id is', () => {
   }
 
   beforeEach(async () => {
+    // The desktop app outside the sandbox, which makes a local drive of a folder by its path.
+    declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
     authMode = true
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volumes-access-')))
     process.env.SUPERAGENT_DATA_DIR = tmpDir
@@ -76,6 +80,7 @@ describe('/api/volumes: whose volume an id is', () => {
   })
 
   afterEach(async () => {
+    declareServerCapabilities(null)
     vi.restoreAllMocks()
     await handle.close()
     fs.rmSync(tmpDir, { recursive: true, force: true })

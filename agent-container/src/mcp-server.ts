@@ -24,7 +24,7 @@ import {
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
 import { webhookRelayAvailable } from './webhook-relay-env'
-import { isComputerUseHost } from './host-desktop-env'
+import { isHostScriptsHost } from './host-desktop-env'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -81,8 +81,7 @@ export function createUserInputMcpServer(
   // calling session owns it — read at call time, since the id changes on restart.
   getSessionId: () => string | null = () => null,
 ) {
-  // Scripts run on the host's desktop, so they come with computer use.
-  const includeScriptRun = isComputerUseHost()
+  const includeScriptRun = isHostScriptsHost()
 
   // Every webhook tool needs the host's webhook relay. Composio-catalog
   // triggers also need platform Composio; custom webhook endpoints don't (they

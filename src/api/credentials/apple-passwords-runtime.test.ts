@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import type { ChildProcess } from 'child_process'
 import {
   ApplePasswordsRuntime,
@@ -20,12 +22,14 @@ function runtimeDependencies(): ApplePasswordsRuntimeDependencies {
 }
 
 describe('ApplePasswordsRuntime hardening', () => {
-  it('keeps status checks side-effect-free when prerequisites are available', async () => {
+  it('keeps status checks side-effect-free when prerequisites are available, in the desktop app', async () => {
+    declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
     const dependencies = runtimeDependencies()
     const runtime = new ApplePasswordsRuntime(dependencies)
 
     await expect(runtime.state()).resolves.toEqual({ state: null, nativeReady: false })
     expect(dependencies.spawnChrome).not.toHaveBeenCalled()
+    declareServerCapabilities(null)
   })
 
   it('is unavailable in the Mac App Store edition, which can’t drive Chrome, and launches nothing', async () => {

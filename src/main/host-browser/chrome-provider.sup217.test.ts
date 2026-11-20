@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 
 // ---------------------------------------------------------------------------
 // SUP-217 — Electron host-browser exposes Chrome DevTools Protocol on all
@@ -215,6 +217,14 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 import { ChromeProvider } from './chrome-provider'
+
+// The desktop app outside the sandbox: the only server that drives the person's Chrome.
+beforeEach(() => {
+  declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
+})
+afterEach(() => {
+  declareServerCapabilities(null)
+})
 
 const originalPlatform = process.platform
 function setPlatform(p: NodeJS.Platform) {

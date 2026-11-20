@@ -983,6 +983,14 @@ import { writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-st
 import { readJsonl, streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
 import { listAgentIntegrations } from '@shared/lib/services/agent-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
+import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
+import { osOf } from '@shared/lib/facts/facts-schema'
+import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
+
+/** Be the desktop app outside the sandbox, on this OS: copying a folder in by its path and computer use are desktop-only. */
+function asDesktopApp(): void {
+  declareServerCapabilities(runtimeCapabilities({ os: osOf(process.platform), distribution: 'direct' }))
+}
 
 // ============================================================================
 // Test Helpers
@@ -4632,6 +4640,7 @@ describe('folder upload — POST /:id/upload-folder', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    asDesktopApp()
     app = createApp()
     mockFsMkdir.mockResolvedValue(undefined)
     // The host folder is walked with readdir: empty unless a test says otherwise.
@@ -4642,6 +4651,7 @@ describe('folder upload — POST /:id/upload-folder', () => {
   })
 
   afterEach(async () => {
+    declareServerCapabilities(null)
     mockFsLstat.mockReset()
     mockFsReaddir.mockReset()
     mockCreateReadStream.mockReset()
@@ -10760,8 +10770,14 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
 
   describe('started with computer use (the dispatch launcher’s toggle)', () => {
     const platform = process.platform
-    const onPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value, configurable: true })
-    afterEach(() => onPlatform(platform))
+    const onPlatform = (value: NodeJS.Platform) => {
+      Object.defineProperty(process, 'platform', { value, configurable: true })
+      asDesktopApp()
+    }
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+      declareServerCapabilities(null)
+    })
 
     it('preloads the computer-use tools and lets the session use any app', async () => {
       onPlatform('darwin')

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { computerUseGuides, isAppSandboxHost, isComputerUseHost } from './host-desktop-env'
+import { computerUseGuides, isAppSandboxHost, isComputerUseHost, isHostScriptsHost } from './host-desktop-env'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -22,6 +22,25 @@ describe('isComputerUseHost', () => {
     vi.stubEnv('HOST_PLATFORM', platform)
     vi.stubEnv('HOST_COMPUTER_USE', undefined)
     expect(isComputerUseHost()).toBe(expected)
+  })
+})
+
+describe('isHostScriptsHost', () => {
+  it('takes the host’s own answer for scripts, apart from computer use', () => {
+    vi.stubEnv('HOST_COMPUTER_USE', 'true')
+    vi.stubEnv('HOST_SCRIPTS', 'false')
+    expect(isHostScriptsHost()).toBe(false)
+    vi.stubEnv('HOST_COMPUTER_USE', 'false')
+    vi.stubEnv('HOST_SCRIPTS', 'true')
+    expect(isHostScriptsHost()).toBe(true)
+  })
+
+  it('follows computer use for a host too old to answer', () => {
+    vi.stubEnv('HOST_SCRIPTS', undefined)
+    vi.stubEnv('HOST_COMPUTER_USE', 'true')
+    expect(isHostScriptsHost()).toBe(true)
+    vi.stubEnv('HOST_COMPUTER_USE', 'false')
+    expect(isHostScriptsHost()).toBe(false)
   })
 })
 

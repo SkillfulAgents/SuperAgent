@@ -3,8 +3,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
 import { appState, defineNamespace, digestKeyPart } from '../app-state'
-import { findsHostApps } from '../facts/capabilities'
-import { getServerFacts } from '../facts/server-facts'
+import { getServerCapabilities } from '../facts/server-facts'
 import { isLoopbackUrl } from './container-url'
 import { MIN_AGENT_CONTEXT_TOKENS, MIN_OLLAMA_VERSION } from './ollama-schema'
 import type { InstalledModel, ServerStatus } from './server-status-schema'
@@ -133,7 +132,7 @@ function ollamaInstallCandidates(): string[] {
 }
 
 function ollamaInstallFound(): boolean {
-  if (!findsHostApps(getServerFacts())) return false
+  if (!getServerCapabilities().canFindHostApps) return false
   return ollamaInstallCandidates().some((candidate) => {
     try {
       accessSync(candidate)

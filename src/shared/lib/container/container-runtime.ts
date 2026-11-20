@@ -45,8 +45,8 @@ import { getAgentOfferedProviders } from '@shared/lib/account-providers/service-
 import { platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
-import { runsInAppSandbox, supportsComputerUse } from '@shared/lib/facts/capabilities'
-import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { runsInAppSandbox } from '@shared/lib/facts/capabilities'
+import { getServerCapabilities, getServerFacts } from '@shared/lib/facts/server-facts'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
 import { prepareVolumeStop } from './volume-stop'
@@ -773,13 +773,14 @@ export class ContainerRuntime {
 
     // Tell the agent container which host OS is running (for script type selection)
     envVars['HOST_PLATFORM'] = process.platform
-    // Whether agents get the computer-use and script tools, as the host answers
-    // it, so the container never advertises what the host would refuse. Always
-    // set, so a container can tell "no" from a host too old to say.
-    const serverFacts = getServerFacts()
-    envVars['HOST_COMPUTER_USE'] = String(supportsComputerUse(serverFacts))
+    // Whether agents get the computer-use and script tools: the same answer the
+    // host gates them on, so the container never advertises what the host would
+    // refuse. Always set, so a container can tell "no" from a host too old to say.
+    const capabilities = getServerCapabilities()
+    envVars['HOST_COMPUTER_USE'] = String(capabilities.canUseComputer)
+    envVars['HOST_SCRIPTS'] = String(capabilities.canRunHostScripts)
     // The Mac App Store edition: the prompt tells agents what it leaves out.
-    envVars['HOST_APP_SANDBOX'] = String(runsInAppSandbox(serverFacts))
+    envVars['HOST_APP_SANDBOX'] = String(runsInAppSandbox(getServerFacts()))
 
     // Enable Composio webhook trigger tools when platform Composio is active
     const platformComposio = isPlatformComposioActiveFrom(settings)
