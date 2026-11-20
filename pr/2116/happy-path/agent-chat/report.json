@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Sent \"Hello! What is 2+2?\" to agent QA-20261120-010521-5cxz in the browser and confirmed the reply contains \"4\".",
+  "reason": "Opened agent QA-20261120-013344-deey, confirmed it was idle, sent \"Hello! What is 2+2?\", and verified the reply contains 4.",
   "steps": [
-    "1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing both QA agents.",
-    "2. Clicked \"QA-20261120-010521-5cxz\" in the sidebar — the agent page at /agents/qa-20261120-010521-5cxz-a2w9gzxzi1 opened.",
-    "3. Checked agent status — the status indicator reads \"idle\", which is an accepted state. Screenshot saved as step3-agent-idle.png.",
-    "4. Typed \"Hello! What is 2+2?\" into the landing-page message input and clicked Send — the view navigated to session \"Basic Arithmetic Question Check\" with my message shown.",
-    "5. Waited for a response — the reply \"2 + 2 = 4.\" appeared within about 5 seconds, well inside the 3-minute limit.",
-    "6. Verified the reply mentions \"4\" — confirmed. Screenshot saved as step6-response-verified.png."
+    "Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing both agents.",
+    "Step 2: Clicked \"QA-20261120-013344-deey\" in the sidebar — the agent page opened at /agents/qa-20261120-013344-deey-gtt0asvkfs.",
+    "Step 3: Checked agent status — the status indicator shows \"idle\", which satisfies the \"running\" or \"idle\" requirement.",
+    "Step 4: Typed \"Hello! What is 2+2?\" into the message box and clicked Send — the browser navigated to a new session, \"Basic Arithmetic Greeting Question\", and the message appeared in the chat.",
+    "Step 5: Waited for the response — the reply \"2 + 2 = 4.\" appeared in the message list, and the \"Working...\" indicator cleared. The agent returned to \"idle\" and the sidebar shows \"Last active less than a minute ago\".",
+    "Step 6: Verified the response mentions \"4\" — \"2 + 2 = 4.\" is shown. Took a screenshot of the chat with the user message and the reply visible."
   ],
   "bugs": [],
-  "durationMs": 47724,
-  "sessionId": "c57b6173-660f-4c57-a3a3-29bdc03f1b72",
+  "durationMs": 57658,
+  "sessionId": "caaec667-8cff-422f-a357-81048e0d8ebf",
   "cost": {
-    "inputTokens": 7851,
-    "outputTokens": 4704,
-    "cacheCreationTokens": 65697,
-    "cacheReadTokens": 687105,
+    "inputTokens": 7670,
+    "outputTokens": 4367,
+    "cacheCreationTokens": 139947,
+    "cacheReadTokens": 553663,
     "model": "claude-haiku-5-5",
-    "totalCostUsd": 0.182203
+    "totalCostUsd": 0.259805
   }
 }
