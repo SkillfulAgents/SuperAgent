@@ -8,7 +8,7 @@ import { type AgentRole, ROLE_HIERARCHY } from '@shared/lib/types/agent'
 
 const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
-/** The parts of an upgrade request the checks read: a Node `IncomingMessage`, or the same built from a Worker's request. */
+/** The parts of an upgrade request the checks read: a Node `IncomingMessage`, or the same built by a runtime without one. */
 export interface UpgradeRequest {
   headers: IncomingMessage['headers']
   socket?: { remoteAddress?: string; encrypted?: boolean }
