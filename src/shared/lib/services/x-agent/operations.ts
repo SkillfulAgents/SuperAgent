@@ -139,6 +139,9 @@ export interface GetTranscriptInput {
   /**
    * How long a sync read may wait for a running turn, in ms. Clamped to
    * (0, the configured maximum]; absent = the maximum. Not on the agent route.
+   * A value that is not a positive finite number also means the maximum: it is
+   * never "don't wait". The budget runs from entry, so the reads before the
+   * wait spend it too.
    */
   syncWaitMs?: number
 }

@@ -42,19 +42,39 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentRecord: async (slug: string) => ({ slug, name: slug }),
 }))
 
+// A new session's start: settings, secrets and the model resolve, all neutral.
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => ({ app: {} }) }))
+vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
+vi.mock('@shared/lib/llm-provider/connection-runtime', () => ({ bindAgentModelChoice: async () => ({}) }))
+vi.mock('@shared/lib/services/session-defaults', () => ({
+  resolveSessionDefaults: async () => ({
+    agentPrefs: {},
+    agentLimits: {},
+    customEnvVars: undefined,
+    maxBrowserTabs: undefined,
+    models: {},
+    resolve: async () => ({ model: 'sonnet' }),
+  }),
+}))
+vi.mock('@shared/lib/notifications/global-feed', () => ({ globalFeed: { publish: vi.fn() } }))
+
 const TARGET = 'target-agent'
 const OTHER = 'other-agent'
 const CALLER_AGENT = 'caller-agent'
 const USER_ID = 'user-1'
 const SESSION_ID = 'session-1'
+const NEW_SESSION_ID = 'session-new'
 
 // The target agent, as the operations reach it.
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]): Promise<'idle' | 'timeout'> => 'idle')
 const mockDeliver = vi.fn(async (..._args: unknown[]) => {})
 const mockIsActive = vi.fn(() => false)
+const mockStart = vi.fn(async (..._args: unknown[]) => ({ id: NEW_SESSION_ID }))
 const fakeActor = {
   container: { start: vi.fn(async () => {}) },
-  files: {},
+  files: {
+    readSized: vi.fn(async () => ({ size: 4, stream: new Blob(['data']).stream() })),
+  },
   live: async () => ({ activeSessionIds: [] as string[] }),
   inputs: { reviews: { requestXAgent: (...args: unknown[]) => mockRequestXAgent(...args) } },
   sessions: {
@@ -64,11 +84,13 @@ const fakeActor = {
     list: vi.fn(async () => [{ id: SESSION_ID, name: 'A session', createdAt: new Date(0), lastActivityAt: new Date(0) }]),
     live: vi.fn(async () => ({ isActive: mockIsActive(), isAwaitingInput: false })),
     waitForIdle: (...args: unknown[]) => mockWaitForIdle(...args),
+    start: (...args: unknown[]) => mockStart(...args),
   },
   messages: {
     findLastEntry: vi.fn(async () => undefined),
     deliver: (...args: unknown[]) => mockDeliver(...args),
     transcriptView: vi.fn(async () => ({ messages: [], total: 0, deliveredFiles: [] })),
+    findDeliveredFile: vi.fn(async () => ({ id: 'd1', filename: 'out.txt', sizeBytes: 4, filePath: '/workspace/out.txt' })),
   },
 }
 
@@ -86,6 +108,11 @@ import { effectiveSyncWaitMs } from './sync-wait'
 
 async function seedRole(userId: string, agentSlug: string, role: AgentRole) {
   await testDb.insert(schema.agentAcl).values({ id: randomUUID(), userId, agentSlug, role, createdAt: new Date() })
+}
+
+/** What the operation handed the target's sessions.start. */
+function lastStart(): { name: string; metadata: Record<string, unknown> } {
+  return mockStart.mock.calls.at(-1)?.[0] as { name: string; metadata: Record<string, unknown> }
 }
 
 /** The timeoutMs the operation handed the target's waitForIdle. */
@@ -108,6 +135,7 @@ beforeEach(async () => {
   mockWaitForIdle.mockResolvedValue('idle')
   mockIsActive.mockReturnValue(false)
   mockEvaluatePolicy.mockResolvedValue('allow')
+  mockStart.mockResolvedValue({ id: NEW_SESSION_ID })
 })
 
 afterEach(async () => {
@@ -156,6 +184,23 @@ describe('the sync wait a caller asks for', () => {
     expect(lastWaitTimeoutMs()).toBeGreaterThan(100_000)
     expect(lastWaitTimeoutMs()).toBeLessThanOrEqual(120_000)
     expect(result.ok && 'error' in result.value && result.value.error).toContain('Sync wait timed out after 120s')
+  })
+
+  it('a new session states the caller-supplied wait in its promoted note', async () => {
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
+    const result = await invokeAgent(caller(), { slug: TARGET, prompt: 'hi', sync: true, syncWaitMs: 3_000 })
+    expect(lastWaitTimeoutMs()).toBeLessThanOrEqual(3_000)
+    expect(result).toEqual({ ok: true, value: {
+      sessionId: NEW_SESSION_ID,
+      status: 'running',
+      error: expect.stringContaining('Sync wait timed out after 3s,'),
+    } })
+  })
+
+  it('a sub-second wait is stated in ms, never as 0s', async () => {
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
+    const result = await invokeAgent(caller(), { slug: TARGET, prompt: 'hi', sessionId: SESSION_ID, sync: true, syncWaitMs: 400 })
+    expect(result.ok && 'error' in result.value && result.value.error).toContain('Sync wait timed out after 400ms,')
   })
 
   it('bounds a sync transcript read the same way', async () => {
@@ -228,6 +273,27 @@ describe('a user caller is authorized by its own role on the target', () => {
     expect((await invoke(local)).ok).toBe(true)
   })
 
+  it('a user caller can download a delivered file it can read', async () => {
+    await seedRole(USER_ID, TARGET, 'viewer')
+    const result = await openDeliveredFile(user(), { slug: TARGET, sessionId: SESSION_ID, deliveryId: 'd1' })
+    if (!result.ok) throw new Error(result.error)
+    expect(result.value.filename).toBe('out.txt')
+    expect(result.value.sizeBytes).toBe(4)
+    expect(await new Response(result.value.body).text()).toBe('data')
+  })
+
+  it('refuses attachments from a user caller', async () => {
+    await seedRole(USER_ID, TARGET, 'user')
+    expect(await invokeAgent(user(), { slug: TARGET, prompt: 'hi', attachments: ['/workspace/a.txt'] }))
+      .toEqual({ ok: false, status: 400, error: 'Attachments can only be sent by an agent.' })
+    expect(mockStart).not.toHaveBeenCalled()
+  })
+
+  it('a user caller must name its target', async () => {
+    await seedRole(USER_ID, TARGET, 'owner')
+    expect(await invokeAgent(user(), { prompt: 'hi' })).toEqual({ ok: false, status: 404, error: 'Target agent not found' })
+  })
+
   it('no agent policy is consulted and no review is raised', async () => {
     await seedRole(USER_ID, TARGET, 'owner')
     mockEvaluatePolicy.mockResolvedValue('block')
@@ -245,5 +311,45 @@ describe('a user caller is authorized by its own role on the target', () => {
     mockEvaluatePolicy.mockResolvedValue('block')
     expect(await read(agentXAgentCaller(CALLER_AGENT))).toEqual({ ok: false, status: 403, error: 'Blocked by policy' })
     expect(mockEvaluatePolicy).toHaveBeenCalled()
+  })
+})
+
+describe('a user caller starting a new session', () => {
+  beforeEach(async () => {
+    authModeEnabled = true
+    await seedRole(USER_ID, TARGET, 'user')
+  })
+
+  it('names and registers it with the neutral defaults, created by and attributed to the user', async () => {
+    const result = await invokeAgent(userXAgentCaller({ userId: USER_ID }), { slug: TARGET, prompt: 'hi' })
+    expect(result).toEqual({ ok: true, value: { sessionId: NEW_SESSION_ID, status: 'running' } })
+    expect(lastStart().name).toBe('New session')
+    expect(lastStart().metadata).toEqual({ createdByUserId: USER_ID })
+    const authors = await testDb.select().from(schema.messageAuthor).all()
+    expect(authors).toHaveLength(1)
+    expect(authors[0]).toMatchObject({ sessionId: NEW_SESSION_ID, agentSlug: TARGET, userId: USER_ID, billedUserId: null, authorAgentSlug: null })
+  })
+
+  it('takes the name and metadata the caller supplies', async () => {
+    const caller = userXAgentCaller({ userId: USER_ID, sessionName: 'From MCP', sessionMetadata: { starred: true } })
+    await invokeAgent(caller, { slug: TARGET, prompt: 'hi' })
+    expect(lastStart().name).toBe('From MCP')
+    expect(lastStart().metadata).toEqual({ starred: true, createdByUserId: USER_ID })
+  })
+
+  it('drops the service-owned keys from supplied metadata', async () => {
+    const caller = userXAgentCaller({
+      userId: USER_ID,
+      sessionMetadata: { invokedByAgentSlug: CALLER_AGENT, createdByUserId: 'someone-else', starred: true },
+    })
+    await invokeAgent(caller, { slug: TARGET, prompt: 'hi' })
+    expect(lastStart().metadata).toEqual({ starred: true, createdByUserId: USER_ID })
+  })
+
+  it('drops them even when the service has no creator to record', async () => {
+    authModeEnabled = false
+    const caller = userXAgentCaller({ userId: 'local', sessionMetadata: { invokedByAgentSlug: CALLER_AGENT, createdByUserId: 'someone-else' } })
+    await invokeAgent(caller, { slug: TARGET, prompt: 'hi' })
+    expect(lastStart().metadata).toEqual({})
   })
 })

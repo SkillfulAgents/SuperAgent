@@ -145,9 +145,14 @@ export async function waitForTurnWithinBudget(
   return outcome === 'idle' ? 'completed' : 'timeout'
 }
 
+/** The wait as the note states it: whole seconds, or ms below a second (never "0s"). */
+function formatWait(timeoutMs: number): string {
+  return timeoutMs < 1000 ? `${Math.max(1, Math.round(timeoutMs))}ms` : `${Math.round(timeoutMs / 1000)}s`
+}
+
 export function syncWaitPromotedNote(timeoutMs: number): string {
   return (
-    `Sync wait timed out after ${Math.round(timeoutMs / 1000)}s, but the target agent is still ` +
+    `Sync wait timed out after ${formatWait(timeoutMs)}, but the target agent is still ` +
     'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
     'Poll get_agent_session_transcript with this session_id to retrieve the result.'
   )

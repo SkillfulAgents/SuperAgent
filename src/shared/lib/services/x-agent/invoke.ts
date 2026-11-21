@@ -160,6 +160,18 @@ function messageAuthorFields(
     : { userId: attributedUserId }
 }
 
+/**
+ * A user caller's session metadata without the keys the service owns:
+ * `invokedByAgentSlug` is an agent caller's provenance (and drives the one-hop
+ * rule), and `createdByUserId` is the attributed user the service checked.
+ */
+function withoutServiceOwnedMetadata(metadata: Partial<SessionMetadata>): Partial<SessionMetadata> {
+  const rest = { ...metadata }
+  delete rest.invokedByAgentSlug
+  delete rest.createdByUserId
+  return rest
+}
+
 export interface InvokeInput {
   /** The target. An agent caller may leave it out to mean its own agent. */
   slug?: string
@@ -176,6 +188,10 @@ export interface InvokeInput {
   /**
    * How long a sync invoke may wait for the turn, in ms. Clamped to
    * (0, the configured maximum]; absent = the maximum. Not on the agent route.
+   * A value that is not a positive finite number also means the maximum: it is
+   * never "don't wait". The budget runs from entry, so container start and
+   * session creation spend it too, and a short wait can be gone before the
+   * turn is waited on (the call then answers 'running').
    */
   syncWaitMs?: number
 }
@@ -405,6 +421,8 @@ export async function invokeAgent(caller: XAgentCaller, input: InvokeInput): Pro
             sessionId: existingSessionId,
             content: deliveredPrompt,
             uuid: messageUuid,
+            // Automated for a user caller too, on purpose (SUP-1569): an
+            // MCP-started session is hidden and promoted like an agent-invoked one.
             options: { isAutomated: true },
           })
         } catch (sendError) {
@@ -505,7 +523,7 @@ export async function invokeAgent(caller: XAgentCaller, input: InvokeInput): Pro
       // The provenance a session carries: the invoking agent, or what the user caller supplies.
       const callerMetadata: Partial<SessionMetadata> = caller.kind === 'agent'
         ? { invokedByAgentSlug: caller.agentSlug }
-        : caller.sessionMetadata
+        : withoutServiceOwnedMetadata(caller.sessionMetadata)
       promptDeliveryStarted = true
       let containerSession: ContainerSession
       try {
@@ -526,6 +544,8 @@ export async function invokeAgent(caller: XAgentCaller, input: InvokeInput): Pro
           maxBudgetUsd: agentLimits.maxBudgetUsd,
           customEnvVars,
           maxBrowserTabs,
+          // Automated for a user caller too, on purpose (SUP-1569): an
+          // MCP-started session is hidden and promoted like an agent-invoked one.
           metadata: { isAutomated: true },
         },
           name: sessionName,

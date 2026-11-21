@@ -42,6 +42,15 @@ export interface AgentXAgentCaller {
   sessionId?: string
 }
 
+/**
+ * A person acting directly. What whoever builds one owes the service:
+ * - the user is already authenticated and active: the service checks their
+ *   role on the target, not their account's status;
+ * - in non-auth mode the service sets no user scope, so the calling route
+ *   runs inside `runWithRequestUser('local')`, as `Authenticated()` does;
+ * - `sessionMetadata` carries provenance only: `createdByUserId` and
+ *   `invokedByAgentSlug` belong to the service and are dropped if supplied.
+ */
 export interface UserXAgentCaller {
   kind: 'user'
   /** The user's id; `local` in non-auth mode. */
