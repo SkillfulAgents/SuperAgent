@@ -38,7 +38,7 @@ import type { FileOps } from '@shared/lib/agent-actor/types'
 import { EFFORT_LEVELS, SPEED_LEVELS, type ContainerSession, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
 import { clampEffortForDisplay, clampSpeedForDisplay } from '@shared/lib/container/runtime-options'
 import { bindAgentModelChoice } from '@shared/lib/llm-provider/connection-runtime'
-import { connectionCatalogFrom } from '@shared/lib/llm-provider/connections'
+import { connectionCatalogFrom, providerForConnection, resolveGlobalSelection, selectableConnectionRows } from '@shared/lib/llm-provider/connections'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
 import { listAgentMembers } from '@shared/lib/services/agent-members-service'
@@ -49,6 +49,7 @@ import {
 } from '@shared/lib/services/x-agent-policy-service'
 import { getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { resolveSessionDefaults, type SessionRuntimePick } from '@shared/lib/services/session-defaults'
 import { captureException } from '@shared/lib/error-reporting'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
@@ -315,6 +316,69 @@ xAgent.post('/members', async (c) => {
     truncated: members.length > MAX_LISTED_MEMBERS,
     members: members.slice(0, MAX_LISTED_MEMBERS).map(({ id, name, email, role, invited }) => ({ id, name, email, role, invited })),
   })
+})
+
+/**
+ * Who a call from a caller session runs as: the triggering message's author.
+ * Session creator and caller owner remain compatibility fallbacks for old
+ * sessions without author rows.
+ */
+async function attributedUser(
+  callerSlug: string,
+  triggeringUserId: string | undefined,
+  createdByUserId: string | null | undefined,
+): Promise<string | undefined> {
+  const known = triggeringUserId ?? createdByUserId ?? undefined
+  if (known || !isAuthMode()) return known
+  try {
+    return (await getOwnersOfAgent(callerSlug))[0]
+  } catch (error) {
+    // An attribution-only lookup: its failure leaves the call unattributed.
+    console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
+      callerSlug,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+// ----------------------------------------------------------------------------
+// POST /api/x-agent/models - the accounts and models the caller's person
+// could pick in the composer, plus the agent's own. Not reviewed: it reads
+// what that person's composer already shows them.
+// ----------------------------------------------------------------------------
+
+xAgent.post('/models', zValidator('json', z.object({ _callerSessionId: z.string().optional() })), async (c) => {
+  const callerSlug = getCallerSlug(c)
+  const { _callerSessionId: sessionId } = c.req.valid('json')
+  const settings = await getSettings()
+  const meta = sessionId ? await agentRegistry.get(callerSlug).sessions.metadata(sessionId) : null
+  const triggering = isAuthMode() && sessionId ? await getLatestMessageAuthorUserId(callerSlug, sessionId) : undefined
+  const userId = await attributedUser(callerSlug, triggering, meta?.createdByUserId)
+  const accounts = await runWithOptionalUser(userId, async () => {
+    // The agent's own account, listed even when it is another member's, as the composer lists it.
+    // Read from the stored preference, so no plan lookup can fail the listing.
+    const own = (await readAgentPreferences(callerSlug, settings)).defaultLlmProviderId ?? (await resolveGlobalSelection(undefined, settings))?.llmProviderId
+    return Promise.all((await selectableConnectionRows(userId, own ?? undefined)).map(async (row) => {
+      const catalog = connectionCatalogFrom(row, settings)
+      // The plan mark is a hint: an account whose plan cannot be read is listed without it.
+      const availability = await providerForConnection(row).getModelAvailability(catalog, { settings }).catch(() => null)
+      const unavailable = new Set(availability?.unavailable.map((entry) => entry.modelId))
+      return {
+        id: row.id,
+        name: row.name,
+        provider: row.provider,
+        ...(row.id === own ? { agentDefault: true } : {}),
+        models: catalog.map((m) => ({
+          id: m.id,
+          label: m.label,
+          ...(m.isLatest && m.family ? { alias: m.family } : {}),
+          ...(unavailable.has(m.id) ? { unavailable: true } : {}),
+        })),
+      }
+    }))
+  })
+  return c.json({ accounts })
 })
 
 // ----------------------------------------------------------------------------
@@ -883,20 +947,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: 'Forbidden: caller has no user access to target agent' }, 403)
   }
 
-  // Attribute to the triggering message author. Session creator and caller
-  // owner remain compatibility fallbacks for old sessions without author rows.
-  let attributedUserId: string | undefined = triggeringUserId ?? callerMeta?.createdByUserId
-  if (!attributedUserId && isAuthMode()) {
-    try {
-      attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
-    } catch (error) {
-      // ACL checks already ran above; this second lookup is attribution-only.
-      console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
-        callerSlug,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
-  }
+  const attributedUserId = await attributedUser(callerSlug, triggeringUserId, callerMeta?.createdByUserId)
 
   // A new session's model is checked and shown on the card before anyone
   // approves it. A blocked call is refused first, with no model lookup.

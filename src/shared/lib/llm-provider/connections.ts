@@ -122,6 +122,11 @@ async function readVisibleConnections(viewer: ConnectionViewer, currentId?: stri
     .all()
 }
 
+/** The connection rows a user (or no one) may pick, plus `currentId`. */
+export async function selectableConnectionRows(userId: string | undefined, currentId?: string): Promise<ConnectionRow[]> {
+  return (await readVisibleConnections({ userId: userId ?? null, admin: false }, currentId)).map(({ connection }) => connection)
+}
+
 const readById = (rows: VisibleConnectionRow[]): ReadConnections => new Map(rows.map(({ connection }) => [connection.id, connection]))
 
 /**

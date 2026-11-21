@@ -53,6 +53,7 @@ import { refreshWidgetTool } from './tools/refresh-widget'
 import { listWidgetsTool } from './tools/list-widgets'
 import { listAgentsTool } from './tools/agents/list-agents'
 import { listAgentMembersTool } from './tools/agents/list-agent-members'
+import { makeListModelsTool } from './tools/agents/list-models'
 import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
@@ -172,6 +173,7 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
     tools: [
       listAgentsTool,
       listAgentMembersTool,
+      makeListModelsTool(getCallerSessionId),
       createAgentTool,
       makeInvokeAgentTool(getCallerSessionId),
       getSessionsTool,
