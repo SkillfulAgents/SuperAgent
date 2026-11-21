@@ -1,15 +1,19 @@
-/** WebSocket half of the dashboard artifact reverse proxy (Vite HMR + app sockets). */
+/**
+ * WebSocket half of the dashboard artifact reverse proxy (Vite HMR + app sockets).
+ * `admitArtifactStream`, `artifactUpstreamOpened` and `bridgeArtifactStream` hold all
+ * of it but the upgrade, so a runtime that accepts sockets another way serves the same proxy.
+ */
 
 import type { IncomingMessage } from 'http'
 import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
 
-import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
+import { agentCatalog, agentRegistry, type WebSocketTarget } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
-import { authenticateAgentWebSocket } from './agent-websocket-auth'
+import { authenticateAgentWebSocket, type UpgradeRequest } from './agent-websocket-auth'
 
-interface ArtifactWebSocketRoute {
+export interface ArtifactWebSocketRoute {
   routeAgentId: string
   artifactSlug: string
   publicBasePath: string
@@ -67,7 +71,7 @@ export function parseArtifactWebSocketRoute(pathname: string): ArtifactWebSocket
   }
 }
 
-function requestProtocol(request: IncomingMessage): string {
+function requestProtocol(request: UpgradeRequest): string {
   const forwarded = request.headers['x-forwarded-proto']
   const value = Array.isArray(forwarded) ? forwarded[0] : forwarded
   if (value) return value.split(',')[0].trim()
@@ -80,11 +84,11 @@ function requestProtocol(request: IncomingMessage): string {
       // Fall through to socket encryption state.
     }
   }
-  return (request.socket as { encrypted?: boolean }).encrypted ? 'https' : 'http'
+  return request.socket?.encrypted ? 'https' : 'http'
 }
 
 export function artifactWebSocketForwardHeaders(
-  request: IncomingMessage,
+  request: UpgradeRequest,
   publicBasePath: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {}
@@ -97,7 +101,7 @@ export function artifactWebSocketForwardHeaders(
     || request.headers.host
     || ''
   headers['x-forwarded-proto'] = requestProtocol(request)
-  const remoteAddress = request.socket.remoteAddress
+  const remoteAddress = request.socket?.remoteAddress
   if (remoteAddress) {
     const forwardedFor = request.headers['x-forwarded-for']
     const existing = Array.isArray(forwardedFor) ? forwardedFor.join(', ') : forwardedFor
@@ -106,7 +110,7 @@ export function artifactWebSocketForwardHeaders(
   return headers
 }
 
-function requestedProtocols(request: IncomingMessage): string[] {
+function requestedProtocols(request: UpgradeRequest): string[] {
   const raw = request.headers['sec-websocket-protocol']
   const value = Array.isArray(raw) ? raw.join(',') : raw
   return value ? value.split(',').map((protocol) => protocol.trim()).filter(Boolean) : []
@@ -124,7 +128,8 @@ function closePeer(peer: WebSocket, code?: number, reason?: Buffer): void {
   peer.close(relayCode, reason?.toString().slice(0, 120))
 }
 
-function bridge(client: WebSocket, upstream: WebSocket, route: ArtifactWebSocketRoute): void {
+/** Relays both ways once both sockets are open; each side closes with the other's code. */
+export function bridgeArtifactStream(client: WebSocket, upstream: WebSocket, route: ArtifactWebSocketRoute): void {
   upstream.on('message', (data, isBinary) => {
     if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary })
   })
@@ -151,6 +156,88 @@ function bridge(client: WebSocket, upstream: WebSocket, route: ArtifactWebSocket
   }
 }
 
+/** What the upgrade may open: the route, and the dashboard's socket in the agent's container. */
+export interface AdmittedArtifactStream {
+  agentSlug: string
+  route: ArtifactWebSocketRoute
+  target: WebSocketTarget
+}
+
+/** The checks before the upgrade. A status to refuse the upgrade with when they fail. */
+export async function admitArtifactStream(
+  route: ArtifactWebSocketRoute,
+  search: string,
+  request: UpgradeRequest,
+): Promise<AdmittedArtifactStream | { status: 403 | 404 | 502 | 503 }> {
+  try {
+    const agentSlug = await agentCatalog.resolve(route.routeAgentId)
+    if (!agentSlug) return { status: 404 }
+    if (!(await authenticateAgentWebSocket(request, agentSlug, 'viewer'))) return { status: 403 }
+    // Forwarded headers first; the actor adds the container's auth headers after them.
+    const target = await agentRegistry.get(agentSlug).container.webSocketTarget(route.containerPath, {
+      search,
+      protocols: requestedProtocols(request),
+      headers: artifactWebSocketForwardHeaders(request, route.publicBasePath),
+    })
+    if (!target) return { status: 503 }
+    return { agentSlug, route, target }
+  } catch (error) {
+    captureException(error, {
+      tags: { component: 'artifact-stream-proxy', operation: 'authorize' },
+      extra: { routeAgentId: route.routeAgentId, artifactSlug: route.artifactSlug },
+    })
+    return { status: 502 }
+  }
+}
+
+/**
+ * Calls `onOpen` in the dashboard socket's `open` event, so the client is upgraded with the
+ * dashboard's chosen subprotocol and the relay listens before the dashboard's first message, which
+ * can arrive with the handshake. Resolves false when the socket was refused or failed (reported,
+ * and the socket terminated), or when `abandoned` fired first: the browser went away, nothing to report.
+ */
+export function artifactUpstreamOpened(
+  upstream: WebSocket,
+  admitted: AdmittedArtifactStream,
+  onOpen: () => void,
+  abandoned?: AbortSignal,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const fail = (error?: unknown) => {
+      if (settled) return
+      settled = true
+      upstream.terminate()
+      if (error) {
+        captureException(error, {
+          tags: { component: 'artifact-stream-proxy', operation: 'connect' },
+          extra: { agentSlug: admitted.agentSlug, artifactSlug: admitted.route.artifactSlug },
+        })
+      }
+      resolve(false)
+    }
+    upstream.once('unexpected-response', (_req, response) => {
+      response.resume()
+      fail(new Error(`Dashboard WebSocket refused upgrade (${response.statusCode})`))
+    })
+    upstream.once('error', fail)
+    abandoned?.addEventListener('abort', () => fail(), { once: true })
+    upstream.once('open', () => {
+      if (settled) return
+      settled = true
+      onOpen()
+      resolve(true)
+    })
+  })
+}
+
+const DENIED: Record<number, string> = {
+  403: '403 Forbidden',
+  404: '404 Not Found',
+  502: '502 Bad Gateway',
+  503: '503 Service Unavailable',
+}
+
 export function setupArtifactStreamProxy(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- server request URLs always parse
@@ -158,62 +245,37 @@ export function setupArtifactStreamProxy(server: ServerType): void {
     const route = parseArtifactWebSocketRoute(url.pathname)
     if (!route) return
 
-    agentCatalog.resolve(route.routeAgentId)
-      .then(async (agentSlug) => {
-        if (!agentSlug) return deny(socket, '404 Not Found')
-        if (!(await authenticateAgentWebSocket(request, agentSlug, 'viewer'))) {
-          return deny(socket, '403 Forbidden')
-        }
-
-        // Forwarded headers first; the actor adds the container's auth headers after them.
-        const target = await agentRegistry.get(agentSlug).container.webSocketTarget(route.containerPath, {
-          search: url.search,
-          protocols: requestedProtocols(request),
-          headers: artifactWebSocketForwardHeaders(request, route.publicBasePath),
-        })
-        if (!target) return deny(socket, '503 Service Unavailable')
-        const upstream = new WebSocket(target.url, target.protocols, { headers: target.headers })
-
-        let settled = false
-        const fail = (error?: unknown) => {
-          if (settled) return
-          settled = true
+    void (async () => {
+      const admitted = await admitArtifactStream(route, url.search, request)
+      if ('status' in admitted) return deny(socket, DENIED[admitted.status])
+      const { target } = admitted
+      const upstream = new WebSocket(target.url, target.protocols, { headers: target.headers })
+      let bridged = false
+      const browserGone = new AbortController()
+      // Also after the open: ws answers a handshake it rejects with 400 and never hands over the socket.
+      socket.once('close', () => {
+        if (bridged) return
+        browserGone.abort()
+        upstream.terminate()
+      })
+      const opened = await artifactUpstreamOpened(upstream, admitted, () => {
+        if (socket.destroyed) {
           upstream.terminate()
-          if (error) {
-            captureException(error, {
-              tags: { component: 'artifact-stream-proxy', operation: 'connect' },
-              extra: { agentSlug, artifactSlug: route.artifactSlug },
-            })
-          }
-          deny(socket, '502 Bad Gateway')
+          return
         }
-
-        socket.once('close', () => {
-          if (!settled) upstream.terminate()
+        ;(request as ProtocolAwareRequest)._gamutDashboardProtocol = upstream.protocol || undefined
+        artifactWss.handleUpgrade(request, socket, head, (browser) => {
+          bridged = true
+          bridgeArtifactStream(browser, upstream, route)
         })
-        upstream.once('unexpected-response', (_req, response) => {
-          response.resume()
-          fail(new Error(`Dashboard WebSocket refused upgrade (${response.statusCode})`))
-        })
-        upstream.once('error', fail)
-        upstream.once('open', () => {
-          if (settled || socket.destroyed) {
-            upstream.terminate()
-            return
-          }
-          settled = true
-          ;(request as ProtocolAwareRequest)._gamutDashboardProtocol = upstream.protocol || undefined
-          artifactWss.handleUpgrade(request, socket, head, (browser) => {
-            bridge(browser, upstream, route)
-          })
-        })
+      }, browserGone.signal)
+      if (!opened) deny(socket, '502 Bad Gateway')
+    })().catch((error) => {
+      captureException(error, {
+        tags: { component: 'artifact-stream-proxy', operation: 'connect' },
+        extra: { routeAgentId: route.routeAgentId, artifactSlug: route.artifactSlug },
       })
-      .catch((error) => {
-        captureException(error, {
-          tags: { component: 'artifact-stream-proxy', operation: 'authorize' },
-          extra: { routeAgentId: route.routeAgentId, artifactSlug: route.artifactSlug },
-        })
-        deny(socket, '502 Bad Gateway')
-      })
+      deny(socket, '502 Bad Gateway')
+    })
   })
 }
