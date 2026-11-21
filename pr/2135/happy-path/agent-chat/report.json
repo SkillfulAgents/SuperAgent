@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Opened the \"QA-20261120-231930-yvni\" agent, confirmed it was idle, sent \"Hello! What is 2+2?\", and verified the reply contains 4.",
+  "reason": "Opened the QA-20261121-001249-bmt4 agent, confirmed it was idle, sent \"Hello! What is 2+2?\", and verified the reply contains 4.",
   "steps": [
-    "Step 1: navigated to http://localhost:47891 — Gamut home loaded with the sidebar listing both agents (QA-20261120-231931-d44a and QA-20261120-231930-yvni).",
-    "Step 2: clicked \"QA-20261120-231930-yvni\" in the sidebar — its agent page opened at /agents/qa-20261120-231930-yvni-8nja0853h3. Screenshot taken.",
-    "Step 3: verified status — the header shows \"idle\" and the sidebar shows \"Idle\", so the status check passes.",
-    "Step 4: typed \"Hello! What is 2+2?\" into the message composer, then clicked the enabled Send button — the browser navigated to a new session (\"Simple Arithmetic Question Check\") and the user message appeared in the message list.",
-    "Step 5: waited for a response — the assistant reply \"2 + 2 = 4.\" was already present in the message list when checked right after sending, and the agent returned to \"idle\" with the Send button disabled. No wait was needed beyond that check, and no \"Working...\" activity indicator was caught in the snapshots.",
-    "Step 6: verified the response mentions \"4\" — the reply reads \"2 + 2 = 4.\" Screenshot taken showing the user message and the reply."
+    "1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-001249-crz0 and QA-20261121-001249-bmt4.",
+    "2. Clicked the QA-20261121-001249-bmt4 agent in the sidebar — the agent page opened at /agents/qa-20261121-001249-bmt4-mlzelcc073 with the agent name in the header.",
+    "3. Verified agent status — the header status indicator reads \"idle\", which satisfies the running-or-idle requirement.",
+    "4. Sent \"Hello! What is 2+2?\" — the first send click did not submit: the text stayed in the composer and no session was created. A second click on the actual \"Send message\" button submitted it, and the page moved to a new session at /sessions/9d89f64b-a9f7-489f-95d3-47f6de6ae358 with the message shown in the chat.",
+    "5. Waited for a response — the reply \"2 + 2 = 4.\" appeared in the message list shortly after the message was sent, well within the 3-minute limit.",
+    "6. Verified the response mentions \"4\" — the assistant reply \"2 + 2 = 4.\" is in the chat and the header still shows \"idle\". Screenshot taken."
   ],
   "bugs": [],
-  "durationMs": 35965,
-  "sessionId": "00c53f75-bd5b-427c-8765-0f7d32389fa2",
+  "durationMs": 70620,
+  "sessionId": "5a2ad648-6213-4cdb-83f7-c8e13fa7822b",
   "cost": {
-    "inputTokens": 8466,
-    "outputTokens": 6939,
-    "cacheCreationTokens": 159090,
-    "cacheReadTokens": 654574,
+    "inputTokens": 8601,
+    "outputTokens": 8920,
+    "cacheCreationTokens": 160634,
+    "cacheReadTokens": 903737,
     "model": "claude-haiku-5-5",
-    "totalCostUsd": 0.307481
+    "totalCostUsd": 0.344367
   }
 }

@@ -1,8 +1,10 @@
 [TEST_PASS]
-[REASON] Opened the "QA-20261120-231930-yvni" agent, confirmed it was idle, sent "Hello! What is 2+2?", and verified the reply contains 4.
-[STEP] Step 1: navigated to http://localhost:47891 — Gamut home loaded with the sidebar listing both agents (QA-20261120-231931-d44a and QA-20261120-231930-yvni).
-[STEP] Step 2: clicked "QA-20261120-231930-yvni" in the sidebar — its agent page opened at /agents/qa-20261120-231930-yvni-8nja0853h3. Screenshot taken.
-[STEP] Step 3: verified status — the header shows "idle" and the sidebar shows "Idle", so the status check passes.
-[STEP] Step 4: typed "Hello! What is 2+2?" into the message composer, then clicked the enabled Send button — the browser navigated to a new session ("Simple Arithmetic Question Check") and the user message appeared in the message list.
-[STEP] Step 5: waited for a response — the assistant reply "2 + 2 = 4." was already present in the message list when checked right after sending, and the agent returned to "idle" with the Send button disabled. No wait was needed beyond that check, and no "Working..." activity indicator was caught in the snapshots.
-[STEP] Step 6: verified the response mentions "4" — the reply reads "2 + 2 = 4." Screenshot taken showing the user message and the reply.
+[REASON] Opened the QA-20261121-001249-bmt4 agent, confirmed it was idle, sent "Hello! What is 2+2?", and verified the reply contains 4.
+[STEP] 1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-001249-crz0 and QA-20261121-001249-bmt4.
+[STEP] 2. Clicked the QA-20261121-001249-bmt4 agent in the sidebar — the agent page opened at /agents/qa-20261121-001249-bmt4-mlzelcc073 with the agent name in the header.
+[STEP] 3. Verified agent status — the header status indicator reads "idle", which satisfies the running-or-idle requirement.
+[STEP] 4. Sent "Hello! What is 2+2?" — the first send click did not submit: the text stayed in the composer and no session was created. A second click on the actual "Send message" button submitted it, and the page moved to a new session at /sessions/9d89f64b-a9f7-489f-95d3-47f6de6ae358 with the message shown in the chat.
+[STEP] 5. Waited for a response — the reply "2 + 2 = 4." appeared in the message list shortly after the message was sent, well within the 3-minute limit.
+[STEP] 6. Verified the response mentions "4" — the assistant reply "2 + 2 = 4." is in the chat and the header still shows "idle". Screenshot taken.
+
+The first send click was a targeting mistake on my side: I clicked a wrapper element instead of the button, which had no ref in the snapshot. It is not logged as an app bug, since the second click on the real button worked and the app behaved normally.

@@ -1,9 +1,7 @@
 [TEST_PASS]
-[REASON] Sent a browser task to the QA-20261120-231931-d44a agent and verified it replied with the example.com page title "Example Domain".
-[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut app loaded with the sidebar showing QA-20261120-231931-d44a under "Your Agents". No errors.
-[STEP] Step 2: Clicked the QA-20261120-231931-d44a agent in the sidebar — the agent page opened at /agents/qa-20261120-231931-d44a-2vy1is87zl, status "idle", with the chat input visible. Screenshot: step2-agent-opened.png.
-[STEP] Step 3: Typed "Open a browser and go to https://example.com. Tell me the page title." and clicked Send — the message appeared in the chat, a new session "Check Example.com Page Title" was created, and the agent status changed to "working". Tool activity showed a ToolSearch call; the agent's transcript shows it searched for `mcp__browser__browser_open`/`browser_close`. Screenshots: step3-message-typed.png, step3-message-sent.png.
-[STEP] Step 4: Waited for the response — "Example Domain" appeared within the 90-second wait, well inside the 3-minute limit. The turn completed in "Worked for 5s · 3 tool calls · 163,128 tokens", and the agent returned to "idle".
-[STEP] Step 5: Verified the response reads "The page title is "Example Domain". The page at https://example.com loaded normally, and I've closed the browser." Screenshot: step5-response-verified.png.
-
-Observation, not counted as a bug: the mid-stream text briefly read ".com in the browser." before the final message rendered correctly.
+[REASON] Sent the "Open a browser and go to https://example.com. Tell me the page title." prompt to agent QA-20261121-001249-crz0 and verified the reply contains "Example Domain".
+[STEP] Step 1: Navigated to http://localhost:47891 — Gamut home loaded with the "QA-20261121-001249-crz0" agent listed in the "Your Agents" sidebar section.
+[STEP] Step 2: Clicked the "QA-20261121-001249-crz0" agent in the sidebar — agent page opened at /agents/qa-20261121-001249-crz0-8notad4icl with an empty message box and status "idle". Screenshot step2-agent-opened.png taken.
+[STEP] Step 3: Typed the prompt into the message box — text appeared in the input and the send button became enabled. My first click targeted the wrong element (the text paragraph, not the send button), so nothing was sent; I took a fresh snapshot, clicked the actual "Send message" button, and the message was sent. The app opened a session titled "Check Example.com page title" and the status changed to "working". Screenshot step3-message-sent.png taken. This misclick was a tester error, not an app bug.
+[STEP] Step 4: Waited up to 3 minutes for a response — the reply "The page title is "Example Domain". I've closed the browser." appeared; the "Worked for 4s · 3 tool calls · 163,069 tokens" summary was shown and the agent returned to "idle".
+[STEP] Step 5: Verified the response mentions "Example Domain" — confirmed in the agent's reply. Screenshot step5-response-verified.png taken.
