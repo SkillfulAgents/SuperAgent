@@ -56,8 +56,21 @@ const SYNC_WAIT_TIMEOUT_MS = resolveSyncWaitTimeoutMs(process.env.X_AGENT_SYNC_W
  * wait, for the same transport-cliff reason the env override can.
  */
 export function effectiveSyncWaitMs(requestedMs: number | undefined): number {
-  if (requestedMs === undefined || Number.isNaN(requestedMs) || requestedMs <= 0) return SYNC_WAIT_TIMEOUT_MS
-  return Math.min(requestedMs, SYNC_WAIT_TIMEOUT_MS)
+  return resolveSyncWait(requestedMs).ms
+}
+
+/** The wait a call runs with, and whether it is the caller's own (else the configured wait). */
+export interface SyncWait {
+  ms: number
+  callerSupplied: boolean
+}
+
+/** {@link effectiveSyncWaitMs}, saying whether the caller's own wait applied. */
+export function resolveSyncWait(requestedMs: number | undefined): SyncWait {
+  if (requestedMs === undefined || Number.isNaN(requestedMs) || requestedMs <= 0) {
+    return { ms: SYNC_WAIT_TIMEOUT_MS, callerSupplied: false }
+  }
+  return { ms: Math.min(requestedMs, SYNC_WAIT_TIMEOUT_MS), callerSupplied: true }
 }
 
 // Hard stop for delivering the prompt at all. Past this point the caller's
@@ -145,14 +158,20 @@ export async function waitForTurnWithinBudget(
   return outcome === 'idle' ? 'completed' : 'timeout'
 }
 
-/** The wait as the note states it: whole seconds, or ms below a second (never "0s"). */
-function formatWait(timeoutMs: number): string {
-  return timeoutMs < 1000 ? `${Math.max(1, Math.round(timeoutMs))}ms` : `${Math.round(timeoutMs / 1000)}s`
+/**
+ * The wait as the note states it. The configured wait (every agent call) keeps
+ * the agent route's wording byte for byte: rounded whole seconds, even "0s"
+ * for a test override below half a second. Only a wait the caller chose itself
+ * is stated in ms below a second, so it never reads "0s".
+ */
+function formatWait({ ms, callerSupplied }: SyncWait): string {
+  if (callerSupplied && ms < 1000) return `${Math.max(1, Math.round(ms))}ms`
+  return `${Math.round(ms / 1000)}s`
 }
 
-export function syncWaitPromotedNote(timeoutMs: number): string {
+export function syncWaitPromotedNote(wait: SyncWait): string {
   return (
-    `Sync wait timed out after ${formatWait(timeoutMs)}, but the target agent is still ` +
+    `Sync wait timed out after ${formatWait(wait)}, but the target agent is still ` +
     'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
     'Poll get_agent_session_transcript with this session_id to retrieve the result.'
   )

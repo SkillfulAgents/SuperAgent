@@ -3,12 +3,23 @@
  * user caller's authorization (its own agent_acl role, no policy, no review).
  * The agent-facing wire contract is pinned by src/api/routes/x-agent.test.ts.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { randomUUID } from 'crypto'
 import * as schema from '../../db/schema'
 import type { AppDatabase } from '../../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../../db/testing/create-test-database'
 import type { AgentRole } from '@shared/lib/types/agent'
+
+// The configured sync wait is read when sync-wait.ts loads. Pin it to the
+// default (unset) before any import, whatever the shell sets, so the tests
+// below can assume a 120s maximum; tests that need another configured wait
+// load the service again under it (loadWithConfiguredWait).
+vi.hoisted(() => {
+  vi.stubEnv('X_AGENT_SYNC_WAIT_TIMEOUT_MS', undefined)
+})
+afterAll(() => {
+  vi.unstubAllEnvs()
+})
 
 let testDb: AppDatabase
 let handle: TestDatabase
@@ -108,6 +119,28 @@ import { effectiveSyncWaitMs } from './sync-wait'
 
 async function seedRole(userId: string, agentSlug: string, role: AgentRole) {
   await testDb.insert(schema.agentAcl).values({ id: randomUUID(), userId, agentSlug, role, createdAt: new Date() })
+}
+
+/** The service loaded afresh with the given configured wait (the env override). */
+async function loadWithConfiguredWait(raw: string) {
+  vi.resetModules()
+  vi.stubEnv('X_AGENT_SYNC_WAIT_TIMEOUT_MS', raw)
+  try {
+    const { invokeAgent: invoke } = await import('./invoke')
+    const callers = await import('./caller')
+    return { invoke, agentCaller: callers.agentXAgentCaller, userCaller: callers.userXAgentCaller }
+  } finally {
+    vi.stubEnv('X_AGENT_SYNC_WAIT_TIMEOUT_MS', undefined)
+  }
+}
+
+/** The promoted note exactly as the agent route has always worded it. */
+function routeNote(seconds: string): string {
+  return (
+    `Sync wait timed out after ${seconds}, but the target agent is still ` +
+    'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
+    'Poll get_agent_session_transcript with this session_id to retrieve the result.'
+  )
 }
 
 /** What the operation handed the target's sessions.start. */
@@ -351,5 +384,37 @@ describe('a user caller starting a new session', () => {
     const caller = userXAgentCaller({ userId: 'local', sessionMetadata: { invokedByAgentSlug: CALLER_AGENT, createdByUserId: 'someone-else' } })
     await invokeAgent(caller, { slug: TARGET, prompt: 'hi' })
     expect(lastStart().metadata).toEqual({})
+  })
+})
+
+describe('the promoted note under a configured sub-second wait', () => {
+  it.each([
+    ['750', '1s'],
+    ['400', '0s'],
+  ])('an agent call configured to %sms keeps the route wording (%s) on both invoke paths', async (raw, seconds) => {
+    const { invoke, agentCaller } = await loadWithConfiguredWait(raw)
+    const caller = agentCaller(CALLER_AGENT, 'calling-session')
+
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
+    const existing = await invoke(caller, { slug: TARGET, prompt: 'hi', sessionId: SESSION_ID, sync: true })
+    expect(lastWaitTimeoutMs()).toBeLessThanOrEqual(Number(raw))
+    expect(existing).toEqual({ ok: true, value: { sessionId: SESSION_ID, status: 'running', error: routeNote(seconds) } })
+
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
+    const created = await invoke(caller, { slug: TARGET, prompt: 'hi', sync: true })
+    expect(created).toEqual({ ok: true, value: { sessionId: NEW_SESSION_ID, status: 'running', error: routeNote(seconds) } })
+  })
+
+  it('a sub-second wait the caller chose is stated in ms on both invoke paths', async () => {
+    const { invoke, userCaller } = await loadWithConfiguredWait('750')
+    const caller = userCaller({ userId: USER_ID })
+
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
+    const existing = await invoke(caller, { slug: TARGET, prompt: 'hi', sessionId: SESSION_ID, sync: true, syncWaitMs: 400 })
+    expect(existing).toEqual({ ok: true, value: { sessionId: SESSION_ID, status: 'running', error: routeNote('400ms') } })
+
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
+    const created = await invoke(caller, { slug: TARGET, prompt: 'hi', sync: true, syncWaitMs: 400 })
+    expect(created).toEqual({ ok: true, value: { sessionId: NEW_SESSION_ID, status: 'running', error: routeNote('400ms') } })
   })
 })

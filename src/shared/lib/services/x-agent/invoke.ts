@@ -46,7 +46,7 @@ import {
   DELIVERY_CUTOFF_MS,
   SUBSCRIBE_TIMEOUT_MS,
   deliveryCutoffError,
-  effectiveSyncWaitMs,
+  resolveSyncWait,
   lateDeliveryRevokedError,
   readLastAssistantMessage,
   subscribeWithTimeout,
@@ -206,8 +206,8 @@ export async function invokeAgent(caller: XAgentCaller, input: InvokeInput): Pro
   // the turn, the delivery cutoff governs whether we deliver the prompt at all
   // — so the total response time stays under the container fetch's 300s header
   // timeout, and no prompt is delivered to a caller that already gave up.
-  const syncWaitMs = effectiveSyncWaitMs(input.syncWaitMs)
-  const syncDeadline = Date.now() + syncWaitMs
+  const syncWait = resolveSyncWait(input.syncWaitMs)
+  const syncDeadline = Date.now() + syncWait.ms
   const deliveryCutoff = Date.now() + DELIVERY_CUTOFF_MS
   const callerSlug = caller.kind === 'agent' ? caller.agentSlug : undefined
   const callerSessionId = caller.kind === 'agent' ? caller.sessionId : undefined
@@ -450,7 +450,7 @@ export async function invokeAgent(caller: XAgentCaller, input: InvokeInput): Pro
             return { ok: true, value: {
               sessionId: existingSessionId,
               status: 'running',
-              error: syncWaitPromotedNote(syncWaitMs),
+              error: syncWaitPromotedNote(syncWait),
             } }
           }
           const lastMessage = await readLastAssistantMessage(
@@ -607,7 +607,7 @@ export async function invokeAgent(caller: XAgentCaller, input: InvokeInput): Pro
           return { ok: true, value: {
             sessionId: newSessionId,
             status: 'running',
-            error: syncWaitPromotedNote(syncWaitMs),
+            error: syncWaitPromotedNote(syncWait),
           } }
         }
         const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
