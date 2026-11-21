@@ -1,11 +1,12 @@
 import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
 import { chatProviderSetup } from './setup'
-import { chatIntegrationAccess, chatIntegrationSessions, slackThreadState } from '../db/schema'
+import { testTeamsCredentials } from './teams-setup'
+import { chatIntegrationAccess, chatIntegrationSessions, slackThreadState, teamsCards, teamsConversationReferences } from '../db/schema'
 import { z, type ZodType } from 'zod'
 import type { IntegrationProvider } from '../agent-integrations/registry'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { ChatAgentIntegration, ChatConnectorClass } from './chat-agent-integration'
-import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, type ChatProvider } from './config-schema'
+import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, teamsConfigSchema, teamsIdentitySchema, type ChatProvider } from './config-schema'
 import { resolveAppLinkContext, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { toPublicChatIntegration } from './public'
 import { mergeChatIntegrationConfig, parseChatIntegrationConfig, type IMessageConfig, type TelegramConfig } from './config-schema'
@@ -39,12 +40,16 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     async isAvailable() { return (await load()).isAvailable() },
     policy: chatIntegrationPolicy,
     setup: chatProviderSetup(provider, schema),
-    storage: () => [chatIntegrationAccess, chatIntegrationSessions, ...(provider === 'slack' ? [slackThreadState] : [])],
+    storage: () => [chatIntegrationAccess, chatIntegrationSessions, ...(provider === 'slack' ? [slackThreadState] : []), ...(provider === 'teams' ? [teamsCards, teamsConversationReferences] : [])],
     serialize: record => toPublicChatIntegration(record as ChatIntegration),
     configuration: {
-      identityLabel: provider === 'imessage' ? 'Phone number' : 'Bot token',
-      identityPaths: [`$.${identityField}`],
+      identityLabel: provider === 'teams' ? 'Teams app' : provider === 'imessage' ? 'Phone number' : 'Bot token',
+      identityPaths: provider === 'teams' ? ['$.tenantId', '$.appId'] : [`$.${identityField}`],
       uniqueKey(input) {
+        if (provider === 'teams') {
+          const identity = teamsIdentitySchema.safeParse(input)
+          return identity.success ? `${identity.data.tenantId}:${identity.data.appId}` : null
+        }
         const parsed = identitySchema.safeParse(input)
         return parsed.success ? parsed.data[identityField] : null
       },
@@ -78,6 +83,19 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
 }
 
 export const chatProviders: IntegrationProvider[] = [
+  chatProvider(
+    'teams', teamsConfigSchema, async () => (await import('./teams-connector')).TeamsConnector,
+    (Connector, config, appLink, record) => new Connector(config, appLink, record),
+    undefined,
+    async (record, input) => {
+      if (!input.config) return
+      const next = teamsConfigSchema.parse(mergeChatIntegrationConfig('teams', record.config, input.config))
+      const previous = parseChatIntegrationConfig('teams', record.config)
+      if (!previous || !('clientSecret' in previous) || next.clientSecret !== previous.clientSecret) {
+        await testTeamsCredentials(next)
+      }
+    },
+  ),
   chatProvider(
     'telegram', telegramConfigSchema, async () => (await import('./telegram-connector')).TelegramConnector,
     (Connector, config, appLink, record) => new Connector(config, appLink, record),

@@ -72,17 +72,27 @@ describe('ConversationHistorySection (inbox)', () => {
     expect(onSelectWindow).toHaveBeenCalledWith(null)
   })
 
-  it('shows a pending chat tagged Blocked with Approve/Deny actions for a Telegram owner', () => {
+  it('shows a pending chat awaiting approval with Approve/Deny actions for a Telegram owner', () => {
     h.access = [makeAccess({ externalChatId: 'chat-p', status: 'pending', title: 'Dana', firstMessagePreview: 'hello?' })]
     render(<ConversationHistorySection {...base} sessions={[]} routeSessionId={null} />)
     expect(screen.getByText('Dana')).toBeInTheDocument()
-    expect(screen.getByText('Blocked')).toBeInTheDocument()
+    expect(screen.getByText('Pending approval')).toBeInTheDocument()
     // The first message (chat request) is surfaced in the row subtitle for triage.
     expect(screen.getByText('hello?')).toBeInTheDocument()
     // A pending request offers both decisions directly - not a single "Unblock".
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Block' })).not.toBeInTheDocument()
+  })
+
+  it('explains a Teams channel request without naming the channel after its sender', () => {
+    h.access = [makeAccess({ externalChatId: 'teams:channel:MTkudGVhbXM', chatType: 'group', status: 'pending',
+      firstUserName: 'Maya Chen', firstMessagePreview: 'Please check the build.' })]
+    render(<ConversationHistorySection {...base} integration={makeChatIntegration({ provider: 'teams' })} sessions={[]} routeSessionId={null} />)
+    expect(screen.getByText('Teams channel')).toBeVisible()
+    expect(screen.getByText(/Requested by Maya Chen/)).toBeVisible()
+    expect(screen.getByText('Pending approval')).toBeVisible()
+    expect(screen.queryByText('Blocked')).toBeNull()
   })
 
   it('opens a pending chat to its request when the row body is clicked', () => {

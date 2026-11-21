@@ -11,6 +11,8 @@ import { ChatIntegrationSetupForm } from './chat-integration-setup-form'
 import type { IntegrationSetupProvider } from './setup-types'
 import type { IntegrationMessageProps } from './messages/types'
 import { SlackIntegrationMessage } from './messages/slack-message'
+import { TeamsIntegrationMessage } from './messages/teams-message'
+import { TeamsConnectionSettings, TeamsSetup } from './teams-setup'
 import { TelegramIntegrationMessage } from './messages/telegram-message'
 import { IMessageIntegrationMessage } from './messages/imessage-message'
 import { IMessageDeliveryCard } from './imessage-delivery-card'
@@ -23,7 +25,7 @@ import { RecallSetupForm } from './recall-setup-form'
 import { MeetingPanel } from './meeting-panel'
 import { MeetingSettingsCard } from './meeting-settings-card'
 
-function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<IntegrationMessageProps>, Settings: IntegrationSetupProvider['Settings'] = ChatIntegrationSettingsCard): IntegrationSetupProvider {
+function chatProvider(slug: Exclude<ChatProvider, 'teams'>, label: string, Message: ComponentType<IntegrationMessageProps>, Settings: IntegrationSetupProvider['Settings'] = ChatIntegrationSettingsCard): IntegrationSetupProvider {
   return { slug, label, description: `Talk to this agent in ${label}.`, Message, Settings, Setup: props => <ChatIntegrationSetupForm {...props} provider={slug} /> }
 }
 
@@ -44,6 +46,8 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
     <SlackDeliveryCard integration={props.integration} />
     <SlackAppAppearanceCard integration={props.integration} />
   </>), Setup: SlackSetup, ConnectionSettings: SlackConnectionSettings },
+  { slug: 'teams', label: 'Microsoft Teams', description: 'Talk to this agent in personal chats, group chats, and team channels.',
+    managementAccess: 'owner', Setup: TeamsSetup, Settings: ChatIntegrationSettingsCard, ConnectionSettings: TeamsConnectionSettings, Message: TeamsIntegrationMessage },
   chatProvider('imessage', 'iMessage', IMessageIntegrationMessage, props => <>
     <ChatIntegrationSettingsCard {...props} />
     <IMessageDeliveryCard integration={props.integration} />

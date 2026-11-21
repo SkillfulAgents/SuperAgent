@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import type { AppDatabase } from '../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
+import { teamsExternalId } from '@shared/lib/chat-integrations/teams-activity'
 
 let testDb: AppDatabase
 let handle: TestDatabase
@@ -31,6 +32,7 @@ describe('chat-integration-access-service', () => {
     await testDb.insert(schema.chatIntegrations).values([
       { id: 'int-tg', agentSlug: 'test-agent', provider: 'telegram', config: '{}', requireApproval: true, createdAt: now, updatedAt: now },
       { id: 'int-slack', agentSlug: 'test-agent', provider: 'slack', config: '{}', requireApproval: false, createdAt: now, updatedAt: now },
+      { id: 'int-teams', agentSlug: 'test-agent', provider: 'teams', config: '{}', requireApproval: true, createdAt: now, updatedAt: now },
     ]).run()
   })
 
@@ -52,6 +54,28 @@ describe('chat-integration-access-service', () => {
   }
 
   describe('decideInboundAccess', () => {
+    it('requires explicit approval from the owner for the first Teams DM', async () => {
+      const chatId = teamsExternalId('personal', 'personal-conversation')
+      const result = await decideInboundAccess({ integrationId: 'int-teams', externalChatId: chatId, chatType: 'private' })
+      expect(result).toEqual({ action: 'blocked', sendNotice: true, status: 'pending' })
+      expect(await isChatAllowed('int-teams', chatId)).toBe(false)
+    })
+
+    it('applies Teams channel approval and revocation to each of its threads', async () => {
+      const channel = teamsExternalId('channel', 'channel-one')
+      const first = teamsExternalId('channel', 'channel-one', 'first-thread')
+      const next = teamsExternalId('channel', 'channel-one', 'next-thread')
+      await decideInboundAccess({ integrationId: 'int-teams', externalChatId: first, chatType: 'group' })
+      const request = await getChatAccess('int-teams', channel)
+      expect(request?.status).toBe('pending')
+      await approveChatAccess(request!.id, 'owner')
+      expect(await isChatAllowed('int-teams', next)).toBe(true)
+      expect(await isChatAllowed('int-teams', teamsExternalId('channel', 'another-channel', 'first-thread'))).toBe(false)
+      await revokeChatAccess(request!.id, 'owner')
+      expect(await isChatAllowed('int-teams', first)).toBe(false)
+      expect((await decideInboundAccess({ integrationId: 'int-teams', externalChatId: next })).status).toBe('denied')
+    })
+
     it('bootstraps the first private contact to allowed', async () => {
       const d = (await decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'c1', chatType: 'private', userId: 'u1' }))
       expect(d).toEqual({ action: 'forward', sendNotice: false, status: 'bootstrapped' })

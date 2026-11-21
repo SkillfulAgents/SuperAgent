@@ -375,3 +375,17 @@ the bot presents as its camera. Integration tools can opt into management invoca
 (`exposure: 'management' | 'both'`) and are then reachable at
 `POST /api/agent-integrations/:id/tools/:tool`, so the join button and the agent's
 `join_meeting` call the same operation. See [Meeting integrations](meeting-integrations.md).
+
+### Microsoft Teams delivery on a private host
+
+A public Gamut deployment can accept activities directly at its configured `HOST_PUBLIC_URL`. For private workspaces, enable the Teams relay gateway on an Internet-reachable HTTPS Gamut server. The gateway authenticates Microsoft's request, strips its bearer token and signs the activity for the workspace's existing webhook queue. The private agent replies to Teams with its own bot credentials.
+
+1. Generate a P-256 private JWK in your secret manager. In a private shell, the following writes one to a restricted file.
+
+   ```sh
+   (umask 077 && node -e "const {privateKey} = require('node:crypto').generateKeyPairSync('ec', {namedCurve:'prime256v1'}); process.stdout.write(JSON.stringify(privateKey.export({format:'jwk'})))" > teams-gateway-key.json)
+   ```
+
+2. On the public Gamut server, set `TEAMS_RELAY_GATEWAY_PRIVATE_JWK` to the JSON secret and `TEAMS_RELAY_HOOK_ORIGIN` to the HTTPS origin that issues your platform's `/v1/hooks/whep_…` endpoints. Restart the server and check that `GET /api/teams-relay/key` returns a public JWK containing `kty`, `crv`, `x` and `y`. All gateway replicas need the same key. Keep it stable for the lifetime of the callback URLs.
+3. On each private Gamut host with the webhook relay connected, set `TEAMS_RELAY_GATEWAY_URL=https://your-public-gamut.example/api/teams-relay` and restart. Leave `HOST_PUBLIC_URL` unset on private hosts. In the agent's Teams setup select HTTPS delivery, save the credentials, then copy the generated messaging endpoint into the bot registration.
+4. After changing a gateway key, recreate each affected installation's callback and update the bot registration. Direct public installations and Microsoft's development socket can be set up independently of this gateway.

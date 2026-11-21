@@ -1298,6 +1298,10 @@ export class AgentIntegrationManager implements Service {
     if (!await conn.connector.authorize(context, message)) return
     if (!(await this.isAllowed(integrationId, chatId))) return
     check()
+    if (conn.connector.handleProviderInput) {
+      if (await conn.connector.handleProviderInput(message, context, check)) return
+      check()
+    }
     const notice = route.notice
     if (notice) await attempt.notifyRoute(() => this.deliver(integrationId, chatId, { type: 'message', text: notice }))
     if (route.action === 'ignore') return
@@ -1713,7 +1717,7 @@ export class AgentIntegrationManager implements Service {
           proposal = undefined
         }
         const settled = await reviews.submit(reviewId, decision as 'allow' | 'deny')
-        if (!settled) await this.replyAlreadyHandled(integrationId, chatId)
+        if (!settled) await this.replyAlreadyHandled(integrationId, chatId, toolUseId)
         else if (proposal) {
           await auditRuleDecision({
             proposal, approved: decision === 'allow', agentSlug: integration.agentSlug, via: 'chat', extra: { integrationId },
@@ -1739,7 +1743,7 @@ export class AgentIntegrationManager implements Service {
     // starting the container, so a decision on another surface meanwhile is
     // not answered again into a container that has nothing parked.
     if (!(await this.isAllowed(integrationId, chatId))) {
-      await this.replyAlreadyHandled(integrationId, chatId)
+      await this.replyAlreadyHandled(integrationId, chatId, toolUseId)
       return
     }
     const actor = agentRegistry.get(integration.agentSlug)
@@ -1754,7 +1758,7 @@ export class AgentIntegrationManager implements Service {
           })
         : null
       if (picked?.ok) event.onAnswered?.()
-      else await this.replyAlreadyHandled(integrationId, chatId)
+      else await this.replyAlreadyHandled(integrationId, chatId, toolUseId)
       return
     }
     let answer = await actor.inputs.answer(toolUseId, response)
@@ -1763,7 +1767,7 @@ export class AgentIntegrationManager implements Service {
     }
     if (answer === 'answered') event.onAnswered?.()
     else if (answer === 'undeliverable') reportError(new Error('Resolve input failed'), 'resolve-input', { integrationId, toolUseId })
-    else await this.replyAlreadyHandled(integrationId, chatId)
+    else await this.replyAlreadyHandled(integrationId, chatId, toolUseId)
   }
 
   /**
@@ -1806,12 +1810,12 @@ export class AgentIntegrationManager implements Service {
    * a user who pressed Allow and got nothing back has no way to know whether
    * the agent is thinking or the press was swallowed.
    */
-  private async replyAlreadyHandled(integrationId: string, chatId?: string): Promise<void> {
+  private async replyAlreadyHandled(integrationId: string, chatId: string | undefined, requestId: string): Promise<void> {
     if (!chatId) return
     const connector = this.connections.get(integrationId)?.connector
     if (!connector) return
     try {
-      await this.deliver(integrationId, chatId, { type: 'request-settled' })
+      await this.deliver(integrationId, chatId, { type: 'request-settled', requestId })
     } catch (err) {
       console.error('[AgentIntegrationManager] Failed to send already-handled notice:', err)
     }

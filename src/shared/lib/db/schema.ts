@@ -1070,6 +1070,35 @@ export const slackThreadState = sqliteTable('slack_thread_state', {
   activeThreads: text('active_threads', { mode: 'json' }).$type<string[]>().notNull(),
 })
 
+// Teams conversation IDs are opaque. Keep the authenticated service endpoint
+// and the bot identity which received the activity for later sends and edits.
+export const teamsConversationReferences = sqliteTable('teams_conversation_references', {
+  integrationId: text('integration_id').notNull().references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  externalId: text('external_id').notNull(),
+  tenantId: text('tenant_id').notNull(),
+  appId: text('app_id').notNull(),
+  serviceUrl: text('service_url').notNull(),
+  conversationId: text('conversation_id').notNull(),
+  teamId: text('team_id'),
+  scopeId: text('scope_id').notNull(),
+  scopeType: text('scope_type', { enum: ['personal', 'groupChat', 'channel'] }).notNull(),
+  threadRoot: text('thread_root'),
+  originatorId: text('originator_id').notNull(),
+}, t => [primaryKey({ columns: [t.integrationId, t.externalId] })])
+
+// A callback contains an opaque card token; its action, requester and
+// destination come from this record, never from the interactive client.
+export const teamsCards = sqliteTable('teams_cards', {
+  token: text('token').primaryKey(),
+  integrationId: text('integration_id').notNull().references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  externalId: text('external_id').notNull(),
+  requestId: text('request_id'),
+  respondentId: text('respondent_id').notNull(),
+  activityId: text('activity_id'),
+  payload: text('payload').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, t => [index('teams_cards_request_idx').on(t.integrationId, t.requestId)])
+
 export const chatIntegrationAccess = sqliteTable('chat_integration_access', {
   id: text('id').primaryKey(),
   integrationId: text('integration_id').notNull()

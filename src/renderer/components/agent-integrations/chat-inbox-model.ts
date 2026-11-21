@@ -1,10 +1,12 @@
 import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
+import { TEAMS_SCOPE_LABEL, teamsChatScope } from '@shared/lib/chat-integrations/teams-chat-scope'
+
 export type ChatAccessStatus = 'allowed' | 'pending' | 'denied'
 
 /**
  * One row in the conversation inbox: a single external chat (person/group),
- * carrying both its access state (Telegram only) and its conversation windows.
+ * carrying both its access state (when approvals are enabled) and its conversation windows.
  *
  * Access is per-chat; conversation windows are per-inactivity-period, so one chat
  * can own several windows (default timeout is Never → usually one). Pending and
@@ -20,6 +22,8 @@ export interface ChatRow {
   accessId?: string
   approvalSource?: ChatIntegrationAccess['approvalSource']
   firstMessagePreview?: string | null
+  /** Who requested access for a shared Teams chat or channel. */
+  requesterName?: string
   /** Conversation windows for this chat, newest-first. Empty for pending/denied. */
   windows: AgentIntegrationSession[]
   /** Newest window's claude session id, for opening the thread (null when none). */
@@ -28,12 +32,15 @@ export interface ChatRow {
   lastActivityAt: number
 }
 
-export const chatFallbackTitle = (externalChatId: string) => `Chat ${externalChatId.slice(-6)}`
+export function chatFallbackTitle(externalChatId: string): string {
+  const scope = teamsChatScope(externalChatId)
+  return scope ? TEAMS_SCOPE_LABEL[scope] : `Chat ${externalChatId.slice(-6)}`
+}
 
 /**
  * Merge conversation windows (sessions) and access entries into one chat-keyed
  * list. Active (allowed/ungated) conversations first by recency; blocked chats
- * (pending + denied - both show the "Blocked" tag) sink to the bottom.
+ * (pending and denied) sink to the bottom.
  */
 export function buildChatRows(
   sessions: AgentIntegrationSession[] | undefined,
@@ -42,9 +49,11 @@ export function buildChatRows(
   const byChat = new Map<string, ChatRow>()
 
   for (const a of access ?? []) {
+    const scope = teamsChatScope(a.externalChatId)
     byChat.set(a.externalChatId, {
       externalChatId: a.externalChatId,
-      title: a.title ?? chatFallbackTitle(a.externalChatId),
+      title: a.title?.trim() || (scope === 'personal' && a.firstUserName?.trim()) || chatFallbackTitle(a.externalChatId),
+      requesterName: scope && scope !== 'personal' ? a.firstUserName?.trim() || undefined : undefined,
       status: a.status,
       accessId: a.id,
       approvalSource: a.approvalSource,

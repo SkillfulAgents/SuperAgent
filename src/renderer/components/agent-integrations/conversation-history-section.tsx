@@ -27,7 +27,7 @@ interface ConversationHistorySectionProps {
 
 /**
  * The conversation inbox: a cron-Run-History-style list of chats (left column),
- * each opening its read-only thread in place. For Telegram owners it also folds
+ * each opening its read-only thread in place. For approval-gated providers it also folds
  * in access control - pending requests to approve/deny, denied chats greyed - so
  * conversations and the allowlist live in one surface.
  */
@@ -43,7 +43,7 @@ export function ConversationHistorySection({
   providerName,
   canManageAccess,
 }: ConversationHistorySectionProps) {
-  const canAccess = canManageAccess && integration.provider === 'telegram'
+  const canAccess = canManageAccess && (integration.provider === 'telegram' || integration.provider === 'teams')
   const { data: access } = useAgentIntegrationAccess(integration.id, canAccess)
 
   const rows = useMemo(

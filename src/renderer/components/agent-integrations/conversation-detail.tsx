@@ -78,6 +78,7 @@ export function ConversationDetail({
           </span>
         </div>
 
+        {row.requesterName && <p className="mt-2 text-xs text-muted-foreground">Requested by {row.requesterName}</p>}
         <div className="mt-3 rounded-card border bg-muted/30 p-4">
           {row.firstMessagePreview ? (
             <div className="flex justify-end">

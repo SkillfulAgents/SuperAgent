@@ -77,6 +77,8 @@
     "@aws-sdk/client-s3": "^3.1149.0",
     "@hono/node-server": "^2.1.5",
     "@hono/zod-validator": "^0.9.1",
+    "@microsoft/teams.api": "^2.2.1",
+    "@microsoft/teams.apps": "^2.2.1",
     "@sentry/node": "10.78.0",
     "@slack/bolt": "^4.7.0",
     "@smithy/node-http-handler": "^4.12.1",

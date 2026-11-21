@@ -35,6 +35,7 @@ const SLACK_MANIFEST = `{
 
 /** How an agent sets each chat provider up (see `IntegrationProviderSetup.agentGuide`). */
 export const CHAT_AGENT_GUIDES: Record<ChatProvider, string> = {
+  teams: `Create a single-tenant bot in Teams Developer Portal (Tools → Bot management) or register an Azure Bot with the Microsoft Teams channel enabled. Enter the Microsoft tenant ID (tenantId), application ID (appId), and client secret value (clientSecret) in Gamut. Set the bot's messaging endpoint to the URL Gamut supplies. Download the agent's Teams app package from Gamut, upload the ZIP in Teams, and install it in a personal chat or team. Mention the agent on each channel turn.`,
   telegram: `Required: \`botToken\` — create a bot via @BotFather on Telegram and copy the token.
 Optional: \`chatId\` — the Telegram chat ID to send messages to. If omitted, the bot will accept messages from anyone who starts a conversation with it.
 

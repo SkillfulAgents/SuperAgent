@@ -148,3 +148,5 @@ src/shared/lib/db/migrations/message-agent-senders.test.ts
 src/shared/lib/services/session-fork-service.test.ts
 src/api/routes/agent-creation-request.test.ts
 src/shared/lib/connection-catalog/agent-catalog.test.ts
+src/shared/lib/chat-integrations/teams-connector.test.ts
+src/api/routes/teams-messages.test.ts

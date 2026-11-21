@@ -5,6 +5,8 @@ const chat = { managementCapabilities: ['reset_conversation', 'session_timeout',
 export const SLACK_AGENT_INSTRUCTIONS = 'To mention a person in Slack, find their user_id with list_chat_users and write <@user_id> in the message. A plain @Name is not a mention.'
 
 export const chatDefinitions: Record<ChatProvider, AgentIntegrationDefinition> = {
+  teams: { ...chat, provider: 'teams', managementAccess: 'owner', name: 'Microsoft Teams', capabilities: ['send_message'], setup: { kind: 'teams-app', credentialFields: ['tenantId', 'appId', 'clientSecret'] },
+    transports: ['direct', 'relay'] },
   telegram: { ...chat, provider: 'telegram', name: 'Telegram', capabilities: ['send_message'], setup: { kind: 'bot-token', credentialFields: ['botToken'] },
     // Long polling, or the bot's webhook when the host has a relay.
     transports: ['direct', 'relay'] },

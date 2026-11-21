@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import type { IntegrationRelayBinding } from './transport'
 import type { VerificationProfile } from '../services/webhook-endpoint-schema'
 import type { IntegrationSetupMetadata } from './setup-schema'
 import type { AgentIntegrationRecord, IntegrationStatus } from './types'
@@ -32,7 +33,14 @@ export interface IntegrationProviderSetup {
    * `relay: true` sets up webhooks: the host mints the endpoint before the
    * installation exists, with `verification` if the provider can give it.
    */
-  prepare(input: unknown, context: IntegrationSetupContext): Promise<{ config: Record<string, unknown>; status?: IntegrationStatus; relay?: boolean; verification?: VerificationProfile }>
+  prepare(input: unknown, context: IntegrationSetupContext): Promise<{
+    config: Record<string, unknown>
+    status?: IntegrationStatus
+    relay?: boolean
+    verification?: VerificationProfile
+    /** Creates provider-specific delivery config once the host has minted the relay endpoint. */
+    bindRelay?(relay: IntegrationRelayBinding): Promise<Record<string, unknown>>
+  }>
   testCredentials?(input: unknown): Promise<Record<string, unknown>>
   authorize?: {
     inputSchema: z.ZodType

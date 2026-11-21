@@ -50,7 +50,7 @@ function PhoneNumberCopyButton() {
   )
 }
 
-const PROVIDER_INFO: Record<ChatProvider, {
+const PROVIDER_INFO: Record<Exclude<ChatProvider, 'teams'>, {
   label: string
   slug: string
   steps: Array<string | React.ReactNode>
@@ -208,7 +208,7 @@ export function ChatIntegrationSetupForm({
   initial,
 }: {
   agentSlug: string
-  provider: ChatProvider
+  provider: Exclude<ChatProvider, 'teams'>
   onClose: () => void
   /** Starting values an agent suggested when it handed the setup over. */
   initial?: Record<string, string>

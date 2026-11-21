@@ -1,9 +1,10 @@
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { isMultiPartyChatType, type ChatConnectorClass, type IncomingMessage } from './chat-agent-integration'
-import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
+import { parseChatIntegrationConfig, teamsConfigSchema, type ChatProvider } from './config-schema'
 import { sanitizeUploadFilename, withUploadTimestamp } from '../utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '../utils/url-safety'
 import { formatSenderPrefix } from '../utils/sender-prefix'
+import { fetchTeamsFile, isTeamsInlineImageUrl } from './teams-files'
 import { agentRegistry } from '../agent-actor'
 import { captureException } from '../error-reporting'
 import { chunksOf } from '../agent-actor/jsonl-files'
@@ -95,7 +96,13 @@ export class ChatInputBuilder {
       }
 
       // Telegram & iMessage: direct URL download (no auth needed)
-      const response = await fetch(fileUrl)
+      let response: Response
+      if (integration.provider === 'teams' && isTeamsInlineImageUrl(fileUrl)) {
+        const { TeamsApi } = await import('./teams-api')
+        response = await new TeamsApi(teamsConfigSchema.parse(config)).fetchInlineImage(fileUrl)
+      } else {
+        response = integration.provider === 'teams' ? await fetchTeamsFile(fileUrl) : await fetch(fileUrl)
+      }
       if (!response.ok) return null
       const buffer = await this.readDownload(response)
       if (!buffer || !this.validateFileContent(buffer)) return null

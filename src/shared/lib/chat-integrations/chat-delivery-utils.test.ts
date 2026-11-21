@@ -5,6 +5,12 @@ import { buildSessionName } from './chat-policy'
 // ── deriveDisplayName ───────────────────────────────────────────────────
 
 describe('deriveDisplayName', () => {
+  it('uses the Teams scope when a shared activity omits its name', () => {
+    expect(deriveDisplayName({ chatId: 'teams:channel:MTk|MTIz', userId: 'sender', userName: 'Maya' })).toBe('Teams channel')
+    expect(deriveDisplayName({ chatId: 'teams:groupChat:MTk', userId: 'sender', userName: 'Maya' })).toBe('Teams group chat')
+    expect(deriveDisplayName({ chatId: 'teams:channel:MTk', userId: 'sender', userName: 'Maya', chatName: 'Planning' })).toBe('Planning')
+  })
+
   it('prefers chatName (group/channel title)', () => {
     expect(deriveDisplayName({
       chatName: '#general',
