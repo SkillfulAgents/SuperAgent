@@ -79,8 +79,8 @@ function InstallInstructions({ mode }: { mode: DeliveryMode }) {
     <li>In <PortalLink href={DEV_PORTAL_URL}>Developer Portal → Tools → Bot management</PortalLink>, select the bot and open <strong>Configure → Delivery method</strong>. {mode === 'socket' ? <>Select <strong>Socket mode</strong> and save.</> : <>Select <strong>HTTPS endpoint</strong>, paste the messaging endpoint, and save.</>}</li>
     <li>Download the app package. In <PortalLink href={TEAMS_URL}>Teams</PortalLink>, choose <strong>Apps → Manage your apps → More options → Upload an app → Upload a custom app</strong>. Select the ZIP, then add the agent to a chat or team.</li>
     <li>If your organization manages uploads, an admin can upload the same ZIP under <strong>Teams apps → Manage apps → Upload new app</strong> in the <PortalLink href={TEAMS_ADMIN_URL}>Teams admin center</PortalLink>.</li>
-    <li>Send a personal message, approve its access request in Gamut, then message again. In channels and group chats, @mention the agent on each message, including replies.</li>
-    <li>For a private or shared channel, add the app to the host team and then to the channel. Approving the channel in Gamut lets its members, including external members, talk to the agent there. Channel file links require access in Gamut. Use personal chat in the registered tenant for file transfers.</li>
+    <li>Send the agent a personal message to start chatting. In channels and group chats, @mention the agent on each message, including replies.</li>
+    <li>For a private or shared channel, add the app to the host team and then to the channel. Channel members can @mention the agent there. Channel file links require access in Gamut. Use personal chat in the registered tenant for file transfers.</li>
   </ol>
 }
 

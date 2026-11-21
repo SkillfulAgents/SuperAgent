@@ -884,5 +884,15 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1795226412420,
     "hash": "32cafc796aae654705e367ceddd67e433b7866f1d0549a29f17fd18db790ea5e"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `teams_conversation_references` ADD `display_name` text;\n",
+      "\n-- Earlier Teams installations kept destination names on the conversation approval.\nUPDATE teams_conversation_references AS ref\nSET display_name = (\n  SELECT coalesce(access.title, CASE WHEN ref.scope_type = 'personal' THEN access.first_user_name END)\n  FROM chat_integration_access AS access\n  WHERE access.integration_id = ref.integration_id AND access.external_chat_id = ref.external_id\n)\nWHERE ref.thread_root IS NULL;\n",
+      "\nDELETE FROM chat_integration_access\nWHERE integration_id IN (SELECT id FROM chat_integrations WHERE provider = 'teams');\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795232032677,
+    "hash": "b679c9d009a254b0bb80195664e638bee2150988b9610e17f87bdbfde64d528f"
   }
 ]

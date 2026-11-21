@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppDatabase } from '../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
-import { chatIntegrations, chatIntegrationAccess, teamsCards } from '../db/schema'
+import { chatIntegrations, teamsCards } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import type { AgentIntegrationRecord, IntegrationSessionContext } from '../agent-integrations/types'
 import type { TeamsConfig } from './config-schema'
@@ -57,11 +57,6 @@ async function open() {
   await connector.connect()
   return connector
 }
-async function allow(id: string) {
-  const now = new Date()
-  await db.insert(chatIntegrationAccess).values({ id: crypto.randomUUID(), integrationId: record.id, externalChatId: id, status: 'allowed',
-    title: 'Approved conversation', firstUserName: 'Ada', requestedAt: now, createdAt: now, updatedAt: now }).run()
-}
 beforeEach(async () => {
   vi.resetAllMocks()
   database = await createTestDatabase()
@@ -104,6 +99,8 @@ describe('Teams conversations and native activities', () => {
     await connector.acceptActivity({ ...channelActivity, entities: [] })
     await connector.acceptActivity({ ...channelActivity, entities: [{ type: 'mention', mentioned: { id: colleague } }] })
     expect(events).not.toHaveBeenCalled()
+    expect((await connector.listChatUsers()).items).toEqual([])
+    expect((await connector.listChatChannels()).items).toEqual([])
     await connector.acceptActivity(channelActivity)
     await connector.acceptActivity({ ...channelActivity, id: '1001', replyToId: '1000', entities: [] })
     await connector.acceptActivity({ ...channelActivity, id: '1002', replyToId: '1000' })
@@ -120,25 +117,25 @@ describe('Teams conversations and native activities', () => {
     await connector.acceptActivity({ ...activity, id: '1001', channelData })
     expect(events.mock.calls.map(([e]) => e.externalId)).toEqual([chatId, teamsExternalId('personal', 'a:personal', '1000')])
   })
-  it('discovers only approved installed destinations and forgets conversations when removed', async () => {
+  it('discovers named recipients and channels after contact and forgets an uninstalled DM', async () => {
     await connector.acceptActivity(activity)
     await connector.acceptActivity(channelActivity)
-    expect((await connector.listChatUsers()).items).toEqual([])
-    await allow(chatId)
-    await allow(teamsParentChatId(thread)!)
+    expect((await connector.listChatUsers()).items).toEqual([{ id: user, name: 'Ada' }])
+    expect((await connector.listChatChannels()).items).toEqual([{ id: teamsParentChatId(thread), name: 'Support', isMember: true }])
     expect(await connector.resolveDirectChat(user)).toBe(chatId)
-    expect(await connector.resolveDirectChat(colleague).catch(e => String(e))).toContain('add the app')
-    expect((await connector.listChatChannels()).items).toHaveLength(1)
+    await expect(connector.resolveDirectChat(colleague)).rejects.toThrow()
+    await connector.acceptActivity({ ...activity, from: { ...activity.from, aadObjectId: colleague, name: 'Grace' },
+      conversation: { ...activity.conversation, id: 'a:colleague' } })
+    expect(await connector.resolveDirectChat(colleague)).toBe(teamsExternalId('personal', 'a:colleague'))
     await connector.acceptActivity({ ...activity, type: 'installationUpdate', action: 'remove' })
-    expect((await connector.listChatUsers()).items).toEqual([])
+    expect((await connector.listChatUsers()).items).toEqual([{ id: colleague, name: 'Grace' }])
+    await expect(connector.resolveDirectChat(user)).rejects.toThrow()
     await expect(connector.sendMessage(chatId, { text: 'Cancelled' })).rejects.toThrow('no longer available')
   })
   it('removes every channel of an uninstalled team and preserves unrelated personal conversations', async () => {
     const teamId = '19:general@thread.tacv2'
     await connector.acceptActivity(activity)
     await connector.acceptActivity({ ...channelActivity, channelData: { ...channelActivity.channelData, team: { id: teamId } } })
-    await allow(chatId)
-    await allow(teamsParentChatId(thread)!)
     await connector.acceptActivity({ ...channelActivity, type: 'installationUpdate', action: 'remove-upgrade',
       conversation: { ...channelActivity.conversation, id: teamId }, channelData: { tenant: { id: tenant }, team: { id: teamId } } })
     expect((await connector.listChatChannels()).items).toEqual([])
@@ -148,7 +145,6 @@ describe('Teams conversations and native activities', () => {
   it('edits partial messages, splits long replies, and adds and removes a native eyes reaction', async () => {
     await connector.acceptActivity(activity)
     const event = events.mock.calls[0][0]
-    await allow(chatId)
     await connector.acknowledgeInput(event)
     expect(microsoft.react).toHaveBeenCalledWith(serviceUrl, 'a:personal', '1000', '1f440_eyes', true)
     connector.releaseAcknowledgements(chatId)
@@ -162,7 +158,7 @@ describe('Teams conversations and native activities', () => {
   })
 })
 describe('Teams cards and files', () => {
-  it('validates request, sender, scope, card id and access before handing a structured native answer to Gamut', async () => {
+  it('validates request, sender, scope and card id before handing a structured native answer to Gamut', async () => {
     await connector.acceptActivity(activity)
     await connector.sendUserRequestCard(chatId, { type: 'question_request', toolUseId: 'question-1',
       questions: [{ question: 'Choose', options: [{ label: 'A' }, { label: 'B' }], multiSelect: true }, { question: 'Why?' }] })
@@ -170,10 +166,6 @@ describe('Teams cards and files', () => {
     expect(await connector.sessionsToRecover()).toEqual([{ externalId: chatId }])
     const press = invocation(row.token, { q0: '1,0', q1: 'Because' })
     expect(microsoft.send.mock.calls.at(-1)?.[2].attachments[0].content.actions[0].type).toBe('Action.Execute')
-    for (const attempt of [press, { ...press, from: { ...activity.from, aadObjectId: colleague } }, { ...press, replyToId: 'unknown' }]) {
-      expect(await connector.acceptActivity(attempt)).toMatchObject({ body: { statusCode: 400 } })
-    }
-    await allow(chatId)
     for (const attempt of [
       { ...press, from: { ...activity.from, aadObjectId: colleague } }, { ...press, replyToId: 'other-card' },
       { ...press, conversation: { ...activity.conversation, id: 'other-chat' } }, invocation(row.token, { q0: '9', q1: 'Because' }),
@@ -187,7 +179,6 @@ describe('Teams cards and files', () => {
   })
   it('routes Allow/Deny through the pending review and supports the older submit action', async () => {
     await connector.acceptActivity(activity)
-    await allow(chatId)
     await connector.sendUserRequestCard(chatId, { type: 'question_request', toolUseId: 'review:review-1:agent', questions: [{ question: 'Read this file?' }] })
     const [row] = await db.select().from(teamsCards).all()
     expect(await connector.acceptActivity(invocation(row.token, { answer: 'perhaps' }))).toMatchObject({ body: { statusCode: 400 } })
@@ -196,7 +187,6 @@ describe('Teams cards and files', () => {
   })
   it('uploads only the exact bytes offered, after authenticated personal consent, then replaces the card with the actual file', async () => {
     await connector.acceptActivity(activity)
-    await allow(chatId)
     const bytes = Buffer.from('contents')
     await connector.sendFile(chatId, bytes, 'report.txt', 'Report', { workspacePath: 'report.txt' })
     const [row] = await db.select().from(teamsCards).all()
@@ -217,7 +207,6 @@ describe('Teams cards and files', () => {
   })
   it('consumes a changed workspace file without sending its new contents or starting an agent turn', async () => {
     await connector.acceptActivity(activity)
-    await allow(chatId)
     await connector.sendFile(chatId, Buffer.from('offered'), 'report.txt', undefined, { workspacePath: 'report.txt' })
     const [row] = await db.select().from(teamsCards).all()
     const url = 'https://tenant.sharepoint.com/file'
@@ -245,7 +234,6 @@ describe('Teams cards and files', () => {
   })
   it('discards offers on decline without touching file bytes or issuing any upload', async () => {
     await connector.acceptActivity(activity)
-    await allow(chatId)
     await connector.sendFile(chatId, Buffer.from('offer'), 'private.txt', undefined, { workspacePath: 'private.txt' })
     const [row] = await db.select().from(teamsCards).all()
     const result = await connector.acceptActivity({ ...activity, type: 'invoke', name: 'fileConsent/invoke', replyToId: '2000', value: { action: 'decline', context: { token: row.token } } })
@@ -289,7 +277,6 @@ describe('Teams delivery boundaries', () => {
     await connector.sendUserRequestCard(thread, { type: 'question_request', toolUseId: 'input-43', questions: [{ question: 'Continue?' }] }, 'session', route.replyTarget.respondentId)
     const [row] = await db.select().from(teamsCards).all()
     expect(row.respondentId).toBe(colleague)
-    await allow(teamsParentChatId(thread)!)
     const press = { ...invocation(row.token, { q0: 'Yes' }), conversation: channelActivity.conversation, channelData: channelActivity.channelData }
     expect(await connector.acceptActivity(press)).toMatchObject({ body: { statusCode: 400 } })
     expect(await connector.acceptActivity({ ...press, from: { ...activity.from, aadObjectId: colleague } })).toMatchObject({ body: { statusCode: 200 } })

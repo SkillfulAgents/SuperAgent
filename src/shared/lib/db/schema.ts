@@ -1084,6 +1084,7 @@ export const teamsConversationReferences = sqliteTable('teams_conversation_refer
   scopeType: text('scope_type', { enum: ['personal', 'groupChat', 'channel'] }).notNull(),
   threadRoot: text('thread_root'),
   originatorId: text('originator_id').notNull(),
+  displayName: text('display_name'),
 }, t => [primaryKey({ columns: [t.integrationId, t.externalId] })])
 
 // A callback contains an opaque card token; its action, requester and

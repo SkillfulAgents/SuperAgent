@@ -85,14 +85,15 @@ describe('ConversationHistorySection (inbox)', () => {
     expect(screen.queryByRole('button', { name: 'Block' })).not.toBeInTheDocument()
   })
 
-  it('explains a Teams channel request without naming the channel after its sender', () => {
-    h.access = [makeAccess({ externalChatId: 'teams:channel:MTkudGVhbXM', chatType: 'group', status: 'pending',
-      firstUserName: 'Maya Chen', firstMessagePreview: 'Please check the build.' })]
-    render(<ConversationHistorySection {...base} integration={makeChatIntegration({ provider: 'teams' })} sessions={[]} routeSessionId={null} />)
-    expect(screen.getByText('Teams channel')).toBeVisible()
-    expect(screen.getByText(/Requested by Maya Chen/)).toBeVisible()
-    expect(screen.getByText('Pending approval')).toBeVisible()
-    expect(screen.queryByText('Blocked')).toBeNull()
+  it('opens Teams sessions without showing historical approval requests to the owner', () => {
+    const externalChatId = 'teams:channel:MTkudGVhbXM'
+    h.access = [makeAccess({ externalChatId, chatType: 'group', status: 'pending', firstUserName: 'Maya Chen' })]
+    const session = makeSession({ externalChatId, sessionId: 'teams-session', displayName: 'Release validation' })
+    render(<ConversationHistorySection {...base} integration={makeChatIntegration({ provider: 'teams' })} providerName="Teams" sessions={[session]} routeSessionId={null} />)
+    fireEvent.click(screen.getByText('Release validation'))
+    expect(base.onSelectWindow).toHaveBeenCalledWith('teams-session')
+    expect(screen.queryByText('Pending approval')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 
   it('opens a pending chat to its request when the row body is clicked', () => {

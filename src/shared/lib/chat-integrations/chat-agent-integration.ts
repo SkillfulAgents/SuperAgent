@@ -10,7 +10,7 @@ import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
 import type { AgentIntegrationRecord, IntegrationAccessCheck, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
 import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, deliverMarkdown, UndeliveredMessageError, type ManagedConnector } from './chat-delivery'
-import { approvalChatId, decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
+import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import { reviewCardFromRegistry } from './request-card'
 import { chatDefinitions } from './definitions'
@@ -351,7 +351,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (decision.action !== 'blocked') return true
     this.releaseAcknowledgements(chatId, [message.externalMessageId])
     if (decision.sendNotice) {
-      const access = await getChatAccess(integrationId, approvalChatId(this.provider, chatId))
+      const access = await getChatAccess(integrationId, chatId)
       if (access) {
         try {
           await this.sendMessage(chatId, { text: 'This bot needs the owner to approve this conversation before it can respond.' })

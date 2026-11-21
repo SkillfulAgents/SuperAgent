@@ -26,8 +26,7 @@ interface HomeAgentIntegrationsProps {
 // the app already polls. Lives in its own component so the access query (one per
 // integration) obeys the rules of hooks inside the integration list.
 function IntegrationNameBadges({ integration, showPending }: { integration: AgentIntegrationListItem; showPending: boolean }) {
-  const enabled = showPending && isPublicChatIntegration(integration)
-    && (integration.provider === 'teams' || (integration.provider === 'telegram' && !!integration.requireApproval))
+  const enabled = showPending && isPublicChatIntegration(integration) && integration.provider === 'telegram' && !!integration.requireApproval
   const { data: access } = useAgentIntegrationAccess(enabled ? integration.id : null)
   const pending = enabled ? (access?.filter((a) => a.status === 'pending').length ?? 0) : 0
   return (

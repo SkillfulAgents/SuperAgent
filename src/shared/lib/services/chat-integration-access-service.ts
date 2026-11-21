@@ -4,7 +4,6 @@ import { db } from '@shared/lib/db'
 import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { chatIntegrationAccess, chatIntegrations } from '@shared/lib/db/schema'
 import type { ChatIntegrationAccess } from '@shared/lib/db/schema'
-import { teamsParentChatId } from '@shared/lib/chat-integrations/teams-activity'
 
 export type ChatAccessStatus = 'pending' | 'allowed' | 'denied'
 export type AccessDecision = { action: 'forward' | 'blocked'; sendNotice: boolean; status: ChatAccessStatus | 'bootstrapped' }
@@ -38,13 +37,8 @@ function statesApproval(row: ReadIntegration, integrationId: string): row is Rea
   return row.id === integrationId && (row.provider !== 'telegram' || 'requireApproval' in row)
 }
 
-/** Approving a Teams channel authorizes the threads in that channel. */
-export function approvalChatId(provider: string, chatId: string): string {
-  return provider === 'teams' ? teamsParentChatId(chatId) ?? chatId : chatId
-}
-
 function needsApproval(integration: ReadIntegration & { requireApproval?: boolean | null }): boolean {
-  return integration.provider === 'teams' || (integration.provider === 'telegram' && integration.requireApproval === true)
+  return integration.provider === 'telegram' && integration.requireApproval === true
 }
 
 // `current` is the integration's row when the caller read it for this check:
@@ -53,7 +47,7 @@ export async function isChatAllowed(integrationId: string, externalChatId: strin
   const integ = current && statesApproval(current, integrationId) ? current : await getIntegration(integrationId)
   if (!integ) return false
   if (!needsApproval(integ)) return true
-  return (await getChatAccess(integrationId, approvalChatId(integ.provider, externalChatId)))?.status === 'allowed'
+  return (await getChatAccess(integrationId, externalChatId))?.status === 'allowed'
 }
 
 export async function decideInboundAccess(args: {
@@ -64,7 +58,6 @@ export async function decideInboundAccess(args: {
   const integ = await getIntegration(args.integrationId)
   if (!integ) return { action: 'blocked', sendNotice: false, status: 'denied' } // fail closed
   if (!needsApproval(integ)) return { action: 'forward', sendNotice: false, status: 'allowed' }
-  args = { ...args, externalChatId: approvalChatId(integ.provider, args.externalChatId) }
 
   const existing = await getChatAccess(args.integrationId, args.externalChatId)
   if (existing?.status === 'allowed') return { action: 'forward', sendNotice: false, status: 'allowed' }
@@ -76,7 +69,7 @@ export async function decideInboundAccess(args: {
 
   // no row yet — try atomic bootstrap (private only): one INSERT … SELECT … WHERE,
   // so two first messages racing cannot both become the allowed chat
-  if (integ.provider === 'telegram' && args.chatType === 'private') {
+  if (args.chatType === 'private') {
     const now = new Date()
     const noAllowedChatYet = notExists(
       db.select({ one: sql`1` }).from(chatIntegrationAccess)

@@ -1,7 +1,7 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { db } from '../db'
 import { batch } from '../db/batch'
-import { chatIntegrationAccess as access, teamsCards, teamsConversationReferences as refs } from '../db/schema'
+import { teamsCards, teamsConversationReferences as refs } from '../db/schema'
 import type { TeamsActivity } from './teams-activity'
 import { teamsExternalId, teamsScopeId, teamsThreadRoot } from './teams-activity'
 import { serializeTeamsCard, teamsCardPayload, type TeamsCard } from './teams-card-schema'
@@ -10,20 +10,20 @@ const ttl = 7 * 24 * 60 * 60 * 1000
 export class TeamsConversationStore {
   constructor(readonly integrationId: string, private tenantId: string, private appId: string) {}
 
-  async remember(a: TeamsActivity, sender: string): Promise<void> {
+  async remember(a: TeamsActivity, sender: string, displayName?: string): Promise<void> {
     const scopeType = a.conversation.conversationType
     const scopeId = teamsScopeId(a)
     const threadRoot = teamsThreadRoot(a)
     const row = {
       integrationId: this.integrationId, tenantId: this.tenantId, appId: this.appId, scopeType, scopeId,
-      originatorId: sender, serviceUrl: a.serviceUrl, teamId: a.channelData?.team?.id ?? a.channelData?.teamsTeamId,
+      originatorId: sender, displayName, serviceUrl: a.serviceUrl, teamId: a.channelData?.team?.id ?? a.channelData?.teamsTeamId,
       externalId: teamsExternalId(scopeType, scopeId), conversationId: threadRoot ? scopeId : a.conversation.id,
     }
     const rows = threadRoot ? [row, { ...row, externalId: teamsExternalId(scopeType, scopeId, threadRoot), conversationId: a.conversation.id, threadRoot }] : [row]
     // Keep the original conversation requester on refresh. A later participant
     // posting a mention must not acquire the right to press their cards.
     await batch(rows.map(ref => db.insert(refs).values(ref).onConflictDoUpdate({
-      target: [refs.integrationId, refs.externalId], set: { serviceUrl: ref.serviceUrl, conversationId: ref.conversationId, teamId: ref.teamId },
+      target: [refs.integrationId, refs.externalId], set: { serviceUrl: ref.serviceUrl, conversationId: ref.conversationId, teamId: ref.teamId, displayName },
       setWhere: and(eq(refs.tenantId, this.tenantId), eq(refs.appId, this.appId)),
     })))
   }
@@ -36,19 +36,17 @@ export class TeamsConversationStore {
   }
 
   async destinations(personal: boolean, userId?: string) {
-    return db.select({ id: refs.externalId, userId: refs.originatorId, title: access.title, userName: access.firstUserName }).from(refs)
-      .innerJoin(access, and(eq(access.integrationId, refs.integrationId), eq(access.externalChatId, refs.externalId)))
+    return db.select({ id: refs.externalId, userId: refs.originatorId, name: refs.displayName }).from(refs)
       .where(and(eq(refs.integrationId, this.integrationId), eq(refs.tenantId, this.tenantId), eq(refs.appId, this.appId),
         personal ? eq(refs.scopeType, 'personal') : inArray(refs.scopeType, ['groupChat', 'channel']), isNull(refs.threadRoot),
-        eq(access.status, 'allowed'), userId ? eq(refs.originatorId, userId) : undefined))
-      .orderBy(asc(access.title), asc(refs.externalId)).limit(201).all()
+        userId ? eq(refs.originatorId, userId) : undefined))
+      .orderBy(asc(refs.displayName), asc(refs.externalId)).limit(201).all()
   }
 
   async uninstall(scopeId: string, teamId?: string) {
     const match = and(eq(refs.integrationId, this.integrationId), eq(refs.tenantId, this.tenantId), eq(refs.appId, this.appId),
       or(eq(refs.scopeId, scopeId), teamId ? eq(refs.teamId, teamId) : undefined))
     await batch([
-      db.delete(access).where(and(eq(access.integrationId, this.integrationId), inArray(access.externalChatId, db.select({ id: refs.externalId }).from(refs).where(match)))),
       db.delete(teamsCards).where(and(eq(teamsCards.integrationId, this.integrationId), inArray(teamsCards.externalId, db.select({ id: refs.externalId }).from(refs).where(match)))),
       db.delete(refs).where(match),
     ])

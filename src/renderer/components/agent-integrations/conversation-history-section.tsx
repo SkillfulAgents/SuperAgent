@@ -43,7 +43,7 @@ export function ConversationHistorySection({
   providerName,
   canManageAccess,
 }: ConversationHistorySectionProps) {
-  const canAccess = canManageAccess && (integration.provider === 'telegram' || integration.provider === 'teams')
+  const canAccess = canManageAccess && integration.provider === 'telegram'
   const { data: access } = useAgentIntegrationAccess(integration.id, canAccess)
 
   const rows = useMemo(

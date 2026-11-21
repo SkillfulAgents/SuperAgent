@@ -57,15 +57,15 @@ export class TeamsConnector extends ChatAgentIntegration {
   static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
   async listChatUsers() {
     const rows = await this.store.destinations(true)
-    return { items: rows.slice(0, 200).map(row => ({ id: row.userId, name: row.userName || row.title || row.userId })), truncated: rows.length > 200 }
+    return { items: rows.slice(0, 200).map(row => ({ id: row.userId, name: row.name || row.userId })), truncated: rows.length > 200 }
   }
   async listChatChannels() {
     const rows = await this.store.destinations(false)
-    return { items: rows.slice(0, 200).map(row => ({ id: row.id, name: row.title || 'Teams conversation', isMember: true })), truncated: rows.length > 200 }
+    return { items: rows.slice(0, 200).map(row => ({ id: row.id, name: row.name || 'Teams conversation', isMember: true })), truncated: rows.length > 200 }
   }
   async resolveDirectChat(userId: string) {
     const [dm] = await this.store.destinations(true, userId.toLowerCase())
-    if (!dm) throw new Error('Ask the person to add the app in Teams and get the conversation approved in Gamut.')
+    if (!dm) throw new Error('Ask the person to send the app a personal message in Teams first.')
     return dm.id
   }
   resolveRoute(event: IntegrationInputEvent) {
@@ -167,7 +167,7 @@ export class TeamsConnector extends ChatAgentIntegration {
     }
     const message = teamsIncomingMessage(activity)
     if (!message) return 'accepted'
-    await this.store.remember(activity, message.userId)
+    await this.store.remember(activity, message.userId, message.chatName)
     return this.emitMessage(message)
   }
 
