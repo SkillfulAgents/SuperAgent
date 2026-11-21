@@ -1,0 +1,24 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Sent \"Hello! What is 2+2?\" to agent QA-20261121-021627-xgnk and checked that the reply contains \"4\".",
+  "steps": [
+    "1. Navigated to http://localhost:47891 — Gamut home loaded with the sidebar listing QA-20261121-021627-xgnk.",
+    "2. Clicked QA-20261121-021627-xgnk in the sidebar — agent page opened at /agents/qa-20261121-021627-xgnk-zye6nsqf0k.",
+    "3. Checked agent status — the header shows \"idle\" and the sidebar shows \"idle\", so the \"running or idle\" check passes.",
+    "4. Typed \"Hello! What is 2+2?\" into the message box and clicked Send — a new session \"Simple Arithmetic Question Check\" opened, the message appeared in the list, and the activity indicator showed \"Working...\".",
+    "5. Waited up to 3 minutes for the \"Working...\" indicator to clear — it cleared well within the limit. The agent returned to \"idle\".",
+    "6. Verified the response — the assistant replied \"2 + 2 = 4.\", which contains \"4\". Screenshot taken (step6-response-2plus2.png)."
+  ],
+  "bugs": [],
+  "durationMs": 75696,
+  "sessionId": "314e6b7a-423e-45f4-8139-ba4648e2a0e6",
+  "cost": {
+    "inputTokens": 7629,
+    "outputTokens": 3216,
+    "cacheCreationTokens": 99514,
+    "cacheReadTokens": 552142,
+    "model": "claude-haiku-5-5",
+    "totalCostUsd": 0.203316
+  }
+}

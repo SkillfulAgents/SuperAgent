@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Sent the browser-task prompt to agent QA-20261121-021628-ipmw and confirmed the reply names \"Example Domain\" as the page title.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Gamut home loaded (title \"Gamut\"), with both agents QA-20261121-021628-ipmw and QA-20261121-021627-xgnk listed under \"Your Agents\" in the sidebar.",
+    "Clicked QA-20261121-021628-ipmw in the sidebar — agent page opened at /agents/qa-20261121-021628-ipmw-joio521n8q showing status \"idle\", the chat input, and the agent settings panel. Took a screenshot.",
+    "Typed and sent \"Open a browser and go to https://example.com. Tell me the page title.\" — a new session \"Check Example.com Page Title\" was created and the status changed to \"working\". A ToolSearch tool card appeared in the chat while the agent started up. Took a screenshot.",
+    "Waited for the response — \"Example Domain\" appeared after roughly 60 seconds, well inside the 3-minute limit. The agent's status returned to \"idle\" and the turn showed \"Worked for 6s · 3 tool calls · 163,075 tokens\".",
+    "Verified the response — the agent replied \"The page title at https://example.com is \"Example Domain\". I've closed the browser.\" The text matches the expected \"Example Domain\". Took a screenshot."
+  ],
+  "bugs": [],
+  "durationMs": 78345,
+  "sessionId": "d2f21845-509a-4ba5-a092-7befe11a23ef",
+  "cost": {
+    "inputTokens": 8269,
+    "outputTokens": 5335,
+    "cacheCreationTokens": 63278,
+    "cacheReadTokens": 699959,
+    "model": "claude-haiku-5-5",
+    "totalCostUsd": 0.184037
+  }
+}
