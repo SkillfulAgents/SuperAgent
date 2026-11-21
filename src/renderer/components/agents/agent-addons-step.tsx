@@ -13,6 +13,18 @@ import { useAgentTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import { DREAM_SKILL_PATH, isPublicDreamSkill } from '@shared/lib/skillset-provider/dream-skill'
 
+/** From the top of the step's content to the top of the channels' third row. */
+const THIRD_ROW_OFFSET_PX = 565
+/** How much of that row shows above the bottom edge (its fade included). */
+const THIRD_ROW_PEEK_PX = 44
+/**
+ * The scroller's height less the content above the third row and the peek,
+ * as a percentage-height spacer (the scroller has a definite height), kept
+ * between 1rem and 30% so a short window still shows the header and a tall
+ * one does not push it halfway down.
+ */
+const ADDONS_TOP_SPACE = `clamp(1rem, calc(100% - ${THIRD_ROW_OFFSET_PX + THIRD_ROW_PEEK_PX}px), 30%)`
+
 export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange }: {
   header: ReactNode
   agentSlug: string
@@ -67,9 +79,11 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
     // The edges fade (CREATE_STEP_FADE_MASK), so the tiles peeking in at the
     // bottom dissolve rather than clip against Back and Create.
     <div className="-mx-2 h-full overflow-y-auto px-2" style={{ maskImage: CREATE_STEP_FADE_MASK, WebkitMaskImage: CREATE_STEP_FADE_MASK }} data-testid="agent-addons-step">
-      {/* Starts near the top, the channel tiles running past the bottom edge
-          and peeking through its fade: a sign there is more below. */}
-      <div className="flex w-full flex-col pb-8 pt-16">
+      {/* The space above the header is sized so the channels' third row
+          (GitHub, Linear) peeks through the bottom fade, whatever the
+          window's height: a sign there is more below. */}
+      <div aria-hidden className="shrink-0" style={{ height: ADDONS_TOP_SPACE }} />
+      <div className="flex w-full flex-col pb-8">
         {header}
         <TooltipProvider delayDuration={200}>
           <div className="space-y-5">
