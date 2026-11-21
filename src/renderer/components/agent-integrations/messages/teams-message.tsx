@@ -1,9 +1,11 @@
+import { teamsCardLink } from '@shared/lib/chat-integrations/teams-deep-links'
 import { File, MessagesSquare } from 'lucide-react'
 import { IntegrationEventLine, IntegrationMessageFooter, PersonAvatar, formatSentAt, sentAtOf } from './message-parts'
 import type { IntegrationMessageProps } from './types'
 
 export function TeamsIntegrationMessage({ display, message, renderMarkdown }: IntegrationMessageProps) {
   const { request, source } = display
+  const link = teamsCardLink(request?.url, source)
   const author = request?.author ?? { name: 'Teams member' }
   const time = formatSentAt(sentAtOf(display, message.createdAt))
   const location = [source.workspace, source.title].filter(Boolean).join(' / ')
@@ -29,6 +31,6 @@ export function TeamsIntegrationMessage({ display, message, renderMarkdown }: In
         </div>
       </div>
     </div>
-    <IntegrationMessageFooter display={display} message={message} link={request?.url ?? source.url} />
+    <IntegrationMessageFooter display={display} message={message} link={link?.href} linkLabel={link?.chat ? 'Open chat in Microsoft Teams' : undefined} />
   </div>
 }

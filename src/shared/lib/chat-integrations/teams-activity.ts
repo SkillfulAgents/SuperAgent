@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { IncomingMessage } from './chat-agent-integration'
+import { teamsActivityLinks } from './teams-deep-links'
 import { isTeamsFileUrl, isTeamsInlineImageUrl } from './teams-files'
 import { TEAMS_CHAT_SCOPES, teamsChatScope, type TeamsScope } from './teams-chat-scope'
 export { teamsChatScope, type TeamsScope } from './teams-chat-scope'
@@ -13,7 +14,7 @@ export const teamsActivitySchema = z.object({
   from: account, recipient: account, replyToId: id.optional(), text: z.string().optional(),
   conversation: z.object({ id, conversationType: scope, tenantId: id.optional(), name: z.string().optional() }),
   channelData: z.object({
-    tenant: z.object({ id }).optional(), team: z.object({ id: id.optional(), name: z.string().optional() }).optional(),
+    tenant: z.object({ id }).optional(), team: z.object({ id: id.optional(), name: z.string().optional(), aadGroupId: z.string().optional().catch(undefined) }).optional(),
     channel: z.object({ id, name: z.string().optional() }).optional(), chat: z.object({ id }).optional(),
     teamsChannelId: id.optional(), teamsTeamId: id.optional(), eventType: z.string().optional(), replyChain: z.object({ id }).optional(),
   }).optional(),
@@ -68,10 +69,6 @@ export function teamsIncomingMessage(a: TeamsActivity): IncomingMessage | undefi
   if (!text && !files.length) return
   const scopeId = teamsScopeId(a)
   const root = teamsThreadRoot(a)
-  const query = new URLSearchParams()
-  if (root) query.set('parentMessageId', root)
-  const tenantId = a.channelData?.tenant?.id ?? a.conversation.tenantId
-  if (tenantId) query.set('tenantId', tenantId)
   const timestamp = a.timestamp instanceof Date ? a.timestamp : a.timestamp ? new Date(a.timestamp) : new Date()
   if (Number.isNaN(timestamp.getTime())) return
   const sender = a.from.name?.trim() || undefined
@@ -82,6 +79,6 @@ export function teamsIncomingMessage(a: TeamsActivity): IncomingMessage | undefi
     chatId: teamsExternalId(scopeType, scopeId, root), userId: a.from.aadObjectId.toLowerCase(), userName: sender, chatName,
     chatType: scopeType === 'personal' ? 'private' : 'group',
     externalMessageId: a.id, timestamp, text, ...(files.length ? { files } : {}),
-    display: { messageUrl: `https://teams.microsoft.com/l/message/${encodeURIComponent(scopeId)}/${encodeURIComponent(a.id)}?${query}`, workspace: a.channelData?.team?.name },
+    display: { ...teamsActivityLinks(a, root), workspace: a.channelData?.team?.name },
   }
 }

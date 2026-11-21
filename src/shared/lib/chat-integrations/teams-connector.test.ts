@@ -88,7 +88,7 @@ describe('Teams conversations and native activities', () => {
   it('restores an authenticated DM destination across connector recreation and prepares display metadata', async () => {
     expect(await connector.acceptActivity(activity)).toBe('accepted')
     expect(events).toHaveBeenCalledWith(expect.objectContaining({ externalId: chatId, payload: expect.objectContaining({
-      userId: user, userName: 'Ada', chatName: 'Ada', text: 'Hello', display: expect.objectContaining({ messageUrl: expect.stringContaining('teams.microsoft.com/l/message/') }),
+      userId: user, userName: 'Ada', chatName: 'Ada', text: 'Hello', display: expect.objectContaining({ conversationUrl: expect.stringContaining('teams.microsoft.com/l/chat/0/0?') }),
     }) }))
     await connector.disconnect()
     connector = await open()

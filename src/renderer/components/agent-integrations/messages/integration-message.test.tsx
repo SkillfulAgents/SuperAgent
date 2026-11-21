@@ -68,6 +68,28 @@ describe('IntegrationMessage', () => {
     expect(screen.queryByText(/notificationId/)).not.toBeInTheDocument()
   })
 
+  it('opens the available bot chat when an older DM card stored a connector-only link', () => {
+    const botChat = 'https://teams.microsoft.com/l/chat/0/0?users=28%3A46e47d11-43c3-4154-a728-5d3526930a00&tenantId=43d49dd5-750f-48a5-9a8e-5cecc581d6ef'
+    card({ ...slack, integration: { ...slack.integration, provider: 'teams' },
+      request: { text: 'Hi', url: 'https://teams.microsoft.com/l/message/a%3AbotConnector/123' }, source: { kind: 'direct', url: botChat } })
+    expect(screen.getByRole('link', { name: 'Open chat in Microsoft Teams' })).toHaveAttribute('href', botChat)
+  })
+
+  it('hides a historical unreachable Teams link without a usable conversation fallback', () => {
+    card({ ...slack, integration: { ...slack.integration, provider: 'teams' },
+      request: { text: 'Hi', url: 'https://teams.microsoft.com/l/message/a%3AbotConnector/123' }, source: { kind: 'direct' } })
+    expect(screen.queryByTestId('integration-message-link')).not.toBeInTheDocument()
+    expect(screen.getByTestId('integration-message-request')).toHaveTextContent('Hi')
+  })
+
+  it('adds the Teams chat context to a historical group message permalink', () => {
+    card({ ...slack, integration: { ...slack.integration, provider: 'teams' },
+      request: { text: 'Hi', url: 'https://teams.microsoft.com/l/message/19%3Agroup%40thread.v2/123' }, source: { kind: 'group' } })
+    const link = new URL(screen.getByTestId('integration-message-link').getAttribute('href')!)
+    expect(link.searchParams.get('context')).toBe('{"contextType":"chat"}')
+    expect(decodeURIComponent(link.pathname)).toBe('/l/message/19:group@thread.v2/123')
+  })
+
   it('represents a Teams attachment without a message body', () => {
     card({ ...slack, integration: { ...slack.integration, provider: 'teams' }, source: { kind: 'direct' }, request: { text: '', author: { name: 'Amal' } } })
     expect(screen.getByTestId('integration-message-request')).toHaveTextContent('Shared attachment')
