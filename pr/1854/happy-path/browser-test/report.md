@@ -1,9 +1,7 @@
 [TEST_PASS]
-[REASON] Sent the prompt to agent QA-20261121-020906-ex0q and verified the reply names the page title "Example Domain".
-[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut app loaded with the sidebar listing QA-20261121-020906-ex0q under "Your Agents".
-[STEP] Step 2: Clicked QA-20261121-020906-ex0q in the sidebar — the agent page opened (idle, "Never active") with the message composer visible.
-[STEP] Step 3: Typed "Open a browser and go to https://example.com. Tell me the page title." and pressed Enter — the text stayed in the composer and was not sent. I then clicked the Send button, and the session "Check Example.com Page Title" opened showing the message with the agent in "working" state.
-[STEP] Step 4: Waited up to 3 minutes for a response — the response appeared within about 4 seconds ("Worked for 4s · 3 tool calls"), and the agent returned to idle.
-[STEP] Step 5: Verified the reply: "The page title of https://example.com is "Example Domain". I've closed the browser." Took a screenshot of the verified response.
-
-Note (not logged as a bug): The agent landing page placeholder says "Press cmd+enter to send", while the session composer shows "↵ Send". Plain Enter on the landing page did not submit, which matches the placeholder but is inconsistent with the session view.
+[REASON] Sent the browser-task prompt to the QA-20261121-022100-mua0 agent and verified the reply names "Example Domain" as the page title.
+[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-022100-mua0 and QA-20261121-022059-hawe.
+[STEP] Step 2: Clicked QA-20261121-022100-mua0 in the sidebar — its agent page opened at /agents/qa-20261121-022100-mua0-xspay65t48 with an empty message input.
+[STEP] Step 3: Typed "Open a browser and go to https://example.com. Tell me the page title." and pressed Enter, which did not send it, so I clicked the Send button. A new session "Check Example.com Page Title" started, the message appeared in the chat, and the agent showed "Working…" with a ToolSearch tool card.
+[STEP] Step 4: Waited about 60 seconds, well within the 3-minute limit. The page showed "Worked for 7s · 3 tool calls · 163,080 tokens" and the agent returned to idle.
+[STEP] Step 5: The reply reads "The page title is "Example Domain". The page loaded normally, and I closed the browser afterward." Verified the text and took a screenshot (step5-response-verified.png).
