@@ -5,7 +5,7 @@ import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { user } from '@shared/lib/db/schema'
 import { hostFiles } from '@shared/lib/blob-store/blob-store'
-import { imageService } from '@shared/lib/images/image-service'
+import { imageService, UnreadableImageError } from '@shared/lib/images/image-service'
 import { avatarOverrideSchema, MAX_AVATAR_BYTES } from '@shared/lib/user-profile-schema'
 
 export class InvalidAvatarError extends Error {}
@@ -39,8 +39,9 @@ export async function prepareAvatar(input: Buffer): Promise<Uint8Array> {
   }
   try {
     return await imageService().cleanPng(input)
-  } catch {
-    throw new InvalidAvatarError('This photo could not be read. Choose another image.')
+  } catch (error) {
+    if (error instanceof UnreadableImageError) throw new InvalidAvatarError('This photo could not be read. Choose another image.')
+    throw error
   }
 }
 

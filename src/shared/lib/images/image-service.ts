@@ -9,14 +9,25 @@ import { heicToJpegInWorkerThread } from './heic-worker-thread'
 export interface ImageService {
   /** The first image of a HEIC or HEIF file as a JPEG. It takes `input`, so the caller must not use it afterwards. */
   heicToJpeg(input: Uint8Array): Promise<Uint8Array<ArrayBuffer>>
-  /** The same PNG decoded and encoded again, so no ancillary chunks from `input` are kept. */
+  /**
+   * The same PNG decoded and encoded again, so no ancillary chunks from `input` are kept. It throws
+   * `UnreadableImageError` when `input` cannot be decoded; any other error is the service's own.
+   */
   cleanPng(input: Uint8Array): Promise<Uint8Array>
 }
+
+/** The input is not an image the service can decode, as opposed to the service failing. */
+export class UnreadableImageError extends Error {}
 
 const localImageService: ImageService = {
   heicToJpeg: heicToJpegInWorkerThread,
   async cleanPng(input) {
-    const decoded = PNG.sync.read(Buffer.from(input.buffer, input.byteOffset, input.byteLength), { checkCRC: true })
+    let decoded: ReturnType<typeof PNG.sync.read>
+    try {
+      decoded = PNG.sync.read(Buffer.from(input.buffer, input.byteOffset, input.byteLength), { checkCRC: true })
+    } catch (error) {
+      throw new UnreadableImageError('PNG could not be decoded', { cause: error })
+    }
     const clean = new PNG({ width: decoded.width, height: decoded.height })
     clean.data = decoded.data
     return Buffer.from(PNG.sync.write(clean))

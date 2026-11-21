@@ -19,8 +19,8 @@ vi.mock('../db', () => ({
   },
 }))
 
-import { imageService, setImageService } from '../images/image-service'
-import { setAvatar } from './profile-avatar-service'
+import { imageService, setImageService, UnreadableImageError } from '../images/image-service'
+import { InvalidAvatarError, setAvatar } from './profile-avatar-service'
 
 const { user } = schema
 const USER = 'user-1'
@@ -99,5 +99,20 @@ describe('setAvatar', () => {
     const reference = await setAvatar(USER, png(10))
 
     expect(fs.readFileSync(path.join(dataDir, 'profile-photos', fileOf(reference))).equals(cleaned)).toBe(true)
+  })
+
+  it('rejects a photo the image service cannot decode as invalid', async () => {
+    setImageService({ ...imageService(), cleanPng: async () => { throw new UnreadableImageError('Unsupported image') } })
+
+    await expect(setAvatar(USER, png(10))).rejects.toBeInstanceOf(InvalidAvatarError)
+    expect(storedFiles()).toEqual([])
+  })
+
+  it('passes an image service failure on instead of calling the photo invalid', async () => {
+    const outage = new Error('Image backend unavailable')
+    setImageService({ ...imageService(), cleanPng: async () => { throw outage } })
+
+    await expect(setAvatar(USER, png(10))).rejects.toBe(outage)
+    expect(storedFiles()).toEqual([])
   })
 })

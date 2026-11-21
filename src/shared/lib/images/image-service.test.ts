@@ -1,7 +1,7 @@
 import { crc32 } from 'node:zlib'
 import { PNG } from 'pngjs'
 import { describe, expect, it } from 'vitest'
-import { imageService } from './image-service'
+import { imageService, UnreadableImageError } from './image-service'
 
 function chunk(type: string, data: Buffer): Buffer {
   const length = Buffer.alloc(4)
@@ -25,5 +25,9 @@ describe('local image service', () => {
     expect(tagged.includes('tEXt')).toBe(true)
     expect(clean.includes('tEXt')).toBe(false)
     expect(PNG.sync.read(clean).data.equals(image.data)).toBe(true)
+  })
+
+  it('throws UnreadableImageError for bytes that are not a PNG', async () => {
+    await expect(imageService().cleanPng(new TextEncoder().encode('not a png'))).rejects.toBeInstanceOf(UnreadableImageError)
   })
 })
