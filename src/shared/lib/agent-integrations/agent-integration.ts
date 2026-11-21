@@ -38,6 +38,8 @@ export abstract class AgentIntegration {
   abstract authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean>
   abstract isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean>
   abstract sessionPolicy(integration: AgentIntegrationRecord, route: Partial<IntegrationRoute>): IntegrationSessionPolicy
+  /** Complete a durable provider operation that needs no agent session (such as a native file transfer). */
+  handleProviderInput?(event: IntegrationInputEvent, context: IntegrationSessionContext, assertCurrent: () => void): Promise<boolean>
   abstract prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<PreparedIntegrationInput>
   abstract deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void>
 

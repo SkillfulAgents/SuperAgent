@@ -41,6 +41,7 @@ vi.mock('@shared/lib/meeting-integrations/participant-credential', () => ({
 }))
 
 import { Authenticated, AgentAdmin, AgentRead, AgentUser, ResolveAgent, getAgentId, getAuthorizedAgentRole, getResolvedAgent } from './auth'
+import agentIntegrationsRouter from '../routes/agent-integrations'
 
 const AGENT = 'a1b2c3d4e5'
 const OTHER_AGENT = 'f6g7h8i9j0'
@@ -84,6 +85,35 @@ afterEach(async () => {
 })
 
 describe('a member on an agent route', () => {
+  it('applies Teams setup ownership to the saved integration, and keeps credentials private on reads', async () => {
+    const api = new Hono().route('/integrations', agentIntegrationsRouter)
+    const config = {
+      appId: '11111111-1111-4111-8111-111111111111',
+      tenantId: '22222222-2222-4222-8222-222222222222',
+      clientSecret: 'private-test-value',
+      deliveryMode: 'https',
+    }
+    await testDb.insert(schema.chatIntegrations).values({
+      id: 'teams-installation', provider: 'teams', agentSlug: AGENT, config: JSON.stringify(config),
+      createdAt: new Date(), updatedAt: new Date(),
+    }).run()
+    for (const [user, canRead, canManage] of [
+      ['admin', 200, 200], ['member', 200, 403], ['viewer', 200, 403], ['outsider', 403, 403],
+    ] as const) {
+      const headers = { 'x-test-user': user }
+      const row = await api.request('/integrations/teams-installation', { headers })
+      expect(row.status).toBe(canRead)
+      if (canRead === 200) {
+        const body = await row.json()
+        expect(body.teams.appId).toBe(config.appId)
+        expect(body).not.toHaveProperty('config')
+        expect(JSON.stringify(body)).not.toContain(config.clientSecret)
+      }
+      expect((await api.request('/integrations/teams-installation/test', { method: 'POST', headers })).status).toBe(canManage)
+    }
+    expect((await api.request('/integrations/teams-installation')).status).toBe(401)
+  })
+
   it('reads the agent and their role in one statement', async () => {
     const select = vi.spyOn(testDb, 'select')
 

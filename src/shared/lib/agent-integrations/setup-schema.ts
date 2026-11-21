@@ -7,6 +7,8 @@ export const integrationSetupMetadataSchema = z.object({
   transports: z.array(z.enum(INTEGRATION_TRANSPORTS)).optional(),
   agentUserEmails: z.array(z.string().email()).optional(),
   emailDomain: z.string().min(1).optional(),
+  teamsRelayAvailable: z.boolean().optional(),
+  teamsMessagingBaseUrl: z.string().url().optional(),
   creationUrl: z.string().url().optional(),
   redirectUri: z.string().url().optional(),
   /** A connected team directory can create this installation's app; the host fills this in. */

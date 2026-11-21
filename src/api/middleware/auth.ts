@@ -388,6 +388,8 @@ export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
   lookupFn: (id: string) => Promise<T | null | undefined>
   contextKey: string
   entityName: string
+  /** Match AgentRead/AgentUser/AgentAdmin on entities managed through the agent's own routes. */
+  workspaceAdminIsOwner?: boolean
 }): (minRole: AgentRole) => MiddlewareHandler {
   return (minRole: AgentRole): MiddlewareHandler => {
     return async (c: Context, next: Next) => {
@@ -406,7 +408,7 @@ export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
       const refused = refuseMeetingParticipant(c)
       if (refused) return refused
       const user = getUser(c)
-      const role = await getUserAgentRole(user.id, entity.agentSlug)
+      const role = opts.workspaceAdminIsOwner && isAdmin(user) ? 'owner' : await getUserAgentRole(user.id, entity.agentSlug)
       if (!role || !hasMinRole(role, minRole)) {
         return c.json({ error: 'Forbidden' }, 403)
       }

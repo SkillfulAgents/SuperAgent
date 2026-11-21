@@ -21,6 +21,8 @@ import settings from './routes/settings'
 import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
+import teamsMessages from './routes/teams-messages'
+import { createTeamsRelayGateway } from './routes/teams-relay-gateway'
 import agentIntegrationsRouter from './routes/agent-integrations'
 import meetingParticipantRouter from './routes/meeting-participant'
 import notifications from './routes/notifications'
@@ -111,6 +113,17 @@ app.use('*', cors({
 // Routes that set their own header — including the static web build's — are
 // left untouched.
 app.use('*', defaultCacheControl)
+
+// This route authenticates the Bot Connector independently, including on a private host with an HTTPS tunnel.
+app.route('/api/teams/messages', teamsMessages)
+if (process.env.TEAMS_RELAY_GATEWAY_PRIVATE_JWK || process.env.TEAMS_RELAY_HOOK_ORIGIN) {
+  const key = process.env.TEAMS_RELAY_GATEWAY_PRIVATE_JWK
+  const origin = process.env.TEAMS_RELAY_HOOK_ORIGIN
+  if (!key || !origin) throw new Error('The Teams relay gateway needs both TEAMS_RELAY_GATEWAY_PRIVATE_JWK and TEAMS_RELAY_HOOK_ORIGIN.')
+  let privateJwk: unknown
+  try { privateJwk = JSON.parse(key) } catch { throw new Error('TEAMS_RELAY_GATEWAY_PRIVATE_JWK must be a private P-256 JWK.') }
+  app.route('/api/teams-relay', createTeamsRelayGateway(privateJwk, origin))
+}
 
 // Local mode: localhost IP restriction for all API endpoints (except container-facing endpoints)
 if (!isAuthMode()) {

@@ -63,7 +63,7 @@ export async function prepareIntegrationSetup(provider: string, rawInput: unknow
   const setup = getIntegrationSetup(provider)
   const { input, provision } = takeProvision(rawInput)
   if (provision && fromAgent) throw new IntegrationSetupError('An agent can’t create apps; its owner sets them up in the agent integration page.', 403)
-  const { relay: wantsRelay, verification, ...prepared } = await setup.prepare(input, fromAgent ? { ...context, fromAgent } : context)
+  const { relay: wantsRelay, verification, bindRelay, ...prepared } = await setup.prepare(input, fromAgent ? { ...context, fromAgent } : context)
   const definition = agentIntegrationRegistry.getDefinition(provider)!
   const transports = supportedTransports(definition)
   if (wantsRelay && !transports.includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)
@@ -78,7 +78,15 @@ export async function prepareIntegrationSetup(provider: string, rawInput: unknow
       captureException(error, { tags: { component: 'agent-integration', operation: 'release-relay-endpoint' }, extra: { provider, endpointId: relay.endpointId } })
     }
   }
-  if (!provision) return { ...prepared, config: { ...prepared.config, relay }, release: releaseRelay }
+  if (!provision) {
+    try {
+      const delivery = await bindRelay?.(relay)
+      return { ...prepared, config: { ...prepared.config, ...delivery, relay }, release: releaseRelay }
+    } catch (error) {
+      await releaseRelay()
+      throw error
+    }
+  }
 
   // The app is created with the webhook URL in it, and its secret then signs what arrives there.
   let app: Awaited<ReturnType<typeof createAgentApp>>

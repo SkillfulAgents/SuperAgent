@@ -134,6 +134,7 @@ const IntegrationAgentRole = EntityAgentRole({
   lookupFn: async (id: string) => getAgentIntegration(id),
   contextKey: 'agentIntegration',
   entityName: 'Agent integration',
+  workspaceAdminIsOwner: true,
 })
 
 // Chat management permits agent users; private OAuth app management needs an owner.

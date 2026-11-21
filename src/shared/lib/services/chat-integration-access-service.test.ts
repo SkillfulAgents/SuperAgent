@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import type { AppDatabase } from '../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
+import { teamsExternalId } from '@shared/lib/chat-integrations/teams-activity'
 
 let testDb: AppDatabase
 let handle: TestDatabase
@@ -31,6 +32,7 @@ describe('chat-integration-access-service', () => {
     await testDb.insert(schema.chatIntegrations).values([
       { id: 'int-tg', agentSlug: 'test-agent', provider: 'telegram', config: '{}', requireApproval: true, createdAt: now, updatedAt: now },
       { id: 'int-slack', agentSlug: 'test-agent', provider: 'slack', config: '{}', requireApproval: false, createdAt: now, updatedAt: now },
+      { id: 'int-teams', agentSlug: 'test-agent', provider: 'teams', config: '{}', requireApproval: true, createdAt: now, updatedAt: now },
     ]).run()
   })
 
@@ -52,6 +54,32 @@ describe('chat-integration-access-service', () => {
   }
 
   describe('decideInboundAccess', () => {
+    it('forwards Teams DMs from different people and addressed shared conversations without claiming an owner', async () => {
+      const contacts = [
+        { externalChatId: teamsExternalId('personal', 'first-dm'), chatType: 'private', userId: 'first' },
+        { externalChatId: teamsExternalId('personal', 'second-dm'), chatType: 'private', userId: 'second' },
+        { externalChatId: teamsExternalId('groupChat', 'group'), chatType: 'group', userId: 'second' },
+        { externalChatId: teamsExternalId('channel', 'channel', 'thread'), chatType: 'group', userId: 'first' },
+      ] as const
+      for (const contact of contacts) {
+        expect(await decideInboundAccess({ integrationId: 'int-teams', ...contact }))
+          .toEqual({ action: 'forward', sendNotice: false, status: 'allowed' })
+        expect(await isChatAllowed('int-teams', contact.externalChatId)).toBe(true)
+      }
+      const rows = await testDb.select().from(schema.chatIntegrationAccess)
+        .where(eq(schema.chatIntegrationAccess.integrationId, 'int-teams')).all()
+      expect(rows).toHaveLength(0)
+    })
+
+    it('continues Teams chats that were left pending by an older installation', async () => {
+      const channel = teamsExternalId('channel', 'channel-one')
+      const thread = teamsExternalId('channel', 'channel-one', 'reply')
+      await seedPending('int-teams', channel)
+      expect(await decideInboundAccess({ integrationId: 'int-teams', externalChatId: thread, chatType: 'group' }))
+        .toEqual({ action: 'forward', sendNotice: false, status: 'allowed' })
+      expect(await isChatAllowed('int-teams', thread)).toBe(true)
+    })
+
     it('bootstraps the first private contact to allowed', async () => {
       const d = (await decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'c1', chatType: 'private', userId: 'u1' }))
       expect(d).toEqual({ action: 'forward', sendNotice: false, status: 'bootstrapped' })

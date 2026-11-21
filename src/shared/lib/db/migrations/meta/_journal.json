@@ -526,6 +526,27 @@
       "when": 1795056099108,
       "tag": "0074_browser_vault_sign_in_methods",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "6",
+      "when": 1795225098749,
+      "tag": "0075_teams_conversations",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "6",
+      "when": 1795226412420,
+      "tag": "0076_teams_team_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "6",
+      "when": 1795232032677,
+      "tag": "0077_teams_destination_names",
+      "breakpoints": true
     }
   ]
 }

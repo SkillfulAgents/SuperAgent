@@ -114,6 +114,24 @@ describe('buildChatRows', () => {
     expect(rows[0].title).toBe('Canonical Title')
   })
 
+  it('uses stored sender names for older personal Teams access requests and human scopes for unnamed shared conversations', () => {
+    const rows = buildChatRows([], [
+      access({ externalChatId: 'teams:personal:YWNlcw', status: 'pending', firstUserName: 'Maya Chen' }),
+      access({ externalChatId: 'teams:channel:YWNlcw', status: 'pending', chatType: 'group', firstUserName: 'Ada' }),
+      access({ externalChatId: 'teams:groupChat:YWNlcw', status: 'pending', chatType: 'group' }),
+    ])
+    expect(rows.map(({ title, requesterName }) => [title, requesterName])).toEqual([
+      ['Maya Chen', undefined], ['Teams channel', 'Ada'], ['Teams group chat', undefined],
+    ])
+  })
+
+  it('retains the actual Teams channel name and avoids encoded IDs on unnamed session windows', () => {
+    const rows = buildChatRows([session({ externalChatId: 'teams:channel:b3Bz|dGhyZWFk', sessionId: 'one' })], [
+      access({ externalChatId: 'teams:channel:b3Bz', status: 'pending', title: 'Support', firstUserName: 'Ada' }),
+    ])
+    expect(rows.map(r => r.title)).toEqual(['Teams channel', 'Support'])
+  })
+
   it('falls back to a short id when nothing is named', () => {
     const rows = buildChatRows([session({ externalChatId: 'abcdef123456', sessionId: 's' })], [])
     expect(rows[0].title).toBe('Chat 123456')

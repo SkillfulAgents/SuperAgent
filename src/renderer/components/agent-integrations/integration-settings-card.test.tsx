@@ -53,7 +53,8 @@ describe('IntegrationSettingsCard', () => {
   it.each([
     { desc: 'shows the require-approval gate for a Telegram access-admin', overrides: {}, canManageAccess: true, visible: true },
     { desc: 'hides require-approval without access-admin rights', overrides: {}, canManageAccess: false, visible: false },
-    { desc: 'hides require-approval for non-Telegram providers', overrides: { provider: 'slack' as const }, canManageAccess: true, visible: false },
+    { desc: 'hides require-approval for Slack', overrides: { provider: 'slack' as const }, canManageAccess: true, visible: false },
+    { desc: 'hides require-approval for Teams', overrides: { provider: 'teams' as const }, canManageAccess: true, visible: false },
   ])('$desc', ({ overrides, canManageAccess, visible }) => {
     render(<IntegrationSettingsCard integration={makeIntegration(overrides)} canManageAccess={canManageAccess} />)
     const gate = screen.queryByLabelText(/require approval/i)

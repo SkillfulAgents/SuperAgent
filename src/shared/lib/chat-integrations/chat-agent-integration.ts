@@ -149,7 +149,7 @@ const CHAT_EVENT_LABELS: Record<IntegrationMessageSource['kind'], string> = {
 
 // ── Abstract class ──────────────────────────────────────────────────────
 
-export interface SendFileOptions { asImage?: boolean; alsoSendToChannel?: boolean; altText?: string; deadline?: number }
+export interface SendFileOptions { workspacePath?: string; asImage?: boolean; alsoSendToChannel?: boolean; altText?: string; deadline?: number }
 
 // The agent waits on send_message, and on the cloud runtime agent-to-host requests are cut at 30 s
 // while the host carries on, so the agent would retry and post twice. It gets its answer by this budget.
@@ -276,7 +276,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    * (Slack Block Kit, Telegram inline keyboards, etc.).
    * Returns the external message ID.
    */
-  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string>
+  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string, respondentId?: string): Promise<string>
 
   /**
    * A tool call starts. Default: post its pill text and return that message, which
@@ -383,7 +383,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (skip) this.releaseAcknowledgements(context.externalId, [message.externalMessageId])
     else if (context.deliveryId) this.quoteStates.get(context.externalId)?.deliveries.set(context.deliveryId, message.externalMessageId)
     if (failedFiles.length && (await this.isAllowed(context))) {
-      await this.sendMessage(context.externalId, { text: `Could not download file(s): ${failedFiles.join(', ')}. ${skip ? 'Message was not sent to the agent.' : 'Your text message will still be sent.'}\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.` })
+      await this.sendMessage(context.externalId, { text: `Could not download file(s): ${failedFiles.join(', ')}. ${skip ? 'Message was not sent to the agent.' : 'Your text message will still be sent.'}${this.provider === 'slack' ? '\n\nEnsure the `files:read` scope is added and the Slack app is reinstalled.' : ''}` })
     }
     return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.(message), display: this.describeMessage(message, request) }
   }
@@ -524,12 +524,12 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (output.type === 'request-settled') { await this.sendMessage(context.externalId, { text: 'That request was already handled — this card is no longer waiting on you.' }); return }
     if (output.type === 'request-opened') {
       if (output.request.scope.sessionId) {
-        await processSSEEvent(this.deliveryState(context), { type: 'user_request_created', request: output.request }, chatSettings(context.integration).showToolCalls, context.sessionId)
+        await processSSEEvent(this.deliveryState(context), { type: 'user_request_created', request: output.request }, chatSettings(context.integration).showToolCalls, context.sessionId, context.replyTarget?.respondentId)
       }
       const card = reviewCardFromRegistry(output.request)
       if (!card) return
       const marks = this.acknowledgedMessages(context.externalId)
-      await this.sendUserRequestCard(context.externalId, card, context.sessionId)
+      await this.sendUserRequestCard(context.externalId, card, context.sessionId, context.replyTarget?.respondentId)
       this.releaseAcknowledgements(context.externalId, marks)
       return
     }

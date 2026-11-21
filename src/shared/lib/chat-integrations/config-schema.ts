@@ -8,6 +8,17 @@ import { z } from 'zod'
 import { integrationRelayConfigShape } from '../agent-integrations/transport'
 import { provisionedAppConfigShape } from '../agent-integrations/provisioned-app'
 
+const microsoftId = z.string().trim().uuid().toLowerCase()
+export const teamsIdentitySchema = z.object({ tenantId: microsoftId, appId: microsoftId })
+export const teamsConfigSchema = teamsIdentitySchema.extend({
+  deliveryMode: z.enum(['https', 'socket']).default('https'),
+  clientSecret: z.string().min(1, 'Microsoft client secret is required'),
+  /** Public endpoint provided by the host for this installation. */
+  messagingEndpoint: z.string().url().optional(),
+  ...integrationRelayConfigShape,
+})
+export type TeamsConfig = z.infer<typeof teamsConfigSchema>
+
 export const telegramConfigSchema = z.object({
   botToken: z.string().min(1, 'Bot token is required'),
   chatId: z.string().optional(),
@@ -80,6 +91,7 @@ export const imessageConfigSchema = z.object({
 
 /** Config the host writes itself; a settings patch or setup input can't supply it. */
 const HOST_OWNED_FIELDS: Partial<Record<string, readonly string[]>> = {
+  teams: ['relay', 'messagingEndpoint'],
   telegram: ['relay', 'webhookSecret'],
   slack: ['relay', 'webhookStatus', 'appId', 'provisionedApp'],
   imessage: ['relay', 'webhookSecret'],
@@ -96,9 +108,9 @@ export type TelegramConfig = z.infer<typeof telegramConfigSchema>
 export type SlackConfig = z.infer<typeof slackConfigSchema>
 export type IMessageConfig = z.infer<typeof imessageConfigSchema>
 
-export const CHAT_PROVIDERS = ['telegram', 'slack', 'imessage'] as const
+export const CHAT_PROVIDERS = ['telegram', 'slack', 'teams', 'imessage'] as const
 export type ChatProvider = (typeof CHAT_PROVIDERS)[number]
-type ChatConfig = TelegramConfig | SlackConfig | IMessageConfig
+type ChatConfig = TeamsConfig | TelegramConfig | SlackConfig | IMessageConfig
 
 const configPatchSchema = z.record(z.string(), z.unknown())
 
@@ -110,6 +122,7 @@ export function isMaskedCredential(value: string): boolean {
 }
 
 const CREDENTIAL_FIELDS: Record<ChatProvider, readonly string[]> = {
+  teams: ['clientSecret'],
   telegram: ['botToken'],
   slack: ['botToken', 'appToken', 'signingSecret'],
   imessage: ['gatewayUrl', 'token'],
@@ -124,6 +137,7 @@ export function validateChatIntegrationConfig(
   config: unknown,
 ): ChatConfig {
   switch (provider) {
+    case 'teams': return teamsConfigSchema.parse(config)
     case 'telegram': return telegramConfigSchema.parse(config)
     case 'slack': return slackConfigSchema.parse(config)
     case 'imessage': return imessageConfigSchema.parse(config)
@@ -180,6 +194,17 @@ export function mergeChatIntegrationConfig(
   if (!stored) return validateChatIntegrationConfig(provider, unmaskedPatch)
 
   const merged: Record<string, unknown> = { ...stored, ...unmaskedPatch }
+  if (provider === 'teams') {
+    const previous = teamsConfigSchema.parse(stored)
+    if ('deliveryMode' in unmaskedPatch && unmaskedPatch.deliveryMode !== previous.deliveryMode) {
+      throw new z.ZodError([{ code: 'custom', path: ['deliveryMode'], message: 'Create a new Teams installation to change how it receives activities' }])
+    }
+    const identity = previous
+    const updated = teamsIdentitySchema.parse(merged)
+    if (updated.appId !== identity.appId || updated.tenantId !== identity.tenantId) {
+      throw new z.ZodError([{ code: 'custom', path: ['appId'], message: 'Create a new installation to use a different Teams app or tenant' }])
+    }
+  }
   // A signing secret saved again (even the same one) hasn't been seen to verify yet.
   if (provider === 'slack' && 'signingSecret' in unmaskedPatch) delete merged.webhookStatus
   return validateChatIntegrationConfig(provider, merged)

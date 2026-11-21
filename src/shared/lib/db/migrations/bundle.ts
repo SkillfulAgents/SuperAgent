@@ -866,5 +866,33 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1795056099108,
     "hash": "109901b115f99f73f721670b26d4837958d6703ee9f6b5cbd72dfd1176ca7e45"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `teams_cards` (\n\t`token` text PRIMARY KEY NOT NULL,\n\t`integration_id` text NOT NULL,\n\t`external_id` text NOT NULL,\n\t`request_id` text,\n\t`respondent_id` text NOT NULL,\n\t`activity_id` text,\n\t`payload` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `teams_cards_request_idx` ON `teams_cards` (`integration_id`,`request_id`);",
+      "\nCREATE TABLE `teams_conversation_references` (\n\t`integration_id` text NOT NULL,\n\t`external_id` text NOT NULL,\n\t`tenant_id` text NOT NULL,\n\t`app_id` text NOT NULL,\n\t`service_url` text NOT NULL,\n\t`conversation_id` text NOT NULL,\n\t`scope_id` text NOT NULL,\n\t`scope_type` text NOT NULL,\n\t`thread_root` text,\n\t`originator_id` text NOT NULL,\n\tPRIMARY KEY(`integration_id`, `external_id`),\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795225098749,
+    "hash": "c3f4e7ee79fb285eaf6ff5d783f4a8833ba360762be747750f47ea59f8b2ba00"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `teams_conversation_references` ADD `team_id` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1795226412420,
+    "hash": "32cafc796aae654705e367ceddd67e433b7866f1d0549a29f17fd18db790ea5e"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `teams_conversation_references` ADD `display_name` text;\n",
+      "\n-- Earlier Teams installations kept destination names on the conversation approval.\nUPDATE teams_conversation_references AS ref\nSET display_name = (\n  SELECT coalesce(access.title, CASE WHEN ref.scope_type = 'personal' THEN access.first_user_name END)\n  FROM chat_integration_access AS access\n  WHERE access.integration_id = ref.integration_id AND access.external_chat_id = ref.external_id\n)\nWHERE ref.thread_root IS NULL;\n",
+      "\nDELETE FROM chat_integration_access\nWHERE integration_id IN (SELECT id FROM chat_integrations WHERE provider = 'teams');\n"
+    ],
+    "bps": true,
+    "folderMillis": 1795232032677,
+    "hash": "b679c9d009a254b0bb80195664e638bee2150988b9610e17f87bdbfde64d528f"
   }
 ]

@@ -49,6 +49,52 @@ describe('IntegrationMessage', () => {
     expect(screen.getByTestId('integration-message-agent-input').textContent).toBe(MODEL_TEXT)
   })
 
+  it('renders a Teams thread with its author, team, channel and link to the original message', () => {
+    const url = 'https://teams.microsoft.com/l/message/19%3Aops/123'
+    card({
+      ...slack,
+      integration: { ...slack.integration, provider: 'teams' },
+      event: { type: 'message', label: 'Thread reply' },
+      request: { ...slack.request!, url, author: { name: 'Ada Lovelace' } },
+      source: { kind: 'thread', workspace: 'Support', title: 'Releases' },
+    })
+    const root = screen.getByTestId('integration-message')
+    expect(root).toHaveAttribute('data-provider', 'teams')
+    expect(root).toHaveTextContent('Microsoft Teams · Thread reply')
+    expect(root).toHaveTextContent('Support / Releases')
+    expect(within(root).getByTestId('integration-message-author')).toHaveTextContent('Ada Lovelace')
+    expect(within(root).getByTestId('integration-message-request')).toHaveTextContent('Can you check the deploy?')
+    expect(within(root).getByTestId('integration-message-link')).toHaveAttribute('href', url)
+    expect(screen.queryByText(/notificationId/)).not.toBeInTheDocument()
+  })
+
+  it('opens the available bot chat when an older DM card stored a connector-only link', () => {
+    const botChat = 'https://teams.microsoft.com/l/chat/0/0?users=28%3A46e47d11-43c3-4154-a728-5d3526930a00&tenantId=43d49dd5-750f-48a5-9a8e-5cecc581d6ef'
+    card({ ...slack, integration: { ...slack.integration, provider: 'teams' },
+      request: { text: 'Hi', url: 'https://teams.microsoft.com/l/message/a%3AbotConnector/123' }, source: { kind: 'direct', url: botChat } })
+    expect(screen.getByRole('link', { name: 'Open chat in Microsoft Teams' })).toHaveAttribute('href', botChat)
+  })
+
+  it('hides a historical unreachable Teams link without a usable conversation fallback', () => {
+    card({ ...slack, integration: { ...slack.integration, provider: 'teams' },
+      request: { text: 'Hi', url: 'https://teams.microsoft.com/l/message/a%3AbotConnector/123' }, source: { kind: 'direct' } })
+    expect(screen.queryByTestId('integration-message-link')).not.toBeInTheDocument()
+    expect(screen.getByTestId('integration-message-request')).toHaveTextContent('Hi')
+  })
+
+  it('adds the Teams chat context to a historical group message permalink', () => {
+    card({ ...slack, integration: { ...slack.integration, provider: 'teams' },
+      request: { text: 'Hi', url: 'https://teams.microsoft.com/l/message/19%3Agroup%40thread.v2/123' }, source: { kind: 'group' } })
+    const link = new URL(screen.getByTestId('integration-message-link').getAttribute('href')!)
+    expect(link.searchParams.get('context')).toBe('{"contextType":"chat"}')
+    expect(decodeURIComponent(link.pathname)).toBe('/l/message/19:group@thread.v2/123')
+  })
+
+  it('represents a Teams attachment without a message body', () => {
+    card({ ...slack, integration: { ...slack.integration, provider: 'teams' }, source: { kind: 'direct' }, request: { text: '', author: { name: 'Amal' } } })
+    expect(screen.getByTestId('integration-message-request')).toHaveTextContent('Shared attachment')
+  })
+
   it('previews a Linear ticket with the comment that invoked the agent', () => {
     card(linear)
     const preview = screen.getByTestId('linear-ticket-preview')

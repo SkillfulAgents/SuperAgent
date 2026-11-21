@@ -49,7 +49,7 @@ export function PersonAvatar({ person, size = 36, className }: {
 }
 
 /** Opens the source in the provider. Links are validated https on the host. */
-export function OpenInProviderLink({ href, provider, className }: { href: string; provider: string; className?: string }) {
+export function OpenInProviderLink({ href, provider, className, label }: { href: string; provider: string; className?: string; label?: string }) {
   return (
     <a
       href={href}
@@ -58,7 +58,7 @@ export function OpenInProviderLink({ href, provider, className }: { href: string
       className={cn('inline-flex items-center gap-0.5 text-muted-foreground hover:text-foreground hover:underline', className)}
       data-testid="integration-message-link"
     >
-      Open in {formatProviderName(provider)}
+      {label ?? `Open in ${formatProviderName(provider)}`}
       <ArrowUpRight className="h-3 w-3" aria-hidden />
     </a>
   )
@@ -115,8 +115,9 @@ function AgentInputToggle({ open, onToggle, controls }: { open: boolean; onToggl
  * received, collapsed by default. The card shows the request; this keeps the
  * full context one click away.
  */
-export function IntegrationMessageFooter({ display, message, link, className }: Pick<IntegrationMessageProps, 'display' | 'message'> & {
+export function IntegrationMessageFooter({ display, message, link, linkLabel, className }: Pick<IntegrationMessageProps, 'display' | 'message'> & {
   link?: string
+  linkLabel?: string
   className?: string
 }) {
   const [open, setOpen] = useState(false)
@@ -125,7 +126,7 @@ export function IntegrationMessageFooter({ display, message, link, className }: 
     <div className={cn('flex w-full flex-col gap-2', className)}>
       <div className="flex items-center justify-end gap-3 text-xs">
         <AgentInputToggle open={open} onToggle={() => setOpen((value) => !value)} controls={panelId} />
-        {link && <OpenInProviderLink href={link} provider={display.integration.provider} />}
+        {link && <OpenInProviderLink href={link} provider={display.integration.provider} label={linkLabel} />}
       </div>
       {open && (
         <pre

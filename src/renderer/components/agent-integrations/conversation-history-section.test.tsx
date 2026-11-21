@@ -72,17 +72,28 @@ describe('ConversationHistorySection (inbox)', () => {
     expect(onSelectWindow).toHaveBeenCalledWith(null)
   })
 
-  it('shows a pending chat tagged Blocked with Approve/Deny actions for a Telegram owner', () => {
+  it('shows a pending chat awaiting approval with Approve/Deny actions for a Telegram owner', () => {
     h.access = [makeAccess({ externalChatId: 'chat-p', status: 'pending', title: 'Dana', firstMessagePreview: 'hello?' })]
     render(<ConversationHistorySection {...base} sessions={[]} routeSessionId={null} />)
     expect(screen.getByText('Dana')).toBeInTheDocument()
-    expect(screen.getByText('Blocked')).toBeInTheDocument()
+    expect(screen.getByText('Pending approval')).toBeInTheDocument()
     // The first message (chat request) is surfaced in the row subtitle for triage.
     expect(screen.getByText('hello?')).toBeInTheDocument()
     // A pending request offers both decisions directly - not a single "Unblock".
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Block' })).not.toBeInTheDocument()
+  })
+
+  it('opens Teams sessions without showing historical approval requests to the owner', () => {
+    const externalChatId = 'teams:channel:MTkudGVhbXM'
+    h.access = [makeAccess({ externalChatId, chatType: 'group', status: 'pending', firstUserName: 'Maya Chen' })]
+    const session = makeSession({ externalChatId, sessionId: 'teams-session', displayName: 'Release validation' })
+    render(<ConversationHistorySection {...base} integration={makeChatIntegration({ provider: 'teams' })} providerName="Teams" sessions={[session]} routeSessionId={null} />)
+    fireEvent.click(screen.getByText('Release validation'))
+    expect(base.onSelectWindow).toHaveBeenCalledWith('teams-session')
+    expect(screen.queryByText('Pending approval')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 
   it('opens a pending chat to its request when the row body is clicked', () => {

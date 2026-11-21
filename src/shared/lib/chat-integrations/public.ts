@@ -5,6 +5,7 @@ import {
   CHAT_PROVIDERS,
   type ChatProvider,
   type SlackConfig,
+  type TeamsConfig,
   type TelegramConfig,
 } from './config-schema'
 
@@ -36,13 +37,24 @@ export interface PublicSlackDelivery {
   appId?: string
 }
 
+export interface PublicTeamsDelivery {
+  deliveryMode: 'https' | 'socket'
+  tenantId: string
+  appId: string
+  messagingEndpoint?: string
+}
+
 export type PublicChatIntegration = PublicAgentIntegration<PublicChatIntegrationSettings>
   & Pick<ChatIntegration, 'showToolCalls' | 'requireApproval' | 'sessionTimeout'>
-  & { provider: ChatProvider; slack?: PublicSlackDelivery }
+  & { provider: ChatProvider; slack?: PublicSlackDelivery; teams?: PublicTeamsDelivery }
 
 /** Slack's delivery state, for an integration that is a Slack one. */
 export function publicSlackDelivery(integration: PublicAgentIntegration): PublicSlackDelivery | undefined {
   return isPublicChatIntegration(integration) ? integration.slack : undefined
+}
+
+export function publicTeamsDelivery(integration: PublicAgentIntegration): PublicTeamsDelivery | undefined {
+  return isPublicChatIntegration(integration) ? integration.teams : undefined
 }
 
 /** Narrow an already-serialized integration to the chat family's public contract. */
@@ -75,6 +87,7 @@ export function toPublicChatIntegration(integration: ChatIntegration): PublicCha
     settings.answerInThread = slack.answerInThread
     settings.newSessionPerThread = slack.newSessionPerThread
   }
+  const teams = parsed && integration.provider === 'teams' ? parsed as TeamsConfig : null
   const webhookStatus = slack?.webhookStatus ?? 'pending'
 
   return {
@@ -83,6 +96,7 @@ export function toPublicChatIntegration(integration: ChatIntegration): PublicCha
     // A Slack installation set up with webhooks has no bot token until its app exists.
     hasCredentials: parsed !== null && (!slack || !!slack.botToken),
     settings,
+    ...(teams ? { teams: { deliveryMode: teams.deliveryMode, appId: teams.appId, tenantId: teams.tenantId, messagingEndpoint: teams.messagingEndpoint } } : {}),
     ...(slack ? {
       slack: {
         botTokenSaved: !!slack.botToken,

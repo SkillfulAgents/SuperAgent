@@ -183,6 +183,17 @@ describe('input handoff results', () => {
     expect(await adapter.input('second')).toBe('rejected')
     expect(await rows()).toHaveLength(1)
   })
+  it('finishes and deduplicates an authorized provider operation without starting an agent or creating a session', async () => {
+    await start()
+    const complete = vi.fn().mockResolvedValue(true)
+    adapter.handleProviderInput = complete
+    expect(await adapter.input('file-consent')).toBe('accepted')
+    await vi.waitFor(async () => expect((await rows())[0]?.state).toBe('delivered'))
+    expect(await adapter.input('file-consent')).toBe('duplicate')
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(runtime.start).not.toHaveBeenCalled()
+    expect(runtime.create).not.toHaveBeenCalled()
+  })
   it('asks for a retry once the manager no longer listens to the connection', async () => {
     await start()
     manager.stop()

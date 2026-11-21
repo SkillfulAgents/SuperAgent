@@ -37,13 +37,16 @@ function statesApproval(row: ReadIntegration, integrationId: string): row is Rea
   return row.id === integrationId && (row.provider !== 'telegram' || 'requireApproval' in row)
 }
 
-// fail-closed for unknown integration; true for non-telegram / public bot.
+function needsApproval(integration: ReadIntegration & { requireApproval?: boolean | null }): boolean {
+  return integration.provider === 'telegram' && integration.requireApproval === true
+}
+
 // `current` is the integration's row when the caller read it for this check:
 // it is not read again (a row that cannot answer is, so nothing fails open).
 export async function isChatAllowed(integrationId: string, externalChatId: string, current?: ReadIntegration): Promise<boolean> {
   const integ = current && statesApproval(current, integrationId) ? current : await getIntegration(integrationId)
   if (!integ) return false
-  if (integ.provider !== 'telegram' || integ.requireApproval !== true) return true
+  if (!needsApproval(integ)) return true
   return (await getChatAccess(integrationId, externalChatId))?.status === 'allowed'
 }
 
@@ -54,7 +57,7 @@ export async function decideInboundAccess(args: {
 }): Promise<AccessDecision> {
   const integ = await getIntegration(args.integrationId)
   if (!integ) return { action: 'blocked', sendNotice: false, status: 'denied' } // fail closed
-  if (integ.provider !== 'telegram' || integ.requireApproval !== true) return { action: 'forward', sendNotice: false, status: 'allowed' }
+  if (!needsApproval(integ)) return { action: 'forward', sendNotice: false, status: 'allowed' }
 
   const existing = await getChatAccess(args.integrationId, args.externalChatId)
   if (existing?.status === 'allowed') return { action: 'forward', sendNotice: false, status: 'allowed' }

@@ -1,0 +1,1 @@
+ALTER TABLE `teams_conversation_references` ADD `team_id` text;

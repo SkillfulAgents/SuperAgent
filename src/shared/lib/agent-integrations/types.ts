@@ -144,7 +144,7 @@ export type IntegrationOutput =
   | { type: 'turn-started' }
   | { type: 'session-reset' }
   | { type: 'access-approved' }
-  | { type: 'request-settled' }
+  | { type: 'request-settled'; requestId?: string }
 
 /** Who is calling an integration tool: the agent through its runtime, or a person managing the installation. */
 export interface IntegrationToolInvocation {

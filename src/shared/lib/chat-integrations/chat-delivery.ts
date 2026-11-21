@@ -1,3 +1,4 @@
+import { TEAMS_SCOPE_LABEL, teamsChatScope } from './teams-chat-scope'
 import type { ChatAgentIntegration, IncomingMessage, ToolOutcome } from './chat-agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
@@ -277,6 +278,7 @@ export async function processSSEEvent(
   event: unknown,
   showToolCalls = false,
   sessionId?: string,
+  respondentId?: string,
 ): Promise<void> {
   const data = event as Record<string, unknown>
   const eventType = data.type as string
@@ -442,7 +444,7 @@ export async function processSSEEvent(
       clearIndicator(managed)
       const marks = managed.connector.acknowledgedMessages(managed.chatId)
       try {
-        await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
+        await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId, respondentId)
         managed.connector.releaseAcknowledgements(managed.chatId, marks)
       } catch (err) {
         console.error(`[ChatAgentIntegration] Failed to send user request card (${request.kind}):`, err)
@@ -675,7 +677,7 @@ async function sendDeliveredFile(
       // don't page Sentry.
       console.error('[ChatAgentIntegration] Delivered file not found:', filePath)
     } else {
-      await managed.connector.sendFile(managed.chatId, Buffer.from(fileData), workspaceBasename(filePath), description)
+      await managed.connector.sendFile(managed.chatId, Buffer.from(fileData), workspaceBasename(filePath), description, { workspacePath: filePath })
       managed.connector.messagePosted(managed.chatId)
       return
     }
@@ -704,7 +706,9 @@ export function shouldHideToolStatusInChat(toolName: string): boolean {
  * Derive a human-readable display name from an incoming chat message.
  * Priority: chatName (group/channel title) → userName (DM sender) → userId fallback.
  */
-export function deriveDisplayName(message: Pick<IncomingMessage, 'chatName' | 'userName' | 'userId'>): string | undefined {
+export function deriveDisplayName(message: Pick<IncomingMessage, 'chatName' | 'userName' | 'userId'> & Partial<Pick<IncomingMessage, 'chatId'>>): string | undefined {
+  const scope = message.chatId && teamsChatScope(message.chatId)
+  if (scope) return message.chatName || (scope === 'personal' ? message.userName : undefined) || TEAMS_SCOPE_LABEL[scope]
   return message.chatName || message.userName || (message.userId ? `User ${message.userId}` : undefined)
 }
 
