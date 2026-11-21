@@ -8,7 +8,7 @@ import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHand
 import { captureException, flushErrorReporting } from '@shared/lib/error-reporting'
 import { declareServerCapabilities, getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import type { AppStateDurableObject } from './objects/cloudflare-app-state'
-import { DeployStepNotReady, needsLiveConnections, prepareDeploy, serveInTaskManager, startTaskManager, type TaskManagerDurableObject } from './objects/cloudflare-task-manager'
+import { DeployStepNotReady, needsLiveConnections, prepareDeploy, serveInTaskManager, type TaskManagerDurableObject } from './objects/cloudflare-task-manager'
 import { logErrorsAsText } from './lib/cloudflare-error-reporting'
 import { nearStorage } from './lib/object-location'
 import type { VersionMetadata } from './lib/object-version'
@@ -37,7 +37,7 @@ export interface Env {
   STORAGE_LOCATION?: string
   /** The settings a new org starts from, as JSON: its deployment's choice (seed-settings.ts). */
   SEED_SETTINGS?: string
-  /** The secret the deploy step sends: a Worker secret. Without it the deploy step is refused, and the task manager object runs the step when it starts. */
+  /** The secret the deploy step sends: a Worker secret. Without it the deploy step is refused, and the first API request of each isolate runs the step. */
   DEPLOY_TOKEN?: string
   /** This deploy: an object on older code restarts when a caller on this one reaches it (object-version.ts). */
   VERSION?: VersionMetadata
@@ -57,7 +57,7 @@ declareServerCapabilities({
 const SERVICE_WORKER = '/sw.js'
 /** What the deploy step calls right after an upload (wrangler.jsonc). */
 const DEPLOY_PATH = '/_deploy/prepare'
-let taskManagerWoken = false
+let deployPrepared = false
 
 export default {
   async fetch(request: Request, bindings: Env, ctx: ExecutionContext): Promise<Response> {
@@ -78,8 +78,8 @@ export default {
     try {
       // Before this isolate boots: the task manager object serves the request whole.
       if (needsLiveConnections(pathname)) {
-        // The object is told the origin first: its start trusts that origin for sign-in.
-        await wakeTaskManager(env, ctx, origin)
+        // The deploy's steps first, with this origin: they trust it for sign-in, and the object knows no origin.
+        await prepareDeployOnce(env, ctx, origin)
         return await serveInTaskManager(withClientAddress(request), env)
       }
       const app = await import('./boot')
@@ -87,7 +87,7 @@ export default {
       // A client that leaves mid-boot must not cancel the boot that later requests wait on.
       ctx.waitUntil(booting.catch(() => {}))
       await booting
-      void wakeTaskManager(env, ctx, origin)
+      void prepareDeployOnce(env, ctx, origin)
       return await app.serve(withClientAddress(request), env, ctx)
     } catch (error) {
       // A failed boot, or an error the API did not answer itself: reported before the request ends,
@@ -137,18 +137,23 @@ export function withClientAddress(request: Request): Request {
   return new Request(request, { headers })
 }
 
-/** Each isolate makes sure, once, that the org's background services run. Resolves once they do, or the wake failed. */
-function wakeTaskManager(env: Env, ctx: ExecutionContext, origin: string): Promise<void> {
-  if (taskManagerWoken) return Promise.resolve()
-  taskManagerWoken = true
-  const woken = startTaskManager(env, origin).catch(async (error: unknown) => {
-    taskManagerWoken = false
-    console.error('[cloudflare] waking the task manager failed:', error)
-    captureException(error, { tags: { component: 'cloudflare', operation: 'wake-task-manager' } })
+/**
+ * Each isolate makes sure, once, that this deploy's steps ran, for a deployment that does not call
+ * the deploy step. Resolves once they ran, or failed; a failed one is tried again by the next request.
+ */
+function prepareDeployOnce(env: Env, ctx: ExecutionContext, origin: string): Promise<void> {
+  if (deployPrepared) return Promise.resolve()
+  deployPrepared = true
+  const prepared = prepareDeploy(env, origin).catch(async (error: unknown) => {
+    deployPrepared = false
+    // The object still runs the previous code and restarts on this one: not an error.
+    if (error instanceof DeployStepNotReady) return
+    console.error('[cloudflare] preparing the deploy failed:', error)
+    captureException(error, { tags: { component: 'cloudflare', operation: 'prepare-deploy' } })
     await flushErrorReporting()
   })
-  ctx.waitUntil(woken)
-  return woken
+  ctx.waitUntil(prepared)
+  return prepared
 }
 
 /**

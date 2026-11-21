@@ -392,7 +392,7 @@ describe('TaskManagerDurableObject after a deploy', () => {
     const { object } = testObject()
     managerFor(object)
 
-    await object.wake()
+    await object.alarm()
     await object.alarm()
 
     expect(app.boot).toHaveBeenCalledTimes(1)
@@ -406,31 +406,31 @@ describe('TaskManagerDurableObject after a deploy', () => {
 
     const { object: skipped } = testObject(sql, deploy)
     managerFor(skipped)
-    await skipped.wake('https://agents.example.com')
+    await skipped.alarm()
     expect(app.migrateDatabase).toHaveBeenCalledTimes(1)
-    expect(app.prepareOrg).toHaveBeenCalledExactlyOnceWith(deploy, { seed: true, origin: 'https://agents.example.com' })
+    expect(app.prepareOrg).toHaveBeenCalledExactlyOnceWith(deploy, { seed: true, origin: undefined })
     expect(app.prepareOrg.mock.invocationCallOrder[0]).toBeLessThan(app.startBackgroundServices.mock.invocationCallOrder[0])
     skipped.stopDispatch()
 
     // The object restarted on the same deploy: the steps are done.
     const { object: restarted } = testObject(sql, deploy)
     managerFor(restarted)
-    await restarted.wake()
+    await restarted.alarm()
     expect(app.migrateDatabase).toHaveBeenCalledTimes(1)
     expect(app.prepareOrg).toHaveBeenCalledTimes(1)
     restarted.stopDispatch()
   })
 
-  it('does not start the services while a step of the deploy fails, and tries again at the next wake', async () => {
+  it('does not start the services while a step of the deploy fails, and tries again at the next alarm', async () => {
     app.migrateDatabase.mockClear()
     app.migrateDatabase.mockRejectedValueOnce(new Error('D1 is unavailable'))
     const { object } = testObject(memorySql(), { VERSION: { id: 'deploy-2', timestamp: '2026-11-06T12:00:00.000Z' } } as unknown as Env)
     managerFor(object)
 
-    await expect(object.wake()).rejects.toThrow('D1 is unavailable')
+    await expect(object.alarm()).rejects.toThrow('D1 is unavailable')
     expect(app.startBackgroundServices).not.toHaveBeenCalled()
 
-    await object.wake()
+    await object.alarm()
     expect(app.startBackgroundServices).toHaveBeenCalledTimes(1)
     object.stopDispatch()
   })
@@ -440,7 +440,7 @@ describe('TaskManagerDurableObject after a deploy', () => {
     const manager = managerFor(object)
     const task = new RecordingTask()
     manager.register(task)
-    await object.wake()
+    await object.alarm()
     await manager.at(T0 + 60_000, 'reminder:invoice', spec('Send the March invoice'))
 
     sql.refuse = true
@@ -461,7 +461,7 @@ describe('TaskManagerDurableObject after a deploy', () => {
     Object.assign((object as unknown as { ctx: object }).ctx, { abort })
     app.backgroundServicesShutDown.mockReturnValueOnce(true)
 
-    await expect(object.wake()).rejects.toThrow('shut down by a replaced instance')
+    await expect(object.alarm()).rejects.toThrow('shut down by a replaced instance')
     expect(abort).toHaveBeenCalledOnce()
     expect(app.startBackgroundServices).not.toHaveBeenCalled()
   })
@@ -475,7 +475,7 @@ describe('TaskManagerDurableObject after a deploy', () => {
     const task = new RecordingTask()
     manager.register(task)
     app.stopBackgroundServices.mockImplementationOnce(() => manager.stop())
-    await replaced.wake()
+    await replaced.alarm()
 
     sql.refuse = true
     await vi.advanceTimersByTimeAsync(10_000)

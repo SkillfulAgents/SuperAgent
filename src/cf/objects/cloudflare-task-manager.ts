@@ -118,12 +118,6 @@ export async function serveInTaskManager(request: Request, env: Pick<Env, 'TASK_
   return env.TASK_MANAGER.getByName(OBJECT_NAME).fetch(request)
 }
 
-/** Makes sure the org's task manager runs its services, once it runs this deploy's code or newer. */
-export async function startTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>, origin?: string): Promise<void> {
-  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
-  await env.TASK_MANAGER.getByName(OBJECT_NAME).wake(origin)
-}
-
 /**
  * Resolves once the org's database is at this deploy's schema and data. The task manager object
  * migrates it once per deploy.
@@ -162,9 +156,10 @@ export class DeployStepNotReady extends Error {
 
 /**
  * The deploy step, right after an upload: migrates the org's database and runs its setup for this
- * deploy, before the new code serves a request. A deploy that skips it is not lost: the task manager
- * object runs both when it starts (startServices), and requests that arrive before it has finished
- * run on the previous schema. `origin` is the origin the caller reached this deploy at.
+ * deploy, before the new code serves a request. A deploy that skips it is not lost: the first API
+ * request of each isolate runs it too, as does the task manager object when it starts
+ * (startServices), and requests that arrive before it has finished run on the previous schema.
+ * `origin` is the origin the caller reached this deploy at.
  */
 export async function prepareDeploy(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>, origin?: string): Promise<void> {
   await ensureMigrated(env)
@@ -261,12 +256,6 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     if (version) sql.exec('INSERT OR IGNORE INTO deploy_step (step, version) VALUES (?, ?)', step, version)
   }
 
-  /** Starts the background services unless they already run here. Each isolate of the org calls it once. */
-  async wake(origin?: string): Promise<void> {
-    this.origin ??= origin
-    await this.start()
-  }
-
   /** An API request that needs the services running here (serveInTaskManager). */
   async fetch(request: Request): Promise<Response> {
     await this.start()
@@ -346,7 +335,7 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
    * The deploy's steps first, then the services. A deploy step that already ran left nothing to do
    * here (oncePerDeploy); a deploy that skipped it is migrated and set up now, so no deployment
    * depends on a call from outside to get its schema. A step that fails is reported, and the next
-   * wake or alarm tries the start again.
+   * request or alarm here tries the start again.
    */
   private async startServices(): Promise<void> {
     await this.migrate()
