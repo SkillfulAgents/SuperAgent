@@ -119,8 +119,8 @@ export function SessionThread({
           {footer}
         </div>
       </div>
-      {/* Side tray (browser, file preview) */}
-      {sessionId && <TrayManager agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} />}
+      {/* Side drawer: browser pages, files, workflow runs and agent transcripts as tabs */}
+      {sessionId && <TrayManager agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} persistent />}
     </div>
   )
 }

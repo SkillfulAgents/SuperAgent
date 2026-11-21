@@ -53,10 +53,7 @@ function PreviewHarness() {
         Open PDF
       </button>
       {isOpen && (
-        <FilePreviewTrayContent
-          sessionId="test-session"
-          onClose={vi.fn()}
-        />
+        <FilePreviewTrayContent sessionId="test-session" />
       )}
     </>
   )

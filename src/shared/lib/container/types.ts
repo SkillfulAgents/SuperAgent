@@ -2,6 +2,7 @@ import type { RuntimeOptions } from './runtime-options'
 import type { ContainerVolume } from '@shared/lib/types/mount'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
+import type { ContextBreakdown } from './context-breakdown-schema'
 import type { AppSettings } from '@shared/lib/config/settings'
 
 /** The container has the route but the session is gone (HTTP 404 + JSON). */
@@ -343,6 +344,9 @@ export interface ContainerClient {
   // Stop one background task by its SDK task id. false = the container could
   // not (session not live, or a build that predates the endpoint).
   stopTask(sessionId: string, taskId: string): Promise<boolean>
+  // The session's full context breakdown. null = the session is not live, or a
+  // container build that predates the endpoint.
+  getContextBreakdown(sessionId: string): Promise<ContextBreakdown | null>
 
   // Default settles (today's session_error). Overrides must be safe on a live runtime (queued re-run).
   onFatalResult(kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery'

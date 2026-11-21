@@ -6,6 +6,7 @@ import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
+import { resolveSubagentRun } from './subagent-run'
 import { WorkflowBlock } from './workflow-block'
 import { WorkflowResultCard } from './workflow-result-card'
 import { DashboardCommentContext } from './dashboard-comment-context'
@@ -164,28 +165,6 @@ function isSubagentTool(name: string): boolean {
 // The rows that read activeSubagents/completedSubagents: they draw a subagent or workflow card.
 export function readsSubagentState(message: ApiMessage): boolean {
   return message.toolCalls?.some(tc => isSubagentTool(tc.name) || tc.name === 'Workflow') ?? false
-}
-
-function resolveSubagentRun(
-  toolCall: ApiToolCall,
-  activeSubagents: SubagentInfo[] | undefined,
-  completedSubagents: Set<string> | null | undefined,
-): { activeSubagent: SubagentInfo | null; isCompleted: boolean } {
-  const directRun = activeSubagents?.find((sub) => sub.parentToolId === toolCall.id)
-  const agentId = toolCall.subagent?.agentId
-  const resumedRun = agentId
-    ? activeSubagents?.find((sub) =>
-      sub.agentId === agentId &&
-      sub.parentToolId !== toolCall.id &&
-      (!sub.parentToolId || !completedSubagents?.has(sub.parentToolId))
-    )
-    : undefined
-  const activeSubagent = resumedRun ?? directRun ?? null
-  const selectedToolId = activeSubagent?.parentToolId ?? toolCall.id
-  return {
-    activeSubagent,
-    isCompleted: completedSubagents?.has(selectedToolId) ?? false,
-  }
 }
 
 /**

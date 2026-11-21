@@ -85,9 +85,7 @@ test.describe('Browser Streaming', () => {
 
     const rail = page.getByTestId('browser-tray-rail')
     await expect.poll(() => rail.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
-    for (const testId of ['browser-tray-stop', 'browser-tray-fullscreen']) {
-      await expect.poll(() => isControlReachable(page.getByTestId(testId))).toBe(true)
-    }
+    await expect.poll(() => isControlReachable(page.getByTestId('browser-tray-stop'))).toBe(true)
     await page.getByTestId('browser-tray-stop').click()
     await expect(page.getByRole('alertdialog')).toBeVisible()
   })
@@ -97,7 +95,7 @@ test.describe('Browser Streaming', () => {
     await mockBrowserStream(page, 600, 800)
     await sessionPage.sendMessage('browse data:text/html,<h1>Portrait page</h1>')
     await expect(page.getByTestId('browser-canvas')).toHaveAttribute('height', '800')
-    await page.getByTestId('browser-tray-fullscreen').click()
+    await page.getByTestId('tray-fullscreen').click()
     await expect(page.getByTestId('tray-drawer')).toHaveAttribute('data-fullscreen')
     await expect(page.getByTestId('browser-activity-region')).toBeHidden()
 
@@ -112,11 +110,11 @@ test.describe('Browser Streaming', () => {
           }),
         )
         .toBe(true)
-      for (const testId of ['browser-tray-stop', 'browser-tray-fullscreen']) {
-        await expect.poll(() => isControlReachable(page.getByTestId(testId))).toBe(true)
-      }
+      // Full screen sits in the drawer's strip, which does not scroll; stop is the control inside the rail.
+      await expect.poll(() => isControlReachable(page.getByTestId('browser-tray-stop'))).toBe(true)
+      await expect(page.getByTestId('tray-fullscreen')).toBeVisible()
     }
-    await page.getByTestId('browser-tray-fullscreen').click()
+    await page.getByTestId('tray-fullscreen').click()
     await expect(page.getByTestId('tray-drawer')).not.toHaveAttribute('data-fullscreen')
     await expect(page.getByTestId('browser-activity-region')).toBeVisible()
   })
@@ -125,7 +123,7 @@ test.describe('Browser Streaming', () => {
     const stream = await mockBrowserStream(page, 800, 450)
     await sessionPage.sendMessage('browse data:text/html,<h1>Keyboard ownership</h1>')
     await expect(page.getByTestId('browser-canvas')).toHaveAttribute('width', '800')
-    await page.getByTestId('browser-tray-fullscreen').click()
+    await page.getByTestId('tray-fullscreen').click()
     await expect(page.getByTestId('tray-drawer')).toHaveAttribute('data-fullscreen')
     const remoteEscapes = () =>
       stream.messages

@@ -4221,6 +4221,44 @@ describe('MessageList', () => {
       fireViewportResize()
       expect(geometry.scrollTop).toBe(500)
     })
+
+    it('pins the thread at its bottom when the width changes: the live edge while following, the same distance from it while escaped', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el, { reducedMotion: false })
+      let width = 800
+      Object.defineProperty(el, 'clientWidth', { configurable: true, get: () => width })
+      const fireViewportResize = () => fireContentResize(el, 0)
+      fireViewportResize()
+
+      // Following: narrowing the column reflows the lines taller, and the live
+      // edge is re-taken in the same frame (1600 - 1 - 600), with no glide.
+      width = 600
+      geometry.setNaturalScrollHeight(1600)
+      fireViewportResize()
+      expect(geometry.scrollTop).toBe(999)
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // Escaped 200px above the bottom: widening reflows the lines shorter,
+      // and the reader stays 200px above the bottom instead of keeping the top.
+      fireEvent.scroll(el)
+      fireEvent.wheel(el, { deltaY: -40 })
+      geometry.setScrollTop(800)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+      width = 900
+      geometry.setNaturalScrollHeight(1200)
+      fireViewportResize()
+      expect(geometry.scrollTop).toBe(400)
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+    })
   })
 
   describe('thinking block dedup (live vs persisted)', () => {

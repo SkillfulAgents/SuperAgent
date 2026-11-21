@@ -185,7 +185,7 @@ describe('SessionChatColumn composer swap', () => {
       expect(panel.style.backdropFilter ?? '').toBe('')
       expect(panel.style.maskImage ?? '').toBe('')
       expect(panel.style.getPropertyValue('-webkit-mask-image')).toBe('')
-      expect(panel.style.backgroundImage).toMatch(/^linear-gradient\(to (right|left), hsl\(var\(--background\) \/ 1\) 0%.* 100%\)$/)
+      expect(panel.style.backgroundImage).toMatch(/^linear-gradient\(to (right|left), hsl\(var\(--canvas\) \/ 1\) 0%.* 100%\)$/)
     }
   })
 

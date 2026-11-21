@@ -38,7 +38,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { silentOpener } from './composer-chips'
 import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
+import { ChatComposerBox, FLOATING_COMPOSER_CLASS, CANVAS_FLOAT_SHADOW_CLASS } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { AgentDefaultFooter } from './agent-default-footer'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
@@ -644,7 +644,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
-        className={`${FLOATING_COMPOSER_CLASS} composer-enter-contents`}
+        className={`${FLOATING_COMPOSER_CLASS} ${CANVAS_FLOAT_SHADOW_CLASS} composer-enter-contents`}
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
         onRetryAttachment={composer.retryAttachment}

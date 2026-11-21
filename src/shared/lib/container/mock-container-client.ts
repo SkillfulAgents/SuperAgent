@@ -28,6 +28,7 @@ import { matchScopes } from '../proxy/scope-matcher'
 import { withUserReason } from '../proxy/user-reason'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
+import type { ContextBreakdown } from './context-breakdown-schema'
 import { background } from '../background'
 
 export const MOCK_ACCOUNT_ID = 'mock-account-id'
@@ -3975,6 +3976,37 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       if (live()) this.writeJsonlEntry(sid, entry)
     }
     return view
+  }
+
+  /** A fixed breakdown in the shape the CLI's full `/context` gives, for a session the mock knows. */
+  async getContextBreakdown(sessionId: string): Promise<ContextBreakdown | null> {
+    if (!this.sessions.has(sessionId)) return null
+    const categories = [
+      { id: 'messages', name: 'Messages', tokens: 43_100, kind: 'used' },
+      { id: 'mcp_tools', name: 'MCP tools', tokens: 27_800, kind: 'used' },
+      { id: 'system_tools', name: 'System tools', tokens: 17_800, kind: 'used' },
+      { id: 'system_prompt', name: 'System prompt', tokens: 12_700, kind: 'used' },
+      { id: 'memory_files', name: 'Memory files', tokens: 1_100, kind: 'used' },
+      { id: 'skills', name: 'Skills', tokens: 9_800, kind: 'used' },
+      { id: 'autocompact_buffer', name: 'Autocompact buffer', tokens: 33_000, kind: 'buffer' },
+      { id: 'free_space', name: 'Free space', tokens: 54_700, kind: 'free' },
+      { id: 'mcp_tools_deferred', name: 'MCP tools (deferred)', tokens: 48_100, kind: 'deferred' },
+    ]
+    return {
+      categories,
+      totalTokens: 112_300,
+      rawMaxTokens: 200_000,
+      percentage: 56,
+      model: 'claude-opus-5-5',
+      memoryFiles: [{ path: '/workspace/CLAUDE.md', tokens: 1_100 }],
+      mcpTools: [
+        { name: 'mcp__browser__navigate', serverName: 'browser', tokens: 900, isLoaded: true },
+        { name: 'mcp__user-input__deliver_file', serverName: 'user-input', tokens: 600, isLoaded: true },
+      ],
+      skills: { totalSkills: 2, includedSkills: 2, tokens: 9_800, skillFrontmatter: [{ name: 'widgets', tokens: 5_200 }, { name: 'dashboards', tokens: 4_600 }] },
+      autoCompactThreshold: 167_000,
+      isAutoCompactEnabled: true,
+    }
   }
 
   /**

@@ -73,7 +73,7 @@ test.describe('File Preview', () => {
 
     await filePill.click()
 
-    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('tray-controls')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
 
     // On a wide Session View, the preview participates in the row layout rather
@@ -158,7 +158,7 @@ test.describe('File Preview', () => {
     await expect(page.locator(
       '[data-testid="folder-entry"][data-entry-path="/workspace/reports"]',
     )).toBeVisible({ timeout: 5000 })
-    await page.getByRole('button', { name: 'Hide files panel' }).click()
+    await page.getByRole('button', { name: 'Hide panel' }).click()
 
     await page.getByRole('button', { name: 'Reports' }).click()
     await expect(page.getByTestId('folder-browser')).toBeVisible({ timeout: 5000 })
@@ -253,7 +253,7 @@ test.describe('File Preview', () => {
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
-    const trayHeader = page.getByTestId('file-preview-header')
+    const trayHeader = page.getByTestId('tray-controls')
     await expect(trayHeader).toBeVisible({ timeout: 5000 })
 
     const tabButton = fileTab(page, 'report.md')
@@ -349,7 +349,7 @@ test.describe('File Preview', () => {
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
-    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('tray-controls')).toBeVisible({ timeout: 5000 })
     const csv = page.getByTestId('csv-renderer')
     await expect(csv).toBeVisible({ timeout: 10000 })
 
@@ -459,7 +459,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
     await getDeliveredFileRow(page, 'report.md').first().click()
-    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('tray-controls')).toBeVisible({ timeout: 5000 })
 
     const picker = page.getByTestId('composer-options-trigger')
     const controls = [
@@ -525,7 +525,7 @@ test.describe('File Preview', () => {
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
-    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('tray-controls')).toBeVisible({ timeout: 5000 })
     await expect(page.getByTestId('video-renderer')).toBeVisible({ timeout: 10000 })
     await expect(page.getByTestId('video-element')).toBeVisible()
 
@@ -675,7 +675,7 @@ test.describe('File Preview', () => {
       await expect(filePill).toBeVisible({ timeout: 10000 })
       await filePill.click()
 
-      const header = page.getByTestId('file-preview-header')
+      const header = page.getByTestId('tray-controls')
       await expect(header).toBeVisible({ timeout: 5000 })
       // The compact overlay covers the chat outright, so the slide-over dim stays hidden.
       await expect(page.getByTestId('tray-drawer-scrim')).toHaveCSS('display', 'none')
@@ -685,7 +685,7 @@ test.describe('File Preview', () => {
       const viewportWidth = page.viewportSize()!.width
       await expect(async () => {
         const title = page.getByTestId('file-preview-title')
-        for (const control of [header.getByTitle('Close file preview'), title.getByLabel('Download file')]) {
+        for (const control of [header.getByTitle('Close panel'), title.getByLabel('Download file')]) {
           await expect(control).toBeVisible()
           const box = await control.boundingBox()
           expect(box).not.toBeNull()
@@ -1061,7 +1061,7 @@ test.describe('File Preview', () => {
     const reportPill = getDeliveredFileRow(page, 'report.md').first()
     await expect(reportPill).toBeVisible({ timeout: 10000 })
     await reportPill.click()
-    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('tray-controls')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 10000 })
 
     // Deliver while the split preview remains open, then open the image file →

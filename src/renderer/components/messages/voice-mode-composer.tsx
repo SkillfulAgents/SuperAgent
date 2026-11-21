@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Mic, MicOff, Volume2, VolumeOff, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { COMPOSER_ACTIONS_ROW_CLASS, COMPOSER_BOX_CLASS, COMPOSER_LEFT_ACTIONS_CLASS, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
+import { COMPOSER_ACTIONS_ROW_CLASS, COMPOSER_BOX_CLASS, COMPOSER_LEFT_ACTIONS_CLASS, FLOATING_COMPOSER_CLASS, CANVAS_FLOAT_SHADOW_CLASS } from './chat-composer-box'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { VoiceConversationPreview } from './voice-conversation-preview'
 import { VoiceToggleButton } from './voice-mode-controls'
@@ -109,7 +109,7 @@ export function VoiceModeComposer({
       // words over the agent are what an interruption is judged by.
       data-utterance={utterance}
     >
-      <div className={cn(COMPOSER_BOX_CLASS, FLOATING_COMPOSER_CLASS, 'composer-enter-contents')}>
+      <div className={cn(COMPOSER_BOX_CLASS, FLOATING_COMPOSER_CLASS, CANVAS_FLOAT_SHADOW_CLASS, 'composer-enter-contents')}>
         <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
         {/* The orb takes the editor's place, at the right where it stays from
             the first moment of the call, with "Initializing…" under it while

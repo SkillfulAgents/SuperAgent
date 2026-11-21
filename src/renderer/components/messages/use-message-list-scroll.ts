@@ -928,17 +928,45 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // a shrink would slide the live edge behind the fold), and container-only
   // resizes (a growing composer). Re-attach after the loading/error states
   // resolve — the scroll container mounts only then.
+  //
+  // A WIDTH change (the side drawer opening, closing or being dragged, the
+  // window resized sideways) reflows every line, and the browser keeps the
+  // viewport's top where it was, so the thread would appear to scroll as its
+  // height changed. The thread is pinned at its bottom instead: following,
+  // the live edge is re-taken in the same frame, without the follow glide
+  // whose catch-up read as scrolling; scrolled up, the reader keeps the same
+  // distance from the bottom the last observed position had.
   useEffect(() => {
     const content = contentRef.current
     const viewport = scrollRef.current
     if (!content || !viewport || typeof ResizeObserver === 'undefined') return
+    let lastWidth = viewport.clientWidth
     const observer = new ResizeObserver(() => {
+      const width = viewport.clientWidth
+      const widthChanged = width !== lastWidth
+      lastWidth = width
+      if (widthChanged) {
+        const baseline = baselineRef.current
+        if (followingRef.current) {
+          if (glideRef.current?.kind === 'follow') glideRef.current.cancel()
+          if (!glideRef.current) {
+            writeScrollTop(viewport, liveEdgeTarget(viewport))
+            rememberPosition()
+            return
+          }
+        } else if (baseline && !pointerDragRef.current && !touchActiveRef.current) {
+          const fromBottom = Math.max(0, baseline.scrollHeight - baseline.clientHeight - baseline.scrollTop)
+          writeScrollTop(viewport, Math.max(0, viewport.scrollHeight - viewport.clientHeight - fromBottom))
+          rememberPosition()
+          return
+        }
+      }
       pinToLiveEdge()
     })
     observer.observe(content)
     observer.observe(viewport)
     return () => observer.disconnect()
-  }, [pinToLiveEdge, isLoading, error])
+  }, [pinToLiveEdge, writeScrollTop, rememberPosition, isLoading, error])
 
   // WebKit moves the viewport off our OWN DOM commits. Re-rendering the reply
   // at the live edge (its speaker button swapped for the playback strip, its

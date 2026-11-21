@@ -13,6 +13,7 @@ import {
   McpServerConfig,
   McpSetServersResult,
   SlashCommand,
+  type SDKControlGetContextUsageResponse,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
@@ -2667,6 +2668,17 @@ export class ClaudeCodeProcess extends EventEmitter {
       state: 'discarded',
       session_id: this.claudeSessionId || this.sessionId,
     });
+  }
+
+  /**
+   * The context window's full breakdown, as the CLI's `/context` counts it:
+   * every category through the token-count API, unlike the summary the
+   * reporter reads after each message. On request only (the drawer's Context
+   * tab), since each read costs those counts. null = no live query to ask.
+   */
+  async contextBreakdown(): Promise<SDKControlGetContextUsageResponse | null> {
+    if (this.stopping || !this.queryInstance) return null;
+    return (await this.queryInstance.getContextUsage({ detail: 'full' })) ?? null;
   }
 
   /**

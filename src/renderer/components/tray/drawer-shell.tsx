@@ -38,6 +38,12 @@ interface DrawerShellProps {
   minWidth?: number
   maxWidth?: number
   className?: string
+  /**
+   * No edge, fill or side shadow: the drawer's card sits straight on the page
+   * (tray-card.ts). Where the drawer covers the view (narrow, overlay, full
+   * screen) it takes the page's fill back, see globals.css.
+   */
+  floating?: boolean
   onTransitionEnd?: (e: React.TransitionEvent) => void
   children: React.ReactNode
 }
@@ -54,6 +60,7 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
   minWidth = MIN_WIDTH,
   maxWidth = MAX_WIDTH,
   className,
+  floating = false,
   onTransitionEnd,
   children,
 }, ref) {
@@ -132,7 +139,10 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
       <div
         ref={drawerRef}
         className={cn(
-          'h-full border-l bg-background flex flex-col shrink-0 overflow-hidden relative z-30 shadow-[-4px_0_16px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_16px_rgba(0,0,0,0.3)]',
+          'h-full flex flex-col shrink-0 overflow-hidden relative z-30',
+          floating
+            ? 'tray-drawer-floating'
+            : 'border-l bg-background shadow-[-4px_0_16px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_16px_rgba(0,0,0,0.3)]',
           responsiveFullWidth && 'file-preview-responsive-overlay',
           responsiveFullWidth && !isOpen && 'file-preview-responsive-overlay-closed',
           wideOverlay && 'file-preview-wide-overlay',
@@ -146,11 +156,16 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
         data-testid="tray-drawer"
         data-fullscreen={fullScreen || undefined}
       >
-        {/* Resize handle on left edge */}
+        {/* Resize handle on left edge. Floating, the drawer's visible edge is its card's, 8px in from the drawer's
+            own: the handle spans that gutter and a few pixels past the card's edge, so the grab lands where the edge
+            is seen, and its hover line is drawn on the card's edge. */}
         {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
         <div
           className={cn(
-            'tray-drawer-resize-handle absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-border transition-colors',
+            'tray-drawer-resize-handle absolute inset-y-0 left-0 z-20 cursor-col-resize transition-colors',
+            floating
+              ? 'w-3 after:absolute after:inset-y-2 after:left-[7px] after:w-0.5 after:rounded-full after:bg-transparent after:transition-colors hover:after:bg-border'
+              : 'w-1 hover:bg-border',
             responsiveFullWidth && 'file-preview-responsive-resize-handle',
           )}
           onMouseDown={handleResizeMouseDown}

@@ -44,6 +44,9 @@
 @layer base {
   :root {
     --background: 0 0% 100%;
+    /* The page under Agent Home and a session (ContentCanvas): the lightest grey a white panel on it still reads
+       against, so the composer, the drawer's card and the home cards lift off it. Dark mode keeps its page. */
+    --canvas: 0 0% 98%;
     --foreground: 0 0% 3.9%;
     --card: 0 0% 100%;
     --card-foreground: 0 0% 3.9%;
@@ -101,6 +104,7 @@
 
   .dark {
     --background: 0 0% 10%;
+    --canvas: 0 0% 10%;
     --foreground: 0 0% 98%;
     --card: 0 0% 13%;
     --card-foreground: 0 0% 98%;
@@ -1156,11 +1160,33 @@ html[data-keyboard-open] [data-composer-footer] {
   container-type: inline-size;
 }
 
+/* A session's floating header (content-shell.tsx): the transcript reaches up behind it by the header's height, so
+   it scrolls under the glass. A banner or the search bar between the header and the chat takes that place instead,
+   and the chat stops at it. */
+.floating-header-shell {
+  --header-overlap: var(--floating-header);
+}
+.floating-header-shell:has([data-top-banner]) {
+  --header-overlap: 0px;
+}
+
 .file-preview-wide-overlay {
   position: absolute;
   inset-block: 0;
   right: 0;
   z-index: 30;
+}
+
+/* A floating drawer (drawer-shell.tsx) is see-through, so its card floats over the page. Where it covers the view
+   instead of standing beside it, the view would show through around the card: it takes the page's own off-white
+   back (--canvas, the page under Agent Home and a session), and over the view it keeps the side shadow that says it
+   is on top. */
+.tray-drawer-floating.file-preview-wide-overlay,
+.tray-drawer-floating.tray-drawer-fullscreen {
+  background-color: hsl(var(--canvas));
+}
+.tray-drawer-floating.file-preview-wide-overlay {
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08);
 }
 
 /* Full screen: the drawer covers its whole tray host (the session body or the
@@ -1180,6 +1206,9 @@ html[data-keyboard-open] [data-composer-footer] {
 }
 
 @container (max-width: 767px) {
+  .tray-drawer-floating.file-preview-responsive-overlay {
+    background-color: hsl(var(--canvas));
+  }
   .file-preview-responsive-overlay {
     position: absolute;
     inset-block: 0;
@@ -1212,6 +1241,11 @@ html[data-keyboard-open] [data-composer-footer] {
   }
 
   .file-preview-wide-close {
+    display: none;
+  }
+
+  /* Full screen has nothing to add once the drawer already covers its host. */
+  .tray-wide-only {
     display: none;
   }
 }

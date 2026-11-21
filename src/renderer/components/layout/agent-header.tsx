@@ -23,6 +23,7 @@ import type { ContainerStatus } from '@shared/lib/container/types'
 import { agentActivity, agentAvatarState } from '@shared/lib/types/agent-activity-status'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
+import { HeaderTraySlot } from './content-shell'
 import { ForkedFromIndicator } from './forked-from-indicator'
 import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/todo-session-chrome'
 
@@ -314,7 +315,23 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
         )}
         {/* The status and its power button in one frosted chip, as on the agent cards on the home page, a size up. Mobile
             collapses it into the kebab menu below; view-only has no kebab or power button, so its status stays. */}
-        {(agent || !isViewOnly) && (
+        {/* A session shows the side drawer's toggle here in place of the chip: the composer already says what the
+            agent is doing. The status stays for assistive technology, which has no other place to read it on this view. */}
+        {sessionId && (
+          <>
+            {agent && (
+              <span className="sr-only">
+                <AgentStatus
+                  status={agent.status}
+                  hasActiveSessions={hasActiveSessions}
+                  hasSessionsAwaitingInput={hasSessionsAwaitingInput}
+                />
+              </span>
+            )}
+            <HeaderTraySlot />
+          </>
+        )}
+        {!sessionId && (agent || !isViewOnly) && (
           <div className={cn('h-[30px] items-center gap-2 rounded-[calc(var(--radius-icon)+1px)] status-chip pl-2.5', isViewOnly ? 'flex pr-2.5' : 'hidden md:flex pr-[2px]')}>
             {agent && (
               <AgentStatus

@@ -382,6 +382,7 @@ function createSessionOps(
       live.markIdle(sessionId)
     },
     stopTask: async (sessionId, taskId) => (await client()).stopTask(sessionId, taskId),
+    contextBreakdown: async (sessionId) => (await client()).getContextBreakdown(sessionId),
     waitForIdle: (sessionId, opts) => live.waitForIdle(sessionId, opts),
     broadcastUpdate: async (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
     reconcileTranscript: async (sessionId, toolCalls) => live.reconcileTranscript(sessionId, toolCalls),

@@ -3,6 +3,8 @@ import { SquareGanttChart, SquarePlus, SquareArrowRight, MessagesSquare, ArrowUp
 import type { ToolRendererProps } from '../renderer-types'
 import { ResultBlock } from '../ui/shared'
 import { AppLink } from '@renderer/components/ui/app-link'
+import { useOptionalWorkflow } from '@renderer/context/workflow-context'
+import { PanelRight } from 'lucide-react'
 import {
   listAgentsDef,
   createAgentDef,
@@ -104,9 +106,22 @@ function InvokeAgentExpandedView({ input, result, isError, agentSlug }: ToolRend
   const sessionIdMatch = resultText.match(/session_id:\s*([^\s]+)/)
   const statusMatch = resultText.match(/status:\s*([^\s]+)/)
   const resolvedSessionId = sessionIdMatch?.[1] ?? session_id
+  // In a session, the called agent's conversation opens in the side drawer as a tab of its own.
+  const tray = useOptionalWorkflow()
 
   return (
     <div className="space-y-3">
+      {tray && target && resolvedSessionId && (
+        <button
+          type="button"
+          onClick={() => tray.openAgentCall({ slug: target, sessionId: resolvedSessionId })}
+          className="inline-flex items-center gap-1.5 rounded-control border border-border/60 bg-background px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          data-testid="invoke-agent-open-panel"
+        >
+          <PanelRight className="h-3.5 w-3.5 text-muted-foreground" />
+          Open in panel
+        </button>
+      )}
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Target:</span>
         {target ? <AgentLink slug={target} label={slug ? undefined : 'This agent'} /> : <span>—</span>}

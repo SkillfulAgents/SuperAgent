@@ -1027,7 +1027,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }
 
   return (
-    <div className="relative flex-1 min-h-0 overflow-hidden">
+    // Under a floating header the transcript reaches up behind it (--header-overlap, globals.css).
+    <div className="relative flex-1 min-h-0 overflow-hidden mt-[calc(-1*var(--header-overlap,0px))]">
       {/* A labelled, focusable scroll region is intentional: keyboard users
           need to be able to drive the transcript with its scroll keys. */}
       {/* eslint-disable jsx-a11y/no-noninteractive-tabindex */}
@@ -1054,7 +1055,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         <div ref={contentRef} className="mx-auto w-full max-w-[720px] px-4">
         <div
           ref={contentBodyRef}
-          className={`space-y-4 ${readOnly ? 'pt-3' : 'pt-[100px]'}`}
+          className={`space-y-4 ${readOnly ? 'pt-[calc(12px+var(--header-overlap,0px))]' : 'pt-[calc(100px+var(--header-overlap,0px))]'}`}
           role="log"
           aria-relevant="additions"
           aria-busy={isStreaming || undefined}

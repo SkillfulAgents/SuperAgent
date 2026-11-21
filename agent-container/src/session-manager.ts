@@ -1343,6 +1343,16 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * The full context breakdown of a live session. found=false when the session
+   * is not resident; breakdown=null when it has no live query to ask.
+   */
+  async contextBreakdown(sessionId: string): Promise<{ found: boolean; breakdown: Awaited<ReturnType<ClaudeCodeProcess['contextBreakdown']>> }> {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return { found: false, breakdown: null };
+    return { found: true, breakdown: await sessionData.process.contextBreakdown() };
+  }
+
+  /**
    * Stop one background task of a live session. found=false when the session
    * is not resident; stopped=false when it has no live query to ask.
    */

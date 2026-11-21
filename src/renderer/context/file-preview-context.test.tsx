@@ -644,3 +644,60 @@ describe('edits since the last turn that changed the file', () => {
     expect(before()).toBe('c')
   })
 })
+
+describe('the drawer tab a preview asks for', () => {
+  it('asks for the tab on every open, including one that is already open', () => {
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.focus).toBeNull()
+
+    act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
+    expect(result.current.focus).toEqual({ key: 'file:agent-1:/workspace/a.md', seq: 1 })
+
+    act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
+    expect(result.current.focus).toEqual({ key: 'folder:agent-1:/workspace/reports', seq: 2 })
+
+    // Clicking the same file again must still bring its tab forward.
+    act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
+    expect(result.current.openTabs).toHaveLength(2)
+    expect(result.current.focus).toEqual({ key: 'file:agent-1:/workspace/a.md', seq: 3 })
+  })
+})
+
+describe('a session\'s tabs when it is left and reopened', () => {
+  function rememberingWrapper({ children }: { children: ReactNode }) {
+    return <FilePreviewProvider commentsEnabled rememberTabs>{children}</FilePreviewProvider>
+  }
+
+  it('starts another session empty and gives the first one its tabs back', () => {
+    mockView = { kind: 'session', id: 'remembered-a' }
+    const { result, rerender } = renderHook(() => useFilePreview(), { wrapper: rememberingWrapper })
+    act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
+    act(() => result.current.openFile('/workspace/b.md', 'agent-1'))
+    act(() => result.current.setActiveTab(0))
+
+    mockView = { kind: 'session', id: 'remembered-b' }
+    rerender()
+    expect(result.current.openTabs).toEqual([])
+    expect(result.current.isOpen).toBe(false)
+
+    mockView = { kind: 'session', id: 'remembered-a' }
+    rerender()
+    expect(result.current.openTabs.map(tab => tab.displayName)).toEqual(['a.md', 'b.md'])
+    expect(result.current.activeTabIndex).toBe(0)
+    expect(result.current.isOpen).toBe(true)
+    // Coming back restores the tabs without asking for any of them again.
+    expect(result.current.focus).toBeNull()
+  })
+
+  it('forgets a session\'s tabs unless the view asks to remember them', () => {
+    mockView = { kind: 'session', id: 'forgotten-a' }
+    const { result, rerender } = renderHook(() => useFilePreview(), { wrapper })
+    act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
+
+    mockView = { kind: 'session', id: 'forgotten-b' }
+    rerender()
+    mockView = { kind: 'session', id: 'forgotten-a' }
+    rerender()
+    expect(result.current.openTabs).toEqual([])
+  })
+})

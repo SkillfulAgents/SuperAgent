@@ -50,6 +50,9 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useAgent: () => ({ data: mockAgent }),
 }))
 
+// Other agents called this turn: none unless a test says so.
+vi.mock('@renderer/hooks/use-turn-agent-calls', () => ({ useTurnAgentCalls: () => [] }))
+
 // Mock useElapsedTimer
 vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
   useElapsedTimer: (startTime: unknown) => (startTime ? '10s' : null),

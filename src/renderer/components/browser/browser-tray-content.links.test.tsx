@@ -68,7 +68,7 @@ describe('browser tray action bar', () => {
   it('renders a URL in the pending request message as a clickable link', () => {
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <BrowserTrayContent agentSlug="prospecting" sessionId="s-1" onClose={vi.fn()} />
+        <BrowserTrayContent agentSlug="prospecting" sessionId="s-1" visible connected onPagesChange={vi.fn()} actionsRef={{ current: null }} />
       </QueryClientProvider>
     )
 

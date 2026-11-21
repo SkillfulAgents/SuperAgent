@@ -29,7 +29,7 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
     <>
       {/* Image pull / runtime install progress */}
       {showProgress && progress && (
-        <div className="shrink-0 border-b bg-muted/30 px-4 py-2">
+        <div data-top-banner className="shrink-0 border-b bg-muted/30 px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
             <span>
@@ -54,7 +54,7 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
 
       {/* Start error banner */}
       {startAgent.isError && (
-        <div className="shrink-0 border-b bg-destructive/10 px-4 py-2">
+        <div data-top-banner className="shrink-0 border-b bg-destructive/10 px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-destructive select-text">
             <AlertCircle className="h-3 w-3 shrink-0" />
             <span>Failed to start agent: {startAgent.error.message}</span>
@@ -66,6 +66,7 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
       {agent?.healthWarnings?.map((warning) => (
         <div
           key={warning.checkName}
+          data-top-banner
           className={`shrink-0 border-b px-4 py-2 ${
             warning.status === 'critical'
               ? 'bg-destructive/10'
@@ -85,7 +86,7 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
 
       {/* Missing mount warning banner */}
       {mountWarning && mountWarning.notMounted.length > 0 && (
-        <div className="shrink-0 border-b bg-yellow-500/10 px-4 py-2">
+        <div data-top-banner className="shrink-0 border-b bg-yellow-500/10 px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-yellow-700 dark:text-yellow-400 select-text">
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span className="flex-1">

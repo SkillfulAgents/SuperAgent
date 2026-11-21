@@ -43,8 +43,13 @@ const stream = {
   navigate: vi.fn(),
 }
 vi.mock('@renderer/hooks/use-browser-stream', () => ({ useBrowserStream: () => stream }))
+vi.mock('@renderer/hooks/use-agents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-agents')>()),
+  useAgents: () => ({ data: [] }),
+  useAgent: () => ({ data: null }),
+}))
 vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ browserActive: true, isActive: true, streamingToolUses: [], activeSubagents: [] }),
+  useMessageStream: () => ({ browserActive: true, isActive: true, streamingToolUses: [], activeSubagents: [], completedSubagents: null, workflows: [] }),
 }))
 vi.mock('@shared/lib/tools/request-browser-input/use-browser-input-actions', () => ({
   useBrowserInputActions: () => ({
@@ -62,11 +67,17 @@ vi.mock('@renderer/lib/api', () => ({ apiFetch: (url: string) => mockApiFetch(ur
 vi.mock('@shared/lib/tools/renderers', () => ({ getToolRenderer: () => undefined }))
 vi.mock('@renderer/components/file-preview/file-preview-tray-content', () => ({ FilePreviewTrayContent: () => null }))
 vi.mock('@renderer/components/workflow/workflow-tray-content', () => ({ WorkflowTrayContent: () => null }))
-vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ openTabs: [], isOpen: false, close: vi.fn() }),
+vi.mock('./subagents-tray-content', async (importOriginal) => ({ ...(await importOriginal<typeof import('./subagents-tray-content')>()), SubagentsTrayContent: () => null }))
+vi.mock('@renderer/context/file-preview-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/context/file-preview-context')>()),
+  useFilePreview: () => ({ openTabs: [], activeTabIndex: 0, isOpen: false, focus: null, close: vi.fn(), setActiveTab: vi.fn(), closeTab: vi.fn() }),
 }))
-vi.mock('@renderer/context/workflow-context', () => ({
-  useWorkflow: () => ({ openWorkflows: [], isOpen: false, close: vi.fn(), selectedRunId: null }),
+vi.mock('@renderer/context/workflow-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/context/workflow-context')>()),
+  useWorkflow: () => ({ openWorkflows: [], subagents: { open: false, viewing: null }, focus: null, closeWorkflow: vi.fn(), closeSubagents: vi.fn(), openSubagent: vi.fn(), background: { open: false, viewing: null }, closeBackgroundTasks: vi.fn(), agentSessions: { open: false, viewing: null }, closeAgentSessions: vi.fn() }),
+}))
+vi.mock('@shared/lib/tools/requests/use-pending-user-requests', () => ({
+  usePendingUserRequests: () => ({ data: [] }),
 }))
 const sidebar = {
   open: true,
@@ -107,7 +118,7 @@ describe('TrayManager with the real browser tray', () => {
     const user = userEvent.setup()
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <TrayManager agentSlug="a" sessionId="s" browserActive={true} />
+        <TrayManager agentSlug="a" sessionId="s" browserActive={true} persistent />
       </QueryClientProvider>,
     )
     await flushFrames()
@@ -117,8 +128,10 @@ describe('TrayManager with the real browser tray', () => {
     expect(screen.getByTestId('tray-drawer')).toHaveAttribute('data-fullscreen')
     expect(screen.getByLabelText('Exit full screen')).toBeInTheDocument()
 
-    await user.click(screen.getByLabelText('Hide browser panel'))
-    expect(screen.queryByTestId('tray-drawer')).toBeNull()
+    await user.click(screen.getByLabelText('Hide panel'))
+    // Hidden, the drawer keeps the browser mounted but takes no space.
+    expect(screen.getByTestId('tray-drawer')).toHaveClass('hidden')
+    expect(screen.getByTestId('browser-tab')).toHaveTextContent('Amazon.com')
 
     await user.click(screen.getByTitle('Show panel'))
     await flushFrames()
@@ -152,7 +165,7 @@ describe('TrayManager with the real browser tray', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 5000 } } })
     const view = render(
       <QueryClientProvider client={client}>
-        <TrayManager agentSlug="a" sessionId="s" browserActive={true} />
+        <TrayManager agentSlug="a" sessionId="s" browserActive={true} persistent />
       </QueryClientProvider>,
     )
     await flushFrames()

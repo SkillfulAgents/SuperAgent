@@ -31,11 +31,11 @@ function PreviewHarness({ filePath, source, deliveries = [] }: {
   source?: PreviewSource
   deliveries?: { id: string; filePath: string }[]
 }) {
-  const { isOpen, openFile, close } = useFilePreview()
+  const { isOpen, openFile } = useFilePreview()
   useCheckDeliveredFiles(deliveries, 'test-agent')
   return <>
     <button onClick={() => openFile(filePath, 'test-agent', undefined, source)}>Open file</button>
-    {isOpen && <FilePreviewTrayContent sessionId="test-session" onClose={close} />}
+    {isOpen && <FilePreviewTrayContent sessionId="test-session" />}
   </>
 }
 

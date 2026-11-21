@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { SubAgentBlock } from './subagent-block'
+import { SubAgentBlock, SubagentTranscript } from './subagent-block'
 import { createToolCall, createAssistantMessage } from '@renderer/test/factories'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
@@ -28,13 +28,21 @@ vi.mock('./tool-call-item', () => ({
   ),
 }))
 
+// The row opens its transcript as a drawer tab; the drawer itself is not under test here.
+const mockOpenSubagent = vi.fn()
+let mockSubagents: { open: boolean; viewing: { id: string } | null } = { open: false, viewing: null }
+vi.mock('@renderer/context/workflow-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/context/workflow-context')>()),
+  useWorkflow: () => ({ subagents: mockSubagents, openSubagent: mockOpenSubagent }),
+}))
+
 // Mock useElapsedTimer
 vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
   useElapsedTimer: () => null,
   formatElapsed: (ms: number) => `${Math.floor(ms / 1000)}s`,
 }))
 
-describe('SubAgentBlock', () => {
+describe('SubagentTranscript', () => {
   beforeEach(() => {
     mockSubMessages = []
   })
@@ -54,7 +62,7 @@ describe('SubAgentBlock', () => {
     })
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -75,7 +83,7 @@ describe('SubAgentBlock', () => {
       result: 'Done',
     })
 
-    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    render(<SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
 
     expect(screen.getByText('GPT 5.5')).toBeInTheDocument()
     expect(screen.queryByText('model-gpt-5-5-1iimw9e')).not.toBeInTheDocument()
@@ -97,7 +105,7 @@ describe('SubAgentBlock', () => {
     })
 
     render(
-      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />
+      <SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" />
     )
 
     // Click to expand
@@ -116,7 +124,7 @@ describe('SubAgentBlock', () => {
     })
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -149,7 +157,7 @@ describe('SubAgentBlock', () => {
     })
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -172,7 +180,7 @@ describe('SubAgentBlock', () => {
     expect(screen.getByText('Sub-agent is working...')).toBeInTheDocument()
   })
 
-  it('reopens the original block for a resumed run and shows its live output before the transcript catches up', () => {
+  it('shows a resumed run in the same transcript, with its live output before the saved transcript catches up', () => {
     const tc = createToolCall({
       id: 'agent-tool',
       name: 'Agent',
@@ -182,9 +190,10 @@ describe('SubAgentBlock', () => {
     })
     mockSubMessages = [createAssistantMessage({ content: { text: 'Initial check finished' } })]
     const { rerender } = render(
-      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted />
+      <SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted />
     )
-    expect(screen.queryByText('Initial check finished')).not.toBeInTheDocument()
+    // The whole transcript is shown: the saved text is there once, not repeated as the result.
+    expect(screen.getAllByText('Initial check finished')).toHaveLength(1)
 
     // MessageItem selects this later run by agentId. SendMessage has a new
     // tool id, while the original Agent block and its persisted result stay.
@@ -200,7 +209,7 @@ describe('SubAgentBlock', () => {
       lastToolName: 'Bash',
     }
     const resumedBlock = (
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc} sessionId="s-1" agentSlug="agent-1"
         isSessionActive isCompleted={false} activeSubagent={resumed}
       />
@@ -217,7 +226,7 @@ describe('SubAgentBlock', () => {
       content: { text: 'Checking the follow-up now' },
       toolCalls: [createToolCall({ id: 'resumed-bash', name: 'Bash', result: undefined })],
     })]
-    rerender(<SubAgentBlock
+    rerender(<SubagentTranscript
       toolCall={tc} sessionId="s-1" agentSlug="agent-1"
       isSessionActive isCompleted={false} activeSubagent={{ ...resumed }}
     />)
@@ -244,7 +253,7 @@ describe('SubAgentBlock', () => {
     ]
 
     render(
-      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />
+      <SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" />
     )
 
     await user.click(screen.getByText('Explore'))
@@ -270,7 +279,7 @@ describe('SubAgentBlock', () => {
     ]
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -304,7 +313,7 @@ describe('SubAgentBlock', () => {
     mockSubMessages = []
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -337,7 +346,7 @@ describe('SubAgentBlock', () => {
     mockSubMessages = []
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -369,7 +378,7 @@ describe('SubAgentBlock', () => {
     mockSubMessages = []
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -403,7 +412,7 @@ describe('SubAgentBlock', () => {
     })
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -424,7 +433,7 @@ describe('SubAgentBlock', () => {
     })
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -464,7 +473,7 @@ describe('SubAgentBlock', () => {
       subagent: { agentId: 'sub-1', status: 'async_launched' },
     })
 
-    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    render(<SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
     await user.click(screen.getByText('fork'))
 
     expect(screen.getByText('date -u output: Mon Oct 19')).toBeInTheDocument()
@@ -481,7 +490,7 @@ describe('SubAgentBlock', () => {
     })
 
     render(
-      <SubAgentBlock
+      <SubagentTranscript
         toolCall={tc}
         sessionId="s-1"
         agentSlug="agent-1"
@@ -517,7 +526,7 @@ describe('SubAgentBlock', () => {
     }
 
     const live = render(
-      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive
+      <SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive
         activeSubagent={{ ...subagent, streamingMessage: fence }} />
     )
     // Let the lazy diagram chunk settle, so a settled render would have drawn by now.
@@ -527,7 +536,7 @@ describe('SubAgentBlock', () => {
     live.unmount()
 
     render(
-      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted
+      <SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted
         activeSubagent={{ ...subagent, streamingMessage: null, resultText: fence }} />
     )
     await user.click(screen.getByText('Explore'))
@@ -539,8 +548,69 @@ describe('SubAgentBlock', () => {
     const tc = createToolCall({ name: 'Task', input: { subagent_type: 'Explore', description: 'Searching' }, result: 'Done', subagent: { agentId: 'sub-1', status: 'completed' } })
     mockSubMessages = [createAssistantMessage({ content: { text: '```mermaid\ngraph LR\n  Saved --> Item\n```' } })]
 
-    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    render(<SubagentTranscript toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
     await user.click(screen.getByText('Explore'))
     expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
+  })
+})
+
+describe('SubAgentBlock', () => {
+  beforeEach(() => {
+    mockSubMessages = []
+    mockSubagents = { open: false, viewing: null }
+    mockOpenSubagent.mockClear()
+  })
+
+  it('is one row that opens the transcript in the Subagents tab instead of expanding in place', async () => {
+    const tc = createToolCall({
+      id: 'agent-tool',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'Find config files' },
+      result: 'Found 3 config files\nin two folders',
+      subagent: { agentId: 'sub-1', status: 'completed' },
+    })
+    mockSubMessages = [createAssistantMessage({ content: { text: 'Reading the tree' } })]
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+
+    const row = screen.getByTestId('subagent-row')
+    expect(row).toHaveTextContent('Sub-agent:')
+    expect(row).toHaveTextContent('Explore')
+    expect(row).toHaveTextContent('Find config files')
+    expect(screen.getByTestId('status-indicator')).toHaveTextContent('completed')
+    // Done, it carries the first line of what the agent reported, and none of its transcript.
+    expect(screen.getByTestId('subagent-row-progress')).toHaveTextContent(/^Found 3 config files$/)
+    expect(screen.queryByText('Reading the tree')).not.toBeInTheDocument()
+
+    await userEvent.setup().click(row)
+    expect(mockOpenSubagent).toHaveBeenCalledWith(tc)
+    expect(screen.queryByText('Reading the tree')).not.toBeInTheDocument()
+  })
+
+  it('shows what a running subagent is on, and how long it has been going', () => {
+    const tc = createToolCall({ id: 'agent-tool', name: 'Agent', input: { subagent_type: 'Explore', description: 'Find config files' }, result: undefined })
+    const active: SubagentInfo = {
+      parentToolId: 'agent-tool',
+      agentId: 'sub-1',
+      streamingMessage: 'Looking through the repo',
+      streamingToolUse: null,
+      progressSummary: null,
+      subagentType: 'Explore',
+      description: 'Find config files',
+      usage: { duration_ms: 12000, total_tokens: 900, tool_uses: 2 },
+      lastToolName: 'Grep',
+    }
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive activeSubagent={active} />)
+
+    expect(screen.getByTestId('subagent-row')).toHaveAttribute('data-status', 'running')
+    expect(screen.getByTestId('subagent-row-progress')).toHaveTextContent('Grep · 12s')
+    // Its live text belongs to the tab, not to the row.
+    expect(screen.queryByText('Looking through the repo')).not.toBeInTheDocument()
+  })
+
+  it('marks the row while the Subagents tab is showing its transcript', () => {
+    const tc = createToolCall({ id: 'agent-tool', name: 'Agent', input: { subagent_type: 'Explore' }, result: 'Done' })
+    mockSubagents = { open: true, viewing: { id: 'agent-tool' } }
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('subagent-row')).toHaveAttribute('data-open', 'true')
   })
 })
