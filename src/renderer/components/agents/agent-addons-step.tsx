@@ -3,6 +3,7 @@ import { Brain, NotebookPen, TrendingUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@renderer/components/ui/switch'
 import { AgentCreationChannels } from './agent-creation-channels'
+import { CREATE_STEP_FADE_MASK } from './create-agent-layout'
 import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -11,6 +12,18 @@ import { useAgentSkills, useDiscoverableSkills, useDeleteSkill, useInstallSkill 
 import { useAgentTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import { DREAM_SKILL_PATH, isPublicDreamSkill } from '@shared/lib/skillset-provider/dream-skill'
+
+/** From the top of the step's content to the top of the channels' third row. */
+const THIRD_ROW_OFFSET_PX = 565
+/** How much of that row shows above the bottom edge (its fade included). */
+const THIRD_ROW_PEEK_PX = 44
+/**
+ * The scroller's height less the content above the third row and the peek,
+ * as a percentage-height spacer (the scroller has a definite height), kept
+ * between 1rem and 30% so a short window still shows the header and a tall
+ * one does not push it halfway down.
+ */
+const ADDONS_TOP_SPACE = `clamp(1rem, calc(100% - ${THIRD_ROW_OFFSET_PX + THIRD_ROW_PEEK_PX}px), 30%)`
 
 export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange }: {
   header: ReactNode
@@ -61,13 +74,21 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   }
 
   return (
-    <div className="h-full overflow-y-auto" data-testid="agent-addons-step">
-      <div className="mx-auto flex min-h-full w-full max-w-xl flex-col justify-center py-8">
+    // 8px either side for focus rings at the column's edge (More's sits 6px
+    // out, plus its 2px ring): a scroller clips sideways too.
+    // The edges fade (CREATE_STEP_FADE_MASK), so the tiles peeking in at the
+    // bottom dissolve rather than clip against Back and Create.
+    <div className="-mx-2 h-full overflow-y-auto px-2" style={{ maskImage: CREATE_STEP_FADE_MASK, WebkitMaskImage: CREATE_STEP_FADE_MASK }} data-testid="agent-addons-step">
+      {/* The space above the header is sized so the channels' third row
+          (GitHub, Linear) peeks through the bottom fade, whatever the
+          window's height: a sign there is more below. */}
+      <div aria-hidden className="shrink-0" style={{ height: ADDONS_TOP_SPACE }} />
+      <div className="flex w-full flex-col pb-8">
         {header}
         <TooltipProvider delayDuration={200}>
           <div className="space-y-5">
             <Section title="Skills">
-              <Row icon={<TrendingUp />} title="Self-Improvement" description="Installs Dream to review past work and improve between sessions."
+              <Row icon={<TrendingUp />} title="Self-Improvement" description="Install a dreaming skill to review past work and improve between sessions."
                 checked={!!installed} disabled={changingSkill || !skills.data || (!installed && !dream)} onChange={on => void toggleDream(on)}
                 reason={dreamReason} />
               {(discoverable.isError || skills.isError) && <Button size="sm" variant="ghost" onClick={() => {
@@ -79,7 +100,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
               <Row icon={<NotebookPen />} title="Memories" description="Remembers what it learns across sessions."
                 checked={preferences.data?.autoMemoryEnabled !== false} disabled={!preferences.data || updatePreferences.isPending}
                 onChange={autoMemoryEnabled => updatePreferences.mutate({ autoMemoryEnabled })} />
-              <Row icon={<Brain />} title="Team Brain" description="Read the shared drive and message Team Brain. Team Brain can read this agent’s sessions."
+              <Row icon={<Brain />} title="Team Brain" description="Reads the shared drive. Team Brain can read its sessions."
                 checked={access.checked} disabled={access.changing || !access.ready}
                 reason={access.reason} onChange={access.toggle} />
               {access.partial && <div className="flex flex-wrap items-center gap-2 px-4 py-2">
@@ -88,7 +109,7 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
                 <Button variant="ghost" size="sm" disabled={!!access.reason} onClick={() => access.toggle(false)}>Remove access</Button>
               </div>}
             </Section>
-            <Section title="Channels">
+            <Section title="Channels" bare>
               <AgentCreationChannels agentSlug={agentSlug} />
             </Section>
           </div>
@@ -98,10 +119,15 @@ export function AgentAddonsStep({ header, agentSlug, onBusyChange, onDreamChange
   )
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+/**
+ * A titled group of add-ons. Its rows go in a card; `bare` hands the
+ * children the whole area instead, for a section laid out its own way
+ * (Channels' grid of tiles and its More).
+ */
+function Section({ title, bare = false, children }: { title: string; bare?: boolean; children: ReactNode }) {
   return <section>
-    <h3 className="mb-2 text-[13px] font-medium text-muted-foreground">{title}</h3>
-    <div className="divide-y rounded-card border bg-card/50">{children}</div>
+    <h3 className="mb-2 text-xs font-normal text-muted-foreground/70">{title}</h3>
+    {bare ? children : <div className="divide-y rounded-card border bg-card/50">{children}</div>}
   </section>
 }
 
@@ -120,7 +146,7 @@ function Row({ title, description, icon, checked, onChange, disabled, reason }: 
     className={`flex items-center gap-3 px-4 py-3 ${inactive ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
     <Icon>{icon}</Icon>
     <span className="min-w-0 flex-1">
-      <span className="block text-sm font-medium">{title}</span>
+      <span className="block text-sm font-normal">{title}</span>
       <span className="block text-xs text-muted-foreground">{description}</span>
     </span>
     {reason && checked && <span aria-hidden className="text-sm font-medium">On</span>}

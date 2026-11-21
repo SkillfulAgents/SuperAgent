@@ -1,5 +1,5 @@
-import { useId, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowRight, Check, Clock3, Plus } from 'lucide-react'
 import { channelSetupComplete } from '@shared/lib/agent-integrations/public'
 import { ChannelAction } from '@renderer/components/agent-integrations/channel-action'
 import { ChannelSetupDialog, channelSetupTarget, type ChannelSetupTarget } from '@renderer/components/agent-integrations/channel-setup-dialog'
@@ -7,16 +7,25 @@ import { useFinishedSetup } from '@renderer/hooks/use-finished-setup'
 import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
 import type { IntegrationSetupProvider } from '@renderer/components/agent-integrations/setup-types'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { cn } from '@shared/lib/utils/cn'
 import { useAgentIntegrations, useAvailableAgentIntegrationProviders } from '@renderer/hooks/use-agent-integrations'
 
+/** Every channel, Inbox and Slack first. */
 const featured = integrationSetupProviders.filter(p => p.slug === 'platform-email' || p.slug === 'slack')
-const moreChannels = integrationSetupProviders.filter(provider => !featured.includes(provider))
+const channels = [...featured, ...integrationSetupProviders.filter(provider => !featured.includes(provider))]
+
+/**
+ * Two columns from `sm`, one on phones, and every row as tall as the
+ * tallest (auto-rows-fr): the tiles are one size whether a description
+ * takes one line or two.
+ */
+const CHANNEL_GRID_CLASS = 'grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2'
+/** A channel tile: the add-ons cards' border and fill, one per channel. */
+const CHANNEL_TILE_CLASS = 'flex flex-col gap-2 rounded-card border bg-card/50 p-3'
 
 export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
   const providers = useAvailableAgentIntegrationProviders()
   const integrations = useAgentIntegrations(agentSlug)
-  const [expanded, setExpanded] = useState(false)
-  const moreId = useId()
   const [target, setTarget] = useState<ChannelSetupTarget | null>(null)
   const { data: deferred } = useFinishedSetup(agentSlug)
 
@@ -27,7 +36,12 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
     const configured = rows?.some(channelSetupComplete)
     const setupTarget = channelSetupTarget(provider, rows)
     const saved = deferred?.steps.some(step => step.provider === provider.slug)
-    const action = configured ? 'Configured' : setupTarget.integrationId || saved ? 'Finish setup' : 'Set up'
+    // Saved for later is a reminder already set, not something left to do
+    // now: it reads as a quiet state (the clock "Set this up later" showed),
+    // and still opens setup if clicked. Only a connection actually begun and
+    // left halfway asks to be finished.
+    const later = !configured && !!saved
+    const action = configured ? 'Configured' : later ? 'Saved for later' : setupTarget.integrationId ? 'Finish setup' : 'Set up'
     let reason: string | undefined
     if (configured) {
       reason = `${title} is already set up for this agent.`
@@ -38,27 +52,37 @@ export function AgentCreationChannels({ agentSlug }: { agentSlug: string }) {
         reason = provider.unavailableReason ?? `${title} is unavailable in this workspace.`
       }
     }
-    return <div key={provider.slug} className="flex items-center gap-3 px-4 py-3">
-      <span className="grid size-8 shrink-0 place-items-center rounded-control bg-muted text-muted-foreground [&_svg]:size-4" aria-hidden>
-        <ServiceIcon slug={provider.slug} fallback="mcp" className={provider.iconClassName} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{title}</p>
-        <p className="text-xs text-muted-foreground">{provider.description}</p>
+    // A tile: a row of the service's mark, its name and its action, then
+    // what it does underneath (wrapping, never cut). The action is an icon
+    // whose words are in its tooltip and accessible name: + to set up, a
+    // clock once saved for later, an arrow for a connection left halfway, a
+    // check when done.
+    const icon = configured ? <Check aria-hidden /> : later ? <Clock3 aria-hidden /> : setupTarget.integrationId ? <ArrowRight aria-hidden /> : <Plus aria-hidden />
+    return <div key={provider.slug} className={CHANNEL_TILE_CLASS}>
+      {/* The mark, the name centred on it, and the action, in one row. */}
+      <div className="flex items-center gap-2.5">
+        {/* A soft grey square, Agent Home's size (28px, a 16px mark), with
+            no border or shadow: the fill is its edge. Black marks (GitHub,
+            Linear) invert in dark mode, as everywhere on grey. */}
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground" aria-hidden>
+          <ServiceIcon slug={provider.slug} fallback="mcp" className={cn('size-4', provider.iconClassName)} />
+        </span>
+        <p className="min-w-0 flex-1 truncate text-sm font-normal">{title}</p>
+        <ChannelAction action={action} title={title} reason={reason} onSetup={() => setTarget(setupTarget)} iconOnly icon={icon}
+          quiet={configured || later}
+          {...later && {
+            label: `Set up ${title}, saved for later`,
+            hint: 'Saved for later as a reminder. Click to set it up now.',
+          }} />
       </div>
-      <ChannelAction action={action} title={title} reason={reason} onSetup={() => setTarget(setupTarget)} />
+      {/* What it does, the tile's full width, on its bottom edge: with every
+          tile one height, a one-line description's spare room sits above it. */}
+      <p className="mt-auto text-xs text-muted-foreground">{provider.description}</p>
     </div>
   }
 
   return <>
-    {featured.map(channelRow)}
-    <button type="button" aria-label="More channels" aria-expanded={expanded} aria-controls={moreId}
-      className="flex w-full items-center justify-between gap-3 rounded-b-card px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-expanded:rounded-none"
-      onClick={() => setExpanded(open => !open)}>
-      More
-      <ChevronDown aria-hidden className={`size-4 ${expanded ? 'rotate-180' : ''}`} />
-    </button>
-    <div id={moreId} hidden={!expanded} className="divide-y">{expanded && moreChannels.map(channelRow)}</div>
+    <div className={CHANNEL_GRID_CLASS}>{channels.map(channelRow)}</div>
     {target && <ChannelSetupDialog agentSlug={agentSlug} target={target} integrations={integrations.data} onClose={() => {
       setTarget(null)
       void integrations.refetch()

@@ -1,5 +1,3 @@
-import { ArrowDownToLine, Shapes } from 'lucide-react'
-import { OptionCard } from '@renderer/components/ui/option-card'
 import { useEffect, useRef, useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { AvatarView, orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
@@ -7,7 +5,7 @@ import { AvatarChoices } from '@renderer/components/agents/agent-avatar/avatar-c
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { AGENT_NAME_MAX_LENGTH } from '@shared/lib/services/agent-identity-schema'
 import type { ChosenAgentIdentity } from '@renderer/components/agents/creation-draft'
-import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
+import { CREATE_AGENT_ORB_TRANSITION, CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
 
 /** The big orb above the name: the teammate being made, before it exists. */
 const PREVIEW_SIZE = 72
@@ -24,18 +22,23 @@ interface AgentIdentityStepProps {
   value: ChosenAgentIdentity
   onChange: (value: ChosenAgentIdentity) => void
   /** Continue (or Enter): only acted on once the name has something in it. */
-  onChooseSource?: (importing: boolean) => void
   onContinue: () => void
+  /**
+   * Come back to from a later step: shown as it is, with no intro. The step
+   * change is its entrance, and the orb has to be at rest in its place for
+   * that transition to land on.
+   */
+  returning?: boolean
 }
 
 /**
  * The create screen's first step: the new teammate's name and orb. The name
  * is required; the orb starts as a random pick. Confirming the identity creates the agent.
  */
-export function AgentIdentityStep({ title, value, onChange, onContinue, onChooseSource }: AgentIdentityStepProps) {
+export function AgentIdentityStep({ title, value, onChange, onContinue, returning = false }: AgentIdentityStepProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   // Same staggered reveal as the describe step's items (.create-agent-item).
-  const [revealed, setRevealed] = useState(false)
+  const [revealed, setRevealed] = useState(returning)
   useEffect(() => {
     const raf = requestAnimationFrame(() => setRevealed(true))
     return () => cancelAnimationFrame(raf)
@@ -50,11 +53,13 @@ export function AgentIdentityStep({ title, value, onChange, onContinue, onChoose
 
   return (
     // Same vertical rhythm as the job step without its roster: centred.
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto" data-testid="agent-identity-step">
+    // A scroller clips sideways too, and the form fills the column, so the
+    // name field's focus ring and shadow need the 4px either side to show.
+    <div className="-mx-1 flex h-full min-h-0 flex-col overflow-y-auto px-1" data-testid="agent-identity-step">
       <div className="min-h-0 flex-1 shrink" aria-hidden />
       <form
         id={AGENT_IDENTITY_FORM_ID}
-        className="mx-auto w-full max-w-xl shrink-0 space-y-8"
+        className="w-full shrink-0 space-y-8"
         onSubmit={(e) => {
           e.preventDefault()
           if (canContinue) onContinue()
@@ -62,13 +67,15 @@ export function AgentIdentityStep({ title, value, onChange, onContinue, onChoose
         }}
       >
         <div {...item(0)}>
-          <AvatarView
-            source={avatarSource(value.avatar)}
-            restingPhi={orbRestingPhi(PREVIEW_SEED)}
-            size={PREVIEW_SIZE}
-            state="idle"
-            followPointer
-          />
+          <span className="inline-block align-top" style={CREATE_AGENT_ORB_TRANSITION}>
+            <AvatarView
+              source={avatarSource(value.avatar)}
+              restingPhi={orbRestingPhi(PREVIEW_SEED)}
+              size={PREVIEW_SIZE}
+              state="idle"
+              followPointer
+            />
+          </span>
         </div>
 
         <div {...item(60)}>
@@ -83,7 +90,10 @@ export function AgentIdentityStep({ title, value, onChange, onContinue, onChoose
               placeholder="e.g. Research Assistant"
               aria-labelledby="agent-identity-title"
               data-testid="agent-identity-name"
-              className="h-11 text-base md:text-base"
+              // A soft grey well, not an outlined box: no border or shadow,
+              // and no ring either (it is focused on arrival, so a ring would
+              // be a border again; the caret says where typing goes).
+              className="h-11 border-transparent bg-muted text-base shadow-none focus-visible:ring-0 md:text-base"
             />
           </div>
         </div>
@@ -95,13 +105,6 @@ export function AgentIdentityStep({ title, value, onChange, onContinue, onChoose
             wide
           />
         </div>
-
-        {onChooseSource && (
-          <div className="grid gap-3 max-sm:[&>button]:min-h-11 sm:flex sm:flex-wrap">
-            <OptionCard title="Browse Templates" icon={<Shapes className="h-4 w-4" />} onClick={() => onChooseSource(false)} />
-            <OptionCard title="Import an Agent" icon={<ArrowDownToLine className="h-4 w-4" />} onClick={() => onChooseSource(true)} />
-          </div>
-        )}
       </form>
       <div className="min-h-0 shrink" style={CREATE_STEP_BOTTOM_SPACER} aria-hidden />
     </div>

@@ -25,9 +25,12 @@ export function ImportAgentDialog({
   open,
   onClose,
   onComplete,
+  name,
 }: {
   open: boolean
   onClose: () => void
+  /** The name the imported agent takes, in place of its package's own. */
+  name?: string
   /** Called after a successful import (post-env-var prompt if any). */
   onComplete: (result: ApiAgentTemplateInstallResult) => void | Promise<void>
 }) {
@@ -69,6 +72,7 @@ export function ImportAgentDialog({
         const result = await importTemplate.mutateAsync({
           file: importFile,
           mode: importFull ? 'full' : 'template',
+          name,
           onProgress: setUploadProgress,
         })
         setUploadProgress(null)
@@ -80,7 +84,7 @@ export function ImportAgentDialog({
         console.error('Failed to import template:', error)
       }
     },
-    [importFile, importFull, importTemplate, closeDialog, onComplete],
+    [importFile, importFull, name, importTemplate, closeDialog, onComplete],
   )
 
   const handleFileDrop = (e: React.DragEvent) => {

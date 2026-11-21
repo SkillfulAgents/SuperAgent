@@ -53,7 +53,7 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
     managementAccess: 'owner', iconClassName: 'dark:invert', Setup: GitHubSetupForm, ConnectionSettings: GitHubConnectionSettings },
   { slug: 'linear', label: 'Linear', description: 'Delegate issues to this agent in Linear.',
     managementAccess: 'owner', iconClassName: 'dark:invert', Setup: LinearSetupForm, ConnectionSettings: LinearConnectionSettings, Settings: LinearIntegrationSettings, Message: LinearIntegrationMessage },
-  { slug: 'recall', label: 'Meetings', description: 'Invite this agent to Zoom, Google Meet, and Microsoft Teams calls.',
+  { slug: 'recall', label: 'Meetings', description: 'Agent joins Zoom, Google, Microsoft meetings.',
     unavailableReason: 'To enable meetings, this workspace needs a public HTTPS address and a connected Gamut account or Recall API key.',
     managementAccess: 'owner', Setup: RecallSetupForm, ConnectionSettings: MeetingPanel, Settings: MeetingSettingsCard },
 

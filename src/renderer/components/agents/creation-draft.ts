@@ -1,13 +1,6 @@
 import { creationDraftSchema, type CreationDraft } from '@shared/lib/types/creation-draft'
 export type { CreationDraft, ChosenAgentIdentity } from '@shared/lib/types/creation-draft'
 
-declare module '@tanstack/history' {
-  interface HistoryState {
-    /** Templates opened from the identity step can return to its original draft. */
-    fromAgentIdentity?: boolean
-  }
-}
-
 // A refresh keeps the history entry. Opening New Agent again gets a different entry.
 export function creationDraftKey() {
   const key = window.history.state?.__TSR_key

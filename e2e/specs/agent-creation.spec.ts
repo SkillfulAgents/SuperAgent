@@ -127,7 +127,7 @@ test('a partial Team Brain setup survives refresh and retries the missing permis
 
   await reachAddons(page)
   const toggle = page.getByRole('switch', { name: 'Team Brain' })
-  await expect(page.getByText(/Team Brain can read this agent’s sessions/)).toBeVisible()
+  await expect(page.getByText(/Team Brain can read its sessions/)).toBeVisible()
   await toggle.click()
   await expect(page.getByText('Could not change who uses Team Brain')).toBeVisible()
   const incomplete = page.getByText('Team Brain setup is incomplete.')
@@ -157,7 +157,7 @@ test('a partial Team Brain setup survives refresh and retries the missing permis
   expect(mountedSlug).toBeUndefined()
 })
 
-test('replaying Start session after a lost response opens the one accepted job', async ({ page, request }) => {
+test('replaying Create after a lost response opens the one accepted job', async ({ page, request }) => {
   const sessions = await reachAddons(page)
   let accepted: string | undefined
   await page.route('**' + sessions, async route => {
@@ -205,7 +205,7 @@ test('Skip keeps Dream installed and sends the first Home job verbatim', async (
   expect(skills.skills).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'dream' })]))
 })
 
-test('Start session appends the Dream instruction once to the saved wizard job', async ({ page }) => {
+test('Create appends the Dream instruction once to the saved wizard job', async ({ page }) => {
   const sessions = await reachAddons(page)
   const toggle = page.getByRole('switch', { name: 'Self-Improvement' })
   await toggle.click()
@@ -253,22 +253,6 @@ test('a restored mention can cancel the access dialog, then grant access and sta
   await expect(message.getByTestId('agent-mention').first()).toContainText('Mentions target')
 })
 
-test('returning from templates restores the unconfirmed name, shape, and color', async ({ page }) => {
-  await new AgentPage(page).clickCreateAgent()
-  const name = page.getByTestId('agent-identity-name')
-  await name.fill('Release coordinator')
-  const shape = page.getByRole('button', { name: 'Diamond', exact: true })
-  const color = page.getByRole('button', { name: 'Red', exact: true })
-  await shape.click()
-  await color.click()
-  await page.getByRole('button', { name: 'Browse Templates' }).click()
-  await page.reload()
-  await page.getByTestId('new-agent-back').click()
-  await expect(name).toHaveValue('Release coordinator')
-  await expect(shape).toHaveAttribute('aria-pressed', 'true')
-  await expect(color).toHaveAttribute('aria-pressed', 'true')
-})
-
 test('removing Dream before leaving the wizard clears its first-job instruction', async ({ page }) => {
   const sessions = await reachAddons(page)
   const toggle = page.getByRole('switch', { name: 'Self-Improvement' })
@@ -283,7 +267,7 @@ test('removing Dream before leaving the wizard clears its first-job instruction'
   expect(response.request().postDataJSON().message).toBe('Prepare a weekly research brief.')
 })
 
-test('More channels opens Telegram setup and returns to the wizard after connecting', async ({ page }) => {
+test('Telegram setup returns to the wizard after connecting', async ({ page }) => {
   await page.route('**/api/agent-integrations/providers', route => route.fulfill({ json: [{ provider: 'telegram' }, { provider: 'linear' }] }))
   let connected = false
   await page.route('**/api/agent-integrations/agents/*', route => {
@@ -302,11 +286,6 @@ test('More channels opens Telegram setup and returns to the wizard after connect
   await inbox.hover()
   await expect(page.getByRole('tooltip')).toHaveText('Connect your Gamut account to set up Inbox.')
   const telegram = page.getByRole('button', { name: 'Set up Telegram' })
-  await expect(telegram).toBeHidden()
-  const more = page.getByRole('button', { name: 'More channels' })
-  const heading = page.getByRole('heading', { name: 'Channels' })
-  await expect(more).toHaveCSS('color', await heading.evaluate(el => getComputedStyle(el).color))
-  await more.click()
   await expect(page.getByRole('button', { name: 'Set up iMessage' })).toBeDisabled()
   const github = page.getByRole('button', { name: 'Set up GitHub' })
   await expect(github).toBeDisabled()
@@ -335,8 +314,7 @@ test('deferred channels survive reload, reopen from Agent Home, and dismiss inde
   await page.getByRole('button', { name: 'Set up Slack' }).click()
   await dialog.getByRole('button', { name: 'Set this up later' }).click()
   await expect(dialog).toBeHidden()
-  await expect(page.getByRole('button', { name: 'Finish setup Slack' })).toBeEnabled()
-  await page.getByRole('button', { name: 'More channels' }).click()
+  await expect(page.getByRole('button', { name: 'Set up Slack, saved for later' })).toBeEnabled()
   await page.getByRole('button', { name: 'Set up Telegram' }).click()
   await dialog.getByRole('button', { name: 'Set this up later' }).click()
   await expect(dialog).toBeHidden()
@@ -387,7 +365,7 @@ test('the defer action stays visible beneath long Slack instructions on a small 
   await expect(defer).toBeInViewport({ ratio: 1 })
   await defer.click()
   await expect(dialog).toBeHidden()
-  await expect(page.getByRole('button', { name: 'Finish setup Slack' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Set up Slack, saved for later' })).toBeEnabled()
 })
 
 for (const surface of ['the wizard', 'Agent Home']) {

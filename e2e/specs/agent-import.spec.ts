@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -13,11 +13,12 @@ import {
 } from '../helpers/onboarding-session'
 
 /**
- * Covers the AgentHome → import → onboarding-session flow refactored to use
- * `useStartOnboardingSession`. The wizard's CreateAgentForm uses the same
- * hook + AgentCreationAids component, so this test exercises both call sites'
- * shared behavior.
+ * Covers importing on the create page's job step, and the onboarding session
+ * `useStartOnboardingSession` starts for a package that carries the skill.
+ * The teammate is named first, so the import takes that name (not the
+ * package's) and replaces the empty agent the name step made.
  */
+const PACKAGE_NAME = 'Name inside the package'
 test.describe('Agent Import Onboarding', () => {
   let appPage: AppPage
   let agentPage: AgentPage
@@ -41,18 +42,24 @@ test.describe('Agent Import Onboarding', () => {
     }
   })
 
+  /** Name a new teammate, then import one in place of describing its job. */
+  async function openImportDialog(page: Page, agentName: string) {
+    await agentPage.clickCreateAgent()
+    await agentPage.nameNewAgent(agentName)
+    await page.getByRole('button', { name: 'Import an agent' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    return dialog
+  }
+
   test('importing a template with the onboarding skill creates an onboarding session', async ({ page }) => {
     const agentName = `Imported Onboarding ${Date.now()}`
     const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'with-onboarding.zip'),
-      { name: agentName, withOnboardingSkill: true },
+      { name: PACKAGE_NAME, withOnboardingSkill: true },
     )
 
-    // Import from the identity page opens the package dialog on the templates page.
-    await agentPage.clickCreateAgent()
-    await page.getByRole('button', { name: 'Import an Agent' }).click()
-    const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible()
+    const dialog = await openImportDialog(page, agentName)
 
     // Upload the fixture zip into the dialog's hidden file input, then submit.
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
@@ -75,13 +82,10 @@ test.describe('Agent Import Onboarding', () => {
     const agentName = `Imported Onboarding Dialog ${Date.now()}`
     const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'onboarding-dialog.zip'),
-      { name: agentName, withOnboardingSkill: true },
+      { name: PACKAGE_NAME, withOnboardingSkill: true },
     )
 
-    await agentPage.clickCreateAgent()
-    await page.getByRole('button', { name: 'Import an Agent' }).click()
-    const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible()
+    const dialog = await openImportDialog(page, agentName)
 
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
     await armTranscriptNotFoundWatch(page)
@@ -103,13 +107,10 @@ test.describe('Agent Import Onboarding', () => {
     const agentName = `Imported Plain ${Date.now()}`
     const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'plain.zip'),
-      { name: agentName, withOnboardingSkill: false },
+      { name: PACKAGE_NAME, withOnboardingSkill: false },
     )
 
-    await agentPage.clickCreateAgent()
-    await page.getByRole('button', { name: 'Import an Agent' }).click()
-    const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible()
+    const dialog = await openImportDialog(page, agentName)
 
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
     await dialog.locator('button[type="submit"]').click()
@@ -122,6 +123,13 @@ test.describe('Agent Import Onboarding', () => {
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(sessionPage.getMessageList()).not.toBeVisible()
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+
+    // One agent under the chosen name: the imported one. The empty agent the
+    // name step made is gone, and the package's own name was never used.
+    await expect.poll(async () => {
+      const agents = await (await page.request.get('/api/agents')).json() as { name: string }[]
+      return agents.filter((agent) => agent.name === agentName || agent.name === PACKAGE_NAME).map((agent) => agent.name)
+    }).toEqual([agentName])
   })
 
   test('importing a branded .agent package file works like a .zip', async ({ page }) => {
@@ -129,13 +137,10 @@ test.describe('Agent Import Onboarding', () => {
     // Same zip bytes exports now produce — only the extension differs.
     const packagePath = await buildAgentTemplateZip(
       path.join(tmpDir, 'branded.agent'),
-      { name: agentName, withOnboardingSkill: false },
+      { name: PACKAGE_NAME, withOnboardingSkill: false },
     )
 
-    await agentPage.clickCreateAgent()
-    await page.getByRole('button', { name: 'Import an Agent' }).click()
-    const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible()
+    const dialog = await openImportDialog(page, agentName)
 
     // The relaxed extension guard must accept the file (no "Only .agent or
     // .zip" toast) and show it as ready to import.

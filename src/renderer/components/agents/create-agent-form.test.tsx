@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, screen } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { DREAM_SETUP_PROMPT } from '@shared/lib/skillset-provider/dream-skill'
 import { toast } from 'sonner'
 import { CreateAgentForm } from './create-agent-form'
@@ -20,6 +21,7 @@ const mockCreateAgent = {
 }
 const mockUpdateAgent = { mutateAsync: vi.fn() }
 const mockDeleteAgent = { mutateAsync: vi.fn() }
+const mockImportTemplate = vi.fn()
 const mockCreateSession = {
   mutateAsync: vi.fn().mockResolvedValue({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid' }),
   isPending: false,
@@ -68,7 +70,7 @@ vi.mock('@renderer/hooks/use-agent-templates', () => ({
   slugFromAgentPath: vi.fn(),
   // The form mounts ImportAgentDialog (closed) for the strip's end-cap card.
   useImportAgentTemplate: () => ({
-    mutateAsync: vi.fn(),
+    mutateAsync: mockImportTemplate,
     reset: vi.fn(),
     isPending: false,
     error: null,
@@ -256,6 +258,30 @@ describe('CreateAgentForm', () => {
       await act(async () => { await submitRef.current?.() })
       expect(mockComposer.handleSubmit).toHaveBeenCalled()
     })
+  })
+
+  it('has no import button of its own unless the host asks for one', () => {
+    renderWithProviders(<CreateAgentForm showTemplates={false} />)
+    expect(screen.queryByRole('button', { name: 'Import an agent' })).toBeNull()
+  })
+
+  it('imports under the host’s name and hands the agent to the host before it opens', async () => {
+    const order: string[] = []
+    const onImported = vi.fn(async () => { order.push('handed over') })
+    mockNavigate.mockImplementationOnce(() => { order.push('opened') })
+    mockImportTemplate.mockResolvedValue({ slug: 'imported', displaySlug: 'imported-id', hasOnboarding: false })
+    const user = userEvent.setup()
+    renderWithProviders(<CreateAgentForm showTemplates={false} importAs={{ name: 'Scout', onImported }} />)
+
+    await user.click(screen.getByRole('button', { name: 'Import an agent' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Import an Agent' })
+    await user.upload(dialog.querySelector<HTMLInputElement>('input[type="file"]')!, new File(['zip'], 'scout.zip'))
+    await user.click(within(dialog).getByRole('button', { name: 'Import' }))
+
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug', params: { slug: 'imported-id' } }))
+    expect(mockImportTemplate).toHaveBeenCalledWith(expect.objectContaining({ name: 'Scout', mode: 'template' }))
+    expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ slug: 'imported' }))
+    expect(order).toEqual(['handed over', 'opened'])
   })
 
   it('does not offer file attachments', () => {

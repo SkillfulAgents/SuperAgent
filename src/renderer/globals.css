@@ -865,10 +865,52 @@ html[data-keyboard-open] [data-composer-footer] {
   transform: translateY(0);
 }
 
+/* The named flow's job composer: rises from below the fold into place, a
+   longer travel than the items' 10px, on the same curve. No filter, so it
+   is never a backdrop root (see -glass above). */
+.create-agent-item-rise {
+  transition:
+    opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.create-agent-item-rise[data-hidden="true"] {
+  opacity: 0;
+  transform: translateY(40vh);
+}
+
+.create-agent-item-rise[data-hidden="false"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .create-agent-item,
-  .create-agent-item-glass {
+  .create-agent-item-glass,
+  .create-agent-item-rise {
     transition-duration: 1ms;
+  }
+}
+
+/* Create-agent steps: a change of step is a view transition in which the
+   orb (view-transition-name: create-agent-orb, on every step) travels to its
+   new place and size while the rest cross-fades. Longer than the default and
+   eased out, like the items' own reveal above, so it settles and never snaps. */
+::view-transition-group(create-agent-orb) {
+  animation-duration: 480ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(create-agent-orb),
+::view-transition-new(create-agent-orb) {
+  animation-duration: 480ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(create-agent-orb),
+  ::view-transition-old(create-agent-orb),
+  ::view-transition-new(create-agent-orb) {
+    animation: none;
   }
 }
 

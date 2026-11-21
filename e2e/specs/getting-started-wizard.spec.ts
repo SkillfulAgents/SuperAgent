@@ -1,4 +1,8 @@
 import { test, expect } from '@playwright/test'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { buildAgentTemplateZip } from '../helpers/agent-template-zip'
 import { AppPage } from '../pages/app.page'
 import { WizardPage } from '../pages/wizard.page'
 
@@ -224,7 +228,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
   })
 
-  test('finishes onboarding after creating the first agent from a template', async ({ page, request }) => {
+  test('finishes onboarding after importing the first agent on the job step', async ({ page, request }) => {
     await request.put('/api/user-settings', {
       data: { setupCompleted: false, onboardingProgress: null },
     })
@@ -247,35 +251,35 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
-    // On a short phone the last tile sits below the footer. Wheel the list itself to reach it.
-    await page.setViewportSize({ width: 390, height: 400 })
-    await page.getByRole('button', { name: 'Browse Templates' }).click()
-    const importTile = page.getByTestId('import-agent-card')
-    await expect(importTile).not.toBeInViewport()
-    await page.mouse.move(180, 160)
-    await page.mouse.wheel(0, 2000)
-    await expect(importTile).toBeInViewport({ ratio: 0.9 })
-    await page.setViewportSize({ width: 1280, height: 800 })
-    const installed = page.waitForResponse(response =>
-      response.request().method() === 'POST' && response.url().endsWith('/api/agents/install-from-skillset'),
-    )
-    await page
-      .locator('[data-testid="explore-template-card"]', { hasText: 'E2E Onboarding Template' })
-      .click()
-
-    const installResponse = await installed
-    expect(installResponse.ok()).toBe(true)
-    const result = await installResponse.json()
+    // Name the teammate, then import one in place of describing its job.
+    const name = 'Imported in onboarding ' + Date.now()
+    await page.getByTestId('agent-identity-name').fill(name)
+    await page.getByTestId('agent-identity-continue').click()
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-wizard-import-'))
+    let result: { slug: string; name: string }
+    try {
+      const zipPath = await buildAgentTemplateZip(path.join(tmpDir, 'plain.zip'), { name: 'Name inside the package' })
+      const imported = page.waitForResponse(response =>
+        response.request().method() === 'POST' && response.url().endsWith('/api/agents/import-template') && response.status() === 201,
+      )
+      await page.getByRole('button', { name: 'Import an agent' }).click()
+      const dialog = page.getByRole('dialog')
+      await dialog.locator('input[type="file"]').setInputFiles(zipPath)
+      await dialog.locator('button[type="submit"]').click()
+      result = await (await imported).json()
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
 
     // Both assertions have to be things the wizard itself cannot satisfy: the
-    // install navigates to the new agent's page and the name appears in the
+    // import navigates to the new agent's page and the name appears in the
     // sidebar, neither of which exists while the wizard overlay is up.
     await expect(page).toHaveURL(/\/agents\//)
     await wizardPage.expectNotVisible()
     await expect(
       page
         .getByTestId(`agent-item-${result.slug}`)
-        .getByText('E2E Onboarding Template', { exact: true }),
+        .getByText(name, { exact: true }),
     ).toBeVisible()
 
     const response = await request.get('/api/user-settings')

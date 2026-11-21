@@ -8,7 +8,7 @@ import { AgentAddonsStep } from './agent-addons-step'
 
 const dream = { name: 'dream', path: 'skills/dream/SKILL.md', version: '0.1.0', skillsetId: DEFAULT_PUBLIC_SKILLSET.id }
 
-const state = { integrations: [] as Partial<PublicAgentIntegration>[], skills: [dream] as typeof dream[] | undefined, catalogError: false, brain: true, everyAgent: false }
+const state = { deferred: [] as string[], integrations: [] as Partial<PublicAgentIntegration>[], skills: [dream] as typeof dream[] | undefined, catalogError: false, brain: true, everyAgent: false }
 let availableProviders: string[] | undefined
 const install = vi.fn()
 const toggle = vi.fn()
@@ -32,7 +32,7 @@ vi.mock('@renderer/hooks/use-team-brain-access', () => ({
   }),
 }))
 vi.mock('@renderer/hooks/use-finished-setup', () => ({
-  useFinishedSetup: () => ({ data: { steps: [] } }),
+  useFinishedSetup: () => ({ data: { steps: state.deferred.map(provider => ({ type: 'channel', provider })) } }),
 }))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrations: () => ({ data: state.integrations, refetch: vi.fn() }),
@@ -47,6 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   availableProviders = ['platform-email', 'slack', 'telegram', 'imessage', 'github', 'linear', 'recall']
   state.integrations = []
+  state.deferred = []
   state.skills = [dream]
   state.catalogError = false
   state.brain = true
@@ -114,17 +115,10 @@ it.each([['Inbox', 'platform-email'], ['Slack', 'slack']])('opens the existing %
 
 it.each([
   ['Telegram', 'telegram'], ['iMessage', 'imessage'], ['GitHub', 'github'], ['Linear', 'linear'], ['Meetings', 'recall'],
-])('opens %s setup from More channels', async (label, provider) => {
+])('opens %s setup, shown beside Inbox and Slack', async (label, provider) => {
   show()
   const action = { name: 'Set up ' + label }
-  expect(screen.queryByRole('button', action)).toBeNull()
-  const more = screen.getByRole('button', { name: 'More channels' })
-  await userEvent.click(more)
-  expect(more).toHaveAttribute('aria-expanded', 'true')
   expect(screen.getByRole('button', action)).toBeVisible()
-  await userEvent.click(more)
-  expect(screen.queryByRole('button', action)).toBeNull()
-  await userEvent.click(more)
   await userEvent.click(screen.getByRole('button', action))
   expect(screen.getByRole('dialog')).toHaveTextContent(provider)
 })
@@ -151,12 +145,11 @@ it.each([
   expect(screen.queryByRole('dialog')).toBeNull()
 })
 
-it('explains both configured and unavailable channels inside More', async () => {
+it('explains both configured and unavailable channels', async () => {
   availableProviders = ['telegram']
   state.integrations = [{ provider: 'telegram', hasCredentials: true }]
   show()
   const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: 'More channels' }))
   const telegram = screen.getByRole('button', { name: 'Configured Telegram' })
   await user.hover(telegram)
   expect(await screen.findByRole('tooltip')).toHaveTextContent('Telegram is already set up')
@@ -187,7 +180,6 @@ vi.mock('@renderer/components/agent-integrations/linear-setup', () => ({
 it.each([['GitHub', 'github'], ['Linear', 'linear']])('resumes an unfinished %s authorization on the existing integration', async (label, provider) => {
   state.integrations = [{ id: 'existing-installation', provider, hasCredentials: false }]
   show()
-  await userEvent.click(screen.getByRole('button', { name: 'More channels' }))
   await userEvent.click(screen.getByRole('button', { name: 'Finish setup ' + label }))
   expect(screen.getByRole('dialog', { name: 'Finish ' + label + ' setup' })).toHaveTextContent('existing-installation')
 })
@@ -200,4 +192,25 @@ it.each([
   show()
   await userEvent.click(screen.getByRole('button', { name: 'Finish setup Slack' }))
   expect(screen.getByRole('dialog')).toHaveTextContent(action + ' existing')
+})
+
+it('names a tile’s plus button for what it sets up', async () => {
+  show()
+  const slack = screen.getByRole('button', { name: 'Set up Slack' })
+  expect(slack).toHaveTextContent('')
+  await userEvent.hover(slack)
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Set up Slack')
+})
+
+it('shows a channel saved for later as a quiet reminder, not a step left to finish', async () => {
+  state.deferred = ['slack']
+  show()
+  expect(screen.queryByRole('button', { name: 'Finish setup Slack' })).toBeNull()
+  const later = screen.getByRole('button', { name: 'Set up Slack, saved for later' })
+  expect(later).toHaveAttribute('data-variant', 'ghost')
+  await userEvent.hover(later)
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Saved for later as a reminder')
+  // Still a way in, for someone who changes their mind.
+  await userEvent.click(later)
+  expect(screen.getByRole('dialog')).toHaveTextContent('slack')
 })

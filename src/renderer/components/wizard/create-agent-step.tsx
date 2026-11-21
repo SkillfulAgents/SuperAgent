@@ -1,4 +1,3 @@
-import { TemplateChoices } from '@renderer/components/agents/template-choices'
 import { useState, type ReactNode } from 'react'
 import { ArrowRight, Loader2, Pencil, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -9,24 +8,41 @@ import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-so
 import { AgentAddonsStep } from '@renderer/components/agents/agent-addons-step'
 import { useCreateAgentFlow, type CreateAgentFlow, type CreationOptions } from '@renderer/hooks/use-create-agent-flow'
 import type { ChosenAgentIdentity } from '@renderer/components/agents/creation-draft'
+import { CREATE_AGENT_ORB_TRANSITION } from '@renderer/components/agents/create-agent-layout'
 import { getPlatform, isElectron } from '@renderer/lib/env'
+import { cn } from '@shared/lib/utils/cn'
 
 /**
- * The create-agent step is the one step wider than a form: it inlines the
- * template roster under the composer, which wants three card columns. It also
- * carries the only horizontal padding in the wizard — 480px of form has
- * gutters to spare in any window big enough to run the app, but the roster at
- * this width does not. `max-w` is border-box, so the cap is 760px of content
- * plus that padding.
- *
- * Unlike the other steps this one is a HEIGHT-FILLING column, not a centered
- * block, and the step container must not scroll: the composer stays pinned
- * while CreateAgentForm scrolls the template roster in the room below it, so
- * every layer between here and the form passes height down (h-full/flex-1
- * with min-h-0 at each level — any level missing min-h-0 lets flex content
- * push the column taller than the window and the pin silently breaks).
+ * One column for the three steps of naming an agent (name and orb, its job,
+ * its add-ons) and for the row of buttons under them, so nothing shifts
+ * sideways from one step to the next and Back and Next sit on the
+ * content's own edges. 576px: the orb picker's eight tiles across, and a
+ * comfortable line for the composer and the add-on rows. `max-w` is
+ * border-box, so the cap is the content plus the padding, which is the only
+ * horizontal padding in the wizard (the 480px steps beside it have gutters to
+ * spare in any window big enough to run the app).
  */
-export const AGENT_STEP_MAX_WIDTH = 'max-w-[808px] px-6'
+export const AGENT_STEP_MAX_WIDTH = 'max-w-[624px] px-6'
+
+/**
+ * The job step when it opens unnamed (a template handoff) inlines the
+ * template roster under the composer, which wants three card columns: 760px.
+ */
+const AGENT_ROSTER_MAX_WIDTH = 'max-w-[808px] px-6'
+
+/** The column a create flow is in now: the steps' one width, or the roster's. */
+export function agentStepWidth(flow: Pick<CreateAgentFlow, 'stage' | 'named'>): string {
+  return flow.stage === 'describe' && !flow.named ? AGENT_ROSTER_MAX_WIDTH : AGENT_STEP_MAX_WIDTH
+}
+
+/*
+ * The step is a HEIGHT-FILLING column, not a centered block, and the step
+ * container must not scroll: the composer stays pinned while CreateAgentForm
+ * scrolls the template roster in the room below it, so every layer between
+ * here and the form passes height down (h-full/flex-1 with min-h-0 at each
+ * level — any level missing min-h-0 lets flex content push the column taller
+ * than the window and the pin silently breaks).
+ */
 
 /** Under the add-ons question: nothing picked here is final. */
 const ADDONS_SUBTITLE = 'You can always modify later.'
@@ -37,14 +53,15 @@ const IDENTITY_AVATAR_SIZE = 56
 type CreateAgentStepProps = CreationOptions & Pick<CreateAgentFormProps, 'onNavigateAway'> & {
   nameTitle?: string
   flow: CreateAgentFlow
-  onChooseSource?: (openImport: boolean) => void
 }
 
 /**
- * The teammate asking: its orb beside the step's question, with its name
- * above. The orb is also the way back to change name and orb.
+ * The teammate asking: its orb beside the step's question. On the job step,
+ * where it is met for the first time, it says who it is first (`introduce`);
+ * that is the one place its name is written. The orb is also the way back to
+ * change name and orb.
  */
-function IdentityHeader({ identity, onEdit, question, subtitle }: { identity: ChosenAgentIdentity; onEdit: () => void; question: string; subtitle?: string }) {
+function IdentityHeader({ identity, onEdit, question, subtitle, introduce = false }: { identity: ChosenAgentIdentity; onEdit: () => void; question: string; subtitle?: string; introduce?: boolean }) {
   const name = identity.name.trim()
   return (
     <div className="shrink-0 pb-8">
@@ -57,17 +74,25 @@ function IdentityHeader({ identity, onEdit, question, subtitle }: { identity: Ch
           data-testid="agent-identity-edit"
           className="group relative shrink-0 rounded-item outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <AvatarView source={avatarSource(identity.avatar)} restingPhi={orbRestingPhi('new-agent')} size={IDENTITY_AVATAR_SIZE} state="idle" followPointer />
+          {/* Just the orb travels between steps, not the pencil over it. */}
+          <span className="block" style={CREATE_AGENT_ORB_TRANSITION}>
+            <AvatarView source={avatarSource(identity.avatar)} restingPhi={orbRestingPhi('new-agent')} size={IDENTITY_AVATAR_SIZE} state="idle" followPointer />
+          </span>
           <span className="absolute -bottom-1 -right-1 grid h-5 w-5 place-items-center rounded-full border bg-background opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
             <Pencil className="h-3 w-3 text-muted-foreground" aria-hidden />
           </span>
         </button>
         <div className="min-w-0">
-          <p className="truncate text-sm text-muted-foreground" data-testid="agent-identity-name-label">{name}</p>
           <h2 className="text-2xl font-normal">
+            {/* Two sentences, a line each: the hello muted, as the add-ons
+                step's second sentence is, so the question is what stands out.
+                The space keeps them apart where they are read as one string.
+                A long name wraps, not truncates. */}
+            {introduce && <><span className="block break-words text-muted-foreground/60">Hey there! I’m <span data-testid="agent-identity-name-label">{name}</span>.</span>{' '}</>}
             {question}
-            {/* A second sentence on the same line, at the same size, muted. */}
-            {subtitle && <>{' '}<span className="text-muted-foreground/60">{subtitle}</span></>}
+            {/* A second sentence on its own line, at the same size, muted.
+                The space keeps the two apart where they are read as one string. */}
+            {subtitle && <>{' '}<span className="block text-muted-foreground/60">{subtitle}</span></>}
           </h2>
         </div>
       </div>
@@ -78,7 +103,6 @@ function IdentityHeader({ identity, onEdit, question, subtitle }: { identity: Ch
 export function CreateAgentStep({
   flow,
   nameTitle = 'Name your first AI teammate',
-  onChooseSource,
   onNavigateAway,
   surface,
 }: CreateAgentStepProps) {
@@ -96,10 +120,9 @@ export function CreateAgentStep({
           value={identity}
           onChange={flow.setIdentity}
           onContinue={() => void flow.confirmIdentity()}
-          onChooseSource={flow.agent ? undefined : onChooseSource ?? flow.showChoices}
+          returning={named}
         />
       )}
-      {stage === 'templates' && <TemplateChoices initiallyImporting={flow.importing} surface={surface} onInstalled={flow.complete} onNavigateAway={onNavigateAway} />}
       {describeVisited && (
         <div className="h-full" hidden={stage !== 'describe'}>
           {/* The title rides inside the form's centered hero block (see the
@@ -107,7 +130,7 @@ export function CreateAgentStep({
           <CreateAgentForm
             className="h-full"
             header={named
-              ? <IdentityHeader identity={identity} onEdit={flow.backToName} question="What job do you want to give me?" />
+              ? <IdentityHeader identity={identity} onEdit={flow.backToName} introduce question="What job will you give me?" />
               : (
                 <div className="shrink-0 pb-8">
                   <h2 className="text-2xl font-normal max-w-sm">Describe your first AI teammate</h2>
@@ -124,6 +147,7 @@ export function CreateAgentStep({
             onContinue={named ? flow.continueToAddons : undefined}
             continueRef={flow.continueRef}
             submitRef={flow.submitRef}
+            importAs={named ? { name: identity.name.trim(), onImported: flow.replaceWithImported } : undefined}
             onAgentCreated={flow.complete}
             onNavigateAway={onNavigateAway}
             surface={surface}
@@ -145,9 +169,11 @@ export function CreateAgentStep({
 
 /**
  * The bottom row's forward button, opposite Back (both the create screen's
- * and the full wizard's): Continue on the name step, which submits its form
- * so it does what Enter does; Continue on the job step, which does what
- * Cmd+Enter in its composer does; Start session on the add-ons step.
+ * and the full wizard's): Next on the name step, which submits its form
+ * so it does what Enter does; Next on the job step, which does what
+ * Cmd+Enter in its composer does; Create on the add-ons step.
+ * Skipping a step is not here: it is a quiet word in the top corner
+ * (`CreateAgentSkipButton`), so this row holds only the ways forward and back.
  */
 export function CreateAgentContinueButton({ flow }: { flow: CreateAgentFlow }) {
   if (flow.stage === 'name') {
@@ -158,20 +184,17 @@ export function CreateAgentContinueButton({ flow }: { flow: CreateAgentFlow }) {
         disabled={!flow.identity.name.trim()}
         data-testid="agent-identity-continue"
       >
-        Continue
+        Next
         <ArrowRight className="h-4 w-4 ml-1" />
       </Button>
     )
   }
   if (flow.stage === 'describe' && flow.named) {
     return (
-      <>
-        <Button variant="ghost" disabled={flow.saving} onClick={() => void flow.finish('home')} data-testid="create-agent-skip">Skip</Button>
-        <Button disabled={flow.saving} onClick={() => void flow.continueRef.current?.()} data-testid="create-agent-continue">
-          Continue
-          <ArrowRight className="h-4 w-4 ml-1" />
-        </Button>
-      </>
+      <Button disabled={flow.saving} onClick={() => void flow.continueRef.current?.()} data-testid="create-agent-continue">
+        Next
+        <ArrowRight className="h-4 w-4 ml-1" />
+      </Button>
     )
   }
   if (flow.stage === 'addons') {
@@ -180,10 +203,10 @@ export function CreateAgentContinueButton({ flow }: { flow: CreateAgentFlow }) {
         {flow.saving ? (
           <>
             <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            Starting…
+            Creating…
           </>
         ) : (
-          'Start session'
+          'Create'
         )}
       </Button>
     )
@@ -191,12 +214,37 @@ export function CreateAgentContinueButton({ flow }: { flow: CreateAgentFlow }) {
   return null
 }
 
+/**
+ * A step's Skip, for the top corner beside the X and drawn like it: muted
+ * until hovered, no border, the X's height. Leaving a step out is always
+ * available and never the thing the screen asks for.
+ */
+export function CornerSkipButton({ className, ...props }: React.ComponentProps<typeof Button>) {
+  return (
+    <Button
+      variant="ghost"
+      {...props}
+      className={cn('h-9 px-3 text-sm font-normal text-muted-foreground hover:text-foreground', className)}
+    >
+      Skip
+    </Button>
+  )
+}
+
+/** The job step's Skip: straight to the named agent's empty home. */
+export function CreateAgentSkipButton({ flow }: { flow: CreateAgentFlow }) {
+  if (flow.stage !== 'describe' || !flow.named) return null
+  return <CornerSkipButton disabled={flow.saving} onClick={() => void flow.finish('home')} data-testid="create-agent-skip" />
+}
+
 type CreateAgentScreenProps = Omit<CreateAgentStepProps, 'flow'> & {
   /**
-   * The bottom row's leading controls: the wizard's Skip, the create page's
-   * Back. The forward button (Continue, Create Agent) always ends the row.
+   * The bottom row's leading control: Back. The forward button (Next,
+   * Create) always ends the row.
    */
   footer: (flow: CreateAgentFlow) => ReactNode
+  /** A host's own quiet action for the top corner (the wizard's Skip), left of the step's. */
+  cornerActions?: (flow: CreateAgentFlow) => ReactNode
   /** Leave the whole flow, from either step: an X in the top-right corner. */
   onClose?: () => void
   'data-testid': string
@@ -208,39 +256,47 @@ interface CreateAgentChromeProps {
   footer: ReactNode
   /** Leave the whole flow: an X in the top-right corner. */
   onClose?: () => void
+  /** Quiet actions in the top-right corner, left of the X (a step's Skip). */
+  cornerActions?: ReactNode
+  /** The content column's and the bottom row's width classes. */
+  width?: string
   'data-testid': string
 }
 
 /**
  * The full-window frame the create pages share: a title-bar drag strip, the
- * X, a content column as wide as the template roster wants, and a bottom row.
+ * X, a content column, and a bottom row as wide as it.
  */
-export function CreateAgentChrome({ children, footer, onClose, 'data-testid': testId }: CreateAgentChromeProps) {
+export function CreateAgentChrome({ children, footer, onClose, cornerActions, width = AGENT_STEP_MAX_WIDTH, 'data-testid': testId }: CreateAgentChromeProps) {
   return (
     <div className="flex h-svh bg-background overflow-hidden" data-testid={testId}>
       {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
-      {onClose && (
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onClose}
-          aria-label="Close"
-          title="Close"
-          data-testid="create-agent-close"
-          // Above the drag region; on Windows, below the window controls
-          // that own the top-right corner of the title bar.
-          className={`app-no-drag absolute right-4 z-20 h-9 w-9 text-muted-foreground hover:text-foreground ${getPlatform() === 'win32' ? 'top-12' : 'top-4'}`}
-        >
-          <X className="h-5 w-5" />
-        </Button>
-      )}
+      {/* The top corner: a step's Skip, then the X. Above the drag region;
+          on Windows, below the window controls that own the top-right corner
+          of the title bar. */}
+      <div className={`app-no-drag absolute right-4 z-20 flex items-center gap-1 ${getPlatform() === 'win32' ? 'top-12' : 'top-4'}`}>
+        {cornerActions}
+        {onClose && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close"
+            data-testid="create-agent-close"
+            className="h-9 w-9 text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-5 w-5" />
+          </Button>
+        )}
+      </div>
       <div className="relative flex flex-col h-svh w-full">
         <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-          <div className={`flex h-full min-h-0 w-full mx-auto flex-col pt-10 ${AGENT_STEP_MAX_WIDTH}`}>
+          <div className={`flex h-full min-h-0 w-full mx-auto flex-col pt-10 ${width}`}>
             {children}
           </div>
         </div>
-        <div className={`flex items-center gap-2 pb-10 max-sm:py-6 w-full mx-auto ${AGENT_STEP_MAX_WIDTH}`}>
+        <div className={`flex items-center gap-2 pb-10 max-sm:py-6 w-full mx-auto ${width}`}>
           {footer}
         </div>
       </div>
@@ -253,20 +309,21 @@ export function CreateAgentChrome({ children, footer, onClose, 'data-testid': te
  * wizard and the from-scratch create page (`/new-agent`) are the same screen
  * with a different way out.
  */
-export function CreateAgentScreen({ footer, onClose, 'data-testid': testId, ...step }: CreateAgentScreenProps) {
+export function CreateAgentScreen({ footer, cornerActions, onClose, 'data-testid': testId, ...step }: CreateAgentScreenProps) {
   const flow = useCreateAgentFlow(step)
-  return <CreateAgentScreenLayout {...step} flow={flow} footer={footer} onClose={onClose} data-testid={testId} />
+  return <CreateAgentScreenLayout {...step} flow={flow} footer={footer} cornerActions={cornerActions} onClose={onClose} data-testid={testId} />
 }
 
-export function CreateAgentScreenLayout({ flow, footer, onClose, 'data-testid': testId, ...step }: CreateAgentScreenProps & { flow: CreateAgentFlow }) {
+export function CreateAgentScreenLayout({ flow, footer, cornerActions, onClose, 'data-testid': testId, ...step }: CreateAgentScreenProps & { flow: CreateAgentFlow }) {
   return (
     <CreateAgentChrome
       data-testid={testId}
       onClose={onClose}
+      cornerActions={<>{cornerActions?.(flow)}<CreateAgentSkipButton flow={flow} /></>}
+      width={agentStepWidth(flow)}
       footer={(
         <>
-          {/* Leading controls fill the row up to the forward button, so a
-              control pushed right (the wizard's Skip) lands beside it. */}
+          {/* Leading controls fill the row up to the forward button. */}
           <div className="flex min-w-0 flex-1 items-center gap-2">{footer(flow)}</div>
           <CreateAgentContinueButton flow={flow} />
         </>

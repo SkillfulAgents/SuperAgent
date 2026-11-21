@@ -198,14 +198,15 @@ export function useImportAgentTemplate() {
   return useMutation<
     ApiAgentTemplateInstallResult,
     Error,
-    { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
+    { file: File; mode?: 'template' | 'full'; name?: string; onProgress?: (p: ImportProgress) => void }
   >({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async ({ file, mode, onProgress }) => {
+    mutationFn: async ({ file, mode, name, onProgress }) => {
       return uploadFileChunked<ApiAgentTemplateInstallResult>({
         url: '/api/agents/import-template',
         file,
-        fields: { mode: mode || 'template' },
+        // `name` replaces the one the package carries.
+        fields: { mode: mode || 'template', ...(name ? { name } : {}) },
         onProgress,
       })
     },

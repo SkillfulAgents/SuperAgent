@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from '@renderer/components/messages/chat-composer-box'
 import { cn } from '@shared/lib/utils'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { CreateAgentTemplates } from '@renderer/components/agents/create-agent-templates'
 import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dialog'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
@@ -33,7 +34,7 @@ import {
 } from '@renderer/components/messages/composer-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
-import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
+import { CREATE_STEP_BOTTOM_SPACER, CREATE_STEP_FADE_MASK } from '@renderer/components/agents/create-agent-layout'
 import { DREAM_SETUP_PROMPT } from '@shared/lib/skillset-provider/dream-skill'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent, ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
@@ -54,14 +55,12 @@ import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
 /**
- * Soft edges for the template roster's scroll viewport: cards dissolve over
- * 32px instead of clipping at the top of the composer above and the footer
+ * Soft edges for the template roster's scroll viewport (CREATE_STEP_FADE_MASK):
+ * cards dissolve instead of clipping at the composer above and the footer
  * below. Top padding (the measured composer overlap plus this gap) keeps
- * at-rest content clear of the bands, so nothing looks faded until it is
- * actually leaving.
+ * at-rest content clear of the bands.
  */
-const ROSTER_FADE_MASK =
-  'linear-gradient(to bottom, transparent 0, black 32px, black calc(100% - 32px), transparent 100%)'
+const ROSTER_FADE_MASK = CREATE_STEP_FADE_MASK
 
 /** At-rest gap between the composer's bottom edge and the roster heading. */
 const ROSTER_TOP_GAP_PX = 64
@@ -117,13 +116,20 @@ export interface CreateAgentFormProps {
   showTemplates?: boolean
   /** Filled with the form's create action, for a host that defers it (`onContinue`). */
   submitRef?: React.MutableRefObject<(() => Promise<void>) | null>
+  /**
+   * Offers an import button in the composer, beside the mic, for a host without the
+   * roster and its import tile (the named flow's job step). The package is
+   * imported under `name`, and `onImported` is awaited before the imported
+   * agent opens: there it takes the place of the agent the name step made.
+   */
+  importAs?: { name: string; onImported: (agent: { slug: string }) => Promise<void> | void }
   /** Form max width in the layout. Defaults to no cap (wrapper decides). */
   className?: string
   /** When true, play the reverse (exit) animation on the same items. */
   exiting?: boolean
 }
 
-export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, dreamSelected, namedFlow, existingAgent, sessionRequestId, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, dreamSelected, namedFlow, existingAgent, sessionRequestId, initialPrompt, onPromptChange, initialRuntimeOptions, onRuntimeOptionsChange, onContinue, continueRef, submitRef, importAs, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -255,6 +261,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
       source: 'import' | 'skillset',
     ) => {
       await discardWarmAgent()
+      if (source === 'import') await importAs?.onImported(agent)
       track('agent_created', {
         source,
         ...(surface ? { surface } : {}),
@@ -272,7 +279,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
       })
       await onAgentCreated?.({ slug: agent.slug })
     },
-    [discardWarmAgent, track, surface, draftsStore, navigate, startOnboardingSession, onAgentCreated],
+    [discardWarmAgent, importAs, track, surface, draftsStore, navigate, startOnboardingSession, onAgentCreated],
   )
 
   const composer = useMessageComposer({
@@ -424,7 +431,8 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
     [finishCreatedAgent],
   )
 
-  // The strip's end-cap card. Forfeits like the old aid chips did: an armed
+  // The strip's end-cap card, or the card under the composer (`importAs`).
+  // Forfeits like the old aid chips did: an armed
   // signup handoff resolving underneath the import dialog would stack the
   // template-install dialog on top of it.
   const [showImportDialog, setShowImportDialog] = useState(false)
@@ -526,16 +534,24 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
         // roster viewport reaches up behind this block and both siblings are
         // stacking contexts, so the later sibling (the roster) would paint
         // over the composer without explicit z-order.
-        {...itemProps(80, 130, 'relative z-10 shrink-0', 'create-agent-item-glass')}
+        // In the named flow it rises from below instead (-rise): the header
+        // and its orb arrive from the step before, the composer from the
+        // bottom of the screen.
+        {...itemProps(namedFlow ? 120 : 80, 130, 'relative z-10 shrink-0', namedFlow ? 'create-agent-item-rise' : 'create-agent-item-glass')}
       >
         <ChatComposerBox
-          className={cn(
-            FLOATING_COMPOSER_CLASS,
-            'transition-shadow duration-500',
-            // twMerge keeps the last shadow per variant, so these override
-            // the floating shadows until the roster starts moving.
-            !rosterScrolled && 'shadow-none dark:shadow-none',
-          )}
+          className={namedFlow
+            // The named flow's job step: the same soft grey well as the name
+            // field on the step before (no border, shadow or glass), since
+            // there is no roster for it to float over.
+            ? 'border-transparent bg-muted shadow-none backdrop-blur-none supports-[backdrop-filter]:bg-muted'
+            : cn(
+              FLOATING_COMPOSER_CLASS,
+              'transition-shadow duration-500',
+              // twMerge keeps the last shadow per variant, so these override
+              // the floating shadows until the roster starts moving.
+              !rosterScrolled && 'shadow-none dark:shadow-none',
+            )}
           textareaRef={textareaRef}
           attachments={composer.attachments}
           onRemoveAttachment={composer.removeAttachment}
@@ -547,17 +563,40 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
           onKeyDown={handleKeyDown}
           placeholder={displayedPlaceholder}
           disabled={isDisabled}
-          rows={2}
+          // Two lines, one taller on phones: there the typewriter placeholder
+          // wraps to three lines, which would otherwise fill it. The named
+          // flow's job step, with nothing under it, has a line more of each.
+          rows={namedFlow ? 3 : 2}
           autoFocus={!templateToInstall && !handoffTemplateSlug}
           dataTestId="create-agent-prompt"
-          // Two lines, one taller on phones: there the typewriter placeholder
-          // wraps to three lines, which would otherwise fill it.
-          textareaClassName="min-h-[60px] sm:min-h-[40px]"
+          textareaClassName={namedFlow ? 'min-h-[80px] sm:min-h-[60px]' : 'min-h-[60px] sm:min-h-[40px]'}
           leftActions={(
             <ComposerOptions state={composerOptions} disabled={isDisabled} size="sm" />
           )}
           rightActions={(
             <>
+              {/* The other way in: an icon the mic's size, named on hover. */}
+              {importAs && (
+                <TooltipProvider delayDuration={200}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-7 w-7"
+                        disabled={isDisabled}
+                        onClick={handleImportClick}
+                        aria-label="Import an agent"
+                        data-testid="create-agent-import"
+                      >
+                        <Upload className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Import an agent</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
               <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
               {/* As a step, the host's bottom row carries Continue. */}
               {!onContinue && (
@@ -637,6 +676,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
         open={showImportDialog}
         onClose={() => setShowImportDialog(false)}
         onComplete={handleImportComplete}
+        name={importAs?.name}
       />
     </div>
   )
