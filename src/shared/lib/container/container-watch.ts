@@ -10,8 +10,9 @@
  * - Every 30 s, the container's health (the memory and CPU warnings the app
  *   shows), while the runtime sees the container running.
  *
- * A check that hangs holds up only its own agent: the manager skips that
- * agent's passes while one runs, and every other agent has its own jobs.
+ * A check that hangs holds up its own agent's passes, which the manager skips
+ * while one runs, and one of the slots its kind of check has in this
+ * process; every other agent has its own jobs.
  *
  * Tasks on their own, with no service around them, like the session index's
  * wakeup: they register on the manager in use the first time a watch starts.
@@ -34,11 +35,12 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
 ) * 1000
 
 /**
- * Status checks of this process's agents at once, one runner call each. The
- * watches of containers found running together come due together; the
- * actors of one process share its runtime, so the bound is theirs to keep.
+ * Checks of one kind that run at once across this process's agents, one
+ * runner call each. The watches of containers seen running together come
+ * due together; the actors of one process share its runtime, so the bound
+ * is theirs to keep.
  */
-const statusChecks = pLimit(4)
+const CHECKS_AT_ONCE = 4
 
 export interface ContainerWatchDeps {
   /** One health check of the running container. */
@@ -74,19 +76,23 @@ const watched = ((globalThis as Record<symbol, Map<string, ContainerWatchDeps> |
 
 class ContainerCheckTask extends Task<Payload> {
   readonly payloadSchema = payloadSchema
+  private readonly slots = pLimit(CHECKS_AT_ONCE)
 
   constructor(readonly type: string, private readonly check: (deps: ContainerWatchDeps) => Promise<void>) {
     super()
   }
 
   async execute({ agentSlug }: Payload): Promise<TaskResult<Payload>> {
-    const deps = watched.get(agentSlug)
-    if (deps) await this.check(deps)
+    await this.slots(async () => {
+      // Read once a slot is free: a watch that stopped while this waited has nothing to check.
+      const deps = watched.get(agentSlug)
+      if (deps) await this.check(deps)
+    })
     return { kind: 'done' }
   }
 }
 
-const statusCheckTask = new ContainerCheckTask('container-watch.status', (deps) => statusChecks(() => deps.checkStatus()))
+const statusCheckTask = new ContainerCheckTask('container-watch.status', (deps) => deps.checkStatus())
 const healthCheckTask = new ContainerCheckTask('container-watch.health', (deps) => deps.checkHealth())
 
 export class ContainerWatch {

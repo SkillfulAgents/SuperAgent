@@ -65,8 +65,9 @@ describe('ContainerWatch', () => {
   })
 
   it('holds up only its own agent when a check hangs', async () => {
+    let release = () => {}
     const stuck = watchOf('agent-a')
-    stuck.checkHealth.mockImplementation(() => new Promise<void>(() => {}))
+    stuck.checkHealth.mockImplementation(() => new Promise<void>((resolve) => { release = () => resolve() }))
     const other = watchOf('agent-b')
     stuck.watch.startHealth()
     other.watch.startHealth()
@@ -77,6 +78,31 @@ describe('ContainerWatch', () => {
     expect(other.checkHealth).toHaveBeenCalledTimes(3)
     stuck.watch.stop()
     other.watch.stop()
+    // Gives back the slot it held, for the tests after this one.
+    release()
+  })
+
+  it('runs at most 4 checks of a kind at once, and none for a watch that stopped while it waited', async () => {
+    const releases: Array<() => void> = []
+    const agents = ['a', 'b', 'c', 'd', 'e', 'f'].map((name) => watchOf(`agent-${name}`))
+    for (const { watch, checkHealth } of agents) {
+      checkHealth.mockImplementation(() => new Promise<void>((resolve) => { releases.push(() => resolve()) }))
+      watch.startHealth()
+    }
+    const calls = () => agents.map(({ checkHealth }) => checkHealth.mock.calls.length)
+
+    // All six come due together: four run, two wait for a slot.
+    await vi.advanceTimersByTimeAsync(HEALTH_MS)
+    expect(calls()).toEqual([1, 1, 1, 1, 0, 0])
+
+    // The last one's watch stops while it waits: its turn checks nothing.
+    agents[5].watch.stop()
+    releases.splice(0).forEach((release) => release())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls()).toEqual([1, 1, 1, 1, 1, 0])
+
+    for (const { watch } of agents) watch.stop()
+    releases.splice(0).forEach((release) => release())
   })
 
   it('starts nothing once dispatch has stopped', async () => {
