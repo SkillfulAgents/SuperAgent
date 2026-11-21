@@ -197,6 +197,18 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect(decode(await readAllBytes(empty.stream))).toBe('')
     })
 
+    it('readSized with a range streams that slice of the same open, cut at the size, and still answers the whole size', async () => {
+      await files.putDoc('r.txt', '0123456789')
+      const slice = await files.readSized('r.txt', { range: { start: 2, end: 5 } })
+      expect(slice.size).toBe(10)
+      expect(decode(await readAllBytes(slice.stream))).toBe('2345')
+      const cut = await files.readSized('r.txt', { range: { start: 8, end: 99 } })
+      expect(decode(await readAllBytes(cut.stream))).toBe('89')
+      const past = await files.readSized('r.txt', { range: { start: 20, end: 30 } })
+      expect(past.size).toBe(10)
+      expect(decode(await readAllBytes(past.stream))).toBe('')
+    })
+
     it('readSized refuses what is not a file', async () => {
       expect(await codeOf(files.readSized('missing.jsonl'))).toBe('not-found')
       await files.mkdir('dir')

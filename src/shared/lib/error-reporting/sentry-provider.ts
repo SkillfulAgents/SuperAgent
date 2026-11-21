@@ -42,8 +42,12 @@ export function redactBotTokens(text: string): string {
   return text.replace(TELEGRAM_BOT_TOKEN, '$1:[redacted]')
 }
 
-/** A signed file URL's token (`/api/signed-files/<token>`): the path segment is the credential. */
-const SIGNED_FILE_TOKEN = /(\/api\/signed-files\/)[^/?#\s"'<>]+/g
+/**
+ * A signed file URL's token (`/api/signed-files/<token>`): the path segment is
+ * the credential. The token is base64url, a `.`, base64url, so punctuation
+ * after it in prose (a full stop, a closing parenthesis) is left alone.
+ */
+const SIGNED_FILE_TOKEN = /(\/api\/signed-files\/)[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/g
 
 /** The text with every signed file URL's token replaced. */
 export function redactSignedFileTokens(text: string): string {

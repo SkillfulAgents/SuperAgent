@@ -14,7 +14,20 @@
  * (`insertIfAbsent` on the token id) before any byte is written; a request
  * that fails before the file landed gives the claim back, and one that
  * succeeded marks it used. The completed upload is then found by its upload
- * id, for that user and agent only (`resolveSignedUpload`).
+ * id, for that user and agent only, while that user may still use the agent
+ * (`resolveSignedUpload`). The write is confined: a link in the way that
+ * leads out of the workspace refuses it.
+ *
+ * Known limits, accepted for now:
+ * - An upload is one request of at most `MAX_UPLOAD_REQUEST_SIZE` (64MB).
+ *   There is no chunking: a larger file cannot go through an upload URL.
+ * - The claim and the upload results live in AppState, which is process
+ *   memory on desktop and single-tenant web (LocalAppState). A restart within
+ *   a token's lifetime forgets a used claim, so that URL could be accepted
+ *   once more (writing a second, separately timestamped file), and forgets
+ *   upload results, so `resolveSignedUpload` returns null for an upload that
+ *   succeeded before the restart.
+ * - A download URL can be used any number of times until it expires.
  */
 import { eq } from 'drizzle-orm'
 import { appState, defineNamespace } from '@shared/lib/app-state'
@@ -37,6 +50,7 @@ import { newTokenId, signFileToken, verifyFileToken } from './signed-file-token'
 import {
   DEFAULT_SIGNED_FILE_URL_TTL_MS,
   MAX_SIGNED_FILE_URL_TTL_MS,
+  MAX_STORED_UPLOAD_NAME_LENGTH,
   SIGNED_FILE_TOKEN_VERSION,
   SIGNED_UPLOAD_RESULT_TTL_MS,
   signedDownloadTargetSchema,
@@ -83,7 +97,7 @@ const uploadResults = defineNamespace({
  */
 export class SignedFileUrlError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 413,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 500,
     message: string,
   ) {
     super(message)
@@ -104,8 +118,6 @@ export interface SignedFileUrl {
 export interface MintOptions {
   /** Shorter than the default if wanted; more than `MAX_SIGNED_FILE_URL_TTL_MS` is refused. */
   ttlMs?: number
-  /** For tests. */
-  now?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +230,7 @@ async function mint(payload: SignedFileTokenPayload): Promise<SignedFileUrl> {
  */
 export async function mintSignedDownloadUrl(userId: string, target: SignedDownloadTarget, options: MintOptions = {}): Promise<SignedFileUrl> {
   const ttlMs = lifetime(options)
-  const now = options.now ?? Date.now()
+  const now = Date.now()
   let parsed: SignedDownloadTarget
   try {
     parsed = signedDownloadTargetSchema.parse(
@@ -235,8 +247,9 @@ export async function mintSignedDownloadUrl(userId: string, target: SignedDownlo
 /**
  * A single-use URL that uploads one file (the PUT body, at most
  * `MAX_UPLOAD_REQUEST_SIZE` bytes) into the agent's `uploads/` for `userId`,
- * who must hold the user role or above on it. `filename` is sanitized now; the
- * stored name gets a timestamp when the bytes arrive. `uploadId` is what
+ * who must hold the user role or above on it. `filename` is sanitized now,
+ * and shortened so that it still fits a file name once the timestamp is added
+ * when the bytes arrive. `uploadId` is what
  * `resolveSignedUpload` finds the stored file by.
  */
 export async function mintSignedUploadUrl(
@@ -245,12 +258,12 @@ export async function mintSignedUploadUrl(
   options: MintOptions = {},
 ): Promise<SignedFileUrl & { uploadId: string }> {
   const ttlMs = lifetime(options)
-  const now = options.now ?? Date.now()
+  const now = Date.now()
   const uploadId = newTokenId()
   const target = await authorizeTarget(await principalFor(userId, now), {
     kind: 'agent-upload',
     agentSlug: input.agentSlug,
-    filename: sanitizeUploadFilename(input.filename).slice(-255),
+    filename: fitStoredUploadName(sanitizeUploadFilename(input.filename)),
     uploadId,
   })
   const minted = await mint({ v: SIGNED_FILE_TOKEN_VERSION, jti: newTokenId(), sub: userId, op: 'upload', target, iat: now, exp: now + ttlMs })
@@ -275,8 +288,8 @@ export interface SignedFileGrant<P extends SignedFileTokenPayload = SignedFileTo
 export async function authorizeSignedFileRequest<O extends SignedFileOperation>(
   token: string,
   op: O,
-  now: number = Date.now(),
 ): Promise<SignedFileGrant<Extract<SignedFileTokenPayload, { op: O }>>> {
+  const now = Date.now()
   const verified = await verifyFileToken(token, now)
   if (!verified.ok) throw INVALID_LINK()
   const { payload } = verified
@@ -310,13 +323,27 @@ function emptyBody(): ReadableStream<Uint8Array> {
   return new ReadableStream({ start: (controller) => controller.close() })
 }
 
+/** `withUploadTimestamp`'s suffix: `-` and a 13-digit millisecond timestamp. */
+const UPLOAD_TIMESTAMP_SUFFIX_LENGTH = 14
+
+/** A sanitized (ASCII) name, cut so it plus the timestamp suffix fits `MAX_STORED_UPLOAD_NAME_LENGTH`, its extension kept. */
+export function fitStoredUploadName(name: string): string {
+  const max = MAX_STORED_UPLOAD_NAME_LENGTH - UPLOAD_TIMESTAMP_SUFFIX_LENGTH
+  if (name.length <= max) return name
+  const dot = name.lastIndexOf('.')
+  const extension = dot > 0 && name.length - dot <= 16 ? name.slice(dot) : ''
+  return `${name.slice(0, max - extension.length)}${extension}`
+}
+
 const TOO_LARGE = () => new SignedFileUrlError(413, `File too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB)`)
 
 /**
- * Writes an upload URL's body into the agent's `uploads/`, once. The same
- * write the upload-file route makes (the actor's `files.write`, nothing left
- * behind on failure). Throws `SignedFileUrlError` 409 while another request
- * holds the URL, 410 once it was used, 413 past `MAX_UPLOAD_REQUEST_SIZE`.
+ * Writes an upload URL's body into the agent's `uploads/`, once: the actor's
+ * `files.write`, confined (a link leading out of the workspace is refused)
+ * and never over an existing file, nothing left behind on failure. Throws
+ * `SignedFileUrlError` 409 while another request holds the URL, 410 once it
+ * was used, 413 past `MAX_UPLOAD_REQUEST_SIZE`, 500 when the file could not
+ * be stored (the cause is logged, not answered).
  */
 export async function storeSignedUpload(
   grant: SignedFileGrant<Extract<SignedFileTokenPayload, { op: 'upload' }>>,
@@ -346,9 +373,11 @@ export async function storeSignedUpload(
     uploadPath = resolveUploadDestPath(filename)
     const limited = capped(body ?? emptyBody(), MAX_UPLOAD_REQUEST_SIZE)
     try {
-      ;({ size } = await files.write(uploadPath, limited.body))
+      ;({ size } = await files.write(uploadPath, limited.body, { confined: true, overwrite: false }))
     } catch (error) {
-      throw limited.exceeded() ? TOO_LARGE() : error
+      if (limited.exceeded()) throw TOO_LARGE()
+      console.error('[signed-files] Upload write failed:', error)
+      throw new SignedFileUrlError(500, 'Upload failed')
     }
   } catch (error) {
     await release()
@@ -370,14 +399,20 @@ export async function storeSignedUpload(
 
 /**
  * Where a completed signed upload was stored, for the user and agent it was
- * minted for; null for another user or agent, an unknown id, or one older
- * than `SIGNED_UPLOAD_RESULT_TTL_MS`. The caller authorizes whatever it then
- * does with the file.
+ * minted for, checked again as a redeem is: the account still active and
+ * still holding the user role or above on the agent. Null for another user
+ * or agent, access since lost, an unknown id, or one older than
+ * `SIGNED_UPLOAD_RESULT_TTL_MS` (or from before a restart, see above).
  */
 export async function resolveSignedUpload(userId: string, agentSlug: string, uploadId: string): Promise<SignedUploadResult | null> {
   if (!userId || !agentSlug || !uploadId) return null
-  const canonical = (await agentCatalog.resolveRecord(agentSlug))?.slug
-  if (!canonical) return null
+  let canonical: string
+  try {
+    canonical = await requireAgentRole(await principalFor(userId, Date.now()), agentSlug, 'user')
+  } catch (error) {
+    if (error instanceof SignedFileUrlError) return null
+    throw error
+  }
   const entry = await appState().get(uploadResults.key(userId, canonical, uploadId))
   return entry?.value ?? null
 }

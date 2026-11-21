@@ -28,17 +28,35 @@ import { serveVolumeFile, volumeErrorResponse } from '../lib/volume-file'
 
 const signedFiles = new Hono()
 
+// The URL is the credential: a page or file opened from it must not hand it on as a Referer.
+signedFiles.use('*', async (c, next) => {
+  c.header('Referrer-Policy', 'no-referrer')
+  await next()
+})
+
 /** `attachment`, with an ASCII fallback name and the exact one in `filename*`. */
 function attachmentDisposition(filename: string): string {
   const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`
 }
 
+/** A confined open: a link leading out of the workspace, a directory or nothing at all is not a file this URL serves. */
+async function openConfined(files: FileOps, filePath: string, range?: { start: number; end: number }) {
+  try {
+    return await files.readSized(filePath, { confined: true, ...(range ? { range } : {}) })
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return null
+    throw error
+  }
+}
+
 /**
  * A workspace file as an attachment, with Range support: the headers the
- * workspace and drive file routes set, never inline. `expectedSize` refuses a
- * delivered file that changed after it was delivered (409), as
- * `/api/x-agent/download-file` does.
+ * workspace and drive file routes set, never inline. The size and the bytes
+ * come from one confined open (`readSized`), as `/api/x-agent/download-file`
+ * reads them, so the file cannot be swapped for a link between a check and
+ * the read. `expectedSize` refuses a delivered file that changed after it
+ * was delivered (409).
  */
 async function serveWorkspaceFile(
   c: Context,
@@ -47,11 +65,12 @@ async function serveWorkspaceFile(
   filename: string,
   expectedSize?: number,
 ): Promise<Response> {
-  // Served by its real location, as the files route does: a link that leaves the workspace is refused.
-  const resolved = await files.resolve(filePath)
-  const stat = resolved === null ? null : await files.stat(resolved)
-  if (resolved === null || !stat || stat.kind !== 'file') return c.json({ error: 'File not found' }, 404)
-  if (expectedSize !== undefined && stat.size !== expectedSize) {
+  const opened = await openConfined(files, filePath)
+  if (!opened) return c.json({ error: 'File not found' }, 404)
+  const { size } = opened
+  const discard = () => opened.stream.cancel().catch(() => {})
+  if (expectedSize !== undefined && size !== expectedSize) {
+    await discard()
     return c.json({ error: 'File changed after it was delivered' }, 409)
   }
 
@@ -62,10 +81,23 @@ async function serveWorkspaceFile(
   // User files must never execute as the app's origin, including when opened in a new tab.
   c.header('Content-Security-Policy', 'sandbox allow-scripts')
 
-  const served = servedRange(c.req.header('range'), stat.size)
-  // A HEAD runs this GET handler: answer with the headers before opening the file (see the files route).
-  if (served.status === 416 || c.req.method === 'HEAD') return c.body(null, served.status, served.headers)
-  return c.body(await files.read(resolved, served.range ?? undefined), served.status, served.headers)
+  const served = servedRange(c.req.header('range'), size)
+  // A HEAD runs this GET handler: the headers are the whole answer, and the open is released unread.
+  if (served.status === 416 || c.req.method === 'HEAD') {
+    await discard()
+    return c.body(null, served.status, served.headers)
+  }
+  if (!served.range) return c.body(opened.stream, served.status, served.headers)
+
+  // A slice is read from a second confined open; a size that moved in between means the file changed.
+  await discard()
+  const slice = await openConfined(files, filePath, served.range)
+  if (!slice) return c.json({ error: 'File not found' }, 404)
+  if (slice.size !== size) {
+    await slice.stream.cancel().catch(() => {})
+    return c.json({ error: 'File changed while being read' }, 409)
+  }
+  return c.body(slice.stream, served.status, served.headers)
 }
 
 function basename(filePath: string): string {

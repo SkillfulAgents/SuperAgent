@@ -14,6 +14,12 @@ export const DEFAULT_SIGNED_FILE_URL_TTL_MS = 5 * 60_000
 /** The longest a minted URL may last: a minter asking for more is refused. */
 export const MAX_SIGNED_FILE_URL_TTL_MS = 5 * 60_000
 
+/** NAME_MAX on the filesystems a workspace lives on: a stored upload's name, timestamp included, fits it. */
+export const MAX_STORED_UPLOAD_NAME_LENGTH = 255
+
+/** How a token's issue time may run ahead of this process's clock (another process minted it). */
+export const SIGNED_FILE_CLOCK_SKEW_MS = 60_000
+
 /** How long a completed upload's id resolves to its workspace path. */
 export const SIGNED_UPLOAD_RESULT_TTL_MS = 60 * 60_000
 
@@ -47,7 +53,7 @@ export const agentUploadTargetSchema = z.object({
   kind: z.literal('agent-upload'),
   agentSlug: agentSlugSchema,
   /** Sanitized when minted; the stored name gets a timestamp when the bytes arrive. */
-  filename: z.string().min(1).max(255),
+  filename: z.string().min(1).max(MAX_STORED_UPLOAD_NAME_LENGTH - 14),
   /** What the completed upload is found by later. */
   uploadId: idSchema,
 }).strict()

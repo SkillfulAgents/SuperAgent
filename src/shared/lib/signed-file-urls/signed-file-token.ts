@@ -10,7 +10,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
 import { getOrCreateRecord } from '@shared/lib/app-records/records'
 import { SIGNED_FILE_URL_SECRET_RECORD_KEY, signedFileUrlSecretRecordSchema } from '@shared/lib/app-records/record-schemas'
-import { signedFileTokenPayloadSchema, type SignedFileTokenPayload } from './signed-file-url-schema'
+import { SIGNED_FILE_CLOCK_SKEW_MS, signedFileTokenPayloadSchema, type SignedFileTokenPayload } from './signed-file-url-schema'
 
 /** Domain separation: this key signs nothing else, but the label keeps it that way if it ever does. */
 const SIGNATURE_LABEL = 'gamut:signed-file-url:'
@@ -45,7 +45,7 @@ export type TokenVerification =
   | { ok: true; payload: SignedFileTokenPayload }
   | { ok: false; reason: 'invalid' | 'expired' }
 
-/** The token's payload when it is ours, unchanged and unexpired. */
+/** The token's payload when it is ours, unchanged, unexpired and not issued in the future. */
 export async function verifyFileToken(token: string, now: number = Date.now()): Promise<TokenVerification> {
   if (typeof token !== 'string' || token.length > MAX_TOKEN_LENGTH) return { ok: false, reason: 'invalid' }
   const dot = token.indexOf('.')
@@ -69,5 +69,7 @@ export async function verifyFileToken(token: string, now: number = Date.now()): 
   const payload = signedFileTokenPayloadSchema.safeParse(parsed)
   if (!payload.success) return { ok: false, reason: 'invalid' }
   if (payload.data.exp <= now) return { ok: false, reason: 'expired' }
+  // Nothing mints ahead of time: an issue time from the future is not a token we made.
+  if (payload.data.iat > now + SIGNED_FILE_CLOCK_SKEW_MS) return { ok: false, reason: 'invalid' }
   return { ok: true, payload: payload.data }
 }

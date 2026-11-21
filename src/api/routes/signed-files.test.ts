@@ -8,7 +8,7 @@ import { runtimeCapabilities } from '@shared/lib/facts/capabilities'
 import { declareServerCapabilities } from '@shared/lib/facts/server-facts'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { backgroundSettled } from '@shared/lib/background'
-import { agentAcl, agents, user, volumeAcl } from '@shared/lib/db/schema'
+import { agentAcl, agents, user, volumeAcl, volumeDefinitions } from '@shared/lib/db/schema'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { createVolumeDefinition } from '@shared/lib/services/volume-service'
 
@@ -88,6 +88,17 @@ function withPayload(url: string, change: (payload: Record<string, unknown>) => 
 
 let driveFolder: string
 
+/** A download URL minted with this process's clock at `at` (as another process's clock might be). */
+async function mintedAt(at: number): Promise<string> {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(at)
+  try {
+    return (await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })).url
+  } finally {
+    vi.useRealTimers()
+  }
+}
+
 beforeEach(async () => {
   declareServerCapabilities(runtimeCapabilities({ os: 'darwin', distribution: 'direct' }))
   vi.stubEnv('AUTH_MODE', 'true')
@@ -113,6 +124,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.useRealTimers()
   declareServerCapabilities(null)
   await backgroundSettled()
   await handle.close()
@@ -123,10 +135,12 @@ afterEach(async () => {
 describe('minting', () => {
   it('returns an absolute URL under the app base URL, expiring after the default five minutes', async () => {
     const now = Date.now()
-    const minted = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' }, { now })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(now)
+    const minted = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
     expect(minted.url).toMatch(/^https:\/\/gamut\.test\/api\/signed-files\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/)
     expect(minted.expiresAt.getTime()).toBe(now + 5 * 60_000)
-    const shorter = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' }, { now, ttlMs: 30_000 })
+    const shorter = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' }, { ttlMs: 30_000 })
     expect(shorter.expiresAt.getTime()).toBe(now + 30_000)
   })
 
@@ -227,10 +241,16 @@ describe('downloads', () => {
 
 describe('tokens', () => {
   it('refuses an expired URL', async () => {
-    const { url } = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' }, { now: Date.now() - 6 * 60_000 })
+    const url = await mintedAt(Date.now() - 6 * 60_000)
     const response = await redeem(url)
     expect(response.status).toBe(401)
     expect(await response.json()).toEqual({ error: 'Invalid or expired link' })
+  })
+
+  it('refuses a token issued in the future, beyond a small clock skew', async () => {
+    expect((await redeem(await mintedAt(Date.now() + 30_000))).status).toBe(200)
+    const ahead = await mintedAt(Date.now() + 2 * 60_000)
+    expect((await redeem(ahead)).status).toBe(401)
   })
 
   it('refuses a tampered signature and a tampered payload, without echoing the token', async () => {
@@ -333,5 +353,149 @@ describe('without auth mode', () => {
     const upload = await mintSignedUploadUrl('local', { agentSlug: 'agent', filename: 'local.txt' })
     expect((await put(upload.url, 'local bytes')).status).toBe(201)
     expect(await resolveSignedUpload('local', 'agent', upload.uploadId)).toMatchObject({ sizeBytes: 11 })
+  })
+})
+
+describe('hardening', () => {
+  const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {})
+
+  it('sends no Referer onward, on success and on refusal', async () => {
+    const { url } = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
+    expect((await redeem(url)).headers.get('referrer-policy')).toBe('no-referrer')
+    expect((await redeem('https://gamut.test/api/signed-files/nope')).headers.get('referrer-policy')).toBe('no-referrer')
+  })
+
+  it('answers HEAD with the headers only', async () => {
+    const { url } = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
+    const response = await redeem(url, { method: 'HEAD' })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-length')).toBe('19')
+    expect(await response.text()).toBe('')
+  })
+
+  it('refuses a download through a link leading out of the workspace, and a directory', async () => {
+    fs.writeFileSync(path.join(root, 'secret.txt'), 'host secret')
+    fs.symlinkSync(path.join(root, 'secret.txt'), path.join(root, 'agent', 'notes', 'link.txt'))
+    const { url } = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/link.txt' })
+    const response = await redeem(url)
+    expect(response.status).toBe(404)
+    expect(await response.text()).not.toContain('host secret')
+    expect((await redeem(url, { headers: { Range: 'bytes=0-3' } })).status).toBe(404)
+
+    const dir = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes' })
+    expect((await redeem(dir.url)).status).toBe(404)
+  })
+
+  it('refuses an upload through a link leading out of the workspace, and gives the URL back', async () => {
+    const spy = quiet()
+    const outside = path.join(root, 'outside')
+    fs.mkdirSync(outside)
+    fs.symlinkSync(outside, path.join(root, 'agent', 'uploads'))
+    const { url, uploadId } = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'escape.txt' })
+    const refused = await put(url, 'escaped')
+    expect(refused.status).toBe(500)
+    expect(await refused.json()).toEqual({ error: 'Upload failed' })
+    expect(fs.readdirSync(outside)).toEqual([])
+
+    fs.unlinkSync(path.join(root, 'agent', 'uploads'))
+    expect((await put(url, 'inside')).status).toBe(201)
+    expect(await resolveSignedUpload('alice', 'agent', uploadId)).toMatchObject({ sizeBytes: 6 })
+    spy.mockRestore()
+  })
+
+  it('gives an upload failure its own answer, releases the claim, and lets a retry succeed', async () => {
+    const spy = quiet()
+    fs.writeFileSync(path.join(root, 'agent', 'uploads'), 'not a folder')
+    const { url } = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'f.txt' })
+    const failed = await put(url, 'data')
+    expect(failed.status).toBe(500)
+    expect(await failed.json()).toEqual({ error: 'Upload failed' })
+    fs.rmSync(path.join(root, 'agent', 'uploads'))
+    expect((await put(url, 'data')).status).toBe(201)
+    expect((await put(url, 'data')).status).toBe(410)
+    spy.mockRestore()
+  })
+
+  it('lets one of several concurrent PUTs on a URL through; the rest get 409', async () => {
+    const { url } = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'race.txt' })
+    let finish!: () => void
+    const gate = new Promise<void>((resolve) => { finish = resolve })
+    const encoder = new TextEncoder()
+    const slow = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode('first '))
+        await gate
+        controller.enqueue(encoder.encode('wins'))
+        controller.close()
+      },
+    })
+    const first = redeem(url, { method: 'PUT', body: slow, duplex: 'half' } as RequestInit)
+    // The write starts only after the claim: once uploads/ exists, the first request holds the URL.
+    await vi.waitFor(() => expect(fs.existsSync(path.join(root, 'agent', 'uploads'))).toBe(true))
+    const others = await Promise.all([put(url, 'two'), put(url, 'three'), put(url, 'four')])
+    expect(others.map((response) => response.status)).toEqual([409, 409, 409])
+    finish()
+    expect((await first).status).toBe(201)
+    const stored = fs.readdirSync(path.join(root, 'agent', 'uploads')).filter((name) => !name.startsWith('.'))
+    expect(stored).toHaveLength(1)
+    expect(fs.readFileSync(path.join(root, 'agent', 'uploads', stored[0]), 'utf8')).toBe('first wins')
+  })
+
+  it('caps a long file name at mint so the stored name fits', async () => {
+    const { url, uploadId } = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: `${'a'.repeat(300)}.txt` })
+    expect((await put(url, 'x')).status).toBe(201)
+    const stored = await resolveSignedUpload('alice', 'agent', uploadId)
+    const name = path.basename(stored!.path)
+    expect(name.length).toBeLessThanOrEqual(255)
+    expect(name).toMatch(/^a+-\d{13}\.txt$/)
+  })
+
+  it('refuses resolving an upload once the user is only a viewer', async () => {
+    const { url, uploadId } = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'later.txt' })
+    expect((await put(url, 'x')).status).toBe(201)
+    await handle.db.update(agentAcl).set({ role: 'viewer' }).where(and(eq(agentAcl.userId, 'alice'), eq(agentAcl.agentSlug, 'agent'))).run()
+    expect(await resolveSignedUpload('alice', 'agent', uploadId)).toBeNull()
+  })
+
+  it('stops serving a drive that went from public to private', async () => {
+    fs.writeFileSync(path.join(driveFolder, 'team.md'), 'team notes')
+    const { id } = await createVolumeDefinition({ type: 'local', config: { path: driveFolder }, name: 'Team', visibility: 'public' }, { userId: 'admin', admin: true })
+    const { url } = await mintSignedDownloadUrl('bob', { kind: 'drive-file', volumeId: id, path: 'team.md' })
+    expect(await (await redeem(url)).text()).toBe('team notes')
+    await handle.db.update(volumeDefinitions).set({ visibility: 'private' }).where(eq(volumeDefinitions.id, id)).run()
+    expect((await redeem(url)).status).toBe(403)
+  })
+})
+
+describe('principals', () => {
+  it('lets an admin through without a role on the agent', async () => {
+    writeWorkspaceFile('other', 'x.txt', 'xx')
+    const { url } = await mintSignedDownloadUrl('admin', { kind: 'workspace-file', agentSlug: 'other', path: 'x.txt' })
+    expect(await (await redeem(url)).text()).toBe('xx')
+    await handle.db.update(user).set({ role: 'user' }).where(eq(user.id, 'admin')).run()
+    expect((await redeem(url)).status).toBe(403)
+  })
+
+  it('refuses an invited, a banned and a deleted account, and accepts one whose ban ran out', async () => {
+    const { url } = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
+    await handle.db.update(user).set({ status: 'invited' }).where(eq(user.id, 'alice')).run()
+    expect((await redeem(url)).status).toBe(403)
+    await handle.db.update(user).set({ status: 'active', banned: true, banExpires: new Date(Date.now() + 60_000) }).where(eq(user.id, 'alice')).run()
+    expect((await redeem(url)).status).toBe(403)
+    await handle.db.update(user).set({ banExpires: new Date(Date.now() - 1000) }).where(eq(user.id, 'alice')).run()
+    expect((await redeem(url)).status).toBe(200)
+    await handle.db.delete(user).where(eq(user.id, 'alice')).run()
+    expect((await redeem(url)).status).toBe(403)
+  })
+
+  it('refuses a token minted in the other auth mode', async () => {
+    vi.stubEnv('AUTH_MODE', 'false')
+    const local = await mintSignedDownloadUrl('local', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
+    vi.stubEnv('AUTH_MODE', 'true')
+    expect((await redeem(local.url)).status).toBe(403)
+
+    const alice = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
+    vi.stubEnv('AUTH_MODE', 'false')
+    expect((await redeem(alice.url)).status).toBe(403)
   })
 })

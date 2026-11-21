@@ -149,3 +149,4 @@ src/shared/lib/services/session-fork-service.test.ts
 src/api/routes/agent-creation-request.test.ts
 src/shared/lib/connection-catalog/agent-catalog.test.ts
 src/api/routes/signed-files.test.ts
+src/api/signed-files.mount.test.ts

@@ -112,8 +112,8 @@ export class InMemoryFileOps implements StoreFileOps {
     return null
   }
 
-  readSized(workspacePath: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
-    return readSized(this.open(workspacePath))
+  readSized(workspacePath: string, options?: { range?: ByteRange }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
+    return readSized(this.open(workspacePath), options?.range)
   }
 
   async open(workspacePath: string): Promise<OpenFile> {

@@ -306,6 +306,12 @@ describe('signed file URL redaction', () => {
     expect(redactSignedFileTokens('/api/agents/a1/files/report.pdf')).toBe('/api/agents/a1/files/report.pdf')
   })
 
+  it('leaves punctuation after the token in prose', () => {
+    expect(redactSignedFileTokens(`fetch failed for /api/signed-files/${token}.`)).toBe('fetch failed for /api/signed-files/[redacted].')
+    expect(redactSignedFileTokens(`(see /api/signed-files/${token}), then retry`)).toBe('(see /api/signed-files/[redacted]), then retry')
+    expect(redactSignedFileTokens(`"/api/signed-files/${token}"`)).toBe('"/api/signed-files/[redacted]"')
+  })
+
   it('takes the token out of the request URL of an event raised while redeeming one', async () => {
     initializeProvider()
     const event = { type: undefined, request: { url: `http://localhost:47891/api/signed-files/${token}`, method: 'GET' } }
