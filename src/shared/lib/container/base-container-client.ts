@@ -306,6 +306,10 @@ const HEALTH_PROBE_TIMEOUT_MS = 2000
 const WARM_SESSION_TIMEOUT_MS = 5000
 // Max wait for the container to drop a session. Its dispose gives the CLI 5 s to exit.
 const DELETE_SESSION_TIMEOUT_MS = 10000
+// Max time for one read of the container's state from the runtime CLI
+// (inspect, stats). The container watch runs these on a few slots shared by
+// every agent, so a read that hangs must give its slot back.
+const RUNTIME_READ_TIMEOUT_MS = 30_000
 
 // Reads stderr only: an exec error's message repeats the command line, flags included.
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
@@ -554,6 +558,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return undefined
   }
 
+  /** Exec bound for a read of the container's state (inspect, stats). */
+  protected getRuntimeReadTimeoutMs(): number {
+    return RUNTIME_READ_TIMEOUT_MS
+  }
+
   /**
    * Whether a run failure is a host-port allocation race. The chosen port passed
    * findAvailablePort()'s pre-flight bind but was grabbed (or published on a
@@ -649,7 +658,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const runner = this.getRunnerShellCommand()
     try {
       const { stdout } = await execWithPath(
-        `${runner} inspect ${containerName}`
+        `${runner} inspect ${containerName}`,
+        { timeoutMs: this.getRuntimeReadTimeoutMs() },
       )
       const inspectData = JSON.parse(stdout.trim())
       const container = Array.isArray(inspectData) ? inspectData[0] : inspectData
@@ -719,7 +729,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const runner = this.getRunnerShellCommand()
     try {
       const { stdout } = await execWithPath(
-        `${runner} stats ${containerName} --no-stream --format ${shellQuote('{{json .}}')}`
+        `${runner} stats ${containerName} --no-stream --format ${shellQuote('{{json .}}')}`,
+        { timeoutMs: this.getRuntimeReadTimeoutMs() },
       )
       const stats = JSON.parse(stdout.trim())
 

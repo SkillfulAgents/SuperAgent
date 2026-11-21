@@ -1092,3 +1092,49 @@ describe('refusedVolumeFlags', () => {
     expect(refusedVolumeFlags(error, flags)).toBe(true)
   })
 })
+
+// ============================================================================
+// State reads give up on a runtime CLI that hangs
+// ============================================================================
+
+/** A runner that never answers: every command sleeps, with its output on /dev/null so the kill frees the pipe. */
+class HungRunnerClient extends BaseContainerClient {
+  constructor(private readonly runner: string) {
+    super({ agentId: 'test-agent' } as ContainerConfig)
+  }
+  protected getRunnerCommand(): string {
+    return this.runner
+  }
+  protected getRuntimeReadTimeoutMs(): number {
+    return 200
+  }
+}
+
+describe('BaseContainerClient state reads with a hung runtime', () => {
+  let dir: string | undefined
+  afterEach(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true })
+    dir = undefined
+  })
+
+  function hungRunner(): string {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hung-runner-'))
+    const runner = path.join(dir, 'runner')
+    fs.writeFileSync(runner, '#!/bin/sh\nexec sleep 30 >/dev/null 2>&1\n', { mode: 0o755 })
+    return runner
+  }
+
+  it('reads the container as stopped when inspect does not answer', async () => {
+    const client = new HungRunnerClient(hungRunner())
+    const started = Date.now()
+    await expect(client.getInfoFromRuntime()).resolves.toEqual({ status: 'stopped', port: null })
+    expect(Date.now() - started).toBeLessThan(3000)
+  })
+
+  it('reads no stats when stats does not answer', async () => {
+    const client = new HungRunnerClient(hungRunner())
+    const started = Date.now()
+    await expect(client.getStats()).resolves.toBeNull()
+    expect(Date.now() - started).toBeLessThan(3000)
+  })
+})

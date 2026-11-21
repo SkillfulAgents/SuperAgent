@@ -22,6 +22,9 @@ vi.mock('./base-container-client', () => ({
     getRunnerShellCommand() {
       return 'container'
     }
+    getRuntimeReadTimeoutMs() {
+      return 30_000
+    }
     getHostApiBaseUrl() {
       return 'http://host.docker.internal:47891'
     }

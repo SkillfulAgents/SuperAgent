@@ -563,6 +563,8 @@ export class ContainerRuntime {
     // Don't update cache while a start is in-flight — Docker may report "running"
     // before the container's HTTP server is ready (health check hasn't passed yet)
     if (this.starting) return info
+    // Dropped during the read: a "running" read would make the agent a new actor and watch.
+    if (this.disposed) return info
 
     this.updateCachedStatus(info.status, info.port)
 
