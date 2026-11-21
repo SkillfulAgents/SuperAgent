@@ -1,4 +1,0 @@
-[    5078ms] [WARNING] [.WebGL-0x48c000fbc00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ http://localhost:47891/agents/qa-20261121-021628-ipmw-joio521n8q:0
-[    5395ms] [WARNING] [.WebGL-0x48c000fbc00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ http://localhost:47891/agents/qa-20261121-021628-ipmw-joio521n8q:0
-[    5555ms] [WARNING] [.WebGL-0x48c000fbc00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ http://localhost:47891/agents/qa-20261121-021628-ipmw-joio521n8q:0
-[    5684ms] [WARNING] [.WebGL-0x48c000fbc00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat) @ http://localhost:47891/agents/qa-20261121-021628-ipmw-joio521n8q:0

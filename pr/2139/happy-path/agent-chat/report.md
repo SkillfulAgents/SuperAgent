@@ -1,10 +1,10 @@
 [TEST_PASS]
-[REASON] Sent "Hello! What is 2+2?" to agent QA-20261121-021627-xgnk and checked that the reply contains "4".
-[STEP] 1. Navigated to http://localhost:47891 — Gamut home loaded with the sidebar listing QA-20261121-021627-xgnk.
-[STEP] 2. Clicked QA-20261121-021627-xgnk in the sidebar — agent page opened at /agents/qa-20261121-021627-xgnk-zye6nsqf0k.
-[STEP] 3. Checked agent status — the header shows "idle" and the sidebar shows "idle", so the "running or idle" check passes.
-[STEP] 4. Typed "Hello! What is 2+2?" into the message box and clicked Send — a new session "Simple Arithmetic Question Check" opened, the message appeared in the list, and the activity indicator showed "Working...".
-[STEP] 5. Waited up to 3 minutes for the "Working..." indicator to clear — it cleared well within the limit. The agent returned to "idle".
-[STEP] 6. Verified the response — the assistant replied "2 + 2 = 4.", which contains "4". Screenshot taken (step6-response-2plus2.png).
+[REASON] Opened the Gamut app, selected agent QA-20261121-022944-98r7, confirmed it was idle, sent "Hello! What is 2+2?", and verified the reply mentions 4.
+[STEP] Step 1, navigate to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-022945-xyk7 and QA-20261121-022944-98r7, both idle.
+[STEP] Step 2, click the "QA-20261121-022944-98r7" agent in the sidebar — the agent page opened at /agents/qa-20261121-022944-98r7-lo1wxzm6y1 with its name in the header.
+[STEP] Step 3, verify status is "running" or "idle" — the status indicator on the agent page reads "idle". Screenshot taken.
+[STEP] Step 4, send "Hello! What is 2+2?" — typed into the message box and pressed Enter, which did not submit (the box still showed the text and the Send button became enabled). Clicked the Send button, and the chat opened in session "Basic Arithmetic Greeting Check" with the user message shown once.
+[STEP] Step 5, wait up to 3 minutes for a response — the reply appeared before any wait was needed; no explicit wait was performed.
+[STEP] Step 6, verify the response mentions "4" and take a screenshot — the assistant reply reads "2 + 2 = 4.", the activity indicator is idle, and the screenshot was taken.
 
-No bugs found. The only console output was 4 WebGL GL Driver warnings, with 0 errors.
+Note (not logged as a bug): plain Enter does not send from the first-message box. The placeholder says "Press cmd+enter to send", so this appears to be by design.
