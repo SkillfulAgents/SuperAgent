@@ -13,6 +13,25 @@ import { authSession, user } from '../db/schema'
 let handle: TestDatabase
 let testDb: AppDatabase
 const auth: { sessionCookieCacheSeconds?: number } = {}
+/** Every call the app makes on the database handle (`select`, `query.authSession.findFirst`, …): none means no statement was issued. */
+let databaseCalls: string[] = []
+
+function recordingCalls<T extends object>(database: T, path = ''): T {
+  return new Proxy(database, {
+    get(target, property) {
+      const value: unknown = Reflect.get(target, property, target)
+      if (typeof property === 'symbol' || property === '_') return value
+      const name = `${path}${property}`
+      if (typeof value === 'function') {
+        return (...args: unknown[]) => {
+          databaseCalls.push(name)
+          return Reflect.apply(value, target, args) as unknown
+        }
+      }
+      return typeof value === 'object' && value !== null ? recordingCalls(value, `${name}.`) : value
+    },
+  })
+}
 
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/config/settings', async (importOriginal) => ({
@@ -30,6 +49,8 @@ vi.mock('@shared/lib/config/settings', async (importOriginal) => ({
 
 import { getAuth, resetAuth } from './index'
 import { Authenticated } from '@/api/middleware/auth'
+import { seedSettings } from '@/cf/lib/seed-settings'
+import type { AppSettings } from '@shared/lib/config/settings'
 
 const BASE = 'http://localhost:47892'
 const PASSWORD = 'CookieCachePassword123!'
@@ -87,7 +108,7 @@ beforeEach(async () => {
   vi.stubEnv('AUTH_PROVIDERS_JSON', '[]')
   vi.stubEnv('PLATFORM_TOKEN', '')
   handle = await createTestDatabase()
-  testDb = handle.db
+  testDb = recordingCalls(handle.db)
   resetAuth()
 })
 
@@ -197,6 +218,41 @@ describe('session cookie cache', () => {
 
     expect((await app.request('/', { headers: { cookie: refreshedCookie } })).status).toBe(200)
     expect(reads).not.toHaveBeenCalled()
+  })
+
+  it('answers a Cloudflare org\'s requests inside its seeded window without a database statement', async () => {
+    const seeded = {} as AppSettings
+    seedSettings(seeded, undefined, BASE)
+    auth.sessionCookieCacheSeconds = seeded.auth?.sessionCookieCacheSeconds
+    const windowMs = auth.sessionCookieCacheSeconds! * 1000
+    const browser = await signedInBrowser()
+    const app = new Hono()
+    app.get('/', Authenticated(), c => c.json({ ok: true }))
+    // Settings are mocked here, so the session read is the only thing that can reach the database.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const signedInAt = Date.now()
+
+    for (const elapsedMs of [0, windowMs / 2, windowMs - 1000]) {
+      vi.setSystemTime(signedInAt + elapsedMs)
+      databaseCalls = []
+      expect((await app.request('/', { headers: { cookie: browser.cookie } })).status).toBe(200)
+      expect(databaseCalls).toEqual([])
+    }
+
+    // Past the window the cookie no longer answers: the session and its user are read again, in one statement.
+    vi.setSystemTime(signedInAt + windowMs + 1000)
+    databaseCalls = []
+    const renewed = await app.request('/', { headers: { cookie: browser.cookie } })
+    expect(renewed.status).toBe(200)
+    expect(databaseCalls).toHaveLength(1)
+
+    // And a session revoked in the database stops working once the window it was cached for is over.
+    const cookie = cookiesOf(renewed, browser.cookie)
+    await testDb.delete(authSession).where(eq(authSession.token, browser.token))
+    vi.setSystemTime(signedInAt + windowMs + 2000)
+    expect((await app.request('/', { headers: { cookie } })).status).toBe(200)
+    vi.setSystemTime(signedInAt + 2 * windowMs + 2000)
+    expect((await app.request('/', { headers: { cookie } })).status).toBe(401)
   })
 
   it('keeps the password-change requirement after an incorrect password', async () => {

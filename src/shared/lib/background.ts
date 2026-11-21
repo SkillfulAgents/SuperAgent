@@ -12,6 +12,15 @@
  * goes no further. The work is tracked until it settles (a failure, until it
  * has been reported), so a test can wait for it with `backgroundSettled()`.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
+
+/** A runtime's hold on the request it serves, e.g. a Worker's ExecutionContext. */
+export interface RequestLifetime {
+  waitUntil(work: Promise<unknown>): void
+}
+
+// The lifetime of the request whose code is running, when its runtime handed one over.
+const requestLifetime = new AsyncLocalStorage<RequestLifetime>()
 
 interface Entry {
   name: string
@@ -51,6 +60,19 @@ export function background(work: PromiseLike<unknown> | (() => PromiseLike<unkno
   const entry: Entry = { name, work: new WeakRef(tracked) }
   inFlight.add(entry)
   collected.register(tracked, entry, entry)
+  try {
+    requestLifetime.getStore()?.waitUntil(tracked)
+  } catch {
+    // The request ended (its context refuses more work): the work runs on without it, as outside one.
+  }
+}
+
+/**
+ * Runs `fn` so that the work it starts with `background()`, now or later in its async calls, keeps
+ * the request alive until that work settles. Work started outside it runs as before.
+ */
+export function runWithBackground<T>(lifetime: RequestLifetime, fn: () => T): T {
+  return requestLifetime.run(lifetime, fn)
 }
 
 /** Never rejects: reporting a failure must not become one. */

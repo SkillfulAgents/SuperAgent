@@ -6,6 +6,7 @@ import { AccountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { McpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { ComputerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
+import type { AgentContainerWatches } from '@shared/lib/container/container-watch'
 import { createAgentRegistry } from './registry'
 import { LiveSessions } from './live/live-sessions'
 import type { AgentState } from './agent-state'
@@ -22,7 +23,7 @@ import { createRecordingHostPort } from './testing/recording-host-port'
 // import side-effect free. The per-agent stores (input requests, reviews,
 // re-auth waits, computer-use grants) and the routers over them are real:
 // they are the actor's own and are what the tests below exercise.
-vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {}, attachAgentIdleAlarms: () => {} } }))
+vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {}, attachAgentIdleAlarms: () => {}, attachAgentContainerWatches: () => {} } }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(async () => null),
@@ -116,6 +117,11 @@ function fakeDeps() {
     isStarting: vi.fn().mockReturnValue(false),
     markStale: vi.fn(),
     restartContainer: vi.fn().mockResolvedValue(undefined),
+    runHealthCheck: vi.fn().mockResolvedValue(undefined),
+    syncAgentStatus: vi.fn().mockResolvedValue({ status: 'running', port: 4321 }),
+    isStopping: vi.fn().mockReturnValue(false),
+    hasClient: vi.fn().mockReturnValue(true),
+    markAsStopped: vi.fn(),
   })
   const runtimes = new Map<string, ReturnType<typeof fakeRuntime>>()
   const containerHost = {
@@ -133,6 +139,7 @@ function fakeDeps() {
     attachAgentWorkspaces: vi.fn(),
     attachAgentSessions: vi.fn(),
     attachAgentIdleAlarms: vi.fn(),
+    attachAgentContainerWatches: vi.fn(),
   }
   const { inputManager, transitions, reviewManager, accountReauthManager, mcpReauthManager, computerUsePermissionManager } =
     routers()
@@ -266,6 +273,50 @@ describe('createAgentRegistry', () => {
       registry.get('a')
       await registry.evict('a')
       expect(attached().peek('a')).toBeUndefined()
+    })
+  })
+
+  describe('the container host reaches each agent\'s container watch', () => {
+    const attached = () => {
+      expect(fake.containerHost.attachAgentContainerWatches).toHaveBeenCalledTimes(1)
+      return fake.containerHost.attachAgentContainerWatches.mock.calls[0][0] as AgentContainerWatches
+    }
+
+    it('a running container gets its actor\'s watch, and peeking never creates a handle', () => {
+      const registry = createAgentRegistry(fake.deps)
+      expect(attached().peek('a')).toBeUndefined()
+      const watch = attached().get('a')
+      expect(watch).toBe((registry.get('a') as LocalAgentActor).state.containerWatch)
+      expect(attached().peek('a')).toBe(watch)
+    })
+
+    it('checks the agent\'s runtime, and marks it stopped when the status cannot be read', async () => {
+      vi.useFakeTimers()
+      try {
+        createAgentRegistry(fake.deps)
+        attached().get('a').startHealth()
+        const runtime = fake.containerHost.runtime('a')
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(runtime.runHealthCheck).toHaveBeenCalledTimes(1)
+        expect(runtime.syncAgentStatus).not.toHaveBeenCalled()
+
+        vi.mocked(runtime.syncAgentStatus).mockRejectedValueOnce(new Error('runtime gone'))
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        await vi.advanceTimersByTimeAsync(270_000)
+        expect(runtime.syncAgentStatus).toHaveBeenCalledTimes(1)
+        expect(runtime.markAsStopped).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('an evicted agent\'s watch stops', async () => {
+      const registry = createAgentRegistry(fake.deps)
+      const watch = attached().get('a')
+      watch.start()
+      expect(watch.isWatching()).toBe(true)
+      await registry.evict('a')
+      expect(watch.isWatching()).toBe(false)
     })
   })
 

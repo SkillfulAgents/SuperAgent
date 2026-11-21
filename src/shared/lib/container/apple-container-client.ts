@@ -241,7 +241,7 @@ export class AppleContainerClient extends BaseContainerClient {
     const containerName = this.getContainerName()
     const runner = this.getRunnerCommand()
     try {
-      const { stdout } = await execWithPath(`${runner} inspect ${containerName}`)
+      const { stdout } = await execWithPath(`${runner} inspect ${containerName}`, { timeoutMs: this.getRuntimeReadTimeoutMs() })
       const data = JSON.parse(stdout)
 
       // Handle both possible formats: single object or array of objects

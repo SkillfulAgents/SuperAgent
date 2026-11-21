@@ -353,7 +353,8 @@ describe('ContainerRuntime idle alarm', () => {
     const runtime = await startRuntime()
     // A transient inspect failure (or a real external stop) is reported as stopped:
     // the alarm is disarmed, and one that fires in that window finds nothing to sleep.
-    mockGetInfoFromRuntime.mockResolvedValueOnce({ status: 'stopped', port: null })
+    // The actor's status checks in the window read it as stopped too.
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
     await runtime.syncAgentStatus()
     expect(runtime.getCachedInfo().status).toBe('stopped')
     expect(alarmOf(SLUG).isArmed()).toBe(false)
@@ -364,11 +365,26 @@ describe('ContainerRuntime idle alarm', () => {
     // The next sync sees it running: the clock was never reset, so the alarm
     // arms from the original start mark, which is already past the timeout,
     // and fires as soon as its timeout read lands.
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4001 })
     await runtime.syncAgentStatus()
     expect(runtime.getCachedInfo().status).toBe('running')
     await vi.advanceTimersByTimeAsync(0)
     expect(mockStop).toHaveBeenCalledTimes(1)
     expect(runtime.getCachedInfo().status).toBe('stopped')
+  })
+
+  it('the actor\'s status check reads a container shown as stopped again, and sleeps it once idle', async () => {
+    const runtime = await startRuntime()
+    mockGetInfoFromRuntime.mockResolvedValueOnce({ status: 'stopped', port: null })
+    await runtime.syncAgentStatus()
+    expect(alarmOf(SLUG).isArmed()).toBe(false)
+
+    // The watch's status pass, 5 minutes after the start, sees the container running and re-arms the alarm.
+    await vi.advanceTimersByTimeAsync(5 * MINUTE)
+    expect(runtime.getCachedInfo().status).toBe('running')
+    expect(alarmOf(SLUG).isArmed()).toBe(true)
+    await vi.advanceTimersByTimeAsync(TIMEOUT - 5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
   })
 
   it('a container a sync finds running gets an alarm, though no actor was held for it', async () => {
