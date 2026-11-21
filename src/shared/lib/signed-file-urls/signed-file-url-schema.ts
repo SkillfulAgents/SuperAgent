@@ -14,8 +14,18 @@ export const DEFAULT_SIGNED_FILE_URL_TTL_MS = 5 * 60_000
 /** The longest a minted URL may last: a minter asking for more is refused. */
 export const MAX_SIGNED_FILE_URL_TTL_MS = 5 * 60_000
 
-/** NAME_MAX on the filesystems a workspace lives on: a stored upload's name, timestamp included, fits it. */
+/** NAME_MAX on the filesystems a workspace lives on: a stored upload's name, suffixes included, fits it. */
 export const MAX_STORED_UPLOAD_NAME_LENGTH = 255
+/** An upload id: 18 random bytes, base64url. */
+export const SIGNED_UPLOAD_ID_LENGTH = 24
+/**
+ * What a stored upload's name adds to the sanitized one: `-<upload id>` (so
+ * two uploads never pick one destination) and `withUploadTimestamp`'s
+ * `-<13-digit ms timestamp>`.
+ */
+export const STORED_UPLOAD_NAME_SUFFIX_LENGTH = 1 + SIGNED_UPLOAD_ID_LENGTH + 14
+/** The longest name minting keeps, so the stored name fits NAME_MAX. */
+export const MAX_SIGNED_UPLOAD_FILENAME_LENGTH = MAX_STORED_UPLOAD_NAME_LENGTH - STORED_UPLOAD_NAME_SUFFIX_LENGTH
 
 /** How a token's issue time may run ahead of this process's clock (another process minted it). */
 export const SIGNED_FILE_CLOCK_SKEW_MS = 60_000
@@ -52,10 +62,10 @@ export const driveFileTargetSchema = z.object({
 export const agentUploadTargetSchema = z.object({
   kind: z.literal('agent-upload'),
   agentSlug: agentSlugSchema,
-  /** Sanitized when minted; the stored name gets a timestamp when the bytes arrive. */
-  filename: z.string().min(1).max(MAX_STORED_UPLOAD_NAME_LENGTH - 14),
-  /** What the completed upload is found by later. */
-  uploadId: idSchema,
+  /** Sanitized and shortened when minted; the stored name gets the upload id and a timestamp. */
+  filename: z.string().min(1).max(MAX_SIGNED_UPLOAD_FILENAME_LENGTH),
+  /** What the upload's record and the completed upload are found by. */
+  uploadId: z.string().length(SIGNED_UPLOAD_ID_LENGTH).regex(/^[A-Za-z0-9_-]+$/),
 }).strict()
 
 export const signedDownloadTargetSchema = z.discriminatedUnion('kind', [
@@ -89,18 +99,24 @@ export const signedFileTokenPayloadSchema = z.discriminatedUnion('op', [
 export type SignedFileTokenPayload = z.infer<typeof signedFileTokenPayloadSchema>
 export type SignedFileOperation = SignedFileTokenPayload['op']
 
-/** An upload URL's use: claimed while its bytes are written, used once they landed. */
-export const signedUploadClaimSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('claimed') }).strict(),
-  z.object({ state: z.literal('used') }).strict(),
-])
-export type SignedUploadClaim = z.infer<typeof signedUploadClaimSchema>
-
-/** A completed upload, found by (user, agent, upload id). */
+/** A completed upload: the workspace path, `/workspace/uploads/…`, as the upload-file route answers it. */
 export const signedUploadResultSchema = z.object({
-  /** The workspace path, `/workspace/uploads/…`, as the upload-file route answers it. */
   path: z.string().min(1),
   filename: z.string().min(1),
   sizeBytes: z.number().int().nonnegative(),
 }).strict()
 export type SignedUploadResult = z.infer<typeof signedUploadResultSchema>
+
+/**
+ * One record per upload URL, from mint to result, found by (user, agent,
+ * upload id). `pending` is written when the URL is minted; a PUT moves it to
+ * `claimed` while the bytes are written, back to `pending` if the write
+ * failed, or to `completed` (spending the URL and holding the result) in one
+ * compare-and-set. An absent record is never usable.
+ */
+export const signedUploadRecordSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('pending'), jti: z.string().min(1) }).strict(),
+  z.object({ state: z.literal('claimed'), jti: z.string().min(1) }).strict(),
+  z.object({ state: z.literal('completed'), jti: z.string().min(1), result: signedUploadResultSchema }).strict(),
+])
+export type SignedUploadRecord = z.infer<typeof signedUploadRecordSchema>

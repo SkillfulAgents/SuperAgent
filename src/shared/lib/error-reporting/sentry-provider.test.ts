@@ -219,6 +219,25 @@ describe('credential request bodies in error reports', () => {
     expect(CREDENTIAL_BODY_ROUTE.test('/api/x-agent/chat/send')).toBe(false)
   })
 
+  it('matches a signed file URL, whose PUT body is an uploaded file, and drops that body from an event', () => {
+    const url = 'http://localhost:47891/api/signed-files/eyJ2IjoxfQ.c2lnbmF0dXJl'
+    expect(CREDENTIAL_BODY_ROUTE.test(url)).toBe(true)
+    expect(CREDENTIAL_BODY_ROUTE.test(`${url}?x=1`)).toBe(true)
+    expect(CREDENTIAL_BODY_ROUTE.test('/api/signed-files/')).toBe(false)
+    expect(scrubCredentialRequestBody({ request: { url, data: '%PDF-1.7 private bytes' } }).request).toEqual({ url })
+  })
+
+  it('keeps the uploaded file out of what the HTTP integration buffers', () => {
+    sentry.httpIntegration.mockClear()
+    sentry.init.mockClear()
+    initializeProvider()
+    const integrations = initializationOptions().integrations as (defaults: { name: string }[]) => unknown[]
+    integrations([])
+    const options = sentry.httpIntegration.mock.calls.at(-1)?.[0] as { ignoreIncomingRequestBody: (url: string) => boolean }
+    expect(options.ignoreIncomingRequestBody('/api/signed-files/eyJ2IjoxfQ.c2lnbmF0dXJl')).toBe(true)
+    expect(options.ignoreIncomingRequestBody('/api/agents/a1/sessions/s-1/messages')).toBe(false)
+  })
+
   it('keeps other bodies', () => {
     const event = { request: { url: '/api/agents/a1/sessions/s-1/messages', data: '{"content":"hi"}' } }
     expect(scrubCredentialRequestBody(event).request?.data).toBe('{"content":"hi"}')

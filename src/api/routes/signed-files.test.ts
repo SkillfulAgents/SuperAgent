@@ -42,6 +42,7 @@ vi.mock('@shared/lib/agent-actor/registry', () => ({
   },
 }))
 
+import { appState, closeAppState, initializeLocalAppState } from '@shared/lib/app-state'
 import signedFiles from './signed-files'
 import {
   MAX_SIGNED_FILE_URL_TTL_MS,
@@ -299,7 +300,7 @@ describe('uploads', () => {
 
     const stored = await resolveSignedUpload('alice', 'agent', uploadId)
     expect(stored).toMatchObject({ filename: 'My_Report.pdf', sizeBytes: 9 })
-    expect(stored!.path).toMatch(/^\/workspace\/uploads\/My_Report-\d+\.pdf$/)
+    expect(stored!.path).toBe(`/workspace/uploads/My_Report-${uploadId}-${stored!.path.match(/-(\d{13})\.pdf$/)![1]}.pdf`)
     expect(fs.readFileSync(path.join(root, 'agent', stored!.path.slice('/workspace/'.length)), 'utf8')).toBe('pdf bytes')
 
     expect(await resolveSignedUpload('bob', 'agent', uploadId)).toBeNull()
@@ -447,7 +448,10 @@ describe('hardening', () => {
     const stored = await resolveSignedUpload('alice', 'agent', uploadId)
     const name = path.basename(stored!.path)
     expect(name.length).toBeLessThanOrEqual(255)
-    expect(name).toMatch(/^a+-\d{13}\.txt$/)
+    expect(name.length).toBe(255)
+    expect(name.startsWith('a'.repeat(200))).toBe(true)
+    expect(name.endsWith('.txt')).toBe(true)
+    expect(name).toContain(`-${uploadId}-`)
   })
 
   it('refuses resolving an upload once the user is only a viewer', async () => {
@@ -497,5 +501,115 @@ describe('principals', () => {
     const alice = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
     vi.stubEnv('AUTH_MODE', 'false')
     expect((await redeem(alice.url)).status).toBe(403)
+  })
+})
+
+/** A restart of the process: LocalAppState is memory, so everything in it is gone. */
+async function restartAppState() {
+  await closeAppState()
+  await initializeLocalAppState()
+}
+
+/** Makes the next `claimed → completed` compare-and-set throw, after running `before`. */
+function failCompletion(before: (completed: { result: { path: string } }) => void = () => {}) {
+  const state = appState()
+  const original = state.compareAndSet.bind(state)
+  return vi.spyOn(state, 'compareAndSet').mockImplementation(async (key, expected, value, options) => {
+    const record = value as { state?: string; result?: { path: string } }
+    if (record.state === 'completed') {
+      before(record as { result: { path: string } })
+      throw new Error('AppState unavailable')
+    }
+    return original(key, expected, value, options)
+  })
+}
+
+describe('upload records', () => {
+  const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {})
+  const uploadsDir = () => path.join(root, 'agent', 'uploads')
+  const storedFiles = () => (fs.existsSync(uploadsDir()) ? fs.readdirSync(uploadsDir()).filter((name) => !name.startsWith('.')) : [])
+
+  it('refuses a URL whose record is gone after a restart, and keeps a used URL refused', async () => {
+    const pending = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'before-restart.txt' })
+    const used = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'used.txt' })
+    expect((await put(used.url, 'once')).status).toBe(201)
+
+    await restartAppState()
+    const refused = await put(pending.url, 'after restart')
+    expect(refused.status).toBe(410)
+    expect(await refused.json()).toEqual({ error: 'This upload link is no longer valid' })
+    expect((await put(used.url, 'twice')).status).toBe(410)
+    expect(storedFiles()).toHaveLength(1)
+    // What the restart dropped: the completed result.
+    expect(await resolveSignedUpload('alice', 'agent', used.uploadId)).toBeNull()
+  })
+
+  it('stores two uploads of one name started in the same millisecond at distinct paths', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now())
+    const first = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'same.txt' })
+    const second = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'same.txt' })
+    const responses = await Promise.all([put(first.url, 'one'), put(second.url, 'two')])
+    expect(responses.map((response) => response.status)).toEqual([201, 201])
+    const a = await resolveSignedUpload('alice', 'agent', first.uploadId)
+    const b = await resolveSignedUpload('alice', 'agent', second.uploadId)
+    expect(a!.path).not.toBe(b!.path)
+    expect(fs.readFileSync(path.join(root, 'agent', a!.path.slice('/workspace/'.length)), 'utf8')).toBe('one')
+    expect(fs.readFileSync(path.join(root, 'agent', b!.path.slice('/workspace/'.length)), 'utf8')).toBe('two')
+  })
+
+  it('leaves a completion that did not land retryable, with no file behind and never a 410', async () => {
+    const spy = quiet()
+    const { url, uploadId } = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'flaky.txt' })
+    const failing = failCompletion()
+    const failed = await put(url, 'first try')
+    expect(failed.status).toBe(500)
+    expect(await failed.json()).toEqual({ error: 'Upload failed' })
+    expect(storedFiles()).toEqual([])
+    expect(await resolveSignedUpload('alice', 'agent', uploadId)).toBeNull()
+
+    failing.mockRestore()
+    expect((await put(url, 'second try')).status).toBe(201)
+    const stored = await resolveSignedUpload('alice', 'agent', uploadId)
+    expect(fs.readFileSync(path.join(root, 'agent', stored!.path.slice('/workspace/'.length)), 'utf8')).toBe('second try')
+    expect((await put(url, 'third')).status).toBe(410)
+    spy.mockRestore()
+  })
+
+  it('cleans up confined: uploads/ swapped for a link before the cleanup deletes nothing outside the workspace', async () => {
+    const spy = quiet()
+    const outside = path.join(root, 'outside')
+    fs.mkdirSync(outside)
+    const { url } = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'swap.txt' })
+    const failing = failCompletion(({ result }) => {
+      // Between the write and its cleanup, uploads/ becomes a link out of the workspace
+      // that holds a file of the very name this request wrote.
+      const name = path.basename(result.path)
+      fs.writeFileSync(path.join(outside, name), 'not yours')
+      fs.renameSync(uploadsDir(), path.join(root, 'agent', 'moved'))
+      fs.symlinkSync(outside, uploadsDir())
+    })
+    expect((await put(url, 'payload')).status).toBe(500)
+    const [name] = fs.readdirSync(outside)
+    expect(fs.readFileSync(path.join(outside, name), 'utf8')).toBe('not yours')
+    failing.mockRestore()
+    spy.mockRestore()
+  })
+})
+
+describe('link base URL', () => {
+  it('uses HOST_PUBLIC_URL when it is set', async () => {
+    vi.stubEnv('HOST_PUBLIC_URL', 'https://files.example.com/')
+    const download = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
+    expect(download.url).toMatch(/^https:\/\/files\.example\.com\/api\/signed-files\/[^/]+$/)
+    const upload = await mintSignedUploadUrl('alice', { agentSlug: 'agent', filename: 'x.txt' })
+    expect(upload.url.startsWith('https://files.example.com/api/signed-files/')).toBe(true)
+  })
+
+  it('falls back to the address the app is bound to otherwise', async () => {
+    vi.stubEnv('HOST_PUBLIC_URL', '')
+    const { url } = await mintSignedDownloadUrl('alice', { kind: 'workspace-file', agentSlug: 'agent', path: 'notes/a.txt' })
+    // getAppBaseUrl() is this file's stand-in for the bound address.
+    expect(url.startsWith('https://gamut.test/api/signed-files/')).toBe(true)
   })
 })

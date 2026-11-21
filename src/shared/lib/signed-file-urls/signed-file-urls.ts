@@ -10,28 +10,37 @@
  * access again, so a URL stops working once its user loses the agent or the
  * drive, or their account is no longer active.
  *
- * An upload URL is single use. Its first request claims it in AppState
- * (`insertIfAbsent` on the token id) before any byte is written; a request
- * that fails before the file landed gives the claim back, and one that
- * succeeded marks it used. The completed upload is then found by its upload
- * id, for that user and agent only, while that user may still use the agent
- * (`resolveSignedUpload`). The write is confined: a link in the way that
- * leads out of the workspace refuses it.
+ * An upload URL is single use, through one AppState record per upload
+ * (`signed-file:upload`, keyed by user, agent and upload id):
+ * - minting writes it `pending` (`insertIfAbsent`), until the token's expiry;
+ * - a PUT moves `pending` -> `claimed` (compare-and-set) before any byte is
+ *   written, so of concurrent PUTs one proceeds and the rest get 409;
+ * - a write that fails moves it back to `pending`, so the URL can be retried
+ *   while it is valid;
+ * - a write that landed moves `claimed` -> `completed` in ONE compare-and-set
+ *   that both spends the URL and stores where the file went, for
+ *   `SIGNED_UPLOAD_RESULT_TTL_MS`. If that step does not land, the file this
+ *   request wrote is removed (confined) and the URL is handed back.
+ * An absent record is never usable: an expired URL, or one minted before a
+ * restart, is refused. `resolveSignedUpload` reads only a `completed` record,
+ * for that user and agent, while that user may still use the agent. The
+ * write is confined and exclusive, to a name that carries the upload id.
  *
  * Known limits, accepted for now:
  * - An upload is one request of at most `MAX_UPLOAD_REQUEST_SIZE` (64MB).
- *   There is no chunking: a larger file cannot go through an upload URL.
- * - The claim and the upload results live in AppState, which is process
- *   memory on desktop and single-tenant web (LocalAppState). A restart within
- *   a token's lifetime forgets a used claim, so that URL could be accepted
- *   once more (writing a second, separately timestamped file), and forgets
- *   upload results, so `resolveSignedUpload` returns null for an upload that
- *   succeeded before the restart.
+ *   There is no chunking: a file over 64MB has no signed upload path yet.
+ *   Chunked signed uploads (up to the 2GB total) are tracked in SUP-1772.
+ * - The records live in AppState, which is process memory on desktop and
+ *   single-tenant web (LocalAppState). A restart drops pending uploads (their
+ *   URLs are refused from then on) and completed results (`resolveSignedUpload`
+ *   returns null for an upload that succeeded before it); it never re-enables
+ *   a used URL.
  * - A download URL can be used any number of times until it expires.
  */
 import { eq } from 'drizzle-orm'
 import { appState, defineNamespace } from '@shared/lib/app-state'
 import { getAppBaseUrl } from '@shared/lib/auth/config'
+import { resolvePublicAppBaseUrl } from '@shared/lib/agent-integrations/app-link'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { effectiveAgentRole } from '@shared/lib/auth/agent-role'
 import { db } from '@shared/lib/db'
@@ -50,16 +59,17 @@ import { newTokenId, signFileToken, verifyFileToken } from './signed-file-token'
 import {
   DEFAULT_SIGNED_FILE_URL_TTL_MS,
   MAX_SIGNED_FILE_URL_TTL_MS,
-  MAX_STORED_UPLOAD_NAME_LENGTH,
+  MAX_SIGNED_UPLOAD_FILENAME_LENGTH,
+  SIGNED_FILE_CLOCK_SKEW_MS,
   SIGNED_FILE_TOKEN_VERSION,
   SIGNED_UPLOAD_RESULT_TTL_MS,
   signedDownloadTargetSchema,
-  signedUploadClaimSchema,
-  signedUploadResultSchema,
+  signedUploadRecordSchema,
   type AgentUploadTarget,
   type SignedDownloadTarget,
   type SignedFileOperation,
   type SignedFileTokenPayload,
+  type SignedUploadRecord,
   type SignedUploadResult,
 } from './signed-file-url-schema'
 
@@ -73,23 +83,29 @@ export type { SignedDownloadTarget, SignedFileTokenPayload, SignedUploadResult }
 /** Where the redeeming router is mounted. */
 export const SIGNED_FILES_ROUTE_PREFIX = '/api/signed-files'
 
-/** A claim outlives its token by this much, so no process with a slower clock sees it gone while the token still verifies. */
-const CLAIM_GRACE_MS = 60_000
+/**
+ * How long a claimed upload may take to write its bytes. A claim held past it
+ * (its process went away mid-write) expires, and the URL with it: it fails
+ * closed. A completion after it does not land, and its file is removed.
+ */
+const UPLOAD_WRITE_WINDOW_MS = 15 * 60_000
 
-const uploadClaims = defineNamespace({
-  name: 'signed-file:upload-claim',
-  consistency: 'strong',
-  schema: signedUploadClaimSchema,
-  // Every write passes `{ at }`, the token's expiry plus the grace; this is the backstop.
-  expiry: { ttlMs: MAX_SIGNED_FILE_URL_TTL_MS + CLAIM_GRACE_MS, onUpdate: 'keep' },
-})
-
-const uploadResults = defineNamespace({
+const uploads = defineNamespace({
   name: 'signed-file:upload',
   consistency: 'strong',
-  schema: signedUploadResultSchema,
-  expiry: { ttlMs: SIGNED_UPLOAD_RESULT_TTL_MS, onUpdate: 'keep' },
+  schema: signedUploadRecordSchema,
+  // Every write names its expiry; this is the backstop.
+  expiry: { ttlMs: MAX_SIGNED_FILE_URL_TTL_MS + SIGNED_FILE_CLOCK_SKEW_MS, onUpdate: 'keep' },
 })
+
+function uploadKey(userId: string, agentSlug: string, uploadId: string) {
+  return uploads.key(userId, agentSlug, uploadId)
+}
+
+/** A pending upload lives until its token expires, plus the margin another process's clock may need. */
+function pendingExpiry(payload: { exp: number }) {
+  return { at: payload.exp + SIGNED_FILE_CLOCK_SKEW_MS }
+}
 
 /**
  * A refusal, with the HTTP status the redeeming route answers it with. The
@@ -216,9 +232,18 @@ function lifetime(options: MintOptions): number {
   return ttlMs
 }
 
+/**
+ * Where the URL's holder reaches this app: the configured public address
+ * (`HOST_PUBLIC_URL`, then the first trusted origin), as the other links the
+ * app hands outside use, else the address it is bound to.
+ */
+async function signedFilesBaseUrl(): Promise<string> {
+  return (await resolvePublicAppBaseUrl()) ?? (await getAppBaseUrl())
+}
+
 async function mint(payload: SignedFileTokenPayload): Promise<SignedFileUrl> {
   const token = await signFileToken(payload)
-  return { url: `${await getAppBaseUrl()}${SIGNED_FILES_ROUTE_PREFIX}/${token}`, expiresAt: new Date(payload.exp) }
+  return { url: `${await signedFilesBaseUrl()}${SIGNED_FILES_ROUTE_PREFIX}/${token}`, expiresAt: new Date(payload.exp) }
 }
 
 /**
@@ -266,7 +291,11 @@ export async function mintSignedUploadUrl(
     filename: fitStoredUploadName(sanitizeUploadFilename(input.filename)),
     uploadId,
   })
-  const minted = await mint({ v: SIGNED_FILE_TOKEN_VERSION, jti: newTokenId(), sub: userId, op: 'upload', target, iat: now, exp: now + ttlMs })
+  const payload: SignedFileTokenPayload = { v: SIGNED_FILE_TOKEN_VERSION, jti: newTokenId(), sub: userId, op: 'upload', target, iat: now, exp: now + ttlMs }
+  // The record a PUT must find: without it the URL is refused.
+  const registered = await appState().insertIfAbsent(uploadKey(userId, target.agentSlug, uploadId), { state: 'pending', jti: payload.jti }, { expiry: pendingExpiry(payload) })
+  if (!registered.inserted) throw new Error('Upload id collision')
+  const minted = await mint(payload)
   return { ...minted, uploadId }
 }
 
@@ -323,12 +352,9 @@ function emptyBody(): ReadableStream<Uint8Array> {
   return new ReadableStream({ start: (controller) => controller.close() })
 }
 
-/** `withUploadTimestamp`'s suffix: `-` and a 13-digit millisecond timestamp. */
-const UPLOAD_TIMESTAMP_SUFFIX_LENGTH = 14
-
-/** A sanitized (ASCII) name, cut so it plus the timestamp suffix fits `MAX_STORED_UPLOAD_NAME_LENGTH`, its extension kept. */
+/** A sanitized (ASCII) name, cut so the stored name (upload id and timestamp added) fits NAME_MAX, its extension kept. */
 export function fitStoredUploadName(name: string): string {
-  const max = MAX_STORED_UPLOAD_NAME_LENGTH - UPLOAD_TIMESTAMP_SUFFIX_LENGTH
+  const max = MAX_SIGNED_UPLOAD_FILENAME_LENGTH
   if (name.length <= max) return name
   const dot = name.lastIndexOf('.')
   const extension = dot > 0 && name.length - dot <= 16 ? name.slice(dot) : ''
@@ -337,13 +363,31 @@ export function fitStoredUploadName(name: string): string {
 
 const TOO_LARGE = () => new SignedFileUrlError(413, `File too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB)`)
 
+/** `name` with `-<upload id>` before its extension, so no two uploads share a destination. */
+function withUploadId(name: string, uploadId: string): string {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return `${name}-${uploadId}`
+  return `${name.slice(0, dot)}-${uploadId}${name.slice(dot)}`
+}
+
+const UPLOAD_FAILED = () => new SignedFileUrlError(500, 'Upload failed')
+
+/** Why an upload record that is not `pending` (or is gone) refuses a PUT. */
+function notPending(record: SignedUploadRecord | null, jti: string): SignedFileUrlError {
+  if (!record || record.jti !== jti) return new SignedFileUrlError(410, 'This upload link is no longer valid')
+  if (record.state === 'completed') return new SignedFileUrlError(410, 'This upload link was already used')
+  return new SignedFileUrlError(409, 'This upload link is in use')
+}
+
 /**
  * Writes an upload URL's body into the agent's `uploads/`, once: the actor's
  * `files.write`, confined (a link leading out of the workspace is refused)
- * and never over an existing file, nothing left behind on failure. Throws
- * `SignedFileUrlError` 409 while another request holds the URL, 410 once it
- * was used, 413 past `MAX_UPLOAD_REQUEST_SIZE`, 500 when the file could not
- * be stored (the cause is logged, not answered).
+ * and exclusive, to `<name>-<upload id>-<timestamp>.<ext>`, nothing left
+ * behind on failure. Throws `SignedFileUrlError` 409 while another request
+ * holds the URL, 410 once it was used or when its record is gone (expired,
+ * or minted before a restart), 413 past `MAX_UPLOAD_REQUEST_SIZE`, 500 when
+ * the file could not be stored (the cause is logged, not answered; the URL
+ * can be retried while it is valid).
  */
 export async function storeSignedUpload(
   grant: SignedFileGrant<Extract<SignedFileTokenPayload, { op: 'upload' }>>,
@@ -351,48 +395,75 @@ export async function storeSignedUpload(
   declaredLength: number | null,
 ): Promise<SignedUploadResult & { uploadId: string }> {
   const { payload } = grant
-  // Refused from the header alone, before the URL is spent.
+  // Refused from the header alone, before the URL is claimed.
   if (declaredLength !== null && declaredLength > MAX_UPLOAD_REQUEST_SIZE) throw TOO_LARGE()
 
-  const claimKey = uploadClaims.key(payload.jti)
-  const claim = await appState().insertIfAbsent(claimKey, { state: 'claimed' }, { expiry: { at: payload.exp + CLAIM_GRACE_MS } })
-  if (!claim.inserted) {
-    throw claim.current.value.state === 'used'
-      ? new SignedFileUrlError(410, 'This upload link was already used')
-      : new SignedFileUrlError(409, 'This upload link is in use')
-  }
+  const { agentSlug, filename, uploadId } = payload.target
+  const key = uploadKey(payload.sub, agentSlug, uploadId)
+  // pending -> claimed is a compare-and-set against the revision read: of concurrent PUTs one wins.
+  const current = await appState().get(key)
+  if (!current || current.value.state !== 'pending' || current.value.jti !== payload.jti) throw notPending(current?.value ?? null, payload.jti)
+  const claim = await appState().compareAndSet(key, current.revision, { state: 'claimed', jti: payload.jti }, {
+    expiry: { at: Math.max(payload.exp + SIGNED_FILE_CLOCK_SKEW_MS, Date.now() + UPLOAD_WRITE_WINDOW_MS) },
+  })
+  if (!claim.ok) throw notPending(claim.current?.value ?? null, payload.jti)
+
+  /** Hands the URL back after a failure: claimed -> pending while the token is valid, else gone. */
   const release = async () => {
-    await appState().consume(claimKey, { revision: claim.entry.revision }).catch(() => {})
+    try {
+      if (Date.now() < payload.exp) {
+        await appState().compareAndSet(key, claim.entry.revision, { state: 'pending', jti: payload.jti }, { expiry: pendingExpiry(payload) })
+      } else {
+        await appState().consume(key, { revision: claim.entry.revision })
+      }
+    } catch (error) {
+      // The claim then runs out by itself; the URL fails closed.
+      console.error('[signed-files] Could not release an upload claim:', error)
+    }
   }
 
-  const { agentSlug, filename, uploadId } = payload.target
   const files = agentRegistry.get(agentSlug).files
   let uploadPath: string
   let size: number
   try {
-    uploadPath = resolveUploadDestPath(filename)
+    uploadPath = resolveUploadDestPath(withUploadId(filename, uploadId))
     const limited = capped(body ?? emptyBody(), MAX_UPLOAD_REQUEST_SIZE)
     try {
       ;({ size } = await files.write(uploadPath, limited.body, { confined: true, overwrite: false }))
     } catch (error) {
       if (limited.exceeded()) throw TOO_LARGE()
       console.error('[signed-files] Upload write failed:', error)
-      throw new SignedFileUrlError(500, 'Upload failed')
+      throw UPLOAD_FAILED()
     }
   } catch (error) {
     await release()
     throw error
   }
 
+  // This request created the file at uploadPath (the write was exclusive). One
+  // compare-and-set both spends the URL and records where the file went.
   const result: SignedUploadResult = { path: `/workspace/${uploadPath}`, filename, sizeBytes: size }
+  const completed: SignedUploadRecord = { state: 'completed', jti: payload.jti, result }
+  let landed: boolean
   try {
-    // Spent first: a URL whose file landed is never usable again, even if what follows fails.
-    // A claim already gone means the token expired meanwhile, which spends it as well.
-    await appState().compareAndSet(claimKey, claim.entry.revision, { state: 'used' }, { expiry: 'keep' })
-    await appState().insertIfAbsent(uploadResults.key(payload.sub, agentSlug, uploadId), result)
+    landed = (await appState().compareAndSet(key, claim.entry.revision, completed, { expiry: { ttlMs: SIGNED_UPLOAD_RESULT_TTL_MS } })).ok
   } catch (error) {
-    await files.delete(uploadPath).catch(() => {})
-    throw error
+    // The answer was lost: the stored record says whether the write landed.
+    console.error('[signed-files] Upload completion failed:', error)
+    landed = await appState().get(key).then(
+      (entry) => entry?.value.state === 'completed' && entry.value.result.path === result.path,
+      () => false,
+    )
+  }
+  if (!landed) {
+    // Never a spent URL with nothing behind it: remove the file this request
+    // created (confined, so a link swapped in meanwhile is refused, never
+    // followed) and hand the URL back.
+    await files.delete(uploadPath, { confined: true }).catch((error) => {
+      console.error('[signed-files] Could not remove an upload that did not complete:', error)
+    })
+    await release()
+    throw UPLOAD_FAILED()
   }
   return { ...result, uploadId }
 }
@@ -413,6 +484,6 @@ export async function resolveSignedUpload(userId: string, agentSlug: string, upl
     if (error instanceof SignedFileUrlError) return null
     throw error
   }
-  const entry = await appState().get(uploadResults.key(userId, canonical, uploadId))
-  return entry?.value ?? null
+  const entry = await appState().get(uploadKey(userId, canonical, uploadId))
+  return entry?.value.state === 'completed' ? entry.value.result : null
 }

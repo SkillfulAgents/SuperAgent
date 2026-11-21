@@ -25,7 +25,7 @@ function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
  * The HTTP integration buffers incoming bodies and attaches them to any event
  * captured while the request is handled; these never go along.
  */
-export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)|\/api\/(agent|chat)-integrations(?:[/?#]|$)|\/api\/x-agent\/chat\/add(?:[?#]|$)/
+export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)|\/api\/(agent|chat)-integrations(?:[/?#]|$)|\/api\/x-agent\/chat\/add(?:[?#]|$)|\/api\/signed-files\/[^/?#]+(?:[?#]|$)/
 
 /** Drop a captured request body from an event raised while handling a credential route. */
 export function scrubCredentialRequestBody<T extends { request?: { url?: string; data?: unknown } }>(event: T): T {
