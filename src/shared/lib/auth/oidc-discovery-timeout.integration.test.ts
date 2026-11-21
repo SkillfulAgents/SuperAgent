@@ -48,15 +48,24 @@ async function createFaultingAuthority() {
   const signing = await generateKeyPair('RS256')
   const grantKey = { ...await exportJWK(signing.publicKey), kid: 'grant-key', alg: 'RS256', use: 'sig' }
   const state = {
-    mode: 'headers' as Stall | 'healthy', discoveryRequests: 0, abortedDiscovery: 0,
+    mode: 'headers' as Stall | 'healthy' | 'held', discoveryRequests: 0, abortedDiscovery: 0,
     jwksRequests: 0, failures: [] as string[],
+  }
+  // 'held': discovery answers normally, but only once the test releases it.
+  let held: Promise<void> = Promise.resolve()
+  let release = () => {}
+  const hold = () => {
+    state.mode = 'held'
+    held = new Promise<void>((resolve) => { release = resolve })
+    return () => release()
   }
 
   async function serve(request: IncomingMessage, response: ServerResponse) {
     const path = request.url ?? '/'
     if (path === '/.well-known/openid-configuration') {
       state.discoveryRequests++
-      if (state.mode !== 'healthy') {
+      if (state.mode === 'held') await held
+      else if (state.mode !== 'healthy') {
         response.on('close', () => { if (!response.writableEnded) state.abortedDiscovery++ })
         if (state.mode === 'body') {
           response.writeHead(200, { 'content-type': 'application/json' })
@@ -99,7 +108,7 @@ async function createFaultingAuthority() {
   oidc.state.acceptedRedirectUri = `${BASE}/api/auth/oauth2/callback/platform`
 
   return {
-    state, oidc,
+    state, oidc, hold,
     signGrant: () => new SignJWT({
       sub: 'platform-installed-user', org_id: ORG, email: 'installed@example.com',
       email_verified: true, name: 'Installed User', jti: randomUUID(),
@@ -107,6 +116,7 @@ async function createFaultingAuthority() {
       .setIssuer(oidc.state.issuer).setAudience(BASE).setIssuedAt().setExpirationTime('2m')
       .sign(signing.privateKey),
     close: async () => {
+      release()
       server.closeAllConnections()
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
       await oidc.close()
@@ -296,4 +306,60 @@ describe.each(['headers', 'body'] as const)('OIDC discovery with stalled %s', (s
     await completeSso()
     expect(authority.state.discoveryRequests).toBe(3)
   }, 20_000)
+})
+
+describe('OIDC discovery shared between concurrent requests', () => {
+  // Long enough for a second request to reach the discovery hook while the first holds discovery.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 300))
+
+  it('makes one discovery request for two cold sign-ins, each answered with its own state', async () => {
+    resetAuth()
+    const release = authority.hold()
+    const first = within(startSso())
+    await vi.waitFor(() => expect(authority.state.discoveryRequests).toBe(1), { timeout: FAST_LIMIT_MS, interval: 10 })
+    const second = within(startSso())
+    await settle()
+    release()
+    const responses = await Promise.all([first, second])
+    expect(authority.state.discoveryRequests).toBe(1)
+
+    for (const response of responses) expect(response.status).toBe(200)
+    const [one, two] = await Promise.all(responses.map(async (response) => ({
+      state: new URLSearchParams(authorizeSchema.parse(await response.json()).url.split('?')[1]).get('state'),
+      cookies: responseCookies(response),
+    })))
+    expect(one.state).toBeTruthy()
+    expect(two.state).toBeTruthy()
+    expect(one.state).not.toBe(two.state)
+    expect(one.cookies).toContain('state=')
+    expect(two.cookies).toContain('state=')
+    expect(one.cookies).not.toBe(two.cookies)
+  })
+
+  it('lets a sign-in and a callback on a fresh instance share one attempt', async () => {
+    authority.state.mode = 'healthy'
+    const start = await within(startSso())
+    expect(start.status).toBe(200)
+    const { url } = authorizeSchema.parse(await start.json())
+    const redirect = await within(fetch(url, { redirect: 'manual' }))
+    expect(redirect.status).toBe(302)
+    expect(authority.state.discoveryRequests).toBe(1)
+
+    // A new instance has the provider pending again: the callback must rediscover it.
+    resetAuth()
+    const release = authority.hold()
+    const signIn = within(startSso())
+    await vi.waitFor(() => expect(authority.state.discoveryRequests).toBe(2), { timeout: FAST_LIMIT_MS, interval: 10 })
+    const callback = within(app.request(redirect.headers.get('location')!, {
+      headers: { cookie: responseCookies(start) },
+    }))
+    await settle()
+    release()
+    const [signedIn, called] = await Promise.all([signIn, callback])
+    expect(authority.state.discoveryRequests).toBe(2)
+    expect(signedIn.status).toBe(200)
+    expect(called.status).toBe(302)
+    expect(called.headers.get('location')).toBe(`${BASE}/`)
+    expect(responseCookies(called)).toContain('session_token=')
+  })
 })
