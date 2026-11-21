@@ -219,8 +219,9 @@ vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
   getMeetingParticipant: () => mockMeetingParticipant.value,
   // As the real one outside a signed-in workspace.
-  canUseAgent: async () => true,
+  canUseAgent: async (_c: unknown, slug: string) => mockCanUseAgent.deny !== slug,
 }))
+const mockCanUseAgent = vi.hoisted(() => ({ deny: undefined as string | undefined }))
 const mockMeetingParticipant = vi.hoisted(() => ({ value: null as unknown }))
 
 // Container host — a manager-shaped mock (slug as first argument) adapted into
@@ -9191,38 +9192,62 @@ describe('POST /api/agents/:id/proxy-review/:reviewId (agent rule requests)', ()
       xAgent: { targetAgentSlug: 'helper', targetAgentName: 'Helper', operation: 'invoke', ...(runtime ? { runtime } : {}) },
     })
     const runtime = { model: 'claude-sonnet-5-5', llmProviderId: 'platform', effort: 'medium', label: 'Sonnet 5.5' }
-    // The card's connection: the platform's built-in catalog.
-    const platformRow = { id: 'platform', provider: 'platform', modelOverrides: '[]' }
+    // Platform-catalog rows: the card's, another shared one, and someone else's personal one.
+    const rows: Record<string, object> = {
+      platform: { id: 'platform', provider: 'platform', modelOverrides: '[]', userId: null },
+      shared: { id: 'shared', provider: 'platform', modelOverrides: '[]', userId: null },
+      theirs: { id: 'theirs', provider: 'platform', modelOverrides: '[]', userId: 'someone-else' },
+    }
     const spies: { mockRestore(): void }[] = []
-    let targetConnection = 'platform'
     beforeEach(async () => {
-      targetConnection = 'platform'
       const connections = await import('@shared/lib/llm-provider/connections')
-      const preferences = await import('@shared/lib/services/agent-preferences-service')
-      spies.push(
-        vi.spyOn(connections, 'getConnection').mockImplementation(async (id) => (id === 'platform' ? platformRow : null) as never),
-        vi.spyOn(preferences, 'readAgentPreferences').mockImplementation(async () => ({ defaultLlmProviderId: targetConnection }) as never),
-      )
+      spies.push(vi.spyOn(connections, 'getConnection').mockImplementation(async (id) => (rows[id] ?? null) as never))
     })
     afterEach(() => { spies.splice(0).forEach((spy) => spy.mockRestore()) })
 
-    it('rides with the allow, on the card\'s connection whatever the post names', async () => {
+    it("rides with the allow on the card's connection when the post names none", async () => {
       mockGetPendingReviewsForAgent.mockReturnValue([invokeCard(runtime)])
-      const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow', pick: { model: 'opus', effort: 'max', llmProviderId: 'someone-elses' } })
+      const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow', pick: { model: 'opus', effort: 'max' } })
       expect(res.status).toBe(200)
       expect(mockSubmitDecision).toHaveBeenCalledWith('my-agent', 'review-1', 'allow', { pick: { model: 'opus', llmProviderId: 'platform', effort: 'max' } })
     })
 
+    it('rides with the allow on another connection the person clicking can pick', async () => {
+      mockGetPendingReviewsForAgent.mockReturnValue([invokeCard(runtime)])
+      const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow', pick: { model: 'opus', llmProviderId: 'shared' } })
+      expect(res.status).toBe(200)
+      expect(mockSubmitDecision).toHaveBeenCalledWith('my-agent', 'review-1', 'allow', { pick: { model: 'opus', llmProviderId: 'shared' } })
+    })
+
     it.each([
-      { name: 'the request continues an existing session', card: invokeCard(), model: 'opus' },
-      { name: 'the card\'s connection has no such model', card: invokeCard(runtime), model: 'not-a-model' },
-      { name: 'the target moved to another connection while the card waited', card: invokeCard(runtime), model: 'opus', moved: true },
-    ])('is refused, and the card stays open, when $name', async ({ card, model, moved }) => {
+      { name: 'the request continues an existing session', card: invokeCard(), pick: { model: 'opus' } },
+      { name: 'the connection has no such model', card: invokeCard(runtime), pick: { model: 'not-a-model' } },
+      { name: 'the person clicking cannot pick the connection', card: invokeCard(runtime), pick: { model: 'opus', llmProviderId: 'theirs' } },
+    ])('is refused, and the card stays open, when $name', async ({ card, pick }) => {
       mockSubmitDecision.mockClear()
-      if (moved) targetConnection = 'another'
       mockGetPendingReviewsForAgent.mockReturnValue([card])
-      expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow', pick: { model } })).status).toBe(409)
+      expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow', pick })).status).toBe(409)
       expect(mockSubmitDecision).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("the card picker's connections", () => {
+    it("lists the viewer's connections plus the card's, read from the pending review", async () => {
+      const connections = await import('@shared/lib/llm-provider/connections')
+      const list = vi.spyOn(connections, 'listConnections').mockResolvedValue([])
+      mockGetPendingReviewsForAgent.mockReturnValue([{
+        id: 'review-1', agentSlug: 'my-agent', accountId: 'helper', toolkit: 'agents', method: 'invoke', targetPath: 'agents:invoke:helper', matchedScopes: ['invoke:helper'], scopeDescriptions: {},
+        xAgent: { targetAgentSlug: 'helper', targetAgentName: 'Helper', operation: 'invoke', runtime: { model: 'm', llmProviderId: 'card-conn', label: 'M' } },
+      }])
+      const res = await app.request('/api/agents/my-agent/proxy-review/review-1/llm-connections')
+      expect(res.status).toBe(200)
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ admin: false }), 'card-conn')
+      mockCanUseAgent.deny = 'helper'
+      expect((await app.request('/api/agents/my-agent/proxy-review/review-1/llm-connections')).status).toBe(403)
+      mockCanUseAgent.deny = undefined
+      mockGetPendingReviewsForAgent.mockReturnValue([])
+      expect((await app.request('/api/agents/my-agent/proxy-review/review-1/llm-connections')).status).toBe(404)
+      list.mockRestore()
     })
   })
 })

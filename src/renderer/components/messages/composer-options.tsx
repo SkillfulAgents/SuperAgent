@@ -125,8 +125,8 @@ export interface UseComposerOptionsArgs {
    * where the two must visibly stay in sync.
    */
   followDefaults?: boolean
-  /** Offer only this connection: its models, and its own default when the pick cannot run. */
-  onlyLlmProviderId?: string
+  /** Read the connections from this path instead of the agent's or session's list. */
+  connectionsPath?: string
   /**
    * The composer's draft key. What the person picks is kept there until it is
    * sent (`markSubmitted`), so it survives the composer unmounting, and comes
@@ -137,7 +137,7 @@ export interface UseComposerOptionsArgs {
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
-  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false, onlyLlmProviderId, draftKey } = args
+  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false, connectionsPath, draftKey } = args
   const {
     effort: initialEffort,
     speed: initialSpeed,
@@ -165,12 +165,12 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     draftsStore.update(draftKey, { options: { ...draftsStore.get(draftKey)?.options, ...picks } })
   }, [draftKey, draftsStore])
 
-  const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialLlmProviderId)
+  const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialLlmProviderId, connectionsPath)
   const [llmProviderId, setLlmProviderId] = useState<string | undefined>(kept?.llmProviderId ?? initialLlmProviderId ?? undefined)
   const connectionDirty = useRef(kept?.llmProviderId != null)
   const connections = useMemo(
-    () => (connectionData?.connections ?? []).filter((c) => !onlyLlmProviderId || c.id === onlyLlmProviderId),
-    [connectionData, onlyLlmProviderId],
+    () => connectionData?.connections ?? [],
+    [connectionData],
   )
   const [model, setModelState] = useState<string | undefined>(kept?.model ?? initialModel)
   const legacyLlmProviderId = connectionData?.legacyLlmProviderId

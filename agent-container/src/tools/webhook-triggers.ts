@@ -208,7 +208,8 @@ Use get_available_triggers first to discover what triggers are available for an 
     model: z
       .string()
       .optional()
-      .describe('Optional model to use when this trigger fires: a model id or a family name such as "sonnet". An unknown model is rejected with the list of valid ids. If not specified, uses the agent default.'),
+      .describe('Optional model to use when this trigger fires: a model id or a family name such as "sonnet". An unknown model is rejected. If not specified, uses the agent default.'),
+    connection: z.string().optional().describe('Optional account for model, by its id or its exact name in Settings → Model Providers. Leave it out to use the agent\'s own account. Name an account only when the user asked for one or the model is not on the agent\'s own account.'),
     effort: z
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()
@@ -247,6 +248,7 @@ Use get_available_triggers first to discover what triggers are available for an 
           name: args.name,
           trigger_config: args.trigger_config,
           model: args.model,
+          connection: args.connection,
           effort: args.effort,
           speed: args.speed,
         },
@@ -286,7 +288,8 @@ If the service reveals a signing secret only AFTER registration, attach it after
     model: z
       .string()
       .optional()
-      .describe('Optional model to use when this endpoint fires: a model id or a family name such as "sonnet". An unknown model is rejected with the list of valid ids. If not specified, uses the agent default.'),
+      .describe('Optional model to use when this endpoint fires: a model id or a family name such as "sonnet". An unknown model is rejected. If not specified, uses the agent default.'),
+    connection: z.string().optional().describe('Optional account for model, by its id or its exact name in Settings → Model Providers. Leave it out to use the agent\'s own account. Name an account only when the user asked for one or the model is not on the agent\'s own account.'),
     effort: z
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()
@@ -324,6 +327,7 @@ If the service reveals a signing secret only AFTER registration, attach it after
           verification: args.verification,
           filter_exp: args.filter_exp,
           model: args.model,
+          connection: args.connection,
           effort: args.effort,
           speed: args.speed,
         },

@@ -31,6 +31,7 @@ interface ScheduleTaskInput {
   name?: string
   timezone?: string
   model?: string
+  connection?: string
   effort?: string
   speed?: string
 }
@@ -56,7 +57,7 @@ export async function scheduleTask({ agentSlug, sessionId, toolUseId, input: raw
   let taskId: string
   let timezone: string | undefined
   try {
-    const modelChoice = await agentModelChoice(agentSlug, input.model)
+    const modelChoice = await agentModelChoice(agentSlug, sessionId, input)
     // An explicit timezone from the agent wins over the agent owner's.
     timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
     taskId = await createScheduledTask({

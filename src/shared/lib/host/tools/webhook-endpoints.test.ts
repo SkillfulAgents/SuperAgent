@@ -111,6 +111,21 @@ describe('create_webhook_endpoint', () => {
     mockCreateRelayEndpoint.mockResolvedValue(ENDPOINT)
   })
 
+  it("checks a named connection as the session's creator", async () => {
+    const runtime = await import('@shared/lib/llm-provider/connection-runtime')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    const bind = vi.spyOn(runtime, 'bindAgentModelChoice').mockResolvedValue({ model: 'gpt-astra', llmProviderId: 'chatgpt' })
+    const prefs = vi.spyOn(preferences, 'readAgentPreferences').mockResolvedValue({} as never)
+    mockSessionMetadata.mockResolvedValue({ createdByUserId: 'user_owner' })
+    await createWebhookEndpoint(request('create_webhook_endpoint', 'tool-mint-conn', {
+      name: 'Deploy hook', prompt: 'Summarize the deploy result', model: 'gpt-astra', connection: 'ChatGPT',
+    }))
+    expect(bind).toHaveBeenCalledWith({ model: 'gpt-astra', connection: 'ChatGPT' }, {}, 'user_owner')
+    expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-astra', llmProviderId: 'chatgpt' }))
+    bind.mockRestore()
+    prefs.mockRestore()
+  })
+
   it('mints on the platform, saves a kind=custom trigger row, and resolves with the URL', async () => {
     const result = await createWebhookEndpoint(request('create_webhook_endpoint', 'tool-mint-1', {
       name: 'Deploy hook',

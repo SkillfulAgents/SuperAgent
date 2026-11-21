@@ -8317,8 +8317,9 @@ async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview
 
 /**
  * The model the person allowing the card picked for the new session: a name in
- * the catalog of the connection the card showed, whoever clicks. A deny, a
- * review already gone, or nothing picked has nothing to check.
+ * the catalog of the card's connection, or of one the person clicking could
+ * pick in the composer. A deny, a review already gone, or nothing picked has
+ * nothing to check.
  */
 async function checkXAgentPick(
   decision: 'allow' | 'deny',
@@ -8329,19 +8330,32 @@ async function checkXAgentPick(
   const review = pending.xAgent
   const parsed = xAgentPickSchema.safeParse(raw)
   if (!parsed.success) return { error: 'Invalid model choice' }
-  const connectionId = review?.operation === 'invoke' ? review.runtime?.llmProviderId : undefined
-  if (!review || !connectionId) return { error: "This request doesn't start a new session, so its model can't be changed." }
-  // The target may have moved to another connection while the card waited.
-  const settings = await getSettings()
-  const prefs = await readAgentPreferences(review.targetAgentSlug, settings)
-  const current = prefs.defaultLlmProviderId ?? (await resolveGlobalSelection(undefined, settings))?.llmProviderId
-  const row = current === connectionId ? await getConnection(connectionId) : null
-  if (!row) return { error: "This agent's model connection changed. Your choice was cleared." }
-  if (!resolveSelection({ llmProviderId: connectionId, model: parsed.data.model }, [{ id: connectionId, catalog: connectionCatalogFrom(row, settings) }])) {
-    return { error: "That model isn't available to this agent. Pick another one." }
+  const cardConnectionId = review?.operation === 'invoke' ? review.runtime?.llmProviderId : undefined
+  if (!review || !cardConnectionId) return { error: "This request doesn't start a new session, so its model can't be changed." }
+  const connectionId = parsed.data.llmProviderId ?? cardConnectionId
+  try {
+    await assertConnectionSelectionAccess(connectionId, cardConnectionId)
+  } catch {
+    return { error: "You can't use that account. Pick another one." }
+  }
+  const row = await getConnection(connectionId)
+  if (!row) return { error: "You can't use that account. Pick another one." }
+  if (!resolveSelection({ llmProviderId: connectionId, model: parsed.data.model }, [{ id: connectionId, catalog: connectionCatalogFrom(row, await getSettings()) }])) {
+    return { error: "That model isn't available on that account. Pick another one." }
   }
   return { pick: { ...parsed.data, llmProviderId: connectionId } }
 }
+
+// GET /api/agents/:id/proxy-review/:reviewId/llm-connections - The card picker's
+// accounts: the viewer's own, plus the account the card shows, read from the review.
+agents.get('/:id/proxy-review/:reviewId/llm-connections', AgentUser(), async (c) => {
+  const slug = getAgentId(c)
+  const pending = await agentRegistry.get(slug).inputs.reviews.get(c.req.param('reviewId'))
+  const cardConnectionId = pending?.xAgent?.operation === 'invoke' ? pending.xAgent.runtime?.llmProviderId : undefined
+  if (!cardConnectionId) return c.json({ error: 'Review not found' }, 404)
+  if (!(await canAllowXAgentCard(c, slug, pending?.xAgent))) return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, cardConnectionId) })
+})
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {

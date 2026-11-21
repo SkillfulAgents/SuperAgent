@@ -14,13 +14,15 @@ export const xAgentRuntimeSchema = z.object({
   effort: z.enum(EFFORT_LEVELS).optional(),
   speed: z.enum(SPEED_LEVELS).optional(),
   label: z.string().min(1),
+  /** The connection's name, shown beside the model. */
+  account: z.string().min(1).optional(),
 })
 export type XAgentRuntime = z.infer<typeof xAgentRuntimeSchema>
 
-/** What the person approving the card may change: the model, effort and speed of the new session. */
-export const xAgentPickSchema = xAgentRuntimeSchema.pick({ model: true, effort: true, speed: true })
+/** What the person approving the card may change: the account, model, effort and speed of the new session. */
+export const xAgentPickSchema = xAgentRuntimeSchema.pick({ model: true, llmProviderId: true, effort: true, speed: true })
 export type XAgentPickInput = z.infer<typeof xAgentPickSchema>
-/** A pick checked against the target's connection. */
+/** A pick checked against a connection the approver may use. */
 export type XAgentPick = XAgentPickInput & { llmProviderId: string }
 
 export type XAgentReview = {

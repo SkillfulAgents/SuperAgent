@@ -90,8 +90,9 @@ Avoid recurring intervals shorter than 15 minutes unless truly necessary: freque
       .string()
       .optional()
       .describe(
-        'Optional model for this task: a model id or a family name such as "sonnet". An unknown model is rejected with the list of valid ids. If not specified, uses the agent default.'
+        'Optional model for this task: a model id or a family name such as "sonnet". An unknown model is rejected. If not specified, uses the agent default.'
       ),
+    connection: z.string().optional().describe('Optional account for model, by its id or its exact name in Settings → Model Providers. Leave it out to use the agent\'s own account. Name an account only when the user asked for one or the model is not on the agent\'s own account.'),
     effort: z
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()

@@ -14,6 +14,8 @@ import {
   connectionCatalogFrom,
   getConnection,
   canSelectConnection,
+  selectableConnectionRows,
+  type ConnectionRow,
   type ResolvedConnection,
 } from './connections'
 
@@ -39,36 +41,56 @@ export async function resolveConnectionRuntimeInherit(
   )
   return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId, wireModel: resolved.wireModel,
     // What the catalog needs, never the row: its config holds the connection's credentials.
-    connection: { provider: resolved.connection.provider, modelOverrides: resolved.connection.modelOverrides } }
+    connection: { name: resolved.connection.name, provider: resolved.connection.provider, modelOverrides: resolved.connection.modelOverrides } }
 }
 
 /**
- * Bind a model an agent names for an automation (a catalog id or a family
- * alias such as `sonnet`) to the connection the agent runs on. The name is
- * saved as given, so a family alias keeps following the family's latest model.
- * Throws with the valid ids when the connection has no such model, so the
- * agent can retry instead of the automation silently running on a default.
+ * Bind a model an agent names for a run (a catalog id or a family alias such
+ * as `sonnet`) to a connection. Without `connection` it is the agent's own, as
+ * a person picks in the composer; a named connection must be one the run's
+ * person could pick there, checked as that person, or as no one when the run
+ * has none. The name is saved as given, so an alias keeps following the
+ * family's latest model. Refusals name no account and echo no input.
  */
 export async function bindAgentModelChoice(
-  model: string | undefined,
+  { model, connection: named }: { model?: string; connection?: string },
   agent: Partial<AgentPreferences> | null | undefined,
+  userId: string | undefined,
   /** The operation's settings, when the caller already read them. */
   settings?: AppSettings,
 ): Promise<{ model?: string; llmProviderId?: string }> {
-  if (!model) return { model }
+  if (!model) {
+    if (named) throw new Error('Name a model together with connection.')
+    return {}
+  }
   const current = settings ?? await getSettings()
-  if (!current.llmDefault) return { model }
-  const { connection } = await resolveSelectionHierarchyFrom(
+  if (!current.llmDefault) {
+    if (named) throw new Error('This app has no accounts to choose from. Leave out connection.')
+    return { model }
+  }
+  const { connection: own } = await resolveSelectionHierarchyFrom(
     current,
     await storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId, current)
   )
-  const catalog = connectionCatalogFrom(connection, current)
-  const picked = resolveSelection({ llmProviderId: connection.id, model }, [{ id: connection.id, catalog }])
-  if (!picked) {
-    const ids = catalog.map((m) => m.id)
-    throw new Error(`Unknown model "${model}". Models available to this agent: ${ids.join(', ')}. Leave out model to use the agent's default.`)
+  const row = named ? await namedConnection(named, own.id, userId) : own
+  const catalog = connectionCatalogFrom(row, current)
+  if (!resolveSelection({ llmProviderId: row.id, model }, [{ id: row.id, catalog }])) {
+    const ids = catalog.map((m) => m.id).join(', ')
+    throw new Error(`Unknown model. Models on ${named ? 'that account' : "this agent's account"}: ${ids}. Leave out model to use the agent's default, or name another account with connection.`)
   }
-  return { model, llmProviderId: connection.id }
+  return { model, llmProviderId: row.id }
+}
+
+// By id, or by a name only one connection the person can pick has; checked as
+// the composer checks a pick, for the person, or for no one.
+async function namedConnection(named: string, ownId: string, userId: string | undefined): Promise<ConnectionRow> {
+  const byId = await getConnection(named)
+  const [row, ...more] = byId ? [byId] : (await selectableConnectionRows(userId, ownId)).filter((r) => r.name === named)
+  if (more.length > 0) throw new Error('More than one account has that name. Name it by id.')
+  if (!row || !canSelectConnection(row, { userId: userId ?? null, admin: false }, ownId)) {
+    throw new Error('That account is not one you can use.')
+  }
+  return row
 }
 
 /** Enforce selection access only for an explicit new binding. An attached

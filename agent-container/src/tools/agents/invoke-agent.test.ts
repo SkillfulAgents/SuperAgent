@@ -53,4 +53,12 @@ describe('invoke_agent attachments', () => {
 
     expect(mockCallHost).toHaveBeenCalledWith('invoke', { slug: 'target', prompt: 'Review', model: 'sonnet', effort: 'high', speed: 'fast' }, expect.anything(), expect.anything())
   })
+
+  it('forwards a named connection', async () => {
+    mockCallHost.mockResolvedValue({ sessionId: 'target-session', status: 'running' })
+    const { makeInvokeAgentTool } = await import('./invoke-agent')
+    const agentTool = makeInvokeAgentTool(() => 'caller-session')
+    await (agentTool as { handler: (args: unknown) => Promise<unknown> }).handler({ slug: 'target', prompt: 'Review', model: 'gpt-astra', connection: 'ChatGPT' })
+    expect(mockCallHost).toHaveBeenCalledWith('invoke', { slug: 'target', prompt: 'Review', model: 'gpt-astra', connection: 'ChatGPT' }, expect.anything(), expect.anything())
+  })
 })

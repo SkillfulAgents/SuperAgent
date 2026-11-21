@@ -70,6 +70,7 @@ export const createWebhookEndpointInputSchema = z.object({
   verification: verificationProfileSchema.nullish(),
   filter_exp: filterExpressionSchema.nullish(),
   model: RuntimeOptionsSchema.shape.model,
+  connection: z.string().nullish(),
   effort: RuntimeOptionsSchema.shape.effort,
   speed: RuntimeOptionsSchema.shape.speed,
 })

@@ -166,6 +166,21 @@ describe('setup_trigger', () => {
     expect(publish).toHaveBeenCalledExactlyOnceWith({ type: 'webhook_trigger_created', triggerId: 'trigger_new_id', agentSlug: AGENT_SLUG })
   })
 
+  it("checks a named connection as the session's creator", async () => {
+    const runtime = await import('@shared/lib/llm-provider/connection-runtime')
+    const preferences = await import('@shared/lib/services/agent-preferences-service')
+    const bind = vi.spyOn(runtime, 'bindAgentModelChoice').mockResolvedValue({ model: 'gpt-astra', llmProviderId: 'chatgpt' })
+    const prefs = vi.spyOn(preferences, 'readAgentPreferences').mockResolvedValue({} as never)
+    mockSessionMetadata.mockResolvedValue({ createdByUserId: 'user_owner' })
+    await setupTrigger(request('setup_trigger', 'tool-setup-conn', {
+      connected_account_id: 'ca_1', trigger_type: 'GMAIL_NEW_EMAIL', prompt: 'Summarize this email', model: 'gpt-astra', connection: 'ChatGPT',
+    }))
+    expect(bind).toHaveBeenCalledWith({ model: 'gpt-astra', connection: 'ChatGPT' }, {}, 'user_owner')
+    expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-astra', llmProviderId: 'chatgpt' }))
+    bind.mockRestore()
+    prefs.mockRestore()
+  })
+
   it('validates trigger type against available triggers', async () => {
     const result = await setupTrigger(request('setup_trigger', 'tool-setup-bad', {
       connected_account_id: 'ca_1',

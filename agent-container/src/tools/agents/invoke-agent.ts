@@ -21,7 +21,8 @@ Note: sessions started by invoke_agent cannot themselves invoke agents — invoc
       session_id: z.string().optional().describe('Optional existing session ID to continue. Omit to start a new session.'),
       sync: z.boolean().optional().describe('If true, wait for the target agent to finish its turn and return its final message. Default false.'),
       attachments: z.array(z.string()).max(10).optional().describe('Up to 10 regular files under the caller\'s /workspace to send with the prompt. Paths may be absolute /workspace/... paths or workspace-relative paths.'),
-      model: z.string().optional().describe('Optional model for a new session: a model id or a family name such as "sonnet", checked against the target agent\'s models. An unknown model is rejected with the list of valid ids. If not specified, uses the target agent\'s default. Leave out model, effort and speed unless the user asked for a specific one. Not allowed with session_id.'),
+      model: z.string().optional().describe('Optional model for a new session: a model id or a family name such as "sonnet", checked against the target agent\'s account, or the account named in connection. An unknown model is rejected with that account\'s model ids. If not specified, uses the target agent\'s default. Leave out model, effort and speed unless the user asked for a specific one. Not allowed with session_id.'),
+      connection: z.string().optional().describe('Optional account for model, by its id or its exact name in Settings → Model Providers. Leave it out to use the agent\'s own account. Name an account only when the user asked for one or the model is not on the agent\'s own account. Not allowed with session_id.'),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Optional effort level for a new session. If not specified, uses the target agent\'s default. Not allowed with session_id.'),
       speed: z.enum(['slow', 'normal', 'fast']).optional().describe('Optional processing-speed tier for a new session. If not specified, uses the target agent\'s default. Not allowed with session_id.'),
     },
@@ -35,6 +36,7 @@ Note: sessions started by invoke_agent cannot themselves invoke agents — invoc
         if (args.sync) body.sync = true
         if (args.attachments !== undefined) body.attachments = args.attachments
         if (args.model) body.model = args.model
+        if (args.connection) body.connection = args.connection
         if (args.effort) body.effort = args.effort
         if (args.speed) body.speed = args.speed
 

@@ -16,17 +16,25 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@renderer/components/messages/composer-options', async () => {
   const { useEffect, useState } = await import('react')
   return {
-    useComposerOptions: ({ initial: { model: initialModel, effort: initialEffort, speed: initialSpeed } = {}, onlyLlmProviderId }: { initial?: { model?: string; effort?: string; speed?: string }; onlyLlmProviderId?: string }) => {
+    useComposerOptions: ({ initial: { model: initialModel, llmProviderId: initialConnection, effort: initialEffort, speed: initialSpeed } = {}, connectionsPath }: { initial?: { model?: string; llmProviderId?: string; effort?: string; speed?: string }; connectionsPath?: string }) => {
+      mockConnectionsPath = connectionsPath
       const [model, setModel] = useState(initialModel === 'locked' ? 'claude-haiku-5-5' : initialModel)
-      // 'loading': the card's connection has not arrived yet.
+      const [llmProviderId, setConnection] = useState(initialConnection)
       const [effort, setEffort] = useState(initialEffort)
       const [speed, setSpeed] = useState(initialSpeed)
-      return { model, setModel, effort, setEffort, speed, setSpeed, connections: onlyLlmProviderId === 'loading' ? [] : [{ id: onlyLlmProviderId }] }
+      // 'loading': the card's connection has not arrived yet.
+      return { model, setModel, llmProviderId, setConnection, effort, setEffort, speed, setSpeed, connections: initialConnection === 'loading' ? [] : [{ id: initialConnection }, { id: 'mine' }], ...(initialConnection === 'moved' ? { llmProviderId: 'mine' } : {}) }
     },
-    ComposerOptions: ({ state, onUserChange }: { state: { model?: string; setModel: (model: string) => void; setEffort: (effort: string) => void }; onUserChange?: () => void }) => {
+    ComposerOptions: ({ state, onUserChange }: { state: { model?: string; setModel: (model: string) => void; setConnection: (id: string) => void; setEffort: (effort: string) => void }; onUserChange?: () => void }) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
       useEffect(() => { state.setEffort('high') }, [])
-      return <button type="button" data-testid="picker" onClick={() => { onUserChange?.(); state.setModel('claude-opus-5-5') }}>{state.model}</button>
+      return (
+        <>
+          <button type="button" data-testid="picker" onClick={() => { onUserChange?.(); state.setModel('claude-opus-5-5') }}>{state.model}</button>
+          <button type="button" data-testid="picker-account" onClick={() => { onUserChange?.(); state.setConnection('mine') }}>account</button>
+          <button type="button" data-testid="picker-account-back" onClick={() => { onUserChange?.(); state.setConnection('platform') }}>back</button>
+        </>
+      )
     },
   }
 })
@@ -35,6 +43,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(),
 }))
 
+let mockConnectionsPath: string | undefined
 let mockUser: { isAuthMode: boolean; rolesReady: boolean; canUseAgent: (slug: string) => boolean } = { isAuthMode: false, rolesReady: true, canUseAgent: () => true }
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUser,
@@ -219,6 +228,7 @@ describe('XAgentReviewRequestItem model', () => {
   it.each([
     { name: 'until the card\'s connection has loaded', runtime: { llmProviderId: 'loading' } },
     { name: 'when the viewer\'s plan would swap the model that runs', runtime: { model: 'locked' } },
+    { name: 'when the picker would show the same model on another account', runtime: { llmProviderId: 'moved' } },
   ])('shows the line, not the picker, $name', ({ runtime }) => {
     render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={{ ...invokeCard, runtime: { ...invokeCard.runtime!, ...runtime } }} onComplete={vi.fn()} />)
     expect(screen.queryByTestId('picker')).toBeNull()
@@ -231,7 +241,33 @@ describe('XAgentReviewRequestItem model', () => {
     render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={invokeCard} onComplete={vi.fn()} />)
     fireEvent.click(screen.getByTestId('picker'))
     await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-allow-once-btn')) })
-    expect(postedBody()).toEqual({ decision: 'allow', pick: { model: 'claude-opus-5-5', effort: 'high', speed: 'fast' } })
+    expect(postedBody()).toEqual({ decision: 'allow', pick: { model: 'claude-opus-5-5', llmProviderId: 'platform', effort: 'high', speed: 'fast' } })
+  })
+
+  it("offers the viewer's accounts plus the card's, and sends another account picked on the card", async () => {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={invokeCard} onComplete={vi.fn()} />)
+    expect(mockConnectionsPath).toBe('/api/agents/caller/proxy-review/review-8/llm-connections')
+    fireEvent.click(screen.getByTestId('picker-account'))
+    await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-allow-once-btn')) })
+    expect(postedBody()).toEqual({ decision: 'allow', pick: { model: 'sonnet', llmProviderId: 'mine', effort: 'high', speed: 'fast' } })
+  })
+
+  it('sends the account last picked when the approver switches account twice', async () => {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={invokeCard} onComplete={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('picker-account'))
+    fireEvent.click(screen.getByTestId('picker-account-back'))
+    await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-allow-once-btn')) })
+    expect(postedBody().pick.llmProviderId).toBe('platform')
+  })
+
+  it('names the account beside the model when the card has one', () => {
+    mockUser = { isAuthMode: true, rolesReady: true, canUseAgent: (slug) => slug === 'caller' }
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={{ ...invokeCard, runtime: { ...invokeCard.runtime!, account: 'ChatGPT' } }} onComplete={vi.fn()} />)
+    expect(screen.getByTestId('xagent-review-model')).toHaveTextContent('Model: Sonnet 5.5 (ChatGPT) · Extra High · Fast')
   })
 
   it('drops a refused pick, so the next Allow runs the card\'s model', async () => {

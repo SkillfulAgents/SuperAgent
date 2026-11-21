@@ -210,6 +210,19 @@ describe('ComposerOptionsPopover', () => {
     expect(await screen.findByText('Effort')).toBeInTheDocument()
   })
 
+  it("reports a connection change as the person's choice", async () => {
+    HTMLElement.prototype.hasPointerCapture = () => false
+    HTMLElement.prototype.scrollIntoView = () => {}
+    const user = userEvent.setup()
+    const onUserChange = vi.fn()
+    const PRO = { ...MAX, id: 'pro', name: 'Claude Pro' }
+    render(<Harness initialModel="claude-opus-4-8" connections={[MAX, PRO]} llmProviderId="max" onUserChange={onUserChange} />)
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(screen.getByLabelText('Connection'))
+    await user.click(await screen.findByRole('option', { name: /Claude Pro/ }))
+    expect(onUserChange).toHaveBeenCalledOnce()
+  })
+
   it('names the model and the connection on hover, even with a single connection', async () => {
     render(<Harness initialModel="claude-opus-4-8" connections={[MAX]} llmProviderId="max" />)
     await userEvent.hover(screen.getByTestId('composer-options-trigger'))

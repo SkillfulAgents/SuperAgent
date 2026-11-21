@@ -107,7 +107,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
         // it pops its name tooltip instantly. Keyboard users can Tab in.
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <ProviderSelect connections={state.connections ?? []} value={state.llmProviderId} onChange={id => state.setConnection?.(id)} disabled={disabled} />
+        <ProviderSelect connections={state.connections ?? []} value={state.llmProviderId} onChange={id => { onUserChange?.(); state.setConnection?.(id) }} disabled={disabled} />
         {selectedModel && (
           <>
             {/* Flat list, no "latest" — per-message picks a concrete version.
