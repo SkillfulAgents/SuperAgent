@@ -43,6 +43,13 @@ import { ensureDirectory, getTempUploadsDir, removeDirectory } from './file-stor
 export const MAX_UPLOAD_TOTAL_SIZE = 2 * 1024 * 1024 * 1024
 
 /**
+ * One upload request's body, at most. The web client splits files above 50MB
+ * into chunks, so no legitimate request exceeds ~50MB plus multipart framing;
+ * 64MB leaves headroom. The upload-file routes and signed upload URLs apply it.
+ */
+export const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
+
+/**
  * A manifest's life after its last write, judged by the backend. It is also the
  * deadline of a write in flight and of a crashed `finish`: past it the manifest
  * is gone, a late commit is refused, and the sweep removes the bytes.

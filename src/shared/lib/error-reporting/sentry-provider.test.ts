@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeOptions } from '@sentry/node'
 import { GrammyError, HttpError } from 'grammy'
-import { CREDENTIAL_BODY_ROUTE, createServerProvider, redactBotTokens, scrubCredentialRequestBody } from './sentry-provider'
+import { CREDENTIAL_BODY_ROUTE, createServerProvider, redactBotTokens, redactSignedFileTokens, scrubCredentialRequestBody } from './sentry-provider'
 import { backgroundSettled } from '../background'
 
 const sentry = vi.hoisted(() => ({
@@ -287,5 +287,31 @@ describe('Telegram bot tokens in error reports', () => {
 
     expect(await beforeSend()({ type: undefined, extra: { unreadable } }, {})).toBeNull()
     expect(beforeBreadcrumb()({ category: 'http', data: unreadable }, {})).toBeNull()
+  })
+})
+
+describe('signed file URL redaction', () => {
+  const token = 'eyJ2IjoxLCJqdGkiOiJhYmMifQ.Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    settings.getSettings.mockResolvedValue({})
+    environment.probeEnvironmentData.mockResolvedValue({})
+    sentry.httpIntegration.mockReturnValue({ name: 'Http' })
+  })
+
+  it('replaces the token, keeping the route and anything after it', () => {
+    expect(redactSignedFileTokens(`https://gamut.test/api/signed-files/${token}`)).toBe('https://gamut.test/api/signed-files/[redacted]')
+    expect(redactSignedFileTokens(`PUT /api/signed-files/${token}?x=1`)).toBe('PUT /api/signed-files/[redacted]?x=1')
+    expect(redactSignedFileTokens('/api/agents/a1/files/report.pdf')).toBe('/api/agents/a1/files/report.pdf')
+  })
+
+  it('takes the token out of the request URL of an event raised while redeeming one', async () => {
+    initializeProvider()
+    const event = { type: undefined, request: { url: `http://localhost:47891/api/signed-files/${token}`, method: 'GET' } }
+
+    expect(await beforeSend()(event, {})).toEqual({
+      request: { url: 'http://localhost:47891/api/signed-files/[redacted]', method: 'GET' },
+    })
   })
 })

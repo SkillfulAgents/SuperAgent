@@ -9,6 +9,8 @@ export const SETTINGS_RECORD_KEY = 'settings'
 export const TENANT_ID_RECORD_KEY = 'tenant-id'
 export const AUTH_SECRET_RECORD_KEY = 'auth-secret'
 export const PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY = 'platform-client-instance-id'
+/** The HMAC key signed file URLs are signed with (`signed-file-urls/`). */
+export const SIGNED_FILE_URL_SECRET_RECORD_KEY = 'signed-file-url-secret'
 
 /** Prefix of the per-agent host→container tokens; the agent slug follows. */
 export const HOST_CONTAINER_TOKEN_KEY_PREFIX = 'host-container-token:'
@@ -43,6 +45,8 @@ export const authSecretRecordSchema = z.string().min(AUTH_SECRET_MIN_LENGTH)
 export const hostContainerTokenRecordSchema = z.string().min(1)
 export const browserContextIdRecordSchema = z.string().min(1)
 export const platformClientInstanceIdRecordSchema = z.string().trim().min(1)
+/** 32 random bytes, base64url. */
+export const signedFileUrlSecretRecordSchema = z.string().min(43)
 
 /** The legacy `host-container-tokens.json` and Browserbase context files: one string per key. */
 export const legacyStringMapSchema = z.record(z.string(), z.string())

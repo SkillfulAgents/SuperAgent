@@ -894,6 +894,7 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
   }
   return {
     MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
+    MAX_UPLOAD_REQUEST_SIZE: 64 * 1024 * 1024,
     formatUploadTooLargeMessage,
     UploadConflictError,
     UploadOutcomeUnknownError,

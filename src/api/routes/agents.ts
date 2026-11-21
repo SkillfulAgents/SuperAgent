@@ -171,6 +171,7 @@ import type {
 import { forkSession, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
+  MAX_UPLOAD_REQUEST_SIZE,
   MAX_UPLOAD_TOTAL_SIZE,
   UploadConflictError,
   UploadOutcomeUnknownError,
@@ -310,7 +311,7 @@ import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-r
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
-import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
+import { UPLOADS_DIR, resolveUploadDestPath } from '@shared/lib/utils/workspace-upload-path'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, resolveAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
@@ -1021,8 +1022,6 @@ agents.route('/member-agents', agentShareStacks)
 // exceeds ~50MB plus multipart framing; 64MB leaves comfortable headroom.
 // Content-Length requests are rejected from the header alone; bodies without a
 // length (chunked transfer-encoding) are counted and cut off at the cap.
-const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
-
 const uploadRequestBodyLimit = bodyLimit({
   maxSize: MAX_UPLOAD_REQUEST_SIZE,
   onError: (c) =>
@@ -6738,31 +6737,6 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
     return c.json({ error: 'Failed to fetch audit log' }, 500)
   }
 })
-
-const UPLOADS_DIR = 'uploads'
-
-/** The workspace path an upload lands at, always inside `uploads/`. */
-function resolveUploadDestPath(filename: string, relativePath?: string): string {
-  // If relativePath is provided (folder upload), preserve directory structure
-  let uploadPath: string
-  if (relativePath) {
-    const normalized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, '')
-    uploadPath = `${UPLOADS_DIR}/${normalized}`
-  } else {
-    // Single-file upload: collapse the untrusted name to a safe basename
-    // (shared with the chat-attachment write path). The check below is the
-    // defense-in-depth backstop.
-    uploadPath = `${UPLOADS_DIR}/${withUploadTimestamp(sanitizeUploadFilename(filename))}`
-  }
-
-  // Security: the actor keeps the write inside the workspace; this keeps it
-  // inside the one folder uploads are allowed into.
-  if (!normalizeWorkspacePath(uploadPath).startsWith(`${UPLOADS_DIR}/`)) {
-    throw new Error('Invalid file path')
-  }
-
-  return uploadPath
-}
 
 async function handleFileUpload(agentSlug: string, file: File, relativePath?: string) {
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {

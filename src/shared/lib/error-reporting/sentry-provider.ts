@@ -42,23 +42,36 @@ export function redactBotTokens(text: string): string {
   return text.replace(TELEGRAM_BOT_TOKEN, '$1:[redacted]')
 }
 
-/** Redact bot tokens in every string of an event the SDK is about to send. */
-function redactBotTokensInEvent<T extends object>(event: T): T {
+/** A signed file URL's token (`/api/signed-files/<token>`): the path segment is the credential. */
+const SIGNED_FILE_TOKEN = /(\/api\/signed-files\/)[^/?#\s"'<>]+/g
+
+/** The text with every signed file URL's token replaced. */
+export function redactSignedFileTokens(text: string): string {
+  return text.replace(SIGNED_FILE_TOKEN, '$1[redacted]')
+}
+
+/** Every credential this module looks for in a string, redacted. */
+function redactCredentials(text: string): string {
+  return redactSignedFileTokens(redactBotTokens(text))
+}
+
+/** Redact credentials in every string of an event the SDK is about to send (the request's URL among them). */
+function redactCredentialsInEvent<T extends object>(event: T): T {
   for (const [key, value] of Object.entries(event)) {
-    if (typeof value === 'string') Reflect.set(event, key, redactBotTokens(value))
-    else if (value && typeof value === 'object') redactBotTokensInEvent(value)
+    if (typeof value === 'string') Reflect.set(event, key, redactCredentials(value))
+    else if (value && typeof value === 'object') redactCredentialsInEvent(value)
   }
   return event
 }
 
-/** Redact bot tokens in a breadcrumb; a console breadcrumb's raw arguments go, its message holds their text. */
+/** Redact credentials in a breadcrumb; a console breadcrumb's raw arguments go, its message holds their text. */
 function scrubBreadcrumb(breadcrumb: Sentry.Breadcrumb): Sentry.Breadcrumb {
   const data = breadcrumb.data && { ...breadcrumb.data }
   if (data) {
     if (breadcrumb.category === 'console') delete data.arguments
-    if (typeof data.url === 'string') data.url = redactBotTokens(data.url)
+    if (typeof data.url === 'string') data.url = redactCredentials(data.url)
   }
-  return { ...breadcrumb, message: breadcrumb.message && redactBotTokens(breadcrumb.message), data }
+  return { ...breadcrumb, message: breadcrumb.message && redactCredentials(breadcrumb.message), data }
 }
 
 /**
@@ -110,7 +123,7 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
       try {
         // Telegram being busy or unreachable is reported as a warning.
         if (isTelegramTemporary(hint.originalException)) event.level = 'warning'
-        return redactBotTokensInEvent(scrubCredentialRequestBody(event))
+        return redactCredentialsInEvent(scrubCredentialRequestBody(event))
       } catch {
         return null
       }
