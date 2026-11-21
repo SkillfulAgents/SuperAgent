@@ -10,6 +10,7 @@ import { validateProxyToken, validateProxyTokenWithOwner } from '@shared/lib/pro
 // container layer, which every route test would then have to mock.
 import { agentCatalog, resolveAgentRecordWithRole } from '@shared/lib/agent-actor/agent-catalog'
 import type { AgentRecord } from '@shared/lib/agent-actor/types'
+import { getUserAgentRole, userHasMinRoleOnAgent } from '@shared/lib/services/agent-acl-role'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -139,15 +140,6 @@ export function Authenticated(): MiddlewareHandler {
 // Agent ACL helpers
 // ---------------------------------------------------------------------------
 
-async function getUserAgentRole(userId: string, agentSlug: string): Promise<AgentRole | null> {
-  const row = await db
-    .select({ role: agentAcl.role })
-    .from(agentAcl)
-    .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, agentSlug)))
-    .limit(1)
-  return (row[0]?.role as AgentRole) ?? null
-}
-
 function getUser(c: Context): { id: string; role?: string } {
   const user = c.get('user' as never) as { id: string; role?: string } | undefined
   if (!user) throw new Error('User not found in context — Authenticated() middleware missing?')
@@ -266,11 +258,10 @@ export async function getReadableAgentIds(c: Context, agentIds: readonly string[
 
 /** AgentUser's policy for an already-resolved ID. */
 export async function canUseAgent(c: Context, agentSlug: string): Promise<boolean> {
+  // Checked before getUser, which throws without a user: non-auth mode has none.
   if (!isAuthMode()) return true
   const user = getUser(c)
-  if (isAdmin(user)) return true
-  const role = await getUserAgentRole(user.id, agentSlug)
-  return !!role && hasMinRole(role, 'user')
+  return userHasMinRoleOnAgent({ id: user.id, isAdmin: isAdmin(user) }, agentSlug, 'user')
 }
 
 /**
