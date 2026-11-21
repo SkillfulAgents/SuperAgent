@@ -1,9 +1,28 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'events'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { WebSocket, WebSocketServer } from 'ws'
+
+let upstreamPort = 0
+
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentCatalog: { resolve: async (routeAgentId: string) => routeAgentId },
+  agentRegistry: {
+    get: () => ({
+      container: {
+        webSocketTarget: async (path: string) => ({ url: `ws://127.0.0.1:${upstreamPort}${path}`, headers: {} }),
+      },
+    }),
+  },
+}))
+vi.mock('./agent-websocket-auth', () => ({ authenticateAgentWebSocket: async () => true }))
+vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
 import {
   artifactWebSocketForwardHeaders,
   parseArtifactWebSocketRoute,
+  setupArtifactStreamProxy,
 } from './artifact-stream-proxy'
 
 function request(headers: Record<string, string>) {
@@ -57,5 +76,41 @@ describe('artifact WebSocket forwarding headers', () => {
     expect(result.cookie).toBe('dashboard=abc')
     expect(result).not.toHaveProperty('sec-websocket-key')
     expect(result).not.toHaveProperty('x-superagent-host-token')
+  })
+})
+
+describe('artifact WebSocket proxy', () => {
+  let proxy: Server
+  let dashboard: WebSocketServer
+  const clients: WebSocket[] = []
+
+  beforeAll(async () => {
+    dashboard = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+    // Like Vite's HMR server, the dashboard speaks first, often in the same read as its handshake.
+    dashboard.on('connection', (socket) => socket.send('connected'))
+    await new Promise((resolve) => dashboard.once('listening', resolve))
+    upstreamPort = (dashboard.address() as AddressInfo).port
+
+    proxy = createServer()
+    setupArtifactStreamProxy(proxy as never)
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+  })
+
+  afterAll(async () => {
+    clients.forEach((client) => client.terminate())
+    dashboard.clients.forEach((client) => client.terminate())
+    await new Promise((resolve) => proxy.close(resolve))
+    await new Promise((resolve) => dashboard.close(resolve))
+  })
+
+  it('relays the message the dashboard sends as it accepts the socket', async () => {
+    const { port } = proxy.address() as AddressInfo
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/agents/agent-1/artifacts/open-slide/__vite_hmr`)
+    clients.push(client)
+    const first = new Promise<string>((resolve, reject) => {
+      client.once('message', (data) => resolve(data.toString()))
+      client.once('error', reject)
+    })
+    await expect(first).resolves.toBe('connected')
   })
 })
