@@ -9,6 +9,7 @@ import { admitBrowserStream, serveBrowserStream as serveStream } from '../../mai
 import { WebSocket } from '../build/shims/ws'
 
 export async function serveBrowserStream(request: Request, slugInUrl: string, ctx: ExecutionContext): Promise<Response> {
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- a request's URL always parses
   const admitted = await admitBrowserStream(slugInUrl, new URL(request.url), { headers: Object.fromEntries(request.headers) })
   if ('status' in admitted) return new Response(null, { status: admitted.status })
   const [client, server] = Object.values(new WebSocketPair()) as [WorkerWebSocket, WorkerWebSocket]

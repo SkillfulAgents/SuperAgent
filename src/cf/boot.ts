@@ -25,7 +25,8 @@ import { captureException } from '@shared/lib/error-reporting'
 import { initializeBackgroundWork, isBackgroundWorkInitialized, taskManager } from '@shared/lib/background-work'
 import { getErrorReporter, initErrorReporting } from '@shared/lib/error-reporting'
 import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
-import { installAgentDeployment } from '@shared/lib/agent-actor/registry'
+import { setActorDeps } from '@shared/lib/agent-actor/registry'
+import { setWorkspaceRemoval } from '@shared/lib/agent-actor/workspace-removal'
 import { createProcessHostPort } from '@shared/lib/host/local-host-port'
 import { createConfigOps } from '@shared/lib/agent-actor/config-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/session-store'
@@ -253,24 +254,24 @@ const reachAgentActor: (env: Env, slug: AgentSlug, run: Parameters<ReachActorObj
 
 /** Where each agent runs: its actor in its own object, its files in its container or, asleep, in R2. */
 function wireAgents(env: Env): void {
-  installAgentDeployment({
+  setActorDeps({
     // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
-    transport: (slug, local) => ownedHere(slug, local, cloudflareAgentActor(slug, (run) => reachAgentActor(env, slug, run))),
-    sessionStore: (slug, hooks) => cloudflareSessionStore(env, slug, hooks),
+    transport: (local) => ownedHere(local.slug, local, cloudflareAgentActor(local.slug, (run) => reachAgentActor(env, local.slug, run))),
+    createSessionStore: (slug, hooks) => cloudflareSessionStore(env, slug, hooks),
     // A session runs in its agent's object; the chat connections, the webhook relay and the trigger manager are in the task manager object.
     host: createProcessHostPort({
       announceSessionStart: (slug, sessionId) => announceSessionStart(env, slug, sessionId),
       runHostTool: (request) => runHostToolInTaskManager(env, request),
     }),
-    // A deleted agent's saved files are in its object and R2, not in a directory here. They are removed
-    // after the answer, by a task that is tried again if it fails: the purge lists and deletes every
-    // object the agent saved. A removal that cannot be scheduled fails, and the agent is kept.
-    removeWorkspace: async (slug) => {
-      await taskManager().at(Date.now(), `${PURGE_WORKSPACE_TASK}:${slug}`, { taskType: PURGE_WORKSPACE_TASK, payload: { slug } })
-    },
     idleTimer: agentIdleTimer,
-    webhookRelayAvailable: () => webhookRelayAvailableInTaskManager(env),
   })
+  // A deleted agent's saved files are in its object and R2, not in a directory here. They are removed
+  // after the answer, by a task that is tried again if it fails: the purge lists and deletes every
+  // object the agent saved. A removal that cannot be scheduled fails, and the agent is kept.
+  setWorkspaceRemoval(async (slug) => {
+    await taskManager().at(Date.now(), `${PURGE_WORKSPACE_TASK}:${slug}`, { taskType: PURGE_WORKSPACE_TASK, payload: { slug } })
+  })
+  containerHost.useWebhookRelayStatus(() => webhookRelayAvailableInTaskManager(env))
 }
 
 /** The SQLite of the agent's object, where its session index is kept. The actor that uses the index runs only in that object. */

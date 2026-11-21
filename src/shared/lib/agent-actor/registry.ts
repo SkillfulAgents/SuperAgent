@@ -12,10 +12,7 @@ import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { localHostPort } from '@shared/lib/host/local-host-port'
-import type { HostPort } from './host-port'
-import { setWorkspaceRemoval, type WorkspaceRemoval } from './workspace-removal'
 import { background } from '@shared/lib/background'
-import type { IdleTimer } from '@shared/lib/container/idle-alarm'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import { serializingActor } from './serializing-actor'
 import type { AgentState } from './agent-state'
@@ -194,36 +191,22 @@ if (process.env.NODE_ENV !== 'production') {
   globalForRegistry.agentActorStates = agentActorStates
 }
 
-/**
- * What a deployment whose agents run outside this process supplies, all at
- * once. Desktop and the Node server install nothing: each agent runs in this
- * process, with its files in a directory on this machine.
- */
-export interface AgentDeployment {
-  /** What `agentRegistry.get` hands out in place of the actor in this process, such as a client of the agent's actor in another process. */
-  transport(slug: AgentSlug, local: AgentActor): AgentActor
-  /** Where each agent's files, config documents and transcripts are (see `LocalActorDeps.createSessionStore`). */
-  sessionStore: NonNullable<LocalActorDeps['createSessionStore']>
-  /** The host the agents ask for host tools, machine work and side effects. */
-  host: HostPort
-  /** How a deleted agent's workspace is removed (see `setWorkspaceRemoval`). */
-  removeWorkspace: WorkspaceRemoval
-  /** What each agent's idle alarm waits with (see `LocalActorDeps.idleTimer`). */
-  idleTimer: (slug: AgentSlug) => IdleTimer
-  /** Whether webhooks can be received, as the process that runs the webhook relay sees it. */
-  webhookRelayAvailable: () => Promise<boolean>
+type ReplacedActorDeps = Required<Pick<LocalActorDeps, 'host' | 'createSessionStore' | 'idleTimer'>> & {
+  /** What `get` hands out in place of the actor in this process, such as a client of the agent's actor in another process. */
+  transport: (actor: AgentActor) => AgentActor
 }
 
-let deployment: AgentDeployment | undefined
+let replaced: ReplacedActorDeps | undefined
 
 /**
- * The one place a deployment sets how its agents run. Called once at boot,
- * before the first `get`: a handle already handed out keeps what it was made with.
+ * Replaces the actor dependencies a runtime whose agents run outside this
+ * process provides itself: their host, where their files are, what their idle
+ * alarms wait with, and how `get` reaches them. Called once at boot, before
+ * the first `get`: a handle already handed out keeps what it was made with.
+ * Desktop and the Node server replace none.
  */
-export function installAgentDeployment(installed: AgentDeployment): void {
-  deployment = installed
-  setWorkspaceRemoval(installed.removeWorkspace)
-  containerHost.useWebhookRelayStatus(installed.webhookRelayAvailable)
+export function setActorDeps(deps: ReplacedActorDeps): void {
+  replaced = deps
 }
 
 // Development and tests only: every actor reached through the serializing test transport.
@@ -282,18 +265,17 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
     return loadSessionUsageTotals
   },
   get host() {
-    return deployment?.host ?? localHostPort
+    return replaced?.host ?? localHostPort
   },
   get createSessionStore() {
-    return deployment?.sessionStore
+    return replaced?.createSessionStore
   },
   get idleTimer() {
-    return deployment?.idleTimer
+    return replaced?.idleTimer
   },
 }, {
   states: agentActorStates,
   get transport() {
-    const installed = deployment
-    return installed ? (actor: AgentActor) => installed.transport(actor.slug, actor) : testTransport
+    return replaced?.transport ?? testTransport
   },
 })

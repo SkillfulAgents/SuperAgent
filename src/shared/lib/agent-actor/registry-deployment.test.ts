@@ -1,5 +1,5 @@
 /**
- * A deployment whose agents live outside this process tells `agentRegistry`
+ * A runtime whose agents live outside this process tells `agentRegistry`
  * where each agent's files are and how callers reach it, once at boot.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -39,7 +39,7 @@ vi.mock('@shared/lib/services/usage-service', () => ({}))
 
 let evictAll: (() => Promise<void>) | undefined
 
-/** A fresh registry module: the deployment is set once per module evaluation. */
+/** A fresh registry module: the replaced deps are set once per module evaluation. */
 async function freshRegistry() {
   vi.resetModules()
   const registry = await import('./registry')
@@ -47,14 +47,12 @@ async function freshRegistry() {
   return registry
 }
 
-/** A deployment with the given parts, and the rest that does nothing. */
-const deploymentWith = (parts: { sessionStore: () => SessionStore; transport?: (slug: string, local: AgentActor) => AgentActor }) => ({
-  transport: parts.transport ?? ((_slug: string, local: AgentActor) => local),
-  sessionStore: parts.sessionStore,
+/** Replaced deps with the given parts, and the rest that does nothing. */
+const depsWith = (parts: { createSessionStore: () => SessionStore; transport?: (local: AgentActor) => AgentActor }) => ({
+  transport: parts.transport ?? ((local: AgentActor) => local),
+  createSessionStore: parts.createSessionStore,
   host: createRecordingHostPort().port,
-  removeWorkspace: vi.fn(async () => {}),
   idleTimer: () => ({ set: vi.fn(), clear: vi.fn() }),
-  webhookRelayAvailable: vi.fn(async () => true),
 })
 
 afterEach(async () => {
@@ -62,41 +60,30 @@ afterEach(async () => {
   evictAll = undefined
 })
 
-describe('agentRegistry in a deployment', () => {
-  it("keeps the agent's files in the session store the deployment supplies", async () => {
-    const { agentRegistry, installAgentDeployment } = await freshRegistry()
+describe('agentRegistry with replaced actor deps', () => {
+  it("keeps the agent's files in the session store the runtime supplies", async () => {
+    const { agentRegistry, setActorDeps } = await freshRegistry()
     const store = createInMemorySessionStore('sales-agent')
-    installAgentDeployment(deploymentWith({ sessionStore: () => store }))
+    setActorDeps(depsWith({ createSessionStore: () => store }))
 
     await agentRegistry.get('sales-agent').files.putDoc('notes/q3.md', 'Pipeline review on Friday')
 
     expect(new TextDecoder().decode((await store.files.getDoc('notes/q3.md'))!)).toBe('Pipeline review on Friday')
   })
 
-  it("hands callers the agent through the deployment's transport, made once per agent", async () => {
-    const { agentRegistry, installAgentDeployment } = await freshRegistry()
+  it("hands callers the agent through the runtime's transport, made once per agent", async () => {
+    const { agentRegistry, setActorDeps } = await freshRegistry()
     const store = createInMemorySessionStore('sales-agent')
-    const make = vi.fn((_slug: string, local: AgentActor) => serializingActor(local))
-    installAgentDeployment(deploymentWith({ sessionStore: () => store, transport: make }))
+    const make = vi.fn((local: AgentActor) => serializingActor(local))
+    setActorDeps(depsWith({ createSessionStore: () => store, transport: make }))
 
     const actor = agentRegistry.get('sales-agent')
     await actor.files.putDoc('notes/q3.md', 'Pipeline review on Friday')
 
     expect(make).toHaveBeenCalledTimes(1)
-    expect(make.mock.calls[0][0]).toBe('sales-agent')
+    expect(make.mock.calls[0][0].slug).toBe('sales-agent')
     expect(agentRegistry.get('sales-agent')).toBe(actor)
     expect(new TextDecoder().decode((await store.files.getDoc('notes/q3.md'))!)).toBe('Pipeline review on Friday')
   })
 
-  it("removes a deleted agent's workspace with the deployment's removal", async () => {
-    const { installAgentDeployment } = await freshRegistry()
-    const installed = deploymentWith({ sessionStore: () => createInMemorySessionStore('sales-agent') })
-    installAgentDeployment(installed)
-    // The removal module of this registry: freshRegistry loaded both again.
-    const { removeAgentWorkspace } = await import('./workspace-removal')
-
-    await removeAgentWorkspace('sales-agent')
-
-    expect(installed.removeWorkspace).toHaveBeenCalledExactlyOnceWith('sales-agent')
-  })
 })
