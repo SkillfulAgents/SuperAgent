@@ -33,6 +33,12 @@ const WEB_PROVIDERS: {
     docsUrl: 'https://docs.parallel.ai/integrations/mcp/search-mcp',
   },
   {
+    value: 'youcom',
+    label: 'You.com',
+    note: 'Web search without an API key (about 100 searches a day). An optional key lifts the daily limit. Works with every model. Page reading uses the model\'s built-in tools when available.',
+    docsUrl: 'https://you.com/docs/agents/mcp-server',
+  },
+  {
     value: 'native',
     label: 'Native',
     note: "Uses the model's built-in web tools. Nothing to set up, but not all models have them.",
@@ -200,6 +206,18 @@ export function WebTab() {
                     validationBody={(apiKey) => ({ provider: 'exa', apiKey })}
                     envVarName="EXA_API_KEY"
                     placeholder="Enter your Exa API key"
+                  />
+                ) : provider.value === 'youcom' ? (
+                  <ProviderApiKeyInput
+                    providerId="youcom"
+                    label="You.com API Key (optional)"
+                    apiKeySettingsField="ydcApiKey"
+                    apiKeyStatusKey="youcom"
+                    validationEndpoint="/api/settings/validate-web-key"
+                    validationBody={(apiKey) => ({ provider: 'youcom', apiKey })}
+                    envVarName="YDC_API_KEY"
+                    placeholder="Optional. Leave blank to use the free tier."
+                    showNotConfiguredAlert={false}
                   />
                 ) : null}
               </ProviderCard>
