@@ -1,4 +1,4 @@
-export const WEB_PROVIDER_IDS = ['native', 'exa', 'platform', 'parallel'] as const
+export const WEB_PROVIDER_IDS = ['native', 'exa', 'platform', 'parallel', 'youcom'] as const
 export type WebProviderId = (typeof WEB_PROVIDER_IDS)[number]
 
 export interface WebSearchOptions {

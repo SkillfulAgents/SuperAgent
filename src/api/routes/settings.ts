@@ -359,6 +359,7 @@ async function buildSettingsResponse(
       deepgram: getVoiceProvider('deepgram').apiKeyStatusFrom(appSettings),
       openai: getVoiceProvider('openai').apiKeyStatusFrom(appSettings),
       exa: getWebProvider('exa').apiKeyStatusFrom(appSettings),
+      youcom: getWebProvider('youcom').apiKeyStatusFrom(appSettings),
     },
     models: effectiveModelsFrom(appSettings),
     agentLimits: appSettings.agentLimits ?? {},

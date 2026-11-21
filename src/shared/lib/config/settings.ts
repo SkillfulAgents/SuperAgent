@@ -83,6 +83,7 @@ export interface ApiKeySettings {
   nangoSecretKey?: string
   accountProviderUserId?: string
   exaApiKey?: string
+  ydcApiKey?: string
 }
 
 export type { VoiceProvider } from '../voice/provider-types'
@@ -442,6 +443,7 @@ export interface GlobalSettingsResponse {
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
     exa: ApiKeyStatus
+    youcom: ApiKeyStatus
   }
   composioUserId?: string
   /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */

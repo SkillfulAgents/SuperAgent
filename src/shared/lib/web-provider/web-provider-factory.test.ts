@@ -6,6 +6,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { getSettings } from '@shared/lib/config/settings'
 import { ParallelWebProvider } from './parallel-web-provider'
+import { YouComWebProvider } from './youcom-web-provider'
 import { ExaWebProvider } from './exa-web-provider'
 import { PlatformWebProvider } from './platform-web-provider'
 import type { WebProviderId } from './types'
@@ -33,6 +34,7 @@ afterEach(() => {
 describe('findWebProvider', () => {
   it('returns the provider for a known vendor id string', async () => {
     expect(findWebProvider('parallel')).toBeInstanceOf(ParallelWebProvider)
+    expect(findWebProvider('youcom')).toBeInstanceOf(YouComWebProvider)
     expect(findWebProvider('exa')).toBeInstanceOf(ExaWebProvider)
     expect(findWebProvider('platform')).toBeInstanceOf(PlatformWebProvider)
   })
@@ -57,6 +59,13 @@ describe('resolveEffectiveWebVendor', () => {
   it('honors a keyless Parallel pin without changing the automatic incumbent', async () => {
     setActive('parallel')
     expect(await resolveEffectiveWebVendor()).toBe('parallel')
+    expect((await getActiveWebProvider())?.search).toBeTypeOf('function')
+    expect((await getActiveWebProvider())?.fetch).toBeUndefined()
+  })
+
+  it('honors a keyless You.com pin without changing the automatic incumbent', async () => {
+    setActive('youcom')
+    expect(await resolveEffectiveWebVendor()).toBe('youcom')
     expect((await getActiveWebProvider())?.search).toBeTypeOf('function')
     expect((await getActiveWebProvider())?.fetch).toBeUndefined()
   })

@@ -58,6 +58,16 @@ describe('WebTab', () => {
     expect(mutateMock).toHaveBeenCalledWith({ webProvider: 'parallel' })
   })
 
+  it('selects You.com without a Gamut account and shows an optional key field', async () => {
+    setup({ webProvider: 'youcom', webProviderIsDefault: false, connected: false })
+    render(<WebTab />)
+    const card = screen.getByRole('radio', { name: /You\.com/i })
+    expect(card).toBeChecked()
+    expect(screen.getByTestId('api-key-input')).toBeInTheDocument()
+    await userEvent.click(card)
+    expect(mutateMock).toHaveBeenCalledWith({ webProvider: 'youcom' })
+  })
+
   it('marks "(default)" on the selected card only when isDefault', () => {
     setup({ webProvider: 'platform', webProviderIsDefault: true, connected: true })
     const { unmount } = render(<WebTab />)
