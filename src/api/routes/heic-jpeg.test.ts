@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
-import { heicUploadAsJpeg, setImageConverter } from './heic-jpeg'
+import { imageService, setImageService } from '@shared/lib/images/image-service'
+import { heicUploadAsJpeg } from './heic-jpeg'
 
 const TINY_HEIC = readFileSync(new URL('../../../e2e/fixtures/tiny.heic', import.meta.url))
 
@@ -24,12 +25,13 @@ describe('heicUploadAsJpeg', () => {
     await expect(heicUploadAsJpeg(name, source)).resolves.toBeUndefined()
   })
 
-  describe('with a deployment converter', () => {
-    afterEach(() => setImageConverter(null))
+  describe('with a deployment image service', () => {
+    afterEach(() => setImageService(null))
 
-    it('converts through the converter set at boot instead of the worker thread', async () => {
+    it('converts through the service set at boot instead of the worker thread', async () => {
       const received: Uint8Array[] = []
-      setImageConverter({
+      setImageService({
+        ...imageService(),
         heicToJpeg: async (input) => {
           received.push(input)
           return new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
@@ -45,8 +47,8 @@ describe('heicUploadAsJpeg', () => {
       expect(Buffer.from(received[0]).equals(TINY_HEIC)).toBe(true)
     })
 
-    it('keeps the original when the converter fails', async () => {
-      setImageConverter({ heicToJpeg: async () => { throw new Error('Unsupported image') } })
+    it('keeps the original when the service fails', async () => {
+      setImageService({ ...imageService(), heicToJpeg: async () => { throw new Error('Unsupported image') } })
       await expect(heicUploadAsJpeg('IMG_0003.heic', TINY_HEIC)).resolves.toBeUndefined()
     })
   })

@@ -19,6 +19,7 @@ vi.mock('../db', () => ({
   },
 }))
 
+import { imageService, setImageService } from '../images/image-service'
 import { setAvatar } from './profile-avatar-service'
 
 const { user } = schema
@@ -53,6 +54,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setImageService(null)
   vi.unstubAllEnvs()
   testSqlite.close()
   fs.rmSync(dataDir, { recursive: true, force: true })
@@ -88,5 +90,14 @@ describe('setAvatar', () => {
     expect(storedFiles()).toEqual([fileOf(override())])
     expect([a, b]).toContain(override())
     expect(storedFiles()).not.toContain(fileOf(before))
+  })
+
+  it('stores the PNG the image service returns', async () => {
+    const cleaned = png(30)
+    setImageService({ ...imageService(), cleanPng: async () => cleaned })
+
+    const reference = await setAvatar(USER, png(10))
+
+    expect(fs.readFileSync(path.join(dataDir, 'profile-photos', fileOf(reference))).equals(cleaned)).toBe(true)
   })
 })

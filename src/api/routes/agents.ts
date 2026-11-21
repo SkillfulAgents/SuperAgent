@@ -92,7 +92,8 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
-import { HEIC_EXTENSIONS, heicToJpeg, heicUploadAsJpeg } from './heic-jpeg'
+import { HEIC_EXTENSIONS, heicUploadAsJpeg } from './heic-jpeg'
+import { imageService } from '@shared/lib/images/image-service'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
@@ -7372,7 +7373,7 @@ async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: 
   const cached = cachedHeicPreview(key)
   if (cached) return cached
 
-  const preview = await heicToJpeg(input)
+  const preview = await imageService().heicToJpeg(input)
   cacheHeicPreview(key, preview)
   return preview
 }
