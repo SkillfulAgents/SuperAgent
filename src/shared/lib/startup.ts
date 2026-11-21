@@ -185,14 +185,16 @@ export function registerBackgroundWork(options: BackgroundWorkOptions = {}): voi
 
 export interface BackgroundWorkOptions {
   /**
-   * False when this process watches no containers, because each agent's container is watched
-   * where that agent runs: the container-host and container-image services are not registered,
-   * and runtime readiness comes from the runners' setup (`ContainerHost.deriveReadiness`).
+   * False when this process is not on the machine where the containers run, so it has no
+   * containers to find at startup and no image to check: the container-host and
+   * container-image services are not registered, and runtime readiness comes from the
+   * runners' setup (`ContainerHost.deriveReadiness`). Each agent's actor still watches its
+   * own container, where that agent runs.
    */
   localContainers?: boolean
 }
 
-/** The services that watch this process's containers: the initial agent sync, status sync, health monitor and image check. */
+/** The services about this machine's containers: the startup read of which ones still run, and the image check. */
 const LOCAL_CONTAINER_SERVICES = new Set(['container-host', 'container-image'])
 
 /** Idempotent. Called via afterBindInitialize, or by a process that only runs the services. */

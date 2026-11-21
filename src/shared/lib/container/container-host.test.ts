@@ -25,6 +25,7 @@ const FUSE_FLAGS = '--device /dev/fuse --cap-add SYS_ADMIN'
 const mockVolumeRunFlags = vi.fn((): string | null => FUSE_FLAGS)
 const mockHealth = vi.fn()
 const mockVolumeStop = vi.fn(async () => Response.json({ drained: true, recovered: 0, recoveryErrors: 0 }))
+const mockReportsExits = vi.fn(() => false)
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -41,6 +42,9 @@ vi.mock('./client-factory', () => ({
     getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
     health: (port?: number) => mockHealth(port),
     volumeRunFlags: () => mockVolumeRunFlags(),
+    get reportsExits() {
+      return mockReportsExits()
+    },
   }),
   getContainerClientClass: (runner: string) => mockGetContainerClientClass(runner),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
@@ -679,6 +683,22 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
       expect(watch.isWatching()).toBe(false)
     } finally {
       watch.stop()
+      containerHost.attachAgentContainerWatches(null)
+    }
+  })
+
+  it('watches nothing when the runner hears the container exit itself', async () => {
+    mockReportsExits.mockReturnValue(true)
+    const runtime = containerHost.runtime('test-agent')
+    const watch = new ContainerWatch('test-agent', { checkHealth: async () => {}, checkStatus: async () => {} })
+    containerHost.attachAgentContainerWatches({ get: () => watch, peek: () => watch })
+
+    try {
+      await runtime.ensureRunning()
+      expect(runtime.getCachedInfo().status).toBe('running')
+      expect(watch.isWatching()).toBe(false)
+    } finally {
+      mockReportsExits.mockReturnValue(false)
       containerHost.attachAgentContainerWatches(null)
     }
   })

@@ -394,7 +394,7 @@ export class ContainerHost {
     return this._readiness
   }
 
-  /** Called by a process that runs no readiness check, because each agent's container is watched where that agent runs. */
+  /** Called by a process that runs no readiness check, because it is not on the machine where the containers run. */
   deriveReadiness(): void {
     this.readinessDerived = true
   }
