@@ -39,6 +39,16 @@ function containers(): CloudflareContainers {
   return installed
 }
 
+/**
+ * Opens a WebSocket to an agent's container at `target` (see `AgentContainer.webSocketTarget`) through
+ * the installed containers. The Worker build's `ws` makes its upgrade request with the `fetch` it is given
+ * (src/cf/build/shims/ws.ts).
+ */
+export function openContainerWebSocket(target: { url: string; protocols?: string | string[]; headers: Record<string, string> }): WebSocket {
+  const options = { headers: target.headers, fetch: (url: string, init: RequestInit) => containers().fetch(url, init) }
+  return new WebSocket(target.url, target.protocols, options as WebSocket.ClientOptions)
+}
+
 export class CloudflareContainerRuntimeClient extends BaseContainerClient {
   static readonly runnerName = 'cloudflare-container'
   static readonly requiresLocalImage = false
@@ -81,10 +91,8 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
     return containers().fetch(url, init)
   }
 
-  // The Worker build's `ws` makes its upgrade request with the `fetch` it is given (src/cf/build/shims/ws.ts).
   protected override openWebSocket(url: string, headers: Record<string, string>): WebSocket {
-    const options = { headers, fetch: (target: string, init: RequestInit) => containers().fetch(target, init) }
-    return new WebSocket(url, options as WebSocket.ClientOptions)
+    return openContainerWebSocket({ url, headers })
   }
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
