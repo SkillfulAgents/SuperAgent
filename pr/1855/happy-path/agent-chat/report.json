@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Opened agent QA-20261120-215821-f42s, confirmed it was idle, sent \"Hello! What is 2+2?\", and verified the reply contains \"4\".",
+  "reason": "Sent \"Hello! What is 2+2?\" to agent QA-20261121-010158-k5rv via the Playwright browser and confirmed the reply contains \"4\".",
   "steps": [
-    "1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261120-215822-6jmg and QA-20261120-215821-f42s.",
-    "2. Clicked the QA-20261120-215821-f42s agent in the sidebar — its agent page opened at /agents/qa-20261120-215821-f42s-1s0x48ergj (screenshot step1-navigate.png).",
-    "3. Verified status — the header and sidebar both show \"idle\", which satisfies the running-or-idle requirement.",
-    "4. Typed \"Hello! What is 2+2?\" into the message box and clicked Send — the app opened a new session (Basic Arithmetic Greeting) and the message appeared in the chat (screenshot step4-message-sent.png).",
-    "5. Waited for a response — the reply \"2 + 2 = 4.\" was already rendered on the first check after sending, so no wait was needed.",
-    "6. Verified the response mentions \"4\" — it reads \"2 + 2 = 4.\" The screenshot step4-message-sent.png shows the user message and the reply."
+    "Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-010159-pm9a and QA-20261121-010158-k5rv.",
+    "Step 2: Clicked QA-20261121-010158-k5rv in the sidebar — its agent page opened at /agents/qa-20261121-010158-k5rv-pcgiqhthlv.",
+    "Step 3: Checked the agent status — the status indicator in the header reads \"idle\", which is an accepted state. Screenshot taken.",
+    "Step 4: Typed \"Hello! What is 2+2?\" in the message box and clicked Send — a new session \"Simple Arithmetic Question Check\" opened and the message appeared in the list, with the activity indicator showing \"Working...\".",
+    "Step 5: Waited up to 3 minutes for the response — the \"Working...\" indicator cleared within that window and the status returned to \"idle\".",
+    "Step 6: The assistant replied \"Hello! 2 + 2 = 4.\" — it contains \"4\", so the check passes. Screenshot taken."
   ],
   "bugs": [],
-  "durationMs": 33879,
-  "sessionId": "613362cd-317d-4ef3-8b1e-e55b87b907e9",
+  "durationMs": 73079,
+  "sessionId": "4bc21e88-4ec4-4c92-874f-bb6838cd002c",
   "cost": {
-    "inputTokens": 7690,
-    "outputTokens": 4682,
-    "cacheCreationTokens": 49268,
-    "cacheReadTokens": 490883,
+    "inputTokens": 8045,
+    "outputTokens": 5122,
+    "cacheCreationTokens": 145391,
+    "cacheReadTokens": 670518,
     "model": "claude-haiku-5-5",
-    "totalCostUsd": 0.141773
+    "totalCostUsd": 0.282446
   }
 }
