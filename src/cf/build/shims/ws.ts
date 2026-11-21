@@ -7,8 +7,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Buffer } from 'node:buffer'
 import type { WorkerWebSocket } from 'cloudflare:workers'
+import type { WebSocket as NodeWebSocket } from 'ws'
 
 type Listener = (...args: any[]) => void
+/** Passed in place of a URL: the socket was accepted here, there is nothing to connect to. */
+const ACCEPTED = Symbol('accepted')
 /** `fetch` makes the upgrade request; the global one unless the caller reaches the server another way. */
 type ClientOptions = { headers?: Record<string, string>; fetch?: (url: string, init: RequestInit) => Promise<Response> }
 
@@ -33,7 +36,8 @@ export class WebSocket {
   // socket was made in, as with ws on Node: an agent's object keeps knowing it serves itself.
   private readonly inCreatorContext = AsyncLocalStorage.snapshot()
 
-  constructor(url: string | URL, protocols?: string | string[] | ClientOptions, options?: ClientOptions) {
+  constructor(url: string | URL | typeof ACCEPTED, protocols?: string | string[] | ClientOptions, options?: ClientOptions) {
+    if (url === ACCEPTED) return
     const named = typeof protocols === 'string' || Array.isArray(protocols) ? protocols : undefined
     // ws takes (url, options) or (url, protocols, options); protocols may be passed as undefined.
     const given = named || protocols === undefined ? options : (protocols as ClientOptions)
@@ -44,7 +48,9 @@ export class WebSocket {
     try {
       const requestHeaders = new Headers(headers)
       requestHeaders.set('Upgrade', 'websocket')
-      if (protocols) requestHeaders.set('Sec-WebSocket-Protocol', [protocols].flat().join(', '))
+      // As ws: an empty list offers none, rather than an empty header the server refuses.
+      const offered = [protocols ?? []].flat()
+      if (offered.length) requestHeaders.set('Sec-WebSocket-Protocol', offered.join(', '))
       const response = await upgrade(url.replace(/^ws/, 'http'), { headers: requestHeaders })
       const socket = (response as Response & { webSocket?: WorkerWebSocket | null }).webSocket
       if (!socket) throw new Error(`WebSocket upgrade refused with status ${response.status}`)
@@ -55,6 +61,15 @@ export class WebSocket {
       this.failed(error)
       this.closed(1006, '')
     }
+  }
+
+  /** The server end of a WebSocketPair this Worker accepts, in ws's shape, as a ws server hands out an upgraded socket on Node. */
+  static accepted(socket: WorkerWebSocket): NodeWebSocket {
+    const ws = new WebSocket(ACCEPTED)
+    socket.accept()
+    ws.attach(socket)
+    // This class is what `ws` is in the Worker build.
+    return ws as unknown as NodeWebSocket
   }
 
   private attach(socket: WorkerWebSocket): void {

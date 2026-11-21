@@ -87,4 +87,31 @@ describe('ws shim', () => {
     await Promise.resolve()
     expect(pongs).toBe(1)
   })
+
+  it('wraps a socket the Worker accepted, with no upgrade request', async () => {
+    const global = vi.fn(); vi.stubGlobal('fetch', global)
+    const { socket, deliver } = fakeSocket()
+    const sent: unknown[] = []
+    ;(socket as unknown as { send: (data: unknown) => void }).send = (data) => sent.push(data)
+    const ws = WebSocket.accepted(socket)
+    const messages: Array<[string, boolean]> = []
+    ws.on('message', (data, isBinary) => messages.push([String(data), isBinary]))
+
+    deliver('message', { data: '{"type":"viewport","width":800}' })
+    ws.send(Buffer.from('frame'), { binary: true })
+
+    expect(ws.readyState).toBe(WebSocket.OPEN)
+    expect(messages).toEqual([['{"type":"viewport","width":800}', false]])
+    expect(sent).toHaveLength(1)
+    expect(global).not.toHaveBeenCalled()
+  })
+
+  it('offers no subprotocol header for an empty list, as ws does', async () => {
+    const { socket } = fakeSocket()
+    const upgrade = vi.fn(async (_url: string, _init: RequestInit) => ({ status: 101, headers: new Headers(), webSocket: socket }) as unknown as Response)
+    const ws = new WebSocket('ws://container/artifacts/app/', [], { headers: {}, fetch: upgrade })
+    await new Promise<void>((resolve) => ws.on('open', () => resolve()))
+
+    expect(new Headers(upgrade.mock.calls[0][1].headers).has('Sec-WebSocket-Protocol')).toBe(false)
+  })
 })
