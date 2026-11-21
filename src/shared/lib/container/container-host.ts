@@ -1,8 +1,9 @@
 /**
  * The container host: what is not per-agent about running containers on this
- * machine. Runtime readiness and image pulls, the status-sync and
- * health-monitor loops, start-all and stop-all, shutdown, and the fallout of a
- * force-stop that kills the shared VM.
+ * machine. Runtime readiness and image pulls, the status read at startup of
+ * the containers still running from before, start-all and stop-all, shutdown,
+ * and the fallout of a force-stop that kills the shared VM. Each agent's actor
+ * watches its own container (`ContainerWatch`).
  *
  * It owns one `ContainerRuntime` per agent; the agent actor reaches its
  * agent's runtime through `runtime(slug)`. Only the actor package imports
@@ -39,40 +40,15 @@ import pLimit from 'p-limit'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { PassTask, taskManager } from '@shared/lib/background-work'
 import type { AgentIdleAlarms } from './idle-alarm'
+import type { AgentContainerWatches } from './container-watch'
 
-/** Interval for syncing container status with reality (in ms). Default: 300 seconds */
-const STATUS_SYNC_INTERVAL_MS = parseInt(
-  process.env.CONTAINER_STATUS_SYNC_INTERVAL_SECONDS || '300',
-  10
-) * 1000
-
-/** Interval for health monitoring (in ms). Default: 30 seconds */
-const HEALTH_CHECK_INTERVAL_MS = parseInt(
-  process.env.CONTAINER_HEALTH_CHECK_INTERVAL_SECONDS || '30',
-  10
-) * 1000
-
-/** Agents the status sync reads at once, one runner call each: enough to overlap them without crowding the VM. */
+/** Agents the startup status read reads at once, one runner call each: enough to overlap them without crowding the VM. */
 const STATUS_SYNC_CONCURRENCY = 4
 
 export class ContainerHost {
   private runtimes: Map<string, ContainerRuntime> = new Map()
-  private statusSyncScheduled = false
   private isSyncing = false
-  private healthMonitorScheduled = false
-  private readonly statusSyncTask = new PassTask('container-host.status-sync', () => this.syncAllStatuses().catch((error) => {
-    console.error('[ContainerHost] Periodic sync failed:', error)
-  }))
-  // Not waited for, so a pass does not count as running until it settles: a
-  // runtime that hangs on one agent holds up that pass, never the later ones.
-  private readonly healthCheckTask = new PassTask('container-host.health-check', async () => {
-    background(this.runHealthChecks().catch((error) => {
-      console.error('[ContainerHost] Health check failed:', error)
-    }), { name: 'container-host.run-health-checks' })
-  })
-  readonly tasks = [this.statusSyncTask, this.healthCheckTask]
 
   /** The agents' workspaces, attached by the agent registry when it is created. */
   private agentWorkspaces: AgentWorkspaceAccess | null = null
@@ -110,6 +86,18 @@ export class ContainerHost {
     this.agentIdleAlarms = access
   }
 
+  /** The agents' container watches, attached by the agent registry when it is created. */
+  private agentContainerWatches: AgentContainerWatches | null = null
+
+  /**
+   * Give runtimes the way to their agents' container watches, which the
+   * actors own. Called once by the agent registry; before that (only in a
+   * test without a registry) no container is watched.
+   */
+  attachAgentContainerWatches(access: AgentContainerWatches | null): void {
+    this.agentContainerWatches = access
+  }
+
   /** The auto-sleep timeout in the settings, in ms; zero or less disables. */
   async autoSleepTimeoutMs(): Promise<number> {
     return autoSleepTimeoutMsFrom(await getSettings())
@@ -139,6 +127,9 @@ export class ContainerHost {
       },
       get agentIdleAlarms() {
         return self.agentIdleAlarms
+      },
+      get agentContainerWatches() {
+        return self.agentContainerWatches
       },
       afterForceStop: (slug: string) => self.afterForceStop(slug),
     }
@@ -274,8 +265,8 @@ export class ContainerHost {
   }
 
   /**
-   * Sync every known agent's status with reality.
-   * Called on startup and periodically.
+   * Sync every known agent's status with reality. Called at startup; from
+   * then on each agent's actor watches its own container.
    *
    * One settings read for the sweep, however many agents (`settings`, when
    * the caller read them for the same operation): each runtime asks the
@@ -324,74 +315,6 @@ export class ContainerHost {
     }
   }
 
-  /**
-   * Start the periodic status sync.
-   * Note: Does not do an initial sync - call initializeAgents() first for that.
-   */
-  startStatusSync(): void {
-    if (this.statusSyncScheduled) {
-      return // Already running
-    }
-    this.statusSyncScheduled = true
-
-    console.log(`[ContainerHost] Starting status sync (interval: ${STATUS_SYNC_INTERVAL_MS / 1000}s)`)
-
-    // Set up periodic sync (initial sync is done by initializeAgents)
-    background(taskManager().ensureEvery(this.statusSyncTask.type, this.statusSyncTask.spec, { intervalMs: STATUS_SYNC_INTERVAL_MS }), { name: 'container-host.schedule-status-sync' })
-  }
-
-  /**
-   * Stop the periodic status sync.
-   */
-  stopStatusSync(): void {
-    if (this.statusSyncScheduled) {
-      this.statusSyncScheduled = false
-      background(taskManager().cancel(this.statusSyncTask.type), { name: 'container-host.cancel-status-sync' })
-      console.log('[ContainerHost] Stopped status sync')
-    }
-  }
-
-  /**
-   * Start periodic health monitoring for running containers.
-   */
-  startHealthMonitor(): void {
-    if (this.healthMonitorScheduled) {
-      return // Already running
-    }
-    this.healthMonitorScheduled = true
-
-    console.log(`[ContainerHost] Starting health monitor (interval: ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`)
-
-    background(taskManager().ensureEvery(this.healthCheckTask.type, this.healthCheckTask.spec, { intervalMs: HEALTH_CHECK_INTERVAL_MS }), { name: 'container-host.schedule-health-monitor' })
-  }
-
-  /**
-   * Stop the periodic health monitor.
-   */
-  stopHealthMonitor(): void {
-    if (this.healthMonitorScheduled) {
-      this.healthMonitorScheduled = false
-      background(taskManager().cancel(this.healthCheckTask.type), { name: 'container-host.cancel-health-monitor' })
-      console.log('[ContainerHost] Stopped health monitor')
-    }
-  }
-
-  /**
-   * Run health checks on all running containers.
-   */
-  private async runHealthChecks(): Promise<void> {
-    const runningIds = this.getRunningAgentIds()
-    if (runningIds.length === 0) return
-
-    for (const slug of runningIds) {
-      try {
-        await this.runtime(slug).runHealthCheck()
-      } catch (error) {
-        console.error(`[ContainerHost] Health check failed for ${slug}:`, error)
-      }
-    }
-  }
-
   // Stop all containers (with per-container timeout to prevent blocking shutdown)
   async stopAll(): Promise<void> {
     // Only stop containers that are actually running (based on cached status)
@@ -420,8 +343,6 @@ export class ContainerHost {
 
   // Synchronous stop - used for exit handlers where async isn't available
   stopAllSync(): void {
-    this.stopStatusSync() // Stop the sync interval
-    this.stopHealthMonitor() // Stop the health monitor
     for (const runtime of this.runtimes.values()) {
       runtime.stopSync()
     }

@@ -113,7 +113,7 @@ A service needs no `stop()` just to clear a timer, since the manager owns those.
 | Service | Scheduled work | Starts |
 | -- | -- | -- |
 | `webhook-relay` | Tick (30 s while online), each consumer's retry, the ack retry | eager, critical |
-| `container-host` | Status sync (300 s), health check (30 s). Initializes the agents and watches the relay | eager, critical |
+| `container-host` | None: reads which containers still run from before this launch, and watches the relay | eager, critical |
 | `platform-notifications` | JWT refresh or reconnect (50 min) | background, startup slot |
 | `agent-integrations` | Health check (5 min), a chat's stream restore (30 s after a failure), the delivery pump's wakeups | background, startup slot |
 | `container-image` | None: pulls or checks the image | background, startup slot |
@@ -134,7 +134,9 @@ The stale-upload sweep (`src/shared/lib/utils/chunked-upload.ts`) is a task with
 
 A local agent's session index stores its recorded activity on a `session-index.store-activity` wakeup (`src/shared/lib/agent-actor/session-activity-wakeup.ts`), also a task with no service: it registers itself the first time an index sets one, and is set 5 s after a write the index has not stored. It asks `taskManager().accepts()` first: once dispatch has stopped the wakeup would be taken and dropped, so the index stores the write itself. See [session-index.md](session-index.md#last-activity).
 
-**A pass that must not count as running.** The integration and container health checks start their work and return, rather than being awaited. A connect that hangs holds up only its own integration (`reconcilingIds`), and a runtime that hangs on one agent holds up only that pass; if the manager saw a pass as running, it would skip all the later ones. Reach for this only when later passes are safe to run alongside a stuck one.
+Each agent's actor watches its own container (`src/shared/lib/container/container-watch.ts`), with two tasks that have no service, one recurring job of each per agent. `container-watch.status` (300 s) runs from the time the container runtime has a client until the runtime is dropped, so a container that a failed read showed as stopped is read again. `container-watch.health` (30 s) runs while the runtime sees the container running. They register themselves the first time a watch starts. A check that hangs holds up only its own agent's passes.
+
+**A pass that must not count as running.** The integration health check starts its work and returns, rather than being awaited. A connect that hangs holds up only its own integration (`reconcilingIds`); if the manager saw a pass as running, it would skip all the later ones. Reach for this only when later passes are safe to run alongside a stuck one.
 
 **Left where they are.** Browser profile maintenance is going away and is not migrated. An agent's auto-sleep is its `IdleAlarm`. Transport heartbeats, request-local timeouts, typing indicators and renderer timers are not background jobs. Neither is the wait between the follow-up passes of a reconnect after system resume (`reconnectAll`), which is one pass in progress.
 

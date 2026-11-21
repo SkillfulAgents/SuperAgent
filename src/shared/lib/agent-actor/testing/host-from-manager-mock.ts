@@ -68,10 +68,6 @@ const HOST_METHODS = [
   'ensureImageReady',
   'initializeAgents',
   'syncAllStatuses',
-  'startStatusSync',
-  'stopStatusSync',
-  'startHealthMonitor',
-  'stopHealthMonitor',
   'stopAll',
   'stopAllSync',
   'workspaceHostPath',
@@ -144,6 +140,7 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
   if (typeof host.attachAgentWorkspaces !== 'function') host.attachAgentWorkspaces = () => {}
   if (typeof host.attachAgentSessions !== 'function') host.attachAgentSessions = () => {}
   if (typeof host.attachAgentIdleAlarms !== 'function') host.attachAgentIdleAlarms = () => {}
+  if (typeof host.attachAgentContainerWatches !== 'function') host.attachAgentContainerWatches = () => {}
   // `onBeforeContainerStop` is a property the app assigns; share it with the mock.
   Object.defineProperty(host, 'onBeforeContainerStop', {
     get: () => manager.onBeforeContainerStop,
