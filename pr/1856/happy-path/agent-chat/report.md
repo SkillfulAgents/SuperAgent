@@ -1,10 +1,8 @@
 [TEST_PASS]
-[REASON] Sent "Hello! What is 2+2?" to agent QA-20261121-011718-f8fw in the Gamut web UI and confirmed the reply contains "4".
-[STEP] 1. Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-011718-f8fw under "Your Agents".
-[STEP] 2. Clicked QA-20261121-011718-f8fw in the sidebar — the agent page opened at /agents/qa-20261121-011718-f8fw-0mr18wqal0.
-[STEP] 3. Checked the agent status — the header shows "idle", which satisfies the "running or idle" requirement.
-[STEP] 4. Typed "Hello! What is 2+2?" into the message box and clicked Send — a new session "Simple Arithmetic Question" opened and the message appeared in the chat.
-[STEP] 5. Waited up to 3 minutes for a response — the indicator went from "Working..." to idle and the reply finished within the wait.
-[STEP] 6. Verified the response — the assistant replied "2 + 2 = 4.", which contains "4". Screenshot taken (step6-response-verified.png).
-
-No bugs found. One note: during streaming the assistant's first text was briefly just "2" before the full "2 + 2 = 4." appeared. This looks like normal streaming and not a defect, and it does not affect the result.
+[REASON] Opened the QA-20261121-022246-hehx agent, confirmed it was idle, sent "Hello! What is 2+2?", and verified the reply contains 4.
+[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing both agents.
+[STEP] Step 2: Clicked "QA-20261121-022246-hehx" in the sidebar — the agent page opened at /agents/qa-20261121-022246-hehx-nwzcax02z9.
+[STEP] Step 3: Checked agent status — the header shows "idle" and the sidebar shows "Idle", so the status check passed.
+[STEP] Step 4: Typed "Hello! What is 2+2?" in the composer and clicked the send button — the message was sent and the view switched to a new session titled "Basic Arithmetic Greeting Check".
+[STEP] Step 5: Waited for a response — the reply "2 + 2 = 4." was already on screen when I checked, and the header returned to "idle", so no extra wait was needed.
+[STEP] Step 6: Verified the response mentions 4 — "2 + 2 = 4." is shown in the message list. Screenshot taken (step4-sent.png).

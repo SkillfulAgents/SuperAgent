@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Sent a page-title request to the QA agent and verified the agent's reply reports \"Example Domain\".",
+  "reason": "Ran the browser-use flow on agent QA-20261121-022247-nm6y: sent the example.com page-title request and checked the reply for \"Example Domain\".",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing \"QA-20261121-011719-po3e\" and \"QA-20261121-011718-f8fw\". Screenshot not taken for this step (snapshot only).",
-    "Step 2: Clicked \"QA-20261121-011719-po3e\" in the sidebar — the agent page opened at /agents/qa-20261121-011719-po3e-xufjb3w31t showing an empty message input with status \"idle\".",
-    "Step 3: Typed \"Open a browser and go to https://example.com. Tell me the page title.\" into the message box and sent it with Meta+Enter — the message appeared in the new session \"Check Example.com Page Title\" and the input became disabled while the agent worked.",
-    "Step 4: Waited up to 3 minutes for a response — the \"Example Domain\" text became visible in about 6 seconds (\"Worked for 6s · 3 tool calls · 163,077 tokens\").",
-    "Step 5: Verified the response reads 'The page title is \"Example Domain\". The page loaded fine and I've closed the browser.' — screenshot saved as step5-response.png."
+    "Step 1: Navigated to http://localhost:47891. The Gamut app loaded with the \"Your Agents\" sidebar listing QA-20261121-022247-nm6y and QA-20261121-022246-hehx.",
+    "Step 2: Clicked QA-20261121-022247-nm6y in the sidebar. The agent page opened at /agents/qa-20261121-022247-nm6y-rysncx9l8r, showing an empty message input and status \"idle\". Screenshot saved as step2-agent-opened.png.",
+    "Step 3: Typed \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input and clicked Send. A new session opened (titled \"Check Example.com Page Title\") and the status changed to \"working\". Screenshot saved as step3-message-typed.png was taken before sending.",
+    "Step 4: Waited for the response. \"Example Domain\" appeared in the chat within the 3-minute window. The turn showed \"Worked for 6s · 3 tool calls · 163,069 tokens\", and the status returned to \"idle\".",
+    "Step 5: The agent's reply reads: 'The page title is \"Example Domain\". I've closed the browser.' This matches the expected text. Screenshot saved as step5-response-verified.png."
   ],
   "bugs": [],
-  "durationMs": 41690,
-  "sessionId": "969b2685-a0d1-45a0-b3ae-07e665320f26",
+  "durationMs": 77843,
+  "sessionId": "31092529-905f-492e-a4ba-2d12027cc766",
   "cost": {
-    "inputTokens": 7622,
-    "outputTokens": 3917,
-    "cacheCreationTokens": 51685,
-    "cacheReadTokens": 515761,
+    "inputTokens": 8299,
+    "outputTokens": 5673,
+    "cacheCreationTokens": 75914,
+    "cacheReadTokens": 757523,
     "model": "claude-haiku-5-5",
-    "totalCostUsd": 0.143389
+    "totalCostUsd": 0.207309
   }
 }
