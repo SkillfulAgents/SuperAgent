@@ -96,6 +96,14 @@ declare module 'cloudflare:workers' {
     list(options?: { prefix?: string; cursor?: string }): Promise<R2Objects>
   }
 
+  export interface ImagesBinding {
+    input(stream: ReadableStream<Uint8Array>): ImageTransformer
+  }
+
+  export interface ImageTransformer {
+    output(options: { format: 'image/jpeg' | 'image/png'; quality?: number }): Promise<{ response(): Response }>
+  }
+
   export abstract class DurableObject<Env = unknown> {
     protected readonly ctx: DurableObjectState
     protected readonly env: Env

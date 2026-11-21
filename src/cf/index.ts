@@ -4,7 +4,7 @@
  * loads on the first API request (boot.ts): evaluating it while the Worker starts goes over the
  * startup CPU limit.
  */
-import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher, R2Bucket } from 'cloudflare:workers'
+import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher, ImagesBinding, R2Bucket } from 'cloudflare:workers'
 import { captureException, flushErrorReporting } from '@shared/lib/error-reporting'
 import { declareServerCapabilities, getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import type { AppStateDurableObject } from './objects/cloudflare-app-state'
@@ -25,6 +25,8 @@ export interface Env {
   TASK_MANAGER: DurableObjectNamespace<TaskManagerDurableObject>
   /** The org's host files: blobs (profile photos, model icons, skillset caches) and the bytes of uploads in progress. */
   HOST_FILES: R2Bucket
+  /** Cloudflare Images: HEIC photos to JPEG and profile photos (cloudflare-image-service.ts). */
+  IMAGES: ImagesBinding
   /** The built UI. */
   ASSETS: Fetcher
   /** The Browser Vault key, 32 bytes in base64: a Worker secret (cloudflare-key-manager.ts). */

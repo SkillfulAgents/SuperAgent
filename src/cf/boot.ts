@@ -13,6 +13,7 @@ import { migrationBundle } from '@shared/lib/db/migrations/bundle'
 import { runDataMigrations } from '@shared/lib/db/data-migrations'
 import { initializeAppState, isAppStateInitialized } from '@shared/lib/app-state'
 import { setBlobStore } from '@shared/lib/blob-store/blob-store'
+import { setImageService } from '@shared/lib/images/image-service'
 import { setUploadByteStore } from '@shared/lib/utils/chunked-upload-bytes'
 import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
@@ -24,6 +25,7 @@ import { getErrorReporter, initErrorReporting } from '@shared/lib/error-reportin
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './objects/cloudflare-app-state'
 import { CloudflareBlobStore, CloudflareUploadByteStore } from './cloudflare-host-files'
+import { CloudflareImageService } from './cloudflare-image-service'
 import { createCloudflareErrorReporter } from './lib/cloudflare-error-reporting'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './objects/cloudflare-task-manager'
@@ -123,6 +125,7 @@ async function start(env: Env): Promise<void> {
   // A Worker's disk does not outlive a request: blobs and the bytes of uploads in progress live in R2.
   setBlobStore(new CloudflareBlobStore(env.HOST_FILES))
   setUploadByteStore(new CloudflareUploadByteStore(env.HOST_FILES))
+  setImageService(new CloudflareImageService(env.IMAGES))
   // The deploy step migrated the database (prepareDeploy); a boot neither migrates nor checks it.
   await openDatabase({ driver: d1(env.DB), migrate: false })
   // A boot retried after a later step failed finds AppState installed.

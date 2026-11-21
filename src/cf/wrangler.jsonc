@@ -46,6 +46,8 @@
   // No id and no bucket name: the first `wrangler deploy` creates them (wrangler 4.45 or later) and writes them back here.
   "d1_databases": [{ "binding": "DB" }],
   "r2_buckets": [{ "binding": "HOST_FILES" }],
+  // HEIC photos to JPEG and profile photos (cloudflare-image-service.ts).
+  "images": { "binding": "IMAGES" },
   "durable_objects": {
     "bindings": [
       { "name": "APP_STATE", "class_name": "AppStateDurableObject" },
