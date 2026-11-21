@@ -19,7 +19,7 @@ function heicPreviewWorkerUrl(): URL {
   }
 }
 
-export function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
+function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
   return new Promise((resolve, reject) => {
     const inputBuffer = input.buffer as ArrayBuffer
     const worker = new Worker(heicPreviewWorkerUrl(), {
@@ -69,10 +69,34 @@ export function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array<Arra
   })
 }
 
-export function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
+function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
   const queued = heicPreviewQueue.then(task)
   heicPreviewQueue = queued.then(() => undefined, () => undefined)
   return queued
+}
+
+/**
+ * Turns a HEIC or HEIF file into JPEG bytes. Desktop and the Node host decode it in a worker
+ * thread. A deployment that cannot start worker threads passes its own converter to
+ * `setImageConverter` at boot.
+ */
+export interface ImageConverter {
+  /** The first image of `input` as a JPEG. It takes `input`, so the caller must not use it afterwards. */
+  heicToJpeg(input: Uint8Array): Promise<Uint8Array<ArrayBuffer>>
+}
+
+const workerThreadConverter: ImageConverter = {
+  heicToJpeg: (input) => queueHeicPreview(() => runHeicPreviewWorker(input)),
+}
+let currentConverter: ImageConverter = workerThreadConverter
+
+/** Set once at boot by a deployment with its own converter. A test passes null to go back to the worker thread. */
+export function setImageConverter(converter: ImageConverter | null): void {
+  currentConverter = converter ?? workerThreadConverter
+}
+
+export function heicToJpeg(input: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
+  return currentConverter.heicToJpeg(input)
 }
 
 /** The agent's Read opens JPEG but not HEIC, so a HEIC someone sends is saved as a JPEG. */
@@ -81,11 +105,9 @@ export async function heicUploadAsJpeg(name: string, source: Blob | Uint8Array):
   const size = source instanceof Uint8Array ? source.byteLength : source.size
   if (!HEIC_EXTENSIONS.has(extension.toLowerCase()) || size > HEIC_PREVIEW_MAX_SOURCE_BYTES) return undefined
   try {
-    const data = await queueHeicPreview(async () => {
-      // The worker takes the buffer it is given, so it gets a copy and the caller keeps the original.
-      const input = new Uint8Array(source instanceof Uint8Array ? source : await source.arrayBuffer())
-      return runHeicPreviewWorker(input)
-    })
+    // The converter takes the buffer it is given, so it gets a copy and the caller keeps the original.
+    const input = new Uint8Array(source instanceof Uint8Array ? source : await source.arrayBuffer())
+    const data = await heicToJpeg(input)
     return { name: `${name.slice(0, -extension.length)}.jpg`, data }
   } catch (error) {
     captureException(error, { tags: { component: 'agents', operation: 'heic-upload-as-jpeg' } })

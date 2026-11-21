@@ -92,7 +92,7 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
-import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
+import { HEIC_EXTENSIONS, heicToJpeg, heicUploadAsJpeg } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
@@ -7342,41 +7342,39 @@ async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: 
     throw new Error('HEIC file exceeds the preview size limit')
   }
 
-  return queueHeicPreview(async () => {
-    const reader = (await actor.files.read(resolvedPath)).getReader()
-    const chunks: Uint8Array[] = []
-    let size = 0
-    let done = false
-    while (!done) {
-      const read = await reader.read()
-      if (read.done) {
-        done = true
-        continue
-      }
-      const value = read.value
-      size += value.byteLength
-      if (size > HEIC_PREVIEW_MAX_SOURCE_BYTES) {
-        await reader.cancel()
-        throw new Error('HEIC file exceeds the preview size limit')
-      }
-      chunks.push(value)
+  const reader = (await actor.files.read(resolvedPath)).getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  let done = false
+  while (!done) {
+    const read = await reader.read()
+    if (read.done) {
+      done = true
+      continue
     }
-
-    const input = new Uint8Array(size)
-    let offset = 0
-    for (const chunk of chunks) {
-      input.set(chunk, offset)
-      offset += chunk.byteLength
+    const value = read.value
+    size += value.byteLength
+    if (size > HEIC_PREVIEW_MAX_SOURCE_BYTES) {
+      await reader.cancel()
+      throw new Error('HEIC file exceeds the preview size limit')
     }
-    const digest = createHash('sha256').update(input).digest('base64url')
-    const key = `${actor.slug}\0${resolvedPath}\0${digest}`
-    const cached = cachedHeicPreview(key)
-    if (cached) return cached
+    chunks.push(value)
+  }
 
-    const preview = await runHeicPreviewWorker(input)
-    cacheHeicPreview(key, preview)
-    return preview
-  })
+  const input = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    input.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  const digest = createHash('sha256').update(input).digest('base64url')
+  const key = `${actor.slug}\0${resolvedPath}\0${digest}`
+  const cached = cachedHeicPreview(key)
+  if (cached) return cached
+
+  const preview = await heicToJpeg(input)
+  cacheHeicPreview(key, preview)
+  return preview
 }
 
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
