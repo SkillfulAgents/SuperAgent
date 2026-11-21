@@ -16,15 +16,19 @@ vi.mock('@shared/lib/agent-actor', () => ({
   agentCatalog: { resolve: deps.resolve },
   agentRegistry: { get: () => ({ container: { webSocketTarget: deps.webSocketTarget } }) },
 }))
-vi.mock('../cloudflare-container-control', () => ({ agentContainers: () => ({ fetch: deps.reach }) }))
+// The installed containers' reach, made through the Worker build's ws (the shim), as in the Worker.
+vi.mock('@shared/lib/container/cloudflare-container-runtime', async () => {
+  const { WebSocket } = await import('../build/shims/ws')
+  return {
+    openContainerWebSocket: (target: { url: string; protocols?: string[]; headers: Record<string, string> }) =>
+      new WebSocket(target.url, target.protocols, { headers: target.headers, fetch: deps.reach }),
+  }
+})
 vi.mock('../../main/agent-websocket-auth', () => ({
   authenticateAgentWebSocket: async (_request: unknown, _slug: string, role: string) => deps.roles.has(role),
 }))
 
 import { serveArtifactStream } from './artifact-stream'
-import type { Env } from '../index'
-
-const ENV = { AGENT: {} } as unknown as Env
 
 type Listener = (event: { data?: unknown; code?: number; reason?: string }) => void
 
@@ -74,11 +78,11 @@ describe('serveArtifactStream', () => {
     vi.stubGlobal('Response', class {
       constructor(_body: unknown, readonly init: { status: number; headers?: Record<string, string> }) {}
     })
-    return (await serveArtifactStream(upgrade(path, search), ENV)) as unknown as { init: { status: number; headers?: Record<string, string> } }
+    return (await serveArtifactStream(upgrade(path, search))) as unknown as { init: { status: number; headers?: Record<string, string> } }
   }
 
   it('refuses someone who may not view the agent, before it reaches the container', async () => {
-    const response = await serveArtifactStream(upgrade(), ENV)
+    const response = await serveArtifactStream(upgrade())
 
     expect(response.status).toBe(403)
     expect(deps.webSocketTarget).not.toHaveBeenCalled()
@@ -99,9 +103,9 @@ describe('serveArtifactStream', () => {
         'x-forwarded-for': '203.0.113.7',
       }),
     }))
-    expect(deps.reach).toHaveBeenCalledWith('http://agent-container.internal/sales-agent/artifacts/sales-board/', {
-      headers: { authorization: 'Bearer host-token', Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'vite-hmr' },
-    })
+    const [reached, init] = deps.reach.mock.calls[0] as [string, RequestInit]
+    expect(reached).toBe('http://agent-container.internal/sales-agent/artifacts/sales-board/')
+    expect(Object.fromEntries(new Headers(init.headers))).toEqual({ authorization: 'Bearer host-token', upgrade: 'websocket', 'sec-websocket-protocol': 'vite-hmr' })
   })
 
   it('passes messages both ways, and closes the browser side with the code the dashboard closed with', async () => {
@@ -117,9 +121,18 @@ describe('serveArtifactStream', () => {
     expect(server.closed).toEqual([[4001, 'server restarted']])
   })
 
+  it('answers 502 when the dashboard refuses its socket', async () => {
+    deps.roles.add('viewer')
+    deps.reach.mockImplementation(async () => ({ status: 404, webSocket: null, headers: new Headers() }))
+
+    const response = await serveArtifactStream(upgrade())
+
+    expect(response.status).toBe(502)
+  })
+
   it('answers 404 for a path that is not a dashboard', async () => {
     deps.roles.add('viewer')
-    const response = await serveArtifactStream(upgrade('/api/agents/sales-agent/artifacts/Not_A_Slug/'), ENV)
+    const response = await serveArtifactStream(upgrade('/api/agents/sales-agent/artifacts/Not_A_Slug/'))
 
     expect(response.status).toBe(404)
   })

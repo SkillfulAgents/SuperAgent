@@ -119,8 +119,8 @@ export default {
       // A WebSocket upgrade does not go through the API's routes, as on the Node server (browser-stream-proxy.ts).
       if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
         const browserStream = BROWSER_STREAM_PATH.exec(pathname)
-        if (browserStream) return await (await import('./lib/browser-stream')).serveBrowserStream(request, decodeURIComponent(browserStream[1]), env)
-        if (ARTIFACT_STREAM_PATH.test(pathname)) return await (await import('./lib/artifact-stream')).serveArtifactStream(withClientAddress(request), env)
+        if (browserStream) return await (await import('./lib/browser-stream')).serveBrowserStream(request, decodeURIComponent(browserStream[1]), ctx)
+        if (ARTIFACT_STREAM_PATH.test(pathname)) return await (await import('./lib/artifact-stream')).serveArtifactStream(withClientAddress(request))
         const meetingFrames = MEETING_FRAMES_PATH.exec(pathname)
         if (meetingFrames) return await (await import('./lib/meeting-frames')).serveMeetingFrames(request, meetingFrames[1])
       }

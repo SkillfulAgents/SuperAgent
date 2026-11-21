@@ -21,6 +21,7 @@ function socket() {
     close: (code?: number, reason?: string) => closed.push([code, reason]),
     addEventListener: (type: string, listener: Listener) => listeners.set(type, listener),
     deliver: (data: unknown) => listeners.get('message')!({ data }),
+    closeFromPeer: () => listeners.get('close')!({ code: 1000, reason: '' } as never),
   }
 }
 
@@ -69,5 +70,19 @@ describe('serveMeetingFrames', () => {
 
     expect(deps.receive).toHaveBeenCalledTimes(1)
     expect(deps.receive).toHaveBeenCalledWith({ event: 'screenshare.frame', data: { png: 'iVBORw0KGgo=' } })
+    server.closeFromPeer()
+  })
+
+  it('closes the socket on a message over the size limit', async () => {
+    vi.stubGlobal('Response', class {
+      constructor(_body: unknown, readonly init: { status: number }) {}
+    })
+    await serveMeetingFrames(upgrade(), 'meeting-1')
+
+    server.deliver('x'.repeat(4 * 1024 * 1024 + 1))
+
+    expect(server.closed).toEqual([[1009, 'Message too big']])
+    expect(deps.receive).not.toHaveBeenCalled()
+    server.closeFromPeer()
   })
 })

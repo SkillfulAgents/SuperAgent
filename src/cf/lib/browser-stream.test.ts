@@ -10,17 +10,28 @@ const deps = vi.hoisted(() => ({
 }))
 vi.mock('@shared/lib/agent-actor', () => ({
   agentCatalog: { resolve: deps.resolve },
-  agentRegistry: { get: () => ({ container: { webSocketTarget: deps.webSocketTarget } }) },
+  agentRegistry: { get: () => ({ container: { webSocketTarget: deps.webSocketTarget, status: async () => ({ status: 'running' }) } }) },
 }))
-vi.mock('../cloudflare-container-control', () => ({ agentContainers: () => ({ fetch: deps.reach }) }))
+// The installed containers' reach, made through the Worker build's ws (the shim), as in the Worker.
+vi.mock('@shared/lib/container/cloudflare-container-runtime', async () => {
+  const { WebSocket } = await import('../build/shims/ws')
+  return {
+    openContainerWebSocket: (target: { url: string; protocols?: string[]; headers: Record<string, string> }) =>
+      new WebSocket(target.url, target.protocols, { headers: target.headers, fetch: deps.reach }),
+  }
+})
 vi.mock('../../main/agent-websocket-auth', () => ({
   authenticateAgentWebSocket: async (_request: unknown, _slug: string, role: string) => deps.roles.has(role),
 }))
+vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => ({ app: {} }) }))
+vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
 import { serveBrowserStream } from './browser-stream'
-import type { Env } from '../index'
+import type { ExecutionContext } from 'cloudflare:workers'
 
-const ENV = { AGENT: {} } as unknown as Env
+const pending: Promise<unknown>[] = []
+const CTX = { waitUntil: (work: Promise<unknown>) => pending.push(work) } as unknown as ExecutionContext
 
 type Listener = (event: { data?: unknown }) => void
 
@@ -49,7 +60,7 @@ describe('serveBrowserStream', () => {
     server = socket()
     deps.roles.clear()
     deps.webSocketTarget.mockClear()
-    deps.reach.mockReset().mockImplementation(async () => ({ webSocket: upstream }))
+    deps.reach.mockReset().mockImplementation(async () => ({ status: 101, webSocket: upstream, headers: new Headers() }))
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new Error('the global fetch was called')
     }))
@@ -68,12 +79,16 @@ describe('serveBrowserStream', () => {
     vi.stubGlobal('Response', class {
       constructor(_body: unknown, readonly init: { status: number }) {}
     })
-    const response = (await serveBrowserStream(upgrade(search), 'sales-agent', ENV)) as unknown as { init: { status: number } }
+    const response = (await serveBrowserStream(upgrade(search), 'sales-agent', CTX)) as unknown as { init: { status: number } }
     expect(response.init.status).toBe(101)
+    // The container's socket opens after the answer; input from before then is dropped, as on the Node server.
+    await Promise.all(pending.splice(0))
+    await vi.waitFor(() => expect(deps.reach).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
   it('refuses someone who may not view the agent, before it reaches the container', async () => {
-    const response = await serveBrowserStream(upgrade(), 'sales-agent', ENV)
+    const response = await serveBrowserStream(upgrade(), 'sales-agent', CTX)
 
     expect(response.status).toBe(403)
     expect(deps.webSocketTarget).not.toHaveBeenCalled()
@@ -84,7 +99,7 @@ describe('serveBrowserStream', () => {
     await open('?width=1280&token=abc')
 
     expect(deps.webSocketTarget).toHaveBeenCalledWith('/browser/stream', { search: '?width=1280' })
-    upstream.deliver(new Blob([new Uint8Array([0xff, 0xd8, 0xff])]))
+    upstream.deliver(new Uint8Array([0xff, 0xd8, 0xff]).buffer)
     await vi.waitFor(() => expect(server.sent).toHaveLength(1))
     expect([...new Uint8Array(server.sent[0] as ArrayBuffer)]).toEqual([0xff, 0xd8, 0xff])
   })
