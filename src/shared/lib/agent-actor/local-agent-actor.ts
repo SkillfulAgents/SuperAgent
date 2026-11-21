@@ -265,6 +265,9 @@ function createContainerOps(slug: AgentSlug, state: AgentState, deps: LocalActor
     stop: (...args) => runtime().stopContainer(...args),
     keepAlive: async () => runtime().keepAlive(),
     checkIdle: () => state.idleAlarm.fire(),
+    syncStatus: async () => {
+      await runtime().syncAgentStatus()
+    },
     status: async () => runtime().getCachedInfo(),
     invalidate: async (options) => {
       if (!runtime().holdsDrives()) return 'not-running'

@@ -16,6 +16,7 @@ vi.mock('@shared/lib/container/container-host', () => ({
     dropRuntime: vi.fn(),
     clearRuntimes: vi.fn(),
     attachAgentIdleAlarms: vi.fn(),
+    attachAgentContainerWatches: vi.fn(),
     useWebhookRelayStatus: vi.fn(),
     runtime: () => ({ getCachedInfo: () => ({ status: 'stopped', port: null }), noteSessionActivity: vi.fn() }),
   },

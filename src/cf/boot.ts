@@ -104,9 +104,9 @@ export function runAgentActorOp(slug: AgentSlug, path: string, args: unknown[], 
   return runActorOp(agentRegistry.get(slug), path, args, actingUserId)
 }
 
-/** Sets the agent's cached container status from its container, which outlives the object's memory. */
+/** The agent's actor reads its container's status: the container outlives the object's memory, and its exits are not polled. */
 export async function syncAgentStatus(slug: AgentSlug): Promise<void> {
-  await containerHost.runtime(slug).syncAgentStatus()
+  await agentRegistry.get(slug).container.syncStatus()
 }
 
 /**

@@ -294,6 +294,13 @@ export interface ContainerOps {
    * (see `LocalActorDeps.idleTimer`) calls this when the wait goes off.
    */
   checkIdle(): Promise<void>
+  /**
+   * Read now whether the container runs, and update what the app shows. A
+   * container whose runner hears it exit (`ContainerClient.reportsExits`) is
+   * not polled: its deployment calls this when it exits, and when a new
+   * process first serves the agent.
+   */
+  syncStatus(): Promise<void>
   /** `containerManager.getCachedInfo` — the cached status; no runtime is queried. */
   status(): Promise<ContainerInfo>
   /**
