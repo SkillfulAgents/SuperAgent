@@ -468,7 +468,7 @@ import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
 const mockInsertAuthor = vi.fn().mockResolvedValue(true)
 const mockDeleteAuthor = vi.fn().mockResolvedValue(undefined)
-vi.mock('./message-author', () => ({
+vi.mock('@shared/lib/services/message-author', () => ({
   insertMessageAuthorBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
   deleteMessageAuthorBestEffort: (...a: unknown[]) => mockDeleteAuthor(...a),
 }))

@@ -9,7 +9,7 @@ import { requiresOneTimeXAgentReview, xAgentPickSchema, xAgentReviewNamesTarget,
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
 import agentMembers, { agentMembersBatch, agentShareStacks, agentShares } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
-import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
+import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from '@shared/lib/services/message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
 import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-comment'
