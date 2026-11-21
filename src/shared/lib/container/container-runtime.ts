@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { createContainerClient } from './client-factory'
 import { ActivityClock } from './activity-clock'
 import type { AgentIdleAlarms, IdleAlarm } from './idle-alarm'
+import type { AgentContainerWatches, ContainerWatch } from './container-watch'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -90,6 +91,8 @@ export interface RuntimeHost {
   afterForceStop(slug: string): void
   /** The agents' idle alarms, on their actors. Null only before the agent registry attached it. */
   readonly agentIdleAlarms: AgentIdleAlarms | null
+  /** The agents' container watches, on their actors. Null only before the agent registry attached it. */
+  readonly agentContainerWatches: AgentContainerWatches | null
 }
 
 /** The auto-sleep timeout in `settings`, in ms; zero or less disables. */
@@ -197,6 +200,7 @@ export class ContainerRuntime {
         this.client = createContainerClient(this.clientConfig(), configuredRunner)
         this.clientRunner = configuredRunner
         this.clientDecidedBy = ++this.clientReads
+        this.containerWatch()?.start()
       }
       return this.client
     }
@@ -213,6 +217,7 @@ export class ContainerRuntime {
     this.client = createContainerClient(this.clientConfig(), runner)
     this.clientRunner = runner
     this.clientDecidedBy = read
+    this.containerWatch()?.start()
     return this.client
   }
 
@@ -402,12 +407,16 @@ export class ContainerRuntime {
 
   /**
    * Update cached container status. Called after start/stop operations.
+   * The agent's actor checks the container's health while it is seen running.
    */
   updateCachedStatus(status: 'running' | 'stopped', port: number | null): void {
     this.cached = { status, port, lastSyncedAt: Date.now() }
-    if (status === 'stopped') {
+    if (status === 'running') {
+      this.containerWatch()?.startHealth()
+    } else {
       this.stale = false
       this.webhookRelayAtStart = null
+      this.heldContainerWatch()?.stopHealth()
     }
   }
 
@@ -554,6 +563,8 @@ export class ContainerRuntime {
     // Don't update cache while a start is in-flight — Docker may report "running"
     // before the container's HTTP server is ready (health check hasn't passed yet)
     if (this.starting) return info
+    // Dropped during the read: a "running" read would make the agent a new actor and watch.
+    if (this.disposed) return info
 
     this.updateCachedStatus(info.status, info.port)
 
@@ -944,6 +955,16 @@ export class ContainerRuntime {
     return this.host.agentIdleAlarms?.peek(this.slug)
   }
 
+  /** The agent's container watch, made with its actor if none is held: a runtime with a client always has one. */
+  private containerWatch(): ContainerWatch | undefined {
+    return this.host.agentContainerWatches?.get(this.slug)
+  }
+
+  /** The agent's container watch when its actor is held: a stop never makes one. */
+  private heldContainerWatch(): ContainerWatch | undefined {
+    return this.host.agentContainerWatches?.peek(this.slug)
+  }
+
   private isBusy(): boolean {
     return (
       this.sessions().hasActive() ||
@@ -977,6 +998,7 @@ export class ContainerRuntime {
     this.cached = null
     this.activity.reset()
     this.heldIdleAlarm()?.cancel()
+    this.heldContainerWatch()?.stop()
     this.healthWarnings = []
     this.stopping = false
     this.starting = null

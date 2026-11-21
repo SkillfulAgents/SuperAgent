@@ -13,7 +13,7 @@ import type { LocalAgentActor } from './local-agent-actor'
 import { drain, drained } from './testing/drain'
 
 vi.mock('@shared/lib/container/container-host', () => ({
-  containerHost: { attachAgentWorkspaces: vi.fn(), attachAgentSessions: vi.fn(), attachAgentIdleAlarms: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn() },
+  containerHost: { attachAgentWorkspaces: vi.fn(), attachAgentSessions: vi.fn(), attachAgentIdleAlarms: vi.fn(), attachAgentContainerWatches: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn() },
 }))
 // What the agents' live sessions hand the host (feed events, notifications)
 // is not what these tests are about: a recording port keeps it in the test.

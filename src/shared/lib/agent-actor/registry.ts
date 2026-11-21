@@ -26,7 +26,7 @@ import type { AgentActor, AgentRegistry, AgentSlug } from './types'
  * container host and created on first use. Evicting a handle releases both.
  *
  * The registry also hands the container host the way to each agent's
- * workspace, live sessions and idle alarm, and the user-input, review,
+ * workspace, live sessions, idle alarm and container watch, and the user-input, review,
  * re-auth and computer-use routers the way to each actor's stores.
  */
 export function createAgentRegistry(
@@ -104,6 +104,11 @@ export function createAgentRegistry(
   deps.containerHost.attachAgentIdleAlarms({
     get: (slug) => get(slug).state.idleAlarm,
     peek: (slug) => handles.get(slug)?.state.idleAlarm,
+  })
+  // The same for the watch: a container found running at startup is watched too.
+  deps.containerHost.attachAgentContainerWatches({
+    get: (slug) => get(slug).state.containerWatch,
+    peek: (slug) => handles.get(slug)?.state.containerWatch,
   })
 
   // Orders the re-arms' timeout reads: only the newest one to start re-arms.
