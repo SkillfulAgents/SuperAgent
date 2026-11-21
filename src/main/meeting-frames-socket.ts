@@ -5,7 +5,9 @@
  * /api/meeting-participant/:meetingId/frames/?token=… over a websocket (the
  * bot host can deliver frames no other way). The meeting's one-time
  * participant token, checked before the upgrade, is the credential, as for
- * the HTTP events callback beside it.
+ * the HTTP events callback beside it. `admitMeetingFrames` and
+ * `receiveMeetingFrames` hold all of it but the upgrade, so a runtime that
+ * accepts sockets another way serves the same socket.
  */
 
 import type { IncomingMessage } from 'http'
@@ -30,6 +32,24 @@ function deny(socket: Duplex, status: string): void {
   socket.destroy()
 }
 
+/** The meeting and where its frames go, once the token checks out; a status to refuse the upgrade with otherwise. */
+export async function admitMeetingFrames(
+  meetingIdInUrl: string,
+  token: string | null,
+): Promise<{ meeting: MeetingRecord; receive: (message: unknown) => Promise<void> } | { status: 401 | 404 | 410 }> {
+  if (!token) return { status: 401 }
+  let meetingId: string
+  try { meetingId = decodeURIComponent(meetingIdInUrl) } catch { return { status: 404 } }
+  const meeting = await verifyParticipantToken(meetingId, token)
+  if (!meeting) return { status: 404 }
+  if (isTerminalMeetingStatus(meeting.status)) return { status: 410 }
+  const receive = await meetingScreenFrameReceiver(meeting)
+  if (!receive) return { status: 404 }
+  return { meeting, receive }
+}
+
+const DENIED: Record<number, string> = { 401: '401 Unauthorized', 404: '404 Not Found', 410: '410 Gone' }
+
 export function setupMeetingFramesSocket(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from the HTTP server always parses
@@ -37,21 +57,15 @@ export function setupMeetingFramesSocket(server: ServerType): void {
     const match = url.pathname.match(FRAMES_PATH)
     if (!match) return
 
-    const token = url.searchParams.get('token')
-    if (!token) return deny(socket, '401 Unauthorized')
-    let meetingId: string
-    try { meetingId = decodeURIComponent(match[1]) } catch { return deny(socket, '404 Not Found') }
-    verifyParticipantToken(meetingId, token).then(async (meeting) => {
-      if (!meeting) return deny(socket, '404 Not Found')
-      if (isTerminalMeetingStatus(meeting.status)) return deny(socket, '410 Gone')
-      const receive = await meetingScreenFrameReceiver(meeting)
-      if (!receive) return deny(socket, '404 Not Found')
-      framesWss.handleUpgrade(request, socket, head, (ws) => receiveFrames(ws, meeting, receive))
+    admitMeetingFrames(match[1], url.searchParams.get('token')).then((admitted) => {
+      if ('status' in admitted) return deny(socket, DENIED[admitted.status])
+      framesWss.handleUpgrade(request, socket, head, (ws) => receiveMeetingFrames(ws, admitted.meeting, admitted.receive))
     }).catch(() => socket.destroy())
   })
 }
 
-function receiveFrames(ws: WebSocket, meeting: MeetingRecord, receive: (message: unknown) => Promise<void>): void {
+/** Hands each frame on an accepted socket to the meeting's receiver. */
+export function receiveMeetingFrames(ws: WebSocket, meeting: MeetingRecord, receive: (message: unknown) => Promise<void>): void {
   const ping = setInterval(() => ws.ping(), PING_MS)
   ws.on('close', () => clearInterval(ping))
   // Protocol errors (including maxPayload) are emitted on the WebSocket. With
@@ -67,6 +81,11 @@ function receiveFrames(ws: WebSocket, meeting: MeetingRecord, receive: (message:
   })
   ws.on('message', (data, isBinary) => {
     if (isBinary) return
+    // The server's maxPayload refuses these first; a socket accepted without one is held to the same limit.
+    if ((data as Buffer).length > MAX_MESSAGE_BYTES) {
+      ws.close(1009, 'Message too big')
+      return
+    }
     let message: unknown
     try { message = JSON.parse(data.toString()) } catch { return }
     receive(message).catch(error => captureException(error, {
