@@ -30,9 +30,10 @@ vi.mock('@shared/lib/agent-actor', () => ({
 vi.mock('./agent-websocket-auth', () => ({
   authenticateAgentWebSocket: async (_request: unknown, _slug: string, role: string) => role === 'viewer' || canInput,
 }))
-vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
+const mocks = vi.hoisted(() => ({ trackServerEvent: vi.fn(), captureException: vi.fn() }))
+vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: mocks.trackServerEvent }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => ({ app: {} }) }))
-vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
+vi.mock('@shared/lib/error-reporting', () => ({ captureException: mocks.captureException }))
 
 import { setupBrowserStreamProxy } from './browser-stream-proxy'
 
@@ -48,6 +49,8 @@ describe('browser stream proxy', () => {
   let received: string[]
   /** Handshakes waiting for the test to let them finish, to model a slow container. */
   let heldUpgrades: Array<() => void>
+  /** The container side of each held handshake, and whether the proxy has ended it. */
+  let heldSockets: Array<{ socket: Duplex; ended: boolean }>
   let holdUpgrades: boolean
   const clients: WebSocket[] = []
 
@@ -62,8 +65,12 @@ describe('browser stream proxy', () => {
     upstreamHttp.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
       upstreamUrls.push(request.url ?? '')
       const finish = () => upstream.handleUpgrade(request, socket, head, (client) => upstream.emit('connection', client, request))
-      if (holdUpgrades) heldUpgrades.push(finish)
-      else finish()
+      if (holdUpgrades) {
+        heldUpgrades.push(finish)
+        const held = { socket, ended: false }
+        socket.once('end', () => { held.ended = true })
+        heldSockets.push(held)
+      } else finish()
     })
     await new Promise<void>((resolve) => upstreamHttp.listen(0, '127.0.0.1', resolve))
     upstreamPort = (upstreamHttp.address() as AddressInfo).port
@@ -86,7 +93,9 @@ describe('browser stream proxy', () => {
     upstreamUrls = []
     received = []
     heldUpgrades = []
+    heldSockets = []
     holdUpgrades = false
+    vi.clearAllMocks()
   })
 
   async function connect(query = '') {
@@ -150,5 +159,18 @@ describe('browser stream proxy', () => {
 
     heldUpgrades[0]()
     await vi.waitFor(() => expect(received).toEqual([viewport(200)]))
+  })
+
+  it('ends the container connection quietly when the viewer leaves before it opens', async () => {
+    holdUpgrades = true
+    const client = await connect()
+    await vi.waitFor(() => expect(heldSockets).toHaveLength(1))
+
+    client.close()
+    await vi.waitFor(() => expect(heldSockets[0].ended).toBe(true))
+    heldSockets[0].socket.destroy()
+
+    expect(mocks.trackServerEvent).not.toHaveBeenCalledWith('browser_closed')
+    expect(mocks.captureException).not.toHaveBeenCalled()
   })
 })

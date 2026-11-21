@@ -194,12 +194,13 @@ export async function admitArtifactStream(
  * Calls `onOpen` in the dashboard socket's `open` event, so the client is upgraded with the
  * dashboard's chosen subprotocol and the relay listens before the dashboard's first message, which
  * can arrive with the handshake. Resolves false when the socket was refused or failed (reported,
- * and the socket terminated).
+ * and the socket terminated), or when `abandoned` fired first: the browser went away, nothing to report.
  */
 export function artifactUpstreamOpened(
   upstream: WebSocket,
   admitted: AdmittedArtifactStream,
   onOpen: () => void,
+  abandoned?: AbortSignal,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false
@@ -220,6 +221,7 @@ export function artifactUpstreamOpened(
       fail(new Error(`Dashboard WebSocket refused upgrade (${response.statusCode})`))
     })
     upstream.once('error', fail)
+    abandoned?.addEventListener('abort', () => fail(), { once: true })
     upstream.once('open', () => {
       if (settled) return
       settled = true
@@ -248,21 +250,25 @@ export function setupArtifactStreamProxy(server: ServerType): void {
       if ('status' in admitted) return deny(socket, DENIED[admitted.status])
       const { target } = admitted
       const upstream = new WebSocket(target.url, target.protocols, { headers: target.headers })
-      let connecting = true
+      let bridged = false
+      const browserGone = new AbortController()
+      // Also after the open: ws answers a handshake it rejects with 400 and never hands over the socket.
       socket.once('close', () => {
-        if (connecting) upstream.terminate()
+        if (bridged) return
+        browserGone.abort()
+        upstream.terminate()
       })
       const opened = await artifactUpstreamOpened(upstream, admitted, () => {
-        connecting = false
         if (socket.destroyed) {
           upstream.terminate()
           return
         }
         ;(request as ProtocolAwareRequest)._gamutDashboardProtocol = upstream.protocol || undefined
         artifactWss.handleUpgrade(request, socket, head, (browser) => {
+          bridged = true
           bridgeArtifactStream(browser, upstream, route)
         })
-      })
+      }, browserGone.signal)
       if (!opened) deny(socket, '502 Bad Gateway')
     })().catch((error) => {
       captureException(error, {
