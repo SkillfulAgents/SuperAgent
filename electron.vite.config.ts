@@ -26,7 +26,7 @@ export default defineConfig({
           // files, because the cache only covers modules loaded after it is on.
           index: path.resolve(__dirname, 'src/main/entry.ts'),
           main: path.resolve(__dirname, 'src/main/index.ts'),
-          'heic-preview-worker': path.resolve(__dirname, 'src/api/routes/heic-preview-worker.mjs'),
+          'heic-preview-worker': path.resolve(__dirname, 'src/shared/lib/images/heic-preview-worker.mjs'),
         },
         output: {
           entryFileNames: chunk => chunk.name === 'heic-preview-worker' ? '[name].cjs' : '[name].js',

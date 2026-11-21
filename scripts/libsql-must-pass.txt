@@ -150,3 +150,4 @@ src/api/routes/agent-creation-request.test.ts
 src/shared/lib/connection-catalog/agent-catalog.test.ts
 src/api/routes/signed-files.test.ts
 src/api/signed-files.mount.test.ts
+src/shared/lib/services/x-agent/x-agent-service.test.ts

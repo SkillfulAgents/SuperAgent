@@ -42,14 +42,14 @@ import { appState, defineNamespace } from '@shared/lib/app-state'
 import { getAppBaseUrl } from '@shared/lib/auth/config'
 import { resolvePublicAppBaseUrl } from '@shared/lib/agent-integrations/app-link'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { effectiveAgentRole } from '@shared/lib/auth/agent-role'
+import { userHasMinRoleOnAgent } from '@shared/lib/services/agent-acl-role'
 import { db } from '@shared/lib/db'
 import { user as userTable, volumeDefinitions } from '@shared/lib/db/schema'
 // The catalog and registry leaves, not the actor package index (see middleware/auth.ts).
 import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
 import { normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
-import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
+import type { AgentRole } from '@shared/lib/types/agent'
 import { getVisibleVolumeDefinition, openVolumeDefinition, type VolumeViewer } from '@shared/lib/services/volume-service'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 import { MAX_UPLOAD_REQUEST_SIZE } from '@shared/lib/utils/chunked-upload'
@@ -169,8 +169,13 @@ async function requireAgentRole(principal: Principal, agentSlug: string, minRole
   const agent = await agentCatalog.resolveRecord(agentSlug)
   if (!agent) throw NOT_FOUND()
   if (principal.account) {
-    const role = await effectiveAgentRole(principal.account, agent.slug)
-    if (!hasMinRole(role, minRole)) throw FORBIDDEN()
+    // The AgentRead / AgentUser rule itself: an admin passes, anyone else needs the role.
+    const allowed = await userHasMinRoleOnAgent(
+      { id: principal.account.id, isAdmin: principal.account.role === 'admin' },
+      agent.slug,
+      minRole,
+    )
+    if (!allowed) throw FORBIDDEN()
   }
   return agent.slug
 }

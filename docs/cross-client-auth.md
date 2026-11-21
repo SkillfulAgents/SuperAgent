@@ -245,10 +245,15 @@ discovery recovers. It runs after discovery's retry hook and before code
 exchange or account provisioning.
 
 Provider discovery is lazy: creating or resetting the auth instance performs
-no discovery requests. `lazy-generic-oauth.ts` seeds Better Auth 1.7.12's
+no discovery requests. `lazy-generic-oauth.ts` seeds Better Auth 1.7.27's
 pending-provider map and retains its request hook, so only the requested SSO
-provider is discovered. That hook shares concurrent attempts and applies a
-10-second abort signal through the response-body read. A stalled provider
+provider is discovered. That hook applies a 10-second abort signal through the
+response-body read; the adapter wraps it so concurrent requests for one
+provider share one attempt (upstream stopped sharing them after 1.7.12).
+Sharing means one request awaits a fetch another request started, which is
+right on Node and Electron. On a runtime where one request cannot await
+another's I/O (Cloudflare Workers, where upstream turns its own shared lookups
+off), the sharing must be skipped so each request runs upstream's hook itself. A stalled provider
 therefore cannot hold up password login, existing bearer sessions, mobile
 renewal, or another provider's SSO. Platform grant verification still performs
 its separate JWKS lookup when its key cache is cold. Keep the exact Better Auth

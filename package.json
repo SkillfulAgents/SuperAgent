@@ -175,7 +175,7 @@
     "analytics": "^0.8.19",
     "autoprefixer": "^10.4.0",
     "beautiful-mermaid": "^1.1.3",
-    "better-auth": "1.7.12",
+    "better-auth": "1.7.27",
     "ccusage": "^15.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
