@@ -1,18 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import { PNG } from 'pngjs/browser'
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { user } from '@shared/lib/db/schema'
 import { hostFiles } from '@shared/lib/blob-store/blob-store'
+import { imageService, UnreadableImageError } from '@shared/lib/images/image-service'
 import { avatarOverrideSchema, MAX_AVATAR_BYTES } from '@shared/lib/user-profile-schema'
 
 export class InvalidAvatarError extends Error {}
 const MAX_DIMENSION = 512
 
 /** Decode and re-encode a bounded raster: don't persist untrusted ancillary data. */
-export function prepareAvatar(input: Buffer): Buffer {
+export async function prepareAvatar(input: Buffer): Promise<Uint8Array> {
   if (input.length < 33 || input.length > MAX_AVATAR_BYTES
     || !input.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
     || input.toString('ascii', 12, 16) !== 'IHDR') {
@@ -38,12 +38,10 @@ export function prepareAvatar(input: Buffer): Buffer {
     throw new InvalidAvatarError('Photo dimensions must be at most 512 × 512 pixels.')
   }
   try {
-    const decoded = PNG.sync.read(input, { checkCRC: true })
-    const clean = new PNG({ width: decoded.width, height: decoded.height })
-    clean.data = decoded.data
-    return Buffer.from(PNG.sync.write(clean))
-  } catch {
-    throw new InvalidAvatarError('This photo could not be read. Choose another image.')
+    return await imageService().cleanPng(input)
+  } catch (error) {
+    if (error instanceof UnreadableImageError) throw new InvalidAvatarError('This photo could not be read. Choose another image.')
+    throw error
   }
 }
 
@@ -66,7 +64,7 @@ export async function removeStoredAvatar(reference: string | null): Promise<void
 export async function setAvatar(userId: string, input: Buffer | null): Promise<string | null> {
   let reference: string | null = null
   if (input) {
-    const png = prepareAvatar(input)
+    const png = await prepareAvatar(input)
     const filename = `${randomUUID()}.png`
     await avatarFiles.write(filename, png)
     reference = avatarOverrideSchema.parse(`/api/profile/images/${filename}`)

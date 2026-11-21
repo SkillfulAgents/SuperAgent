@@ -69,7 +69,7 @@ export default defineConfig({
   entry: {
     server: 'src/web/server.ts',
     'llm-sdk-bundle': 'src/api/llm-sdk-bundle.ts',
-    'heic-preview-worker': 'src/api/routes/heic-preview-worker.mjs',
+    'heic-preview-worker': 'src/shared/lib/images/heic-preview-worker.mjs',
   },
   format: ['esm'],
   outDir: 'dist/web',
