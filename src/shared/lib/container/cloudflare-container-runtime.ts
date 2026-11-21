@@ -54,7 +54,7 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
   static readonly requiresLocalImage = false
   static readonly supportsCustomAgentImage = false
 
-  // Each container's agent object watches it (`monitor()`) and hears it exit.
+  // Each container's agent object watches it (`monitor()`), and when it exits has the actor read its status (`ContainerOps.syncStatus`).
   readonly reportsExits = true
 
   private lastKnownInfo: ContainerInfo = { status: 'stopped', port: null }

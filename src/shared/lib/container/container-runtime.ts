@@ -93,6 +93,8 @@ export interface RuntimeHost {
   readonly agentIdleAlarms: AgentIdleAlarms | null
   /** The agents' container watches, on their actors. Null only before the agent registry attached it. */
   readonly agentContainerWatches: AgentContainerWatches | null
+  /** Whether webhooks can be received, as the process that runs the webhook relay sees it; null: the relay of this process. */
+  readonly webhookRelayAvailable: (() => Promise<boolean>) | null
 }
 
 /** The auto-sleep timeout in `settings`, in ms; zero or less disables. */
@@ -432,6 +434,17 @@ export class ContainerRuntime {
   reconcileWebhookRelay(available: boolean): void {
     if (this.webhookRelayAtStart === null) this.webhookRelayAtStart = available
     else if (this.webhookRelayAtStart !== available) this.stale = true
+  }
+
+  private webhookRelayAvailable(): Promise<boolean> {
+    return this.host.webhookRelayAvailable?.() ?? Promise.resolve(getWebhookRelay().snapshot().available)
+  }
+
+  /** Reconciles with the relay now; a relay in another process answers later, and the start does not wait for it. */
+  private recheckWebhookRelay(): void {
+    const read = this.host.webhookRelayAvailable
+    if (!read) return this.reconcileWebhookRelay(getWebhookRelay().snapshot().available)
+    background(read().then((available) => this.reconcileWebhookRelay(available)), { name: 'container-runtime.recheck-webhook-relay' })
   }
 
   isStale(): boolean {
@@ -797,7 +810,7 @@ export class ContainerRuntime {
     // above) follow the relay, not Composio mode: a personal Composio key
     // must not take the endpoint tools away.
     // Always set, so a container can tell "unavailable" from a host too old to say.
-    this.webhookRelayAtStart = getWebhookRelay().snapshot().available
+    this.webhookRelayAtStart = await this.webhookRelayAvailable()
     envVars['WEBHOOK_RELAY_AVAILABLE'] = String(this.webhookRelayAtStart)
 
     // Platform services (media, enrichment, search) only need the token.
@@ -847,7 +860,7 @@ export class ContainerRuntime {
     this.updateCachedStatus(info.status, info.port)
     // Availability may have moved while the container started; the watcher
     // only sees running agents, so this one checks itself.
-    if (info.status === 'running') this.reconcileWebhookRelay(getWebhookRelay().snapshot().available)
+    if (info.status === 'running') this.recheckWebhookRelay()
 
     // The start is the first mark on the idle clock: it floors stale session
     // timestamps from before the previous sleep. The alarm is armed by

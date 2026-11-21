@@ -21,8 +21,14 @@ const app = vi.hoisted(() => {
 })
 vi.mock('../boot', () => app)
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
+const integrations = vi.hoisted(() => ({ sessionStarted: vi.fn(async (_agentSlug: string, _sessionId: string) => {}) }))
+vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: integrations }))
+const hostTools = vi.hoisted(() => ({ runHostTool: vi.fn() }))
+vi.mock('@shared/lib/host/tools', () => ({ runHostTool: hostTools.runHostTool }))
+const relay = vi.hoisted(() => ({ available: false }))
+vi.mock('@shared/lib/webhook-relay', () => ({ getWebhookRelay: () => ({ snapshot: () => ({ available: relay.available }) }) }))
 
-import { CloudflareTaskManager, DeployStepNotReady, TaskManagerDurableObject, ensureMigrated, ensureOrgPrepared, needsLiveConnections, prepareDeploy, serveInTaskManager } from './cloudflare-task-manager'
+import { CloudflareTaskManager, DeployStepNotReady, TaskManagerDurableObject, announceSessionStart, runHostToolInTaskManager, servingTaskManager, webhookRelayAvailableInTaskManager, ensureMigrated, ensureOrgPrepared, needsLiveConnections, prepareDeploy, serveInTaskManager } from './cloudflare-task-manager'
 import type { Env } from '../index'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -489,6 +495,78 @@ describe('TaskManagerDurableObject after a deploy', () => {
   })
 })
 
+describe('a session that starts a turn', () => {
+  it("is announced to the integration manager in the task manager object, with its services started", async () => {
+    integrations.sessionStarted.mockClear()
+    app.startBackgroundServices.mockClear()
+    const { object } = testObject()
+    managerFor(object)
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await announceSessionStart({ TASK_MANAGER: objects }, 'sales', 'session-1')
+
+    expect(app.startBackgroundServices).toHaveBeenCalledTimes(1)
+    expect(integrations.sessionStarted).toHaveBeenCalledExactlyOnceWith('sales', 'session-1')
+    object.stopDispatch()
+  })
+
+  it('does not fail the turn when the task manager object cannot be reached', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const unreachable = { getByName: () => ({ sessionStarted: async () => { throw new Error('Network connection lost.') } }) } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await expect(announceSessionStart({ TASK_MANAGER: unreachable }, 'sales', 'session-1')).resolves.toBeUndefined()
+    expect(captureException).toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+})
+
+describe("an agent session's host tools", () => {
+  const request = { agentSlug: 'sales', sessionId: 'session-1', toolUseId: 'tool-1', toolName: 'create_webhook_endpoint' as const, input: '{"name":"Orders"}' }
+
+  it('run in the task manager object, after its services started', async () => {
+    app.startBackgroundServices.mockClear()
+    hostTools.runHostTool.mockReset()
+    const { object } = testObject()
+    managerFor(object)
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+    let servedBy: unknown
+    hostTools.runHostTool.mockImplementationOnce(async () => {
+      servedBy = servingTaskManager()
+      return { status: 'resolved', value: 'Created the endpoint' }
+    })
+
+    expect(await runHostToolInTaskManager({ TASK_MANAGER: objects }, request)).toEqual({ status: 'resolved', value: 'Created the endpoint' })
+
+    expect(hostTools.runHostTool).toHaveBeenCalledExactlyOnceWith(request)
+    expect(servedBy).toBe(object)
+    expect(app.startBackgroundServices.mock.invocationCallOrder[0]).toBeLessThan(hostTools.runHostTool.mock.invocationCallOrder[0])
+    object.stopDispatch()
+  })
+
+  it('reject when the task manager object cannot be reached, so the session reports the tool as failed', async () => {
+    const unreachable = { getByName: () => ({ runHostTool: async () => { throw new Error('Network connection lost.') } }) } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await expect(runHostToolInTaskManager({ TASK_MANAGER: unreachable }, request)).rejects.toThrow('Network connection lost.')
+  })
+})
+
+describe("the webhook relay's status for an agent's container start", () => {
+  it('is read from the relay in the task manager object, after its services started', async () => {
+    app.startBackgroundServices.mockClear()
+    const { object } = testObject()
+    managerFor(object)
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    relay.available = true
+    expect(await webhookRelayAvailableInTaskManager({ TASK_MANAGER: objects })).toBe(true)
+    relay.available = false
+    expect(await webhookRelayAvailableInTaskManager({ TASK_MANAGER: objects })).toBe(false)
+
+    expect(app.startBackgroundServices).toHaveBeenCalledTimes(1)
+    object.stopDispatch()
+  })
+})
+
 describe('requests that need the live chat connections', () => {
   it('names the routes that read or change a connection, and no other', () => {
     for (const path of [
@@ -502,12 +580,16 @@ describe('requests that need the live chat connections', () => {
       '/api/x-agent/meetings/join',
       '/api/agents/support-desk/sessions/session-1/fill-login',
       '/api/agents/support-desk/sessions/session-1/login-via',
+      '/api/platform-auth/complete',
+      '/api/platform-auth/revoke',
     ]) expect(needsLiveConnections(path), path).toBe(true)
     for (const path of [
       '/api/agents',
       '/api/agents/support-desk/sessions',
       '/api/agents/support-desk/sessions/session-1/login-request',
       '/api/agents/support-desk/sessions/session-1/fill-login/extra',
+      '/api/platform-auth',
+      '/api/platform-auth/download-nonce/redeem',
       '/api/agent-integrations-export',
       '/api/x-agent/chatter',
       '/api/x-agent/integrations',
@@ -639,5 +721,16 @@ describe('migrating the database', () => {
     await Promise.all([ensureMigrated({ TASK_MANAGER: objects }), ensureOrgPrepared({ TASK_MANAGER: objects })])
     expect(app.migrateDatabase).toHaveBeenCalledTimes(1)
     expect(app.prepareOrg).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('webhookRelayAvailableInTaskManager when the read fails', () => {
+  it('counts a failed read of the relay status as unavailable, so the container still starts', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const env = {
+      TASK_MANAGER: { getByName: () => ({ webhookRelayAvailable: async () => { throw new Error('internal error; reference = abc') } }) },
+    } as unknown as Env
+
+    expect(await webhookRelayAvailableInTaskManager(env)).toBe(false)
   })
 })

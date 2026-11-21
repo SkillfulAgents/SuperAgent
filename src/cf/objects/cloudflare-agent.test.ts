@@ -1,14 +1,18 @@
 import Database from 'better-sqlite3'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cloudflare-agent'
+import { inactivityTimeoutMs, AgentDurableObject, bridgeWebSocket, serveWorkspaceRequest } from './cloudflare-agent'
 import { SavedWorkspace, linkTarget, workspaceBlobKey } from '../lib/saved-workspace'
+import { createObjectSessionIndexStorage } from '../lib/object-session-index-storage'
 import type { Env } from '../index'
 import { captureException } from '@shared/lib/error-reporting'
 import { describeFileOpsContract } from '@shared/lib/agent-actor/testing/file-ops-contract'
 import { createCloudflareFileOps } from '../cloudflare-file-ops'
-import { sleepingStore } from '../cloudflare-container-control'
+import { sleepingStoreOn } from '../cloudflare-container-control'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
+// The app must not boot to list a sleeping agent: its session index is in the object's own SQLite.
+const { boot, syncAgentStatus } = vi.hoisted(() => ({ boot: vi.fn(), syncAgentStatus: vi.fn(async () => {}) }))
+vi.mock('../boot', () => ({ boot, syncAgentStatus, runAgentActorOp: async () => ({ value: 'from the actor' }), autoSleepTimeoutMs: async () => 30 * 60_000 }))
 
 // Workers' FixedLengthStream, which Node lacks: here a pass-through.
 beforeAll(() => {
@@ -41,7 +45,7 @@ function env(r2: ReturnType<typeof bucket>) {
   const agent = { workspaceRequest: vi.fn(async () => new Response(null, { status: 202 })) }
   const value = {
     WORKSPACES: r2,
-    AGENT: { idFromString: (id: string) => id, get: () => agent },
+    AGENT: { idFromString: (id: string) => id, get: vi.fn(() => agent), getByName: vi.fn(() => agent) },
   } as unknown as Env
   return { value, agent }
 }
@@ -96,6 +100,16 @@ describe('serveWorkspaceRequest', () => {
     expect(response.status).toBe(202)
     expect(agent.workspaceRequest).toHaveBeenCalledTimes(1)
   })
+
+  it("reaches the agent's object by its name when the container's route names it, so the object knows its agent", async () => {
+    const { value } = env(bucket(() => HASH))
+    const namespace = value.AGENT as unknown as { get: ReturnType<typeof vi.fn>; getByName: ReturnType<typeof vi.fn> }
+
+    await serveWorkspaceRequest(new Request('http://workspace.internal/changes', { method: 'POST', body: '{"entries":[],"removed":[]}' }), value, OBJECT, 'sales')
+
+    expect(namespace.getByName).toHaveBeenCalledWith('sales')
+    expect(namespace.get).not.toHaveBeenCalled()
+  })
 })
 
 /** The real stop code, on an object whose container calls are recorded instead of made. */
@@ -112,6 +126,9 @@ function agent(saved: boolean) {
       calls.push('stop')
     },
     containerUp: async () => false,
+    cancelIdleCheck: async () => {
+      calls.push('cancelIdleCheck')
+    },
   })
   /** The object's private members, which a test sets or replaces. */
   const internals = object as unknown as Record<string, unknown>
@@ -119,12 +136,12 @@ function agent(saved: boolean) {
 }
 
 describe('AgentDurableObject stop', () => {
-  it('stops the container after the workspace is saved', async () => {
+  it('stops the container after the workspace is saved, then drops its idle check', async () => {
     const { object, calls } = agent(true)
 
     await object.stopAgent()
 
-    expect(calls).toEqual(['save', 'stop'])
+    expect(calls).toEqual(['save', 'stop', 'cancelIdleCheck'])
   })
 
   it('keeps the container running when the save fails, and says so', async () => {
@@ -146,7 +163,7 @@ describe('AgentDurableObject stop', () => {
     exit()
     await stopped
 
-    expect(calls).toEqual(['save', 'stop', 'stopped'])
+    expect(calls).toEqual(['save', 'stop', 'cancelIdleCheck', 'stopped'])
   })
 
   it('drops the container of an agent being deleted without saving its workspace', async () => {
@@ -158,7 +175,7 @@ describe('AgentDurableObject stop', () => {
 
     await object.stopAgent({ discard: true })
 
-    expect(calls).toEqual(['destroy'])
+    expect(calls).toEqual(['destroy', 'cancelIdleCheck'])
   })
 
   it('stops an agent whose container never started without signalling it', async () => {
@@ -251,9 +268,10 @@ function storage() {
       const statement = db.prepare(query)
       // The object's SQLite takes and gives bytes as an ArrayBuffer; this one as a Buffer.
       const bound = bindings.map((value) => (value instanceof ArrayBuffer ? Buffer.from(value) : value))
-      const rows = (statement.reader ? statement.all(...bound) : (statement.run(...bound), [])) as Array<Record<string, unknown>>
+      let rowsWritten = 0
+      const rows = (statement.reader ? statement.all(...bound) : ((rowsWritten = statement.run(...bound).changes), [])) as Array<Record<string, unknown>>
       for (const row of rows) for (const [key, value] of Object.entries(row)) if (Buffer.isBuffer(value)) row[key] = new Uint8Array(value).buffer
-      return { toArray: () => rows }
+      return { toArray: () => rows, rowsWritten }
     },
   }
   return { sql, transactionSync: <T>(run: () => T) => db.transaction(run)() }
@@ -682,6 +700,117 @@ describe('AgentDurableObject writing a file while its agent sleeps', () => {
   })
 })
 
+describe('AgentDurableObject listing its agent', () => {
+  /** A sleeping agent with one dashboard in its saved workspace and one session in the index. */
+  function sleepingAgent() {
+    const agent = runningAgent(false)
+    Object.assign(agent.ctx, { container: { running: false } })
+    const files = {
+      'artifacts/sales/package.json': JSON.stringify({ name: 'Sales', scripts: { start: 'bun run server.ts' } }),
+      'artifacts/sales/screenshot.png': 'png',
+    }
+    for (const [path, bytes] of Object.entries(files)) {
+      const hash = path.endsWith('package.json') ? H1 : H2
+      agent.ctx.storage.sql.exec("INSERT INTO workspace_file (path, hash, size, mode, mtime, kind) VALUES (?, ?, ?, 420, 1, 'file')", path, hash, bytes.length)
+      agent.r2.set(workspaceBlobKey(OBJECT, hash), bytes)
+    }
+    boot.mockReset()
+    return agent
+  }
+
+  it('answers for a sleeping agent from its saved files and its session index, without booting the app', async () => {
+    const { object, ctx } = sleepingAgent()
+    await createObjectSessionIndexStorage(() => ctx.storage.sql as never).fill([
+      { sessionId: 'weekly-report', meta: null, transcript: { mtimeMs: Date.parse('2026-11-12T09:30:00Z'), birthtimeMs: 1, size: 200 } },
+    ])
+
+    const outcome = await object.actorCall('listing', [])
+
+    expect(boot).not.toHaveBeenCalled()
+    expect(outcome).toMatchObject({
+      value: {
+        live: { container: { status: 'stopped' }, activeSessionIds: [], awaitingSessionIds: [], openRequests: [], pendingReviews: [] },
+        sessions: { sessionIds: ['weekly-report'], sessionCount: 1, lastActivityAt: new Date('2026-11-12T09:30:00Z') },
+        artifacts: { dashboards: [{ slug: 'sales', name: 'Sales', hasScreenshot: true }] },
+        refreshingWidgets: [],
+      },
+    })
+  })
+
+  it("asks the agent's actor once this object has run it, or while a container runs: it may hold live state", async () => {
+    const booted = sleepingAgent()
+    await booted.object.actorCall('live', [])
+    expect(await booted.object.actorCall('listing', [])).toEqual({ value: 'from the actor' })
+
+    const running = sleepingAgent()
+    Object.assign(running.ctx, { container: { running: true } })
+    expect(await running.object.actorCall('listing', [])).toEqual({ value: 'from the actor' })
+    expect(boot).toHaveBeenCalled()
+  })
+
+  it("reads the container's status again when the container exits by itself, once this object has run the actor", async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const exit = (object: unknown) => (object as { onContainerExit(outcome: string): void }).onContainerExit('code 137')
+
+    const asleep = sleepingAgent()
+    syncAgentStatus.mockClear()
+    exit(asleep.object)
+    await vi.waitFor(() => expect(log).toHaveBeenCalled())
+    expect(syncAgentStatus).not.toHaveBeenCalled()
+
+    const booted = sleepingAgent()
+    await booted.object.actorCall('live', [])
+    expect(syncAgentStatus).toHaveBeenCalledTimes(1)
+    exit(booted.object)
+    await vi.waitFor(() => expect(syncAgentStatus).toHaveBeenCalledTimes(2))
+    log.mockRestore()
+  })
+
+  it('asks the actor when the reading without it fails', async () => {
+    const { object, ctx } = sleepingAgent()
+    // The object's SQLite refuses the index's statements.
+    const exec = ctx.storage.sql.exec
+    ctx.storage.sql.exec = (query: string, ...bindings: unknown[]) => {
+      if (query.includes('agent_session')) throw new Error('disk I/O error')
+      return exec(query, ...bindings)
+    }
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    expect(await object.actorCall('listing', [])).toEqual({ value: 'from the actor' })
+    expect(logged).toHaveBeenCalled()
+    logged.mockRestore()
+  })
+})
+
+describe('AgentDurableObject agent name', () => {
+  const kv = () => {
+    const values = new Map<string, unknown>()
+    return { get: (key: string) => values.get(key), put: (key: string, value: unknown) => void values.set(key, value), delete: (key: string) => values.delete(key) }
+  }
+  const objectWith = (id: { name?: string; toString(): string }, store: ReturnType<typeof kv>) => {
+    const object = Object.create(AgentDurableObject.prototype) as Record<string, unknown>
+    Object.assign(object, { ctx: { id, storage: { kv: store } } })
+    return object as unknown as { agentSlug(): string; agentName(): string }
+  }
+
+  it('keeps the name it was first reached by, for a later instance reached by id', () => {
+    const store = kv()
+    const named = { name: 'sales', toString: () => '92fe3b64fead0000' }
+    // What the constructor does for an instance reached by name.
+    if (named.name) store.put('agent-name', named.name)
+    expect(objectWith(named, store).agentSlug()).toBe('sales')
+
+    const byId = { toString: () => '92fe3b64fead0000' }
+    expect(objectWith(byId, store).agentSlug()).toBe('sales')
+  })
+
+  it('refuses to act for an agent when it was only ever reached by id', () => {
+    const byId = { toString: () => '92fe3b64fead0000' }
+    expect(() => objectWith(byId, kv()).agentSlug()).toThrow(/reached by id/)
+    expect(objectWith(byId, kv()).agentName()).toBe('92fe3b64')
+  })
+})
+
 describe('SavedWorkspace reading a link while its agent sleeps', () => {
   const linked = async () => {
     const store = storage()
@@ -719,14 +848,46 @@ describe('SavedWorkspace reading a link while its agent sleeps', () => {
   })
 })
 
+describe('inactivityTimeoutMs', () => {
+  it('runs a container past the auto-sleep timeout, and as long as the runtime allows when auto-sleep is off', () => {
+    expect(inactivityTimeoutMs(30 * 60_000)).toBe(35 * 60_000)
+    expect(inactivityTimeoutMs(120 * 60_000)).toBe(125 * 60_000)
+    expect(inactivityTimeoutMs(24 * 60 * 60_000)).toBe(6 * 60 * 60_000)
+    expect(inactivityTimeoutMs(0)).toBe(6 * 60 * 60_000)
+  })
+})
+
 // The shared contract over the real file ops, object and saved workspace of a sleeping agent.
 describeFileOpsContract('Cloudflare file ops while the agent sleeps', () => {
   const { object } = runningAgent(false)
-  const agents = { getByName: () => object } as unknown as Env['AGENT']
   return {
-    files: createCloudflareFileOps(async () => null, sleepingStore(agents, 'sales agent')),
+    files: createCloudflareFileOps(async () => null, sleepingStoreOn(async (run) => run(object))),
     dispose: () => clearTimeout((object as unknown as { settleTimer?: ReturnType<typeof setTimeout> }).settleTimer),
   }
+})
+
+describe("AgentDurableObject as its agent's idle timer", () => {
+  it('writes the alarm once per window: a later deadline keeps the earlier check, an earlier one moves it', async () => {
+    const alarms: Array<number | null> = []
+    const object = Object.create(AgentDurableObject.prototype) as AgentDurableObject & Record<string, unknown>
+    Object.assign(object, {
+      ctx: { id: { name: 'sales agent' }, storage: { setAlarm: async (at: number) => void alarms.push(at), deleteAlarm: async () => void alarms.push(null) } },
+      idleCheckAt: null,
+    })
+
+    object.scheduleIdleCheckBy(30 * 60_000)
+    object.scheduleIdleCheckBy(31 * 60_000)
+    object.scheduleIdleCheckBy(32 * 60_000)
+    expect(alarms).toEqual([30 * 60_000])
+
+    object.scheduleIdleCheckBy(20 * 60_000)
+    expect(alarms).toEqual([30 * 60_000, 20 * 60_000])
+
+    // A stop clears it; the next start's first mark sets it again.
+    await object.cancelIdleCheck()
+    object.scheduleIdleCheckBy(50 * 60_000)
+    expect(alarms).toEqual([30 * 60_000, 20 * 60_000, null, 50 * 60_000])
+  })
 })
 
 describe('SavedWorkspace writing a large file from a stream', () => {

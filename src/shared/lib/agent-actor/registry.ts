@@ -191,6 +191,29 @@ if (process.env.NODE_ENV !== 'production') {
   globalForRegistry.agentActorStates = agentActorStates
 }
 
+type ReplacedActorDeps = Required<Pick<LocalActorDeps, 'host' | 'createSessionStore' | 'idleTimer'>> & {
+  /** What `get` hands out in place of the actor in this process, such as a client of the agent's actor in another process. */
+  transport: (actor: AgentActor) => AgentActor
+}
+
+let replaced: ReplacedActorDeps | undefined
+
+/**
+ * Replaces the actor dependencies a runtime whose agents run outside this
+ * process provides itself: their host, where their files are, what their idle
+ * alarms wait with, and how `get` reaches them. Called once at boot, before
+ * the first `get`: a handle already handed out keeps what it was made with.
+ * Desktop and the Node server replace none.
+ */
+export function setActorDeps(deps: ReplacedActorDeps): void {
+  replaced = deps
+}
+
+// Development and tests only: every actor reached through the serializing test transport.
+const testTransport = process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
+  ? serializingActor
+  : undefined
+
 // Getters, not values: each dependency is read when an actor method runs, not
 // when this module loads. A test that mocks one of these modules therefore
 // intercepts exactly the call it always intercepted, and the others are never
@@ -242,12 +265,17 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
     return loadSessionUsageTotals
   },
   get host() {
-    return localHostPort
+    return replaced?.host ?? localHostPort
+  },
+  get createSessionStore() {
+    return replaced?.createSessionStore
+  },
+  get idleTimer() {
+    return replaced?.idleTimer
   },
 }, {
   states: agentActorStates,
-  // Development and tests only: every actor reached through the serializing test transport.
-  ...(process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
-    ? { transport: serializingActor }
-    : {}),
+  get transport() {
+    return replaced?.transport ?? testTransport
+  },
 })

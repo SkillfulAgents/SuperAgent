@@ -24,9 +24,9 @@ export { AgentDurableObject } from './objects/cloudflare-agent'
  * AgentDurableObject routes here (ctx.exports, by this name). The work they leave running keeps
  * the invocation alive.
  */
-export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string }> {
+export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string; agentName?: string }> {
   fetch(request: Request): Promise<Response> {
-    return runWithBackground(this.ctx, () => serveContainerCall(withoutClientAddress(request), nearStorage(this.env), this.ctx.props.containerId))
+    return runWithBackground(this.ctx, () => serveContainerCall(withoutClientAddress(request), nearStorage(this.env), this.ctx.props.containerId, this.ctx.props.agentName))
   }
 }
 
@@ -77,6 +77,12 @@ declareServerCapabilities({
 })
 
 const SERVICE_WORKER = '/sw.js'
+/** The live browser view's WebSocket (browser-stream.ts). */
+const BROWSER_STREAM_PATH = /^\/api\/agents\/([^/]+)\/browser\/stream$/
+/** A dashboard's WebSockets (artifact-stream.ts). */
+const ARTIFACT_STREAM_PATH = /^\/api\/agents\/[^/]+\/artifacts\/[^/]+(\/|$)/
+/** The meeting bot host's frames of shared screens (meeting-frames.ts). */
+const MEETING_FRAMES_PATH = /^\/api\/meeting-participant\/([^/]+)\/frames\/?$/
 /** What the deploy step calls right after an upload (wrangler.jsonc). */
 const DEPLOY_PATH = '/_deploy/prepare'
 let deployPrepared = false
@@ -110,6 +116,14 @@ export default {
       ctx.waitUntil(booting.catch(() => {}))
       await booting
       void prepareDeployOnce(env, ctx, origin)
+      // A WebSocket upgrade does not go through the API's routes, as on the Node server (browser-stream-proxy.ts).
+      if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+        const browserStream = BROWSER_STREAM_PATH.exec(pathname)
+        if (browserStream) return await (await import('./lib/browser-stream')).serveBrowserStream(request, decodeURIComponent(browserStream[1]), ctx)
+        if (ARTIFACT_STREAM_PATH.test(pathname)) return await (await import('./lib/artifact-stream')).serveArtifactStream(withClientAddress(request))
+        const meetingFrames = MEETING_FRAMES_PATH.exec(pathname)
+        if (meetingFrames) return await (await import('./lib/meeting-frames')).serveMeetingFrames(request, meetingFrames[1])
+      }
       return await app.serve(withClientAddress(request), env, ctx)
     } catch (error) {
       // A failed boot, or an error the API did not answer itself: reported before the request ends,

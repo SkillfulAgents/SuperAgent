@@ -32,6 +32,7 @@ import { nearStorage } from '../lib/object-location'
 import { reachCurrentCode, restartIfOlder, type VersionMetadata } from '../lib/object-version'
 import { Task, TaskManager, type PeriodicOptions, type RetryPolicy, type TaskContext, type TaskSpec } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
+import type { HostToolRequest, HostToolResult } from '@shared/lib/agent-actor/host-port'
 
 /** The name of the org's one task manager object. */
 const OBJECT_NAME = 'org'
@@ -106,6 +107,9 @@ const LIVE_CONNECTION_ROUTES = [
   // A sign-in the user makes from a login card: its session is then watched for minutes, on
   // timers that a request's isolate does not keep after the answer.
   /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/(fill-login|login-via)$/,
+  // A platform sign-in or sign-out: it tells the relay, the notifications and the triggers that
+  // the account changed, and only the copies in this object are running.
+  /^\/api\/platform-auth\/(complete|revoke)$/,
 ]
 
 export function needsLiveConnections(pathname: string): boolean {
@@ -116,6 +120,57 @@ export function needsLiveConnections(pathname: string): boolean {
 export async function serveInTaskManager(request: Request, env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<Response> {
   await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
   return env.TASK_MANAGER.getByName(OBJECT_NAME).fetch(request)
+}
+
+/**
+ * Tells the chat integrations that a session started a turn, so the chat it belongs to follows it
+ * and gets the reply. The connections live in the task manager object, and the session runs in its
+ * agent's object, whose own integration manager never starts: there the call did nothing, and a
+ * turn started from the app or a scheduled task never reached its chat. A failure is reported and
+ * does not fail the turn.
+ */
+export async function announceSessionStart(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>, agentSlug: string, sessionId: string): Promise<void> {
+  try {
+    const own = servingTaskManager()
+    if (own) return await own.sessionStarted(agentSlug, sessionId)
+    await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+    await env.TASK_MANAGER.getByName(OBJECT_NAME).sessionStarted(agentSlug, sessionId)
+  } catch (error) {
+    console.error(`[task-manager] announcing the start of session ${sessionId} of agent ${agentSlug} failed:`, error)
+    captureException(error, { tags: { component: 'task-manager', operation: 'announce-session-start' }, extra: { agentSlug, sessionId } })
+  }
+}
+
+/**
+ * Runs a host tool of an agent's session in the task manager object. The webhook relay and the
+ * trigger manager run there, with the other background services. In the agent's object they never
+ * start: a webhook tool found the relay stopped, and a new trigger's sync did nothing. Every host
+ * tool goes there, so all of them run in one place. A failure rejects; the session reports it as
+ * the tool's error.
+ */
+export async function runHostToolInTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>, request: HostToolRequest): Promise<HostToolResult> {
+  const own = servingTaskManager()
+  if (own) return own.runHostTool(request)
+  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+  return env.TASK_MANAGER.getByName(OBJECT_NAME).runHostTool(request)
+}
+
+/**
+ * Whether webhooks can be received, as the relay in the task manager object sees it. An agent's
+ * container start reads it for its webhook tools. A failed read (the object restarting after a
+ * deploy) counts as unavailable: the agent starts without webhook tools rather than not at all.
+ */
+export async function webhookRelayAvailableInTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<boolean> {
+  try {
+    const own = servingTaskManager()
+    if (own) return await own.webhookRelayAvailable()
+    await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+    return await env.TASK_MANAGER.getByName(OBJECT_NAME).webhookRelayAvailable()
+  } catch (error) {
+    console.warn('[task-manager] reading the webhook relay status failed; the agent starts without webhook tools:', error)
+    captureException(error, { level: 'warning', tags: { component: 'task-manager', operation: 'webhook-relay-status' } })
+    return false
+  }
 }
 
 /**
@@ -187,8 +242,10 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     sql.exec('CREATE TABLE IF NOT EXISTS deploy_step (step TEXT NOT NULL, version TEXT NOT NULL, PRIMARY KEY (step, version))')
   }
 
+  // The org's services and the scheduling calls run here: a caller's restart would end them, so the
+  // object moves to new code by Cloudflare's deferred update. The deploy step still restarts it (runsDeployOf).
   checkVersion(callerVersion: string): boolean {
-    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion, () => false)
   }
 
   /**
@@ -254,6 +311,28 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
       throw error
     }
     if (version) sql.exec('INSERT OR IGNORE INTO deploy_step (step, version) VALUES (?, ?)', step, version)
+  }
+
+  /** A session started a turn (announceSessionStart): the integration manager here holds the chats. */
+  async sessionStarted(agentSlug: string, sessionId: string): Promise<void> {
+    await this.start()
+    await serving.run(this, async () => {
+      const { agentIntegrationManager } = await import('@shared/lib/agent-integrations/agent-integration-manager')
+      await agentIntegrationManager.sessionStarted(agentSlug, sessionId)
+    })
+  }
+
+  /** A host tool of an agent's session (runHostToolInTaskManager): the relay and the trigger manager it uses run here. */
+  async runHostTool(request: HostToolRequest): Promise<HostToolResult> {
+    await this.start()
+    return serving.run(this, async () => (await import('@shared/lib/host/tools')).runHostTool(request))
+  }
+
+  /** Whether the relay here can receive webhooks (webhookRelayAvailableInTaskManager). */
+  async webhookRelayAvailable(): Promise<boolean> {
+    await this.start()
+    const { getWebhookRelay } = await import('@shared/lib/webhook-relay')
+    return getWebhookRelay().snapshot().available
   }
 
   /** An API request that needs the services running here (serveInTaskManager). */

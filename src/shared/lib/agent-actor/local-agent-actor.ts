@@ -86,6 +86,12 @@ export interface LocalActorDeps {
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
   /**
+   * Where the agent's files, config documents and transcripts are, when the
+   * deployment keeps them somewhere other than a directory on this machine.
+   * Omitted: the local workspace.
+   */
+  readonly createSessionStore?: (slug: AgentSlug, hooks: Pick<SessionStore, 'onActivity'>) => SessionStore
+  /**
    * What the agent's idle alarm waits with, for a deployment whose process
    * can end while the container runs. Absent: this process's timer.
    */
@@ -151,7 +157,7 @@ export class LocalAgentActor implements AgentActor {
       state ??
       createAgentState(slug, {
         sessions: {
-          store: createLocalSessionStore(slug, deps, {
+          store: (deps.createSessionStore ?? ((s, hooks) => createLocalSessionStore(s, deps, hooks)))(slug, {
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
           }),
           host: deps.host,
@@ -166,7 +172,7 @@ export class LocalAgentActor implements AgentActor {
     this.memories = createMemoryOps(this.store.files)
     this.config = this.store.config
     this.live = async () => liveSummary(slug, this.state, deps)
-    this.container = createContainerOps(slug, deps)
+    this.container = createContainerOps(slug, this.state, deps)
     const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)
     this.sessions = createSessionOps(slug, this.store, this.state, delivery, deps)
     this.messages = createMessageOps(slug, this.store, this.state, delivery, deps)
@@ -249,7 +255,7 @@ function liveSummary(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): 
   }
 }
 
-function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps {
+function createContainerOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): ContainerOps {
   const runtime = () => deps.containerHost.runtime(slug)
   const client = () => runtime().getClient()
   return {
@@ -258,6 +264,10 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     },
     stop: (...args) => runtime().stopContainer(...args),
     keepAlive: async () => runtime().keepAlive(),
+    checkIdle: () => state.idleAlarm.fire(),
+    syncStatus: async () => {
+      await runtime().syncAgentStatus()
+    },
     status: async () => runtime().getCachedInfo(),
     invalidate: async (options) => {
       if (!runtime().holdsDrives()) return 'not-running'

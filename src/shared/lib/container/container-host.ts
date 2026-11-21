@@ -74,6 +74,16 @@ export class ContainerHost {
     this.agentSessions = access
   }
 
+  private webhookRelayAvailable: (() => Promise<boolean>) | null = null
+
+  /**
+   * Whether webhooks can be received, for a host whose webhook relay runs in
+   * another process. Set once at boot. Null: the relay of this process.
+   */
+  useWebhookRelayStatus(read: (() => Promise<boolean>) | null): void {
+    this.webhookRelayAvailable = read
+  }
+
   /** The agents' idle alarms, attached by the agent registry when it is created. */
   private agentIdleAlarms: AgentIdleAlarms | null = null
 
@@ -130,6 +140,9 @@ export class ContainerHost {
       },
       get agentContainerWatches() {
         return self.agentContainerWatches
+      },
+      get webhookRelayAvailable() {
+        return self.webhookRelayAvailable
       },
       afterForceStop: (slug: string) => self.afterForceStop(slug),
     }

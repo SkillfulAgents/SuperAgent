@@ -8,7 +8,7 @@
  * import graph of anything that touches an agent. Notifications, analytics
  * and the global feed are handed over synchronously, as they always were.
  */
-import { createLocalHostPort, type ComputerUseCaller, type SessionNotification } from '@shared/lib/agent-actor/host-port'
+import { createLocalHostPort, type ComputerUseCaller, type HostPort, type HostToolRequest, type HostToolResult, type SessionNotification } from '@shared/lib/agent-actor/host-port'
 import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -79,13 +79,15 @@ function notify(notification: SessionNotification): Promise<void> {
  * hint that may never reach them. Work the host must do because of it is
  * started here, directly, so it never waits on a hint reaching a listener.
  */
-function feedEvent(event: GlobalFeedEvent): Promise<void> {
+function feedEvent(event: GlobalFeedEvent, announceSessionStart?: SessionStartAnnouncer): Promise<void> {
   globalFeed.publish(event)
-  return hostWorkFor(event)
+  return hostWorkFor(event, announceSessionStart)
 }
 
+type SessionStartAnnouncer = (agentSlug: string, sessionId: string) => Promise<void>
+
 /** Loaded on first use, as the tools are: both services reach back to the agent registry. */
-async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
+async function hostWorkFor(event: GlobalFeedEvent, announceSessionStart?: SessionStartAnnouncer): Promise<void> {
   // A session settled: the agent's stale and opted-in widgets re-run.
   if (event.type === 'session_idle' && typeof event.agentSlug === 'string') {
     const { widgetRefreshService } = await import('@shared/lib/services/widget-refresh-service')
@@ -93,34 +95,49 @@ async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
   }
   // A session started a turn: the chat it belongs to, if any, follows it.
   if (event.type === 'session_active' && typeof event.agentSlug === 'string' && typeof event.sessionId === 'string') {
+    if (announceSessionStart) return announceSessionStart(event.agentSlug, event.sessionId)
     const { agentIntegrationManager } = await import('@shared/lib/agent-integrations/agent-integration-manager')
     await agentIntegrationManager.sessionStarted(event.agentSlug, event.sessionId)
   }
 }
 
-export const localHostPort = createLocalHostPort({
-  calls: {
-    hostTool: async (request) => (await import('./tools')).runHostTool(request),
-    computerUse: async ({ method, params, caller, startBy, app }) => {
-      if (!isE2EMock()) return (await computerUse()).executeComputerUseCommand(method, params, await computerUseCaller(caller), { startBy, app })
-      const acted = app ?? (await mockTargetApp(method, params))
-      return { output: `[mock] ${method} executed successfully`, ...(acted !== undefined && { app: acted }) }
+type HostToolRunner = (request: HostToolRequest) => Promise<HostToolResult>
+
+/**
+ * The host as the agents in this process reach it. `announceSessionStart` is where a session's
+ * start is announced, so the chat it belongs to follows it. Omitted, as on desktop and the Node
+ * server, it is the integration manager of this process; a deployment that keeps the chat
+ * connections in another process passes what reaches them there. `runHostTool` is the same for
+ * the host tools: they use the webhook relay and the trigger manager, which run with the
+ * background services.
+ */
+export function createProcessHostPort(options: { announceSessionStart?: SessionStartAnnouncer; runHostTool?: HostToolRunner } = {}): HostPort {
+  return createLocalHostPort({
+    calls: {
+      hostTool: async (request) => (options.runHostTool ? options.runHostTool(request) : (await import('./tools')).runHostTool(request)),
+      computerUse: async ({ method, params, caller, startBy, app }) => {
+        if (!isE2EMock()) return (await computerUse()).executeComputerUseCommand(method, params, await computerUseCaller(caller), { startBy, app })
+        const acted = app ?? (await mockTargetApp(method, params))
+        return { output: `[mock] ${method} executed successfully`, ...(acted !== undefined && { app: acted }) }
+      },
+      computerUsePermissions: async (needs) => (isE2EMock() ? null : (await computerUse()).checkComputerUsePermissions(needs)),
+      computerUseTargetApp: async ({ method, params }) =>
+        isE2EMock()
+          ? mockTargetApp(method, params)
+          : (await computerUse()).placeComputerUseCall(method, params),
+      computerUseAppIcon: async ({ app }) => (await import('@shared/lib/computer-use/app-icon')).getAppIconBase64(app),
+      hostScript: async ({ script, scriptType }) => (await import('./script')).runHostScript(script, scriptType),
+      loginRequest: async (request) => (await import('@shared/lib/browser-vault/login-host')).decideLoginRequest(request),
     },
-    computerUsePermissions: async (needs) => (isE2EMock() ? null : (await computerUse()).checkComputerUsePermissions(needs)),
-    computerUseTargetApp: async ({ method, params }) =>
-      isE2EMock()
-        ? mockTargetApp(method, params)
-        : (await computerUse()).placeComputerUseCall(method, params),
-    computerUseAppIcon: async ({ app }) => (await import('@shared/lib/computer-use/app-icon')).getAppIconBase64(app),
-    hostScript: async ({ script, scriptType }) => (await import('./script')).runHostScript(script, scriptType),
-    loginRequest: async (request) => (await import('@shared/lib/browser-vault/login-host')).decideLoginRequest(request),
-  },
-  events: {
-    global: feedEvent,
-    notification: notify,
-    analytics: ({ event, properties }) => trackServerEvent(event, properties),
-    computerUseTurnEnded: async ({ sessionId }) => {
-      if (!isE2EMock()) (await computerUse()).endComputerUseTurn(sessionId)
+    events: {
+      global: (event) => feedEvent(event, options.announceSessionStart),
+      notification: notify,
+      analytics: ({ event, properties }) => trackServerEvent(event, properties),
+      computerUseTurnEnded: async ({ sessionId }) => {
+        if (!isE2EMock()) (await computerUse()).endComputerUseTurn(sessionId)
+      },
     },
-  },
-})
+  })
+}
+
+export const localHostPort = createProcessHostPort()
