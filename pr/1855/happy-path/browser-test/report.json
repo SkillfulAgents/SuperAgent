@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Sent the \"Open a browser and go to https://example.com. Tell me the page title.\" message to agent QA-20261121-010159-pm9a and verified the reply names \"Example Domain\".",
+  "reason": "Opened agent QA-20261121-023221-cwf7, sent the browser task, and confirmed the reply names \"Example Domain\" as the page title.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-010159-pm9a and QA-20261121-010158-k5rv.",
-    "Step 2: Clicked the QA-20261121-010159-pm9a agent in the sidebar — its agent page opened at /agents/qa-20261121-010159-pm9a-mgjdfwtadk with an empty composer and status \"idle\".",
-    "Step 3: Typed the message into the composer and sent it. My first click hit the model/effort selector (\"Opus 5.5 · Medium\") instead of Send, which opened its popover. I pressed Escape and then clicked the Send button. The session \"Check Example.com Page Title\" started, the message appeared in the transcript, and the status changed to \"working\". The model stayed at Opus 5.5 · Medium. The misclick was my error, not an app bug.",
-    "Step 4: Waited for \"Example Domain\" to appear, with a 3-minute limit. It appeared before the limit. The status returned to \"idle\" and the run showed \"Worked for 5s · 3 tool calls · 163,115 tokens\".",
-    "Step 5: Verified the reply reads \"The page title is \"Example Domain\". The page loaded without errors, and I've closed the browser.\" Screenshot taken (step5-response.png)."
+    "Step 1: Navigated to http://localhost:47891 — the Gamut app loaded (title \"Gamut\") with the sidebar listing \"QA-20261121-023221-cwf7\".",
+    "Step 2: Clicked \"QA-20261121-023221-cwf7\" in the sidebar — the agent page opened at /agents/qa-20261121-023221-cwf7-n2hyyhp5ar, status \"idle\".",
+    "Step 3: Typed \"Open a browser and go to https://example.com. Tell me the page title.\" into the composer and pressed Enter — the text stayed in the composer and was not sent. I then clicked the Send button, and the message was sent. A new session \"Check Example.com Page Title\" started and showed \"Working...\".",
+    "Step 4: Waited for the \"Working...\" indicator to disappear (up to 3 minutes) — it cleared in under a minute. The status changed to \"idle\" and the agent replied.",
+    "Step 5: Verified the response reads 'The page title is \"Example Domain\". The browser has been closed again.' — the text matches. Took screenshot step5-response.png."
   ],
   "bugs": [],
-  "durationMs": 81679,
-  "sessionId": "d0bf90ef-073d-4768-9984-c32dd4d19113",
+  "durationMs": 64582,
+  "sessionId": "bf69d979-e16a-4e45-97c8-7f1df673a818",
   "cost": {
-    "inputTokens": 8855,
-    "outputTokens": 8886,
-    "cacheCreationTokens": 108305,
-    "cacheReadTokens": 1122032,
+    "inputTokens": 7978,
+    "outputTokens": 7096,
+    "cacheCreationTokens": 48573,
+    "cacheReadTokens": 676280,
     "model": "claude-haiku-5-5",
-    "totalCostUsd": 0.300869
+    "totalCostUsd": 0.171802
   }
 }

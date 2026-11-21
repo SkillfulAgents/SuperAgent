@@ -1,7 +1,11 @@
 [TEST_PASS]
-[REASON] Sent the "Open a browser and go to https://example.com. Tell me the page title." message to agent QA-20261121-010159-pm9a and verified the reply names "Example Domain".
-[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut home page loaded with the sidebar listing QA-20261121-010159-pm9a and QA-20261121-010158-k5rv.
-[STEP] Step 2: Clicked the QA-20261121-010159-pm9a agent in the sidebar — its agent page opened at /agents/qa-20261121-010159-pm9a-mgjdfwtadk with an empty composer and status "idle".
-[STEP] Step 3: Typed the message into the composer and sent it. My first click hit the model/effort selector ("Opus 5.5 · Medium") instead of Send, which opened its popover. I pressed Escape and then clicked the Send button. The session "Check Example.com Page Title" started, the message appeared in the transcript, and the status changed to "working". The model stayed at Opus 5.5 · Medium. The misclick was my error, not an app bug.
-[STEP] Step 4: Waited for "Example Domain" to appear, with a 3-minute limit. It appeared before the limit. The status returned to "idle" and the run showed "Worked for 5s · 3 tool calls · 163,115 tokens".
-[STEP] Step 5: Verified the reply reads "The page title is "Example Domain". The page loaded without errors, and I've closed the browser." Screenshot taken (step5-response.png).
+[REASON] Opened agent QA-20261121-023221-cwf7, sent the browser task, and confirmed the reply names "Example Domain" as the page title.
+[STEP] Step 1: Navigated to http://localhost:47891 — the Gamut app loaded (title "Gamut") with the sidebar listing "QA-20261121-023221-cwf7".
+[STEP] Step 2: Clicked "QA-20261121-023221-cwf7" in the sidebar — the agent page opened at /agents/qa-20261121-023221-cwf7-n2hyyhp5ar, status "idle".
+[STEP] Step 3: Typed "Open a browser and go to https://example.com. Tell me the page title." into the composer and pressed Enter — the text stayed in the composer and was not sent. I then clicked the Send button, and the message was sent. A new session "Check Example.com Page Title" started and showed "Working...".
+[STEP] Step 4: Waited for the "Working..." indicator to disappear (up to 3 minutes) — it cleared in under a minute. The status changed to "idle" and the agent replied.
+[STEP] Step 5: Verified the response reads 'The page title is "Example Domain". The browser has been closed again.' — the text matches. Took screenshot step5-response.png.
+
+Observations (not counted as bugs):
+- The composer placeholder says "Press cmd+enter to send", but a plain Enter did not send. This may be intended behaviour, since the Send button worked.
+- The completed turn shows "3 tool calls" and a visible "ToolSearch" card. I did not expand the turn to check whether browser_open/browser_navigate cards appear, since that is beyond the scripted steps.
