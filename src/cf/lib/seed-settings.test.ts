@@ -10,7 +10,7 @@ const SEED = JSON.stringify({
 })
 
 describe('seedSettings', () => {
-  it("starts a new org from its deployment's seed, with the origin this runtime needs", () => {
+  it("starts a new org from its deployment's seed, with the runner and origin this runtime needs", () => {
     const settings = { app: { theme: 'dark' } } as unknown as AppSettings
 
     expect(seedSettings(settings, SEED, ORIGIN)).toBe(true)
@@ -19,6 +19,7 @@ describe('seedSettings', () => {
       llmProvider: 'platform',
       app: { theme: 'dark', setupCompleted: true, hostBrowserProvider: 'platform' },
       auth: { allowLocalAuth: false, allowSocialAuth: true, trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: 60 },
+      container: { containerRunner: 'cloudflare-container' },
     })
   })
 
@@ -27,6 +28,7 @@ describe('seedSettings', () => {
       llmProvider: 'anthropic',
       app: { setupCompleted: true },
       auth: { allowLocalAuth: true, trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: 0 },
+      container: { containerRunner: 'cloudflare-container' },
     } as unknown as AppSettings
 
     expect(seedSettings(settings, SEED, ORIGIN)).toBe(false)
@@ -39,7 +41,7 @@ describe('seedSettings', () => {
 
     expect(seedSettings(settings, undefined, ORIGIN)).toBe(true)
 
-    expect(settings).toEqual({ auth: { trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: 60 } })
+    expect(settings).toEqual({ container: { containerRunner: 'cloudflare-container' }, auth: { trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: 60 } })
   })
 
   it('reads sessions from the signed cookie for a minute, so a request does not pay two D1 round trips for one', () => {
@@ -65,13 +67,17 @@ describe('seedSettings', () => {
     seedSettings(seeded, JSON.stringify({ auth: { sessionCookieCacheSeconds: seconds } }), ORIGIN)
     expect(seeded.auth?.sessionCookieCacheSeconds).toBe(seconds)
 
-    const existing = { app: { setupCompleted: true }, auth: { trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: seconds } } as unknown as AppSettings
+    const existing = {
+      app: { setupCompleted: true },
+      auth: { trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: seconds },
+      container: { containerRunner: 'cloudflare-container' },
+    } as unknown as AppSettings
     expect(seedSettings(existing, SEED, ORIGIN)).toBe(false)
     expect(existing.auth?.sessionCookieCacheSeconds).toBe(seconds)
   })
 
   it('keeps the origins an admin already trusts and adds its own', () => {
-    const settings = { app: { setupCompleted: true }, auth: { trustedOrigins: ['https://old.example.com'] } } as unknown as AppSettings
+    const settings = { app: { setupCompleted: true }, auth: { trustedOrigins: ['https://old.example.com'] }, container: { containerRunner: 'cloudflare-container' } } as unknown as AppSettings
 
     seedSettings(settings, SEED, ORIGIN)
 

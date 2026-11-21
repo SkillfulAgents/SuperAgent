@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deployAuthorized, serveAppShell, servedByApi, withClientAddress } from './index'
+import { deployAuthorized, serveAppShell, servedByApi, withClientAddress, withoutClientAddress } from './index'
 
 describe('withClientAddress', () => {
   it("replaces the address a client sent with Cloudflare's", () => {
@@ -33,6 +33,22 @@ describe('withClientAddress', () => {
 
     expect(request.headers.get('x-forwarded-for')).toBeNull()
     expect(request.headers.get('x-real-ip')).toBeNull()
+  })
+})
+
+describe('withoutClientAddress', () => {
+  it("drops every address header from a container's call, which the agent's own code wrote", async () => {
+    const request = withoutClientAddress(new Request('http://host.internal/api/proxy/v1/messages', {
+      method: 'POST',
+      headers: { 'cf-connecting-ip': '203.0.113.7', 'x-forwarded-for': '198.51.100.1', 'x-real-ip': '198.51.100.1', authorization: 'Bearer host-token' },
+      body: '{"model":"sonnet"}',
+    }))
+
+    expect(request.headers.get('cf-connecting-ip')).toBeNull()
+    expect(request.headers.get('x-forwarded-for')).toBeNull()
+    expect(request.headers.get('x-real-ip')).toBeNull()
+    expect(request.headers.get('authorization')).toBe('Bearer host-token')
+    expect(await request.text()).toBe('{"model":"sonnet"}')
   })
 })
 

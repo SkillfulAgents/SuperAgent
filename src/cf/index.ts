@@ -4,10 +4,12 @@
  * loads on the first API request (boot.ts): evaluating it while the Worker starts goes over the
  * startup CPU limit.
  */
-import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher, ImagesBinding, R2Bucket } from 'cloudflare:workers'
+import { WorkerEntrypoint, type D1Database, type DurableObjectNamespace, type ExecutionContext, type ExportedHandler, type Fetcher, type ImagesBinding, type R2Bucket } from 'cloudflare:workers'
 import { captureException, flushErrorReporting } from '@shared/lib/error-reporting'
 import { declareServerCapabilities, getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
+import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './objects/cloudflare-app-state'
+import { serveContainerCall, type AgentDurableObject } from './objects/cloudflare-agent'
 import { DeployStepNotReady, needsLiveConnections, prepareDeploy, serveInTaskManager, type TaskManagerDurableObject } from './objects/cloudflare-task-manager'
 import { logErrorsAsText } from './lib/cloudflare-error-reporting'
 import { nearStorage } from './lib/object-location'
@@ -15,6 +17,18 @@ import type { VersionMetadata } from './lib/object-version'
 
 export { AppStateDurableObject } from './objects/cloudflare-app-state'
 export { TaskManagerDurableObject } from './objects/cloudflare-task-manager'
+export { AgentDurableObject } from './objects/cloudflare-agent'
+
+/**
+ * A container's calls to http://host.internal and http://workspace.internal, which its
+ * AgentDurableObject routes here (ctx.exports, by this name). The work they leave running keeps
+ * the invocation alive.
+ */
+export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string }> {
+  fetch(request: Request): Promise<Response> {
+    return runWithBackground(this.ctx, () => serveContainerCall(withoutClientAddress(request), nearStorage(this.env), this.ctx.props.containerId))
+  }
+}
 
 export interface Env {
   /** The org's database: SuperAgent's tables. */
@@ -27,6 +41,10 @@ export interface Env {
   HOST_FILES: R2Bucket
   /** Cloudflare Images: HEIC photos to JPEG and profile photos (cloudflare-image-service.ts). */
   IMAGES: ImagesBinding
+  /** One per agent: its container and, while it sleeps, its saved workspace (cloudflare-agent.ts). */
+  AGENT: DurableObjectNamespace<AgentDurableObject>
+  /** Agent workspace files, one object per content hash. */
+  WORKSPACES: R2Bucket
   /** The built UI. */
   ASSETS: Fetcher
   /** The Browser Vault key, 32 bytes in base64: a Worker secret (cloudflare-key-manager.ts). */
@@ -35,6 +53,10 @@ export interface Env {
   APP_ORIGIN?: string
   /** Where the org's database is, as Cloudflare's location hint (such as "wnam"): new Durable Objects are made near it (object-location.ts). Unset: near their first caller. */
   STORAGE_LOCATION?: string
+  /** The container snapshot agents start from, as JSON (id, name, size): its deployment keeps it warm. Unset: the image (container-snapshot.ts). */
+  CONTAINER_SNAPSHOT?: string
+  /** The instance type of each agent's container; unset: the one cloudflare-agent.ts names. */
+  AGENT_INSTANCE_TYPE?: string
   /** The settings a new org starts from, as JSON: its deployment's choice (seed-settings.ts). */
   SEED_SETTINGS?: string
   /** The secret the deploy step sends: a Worker secret. Without it the deploy step is refused, and the first API request of each isolate runs the step. */
@@ -134,6 +156,16 @@ export function withClientAddress(request: Request): Request {
   headers.delete('x-real-ip')
   const address = request.headers.get('cf-connecting-ip')
   if (address) headers.set('x-forwarded-for', address)
+  return new Request(request, { headers })
+}
+
+/**
+ * A container's call with no client address on it. It does not come through Cloudflare's edge, so
+ * every address header on it, cf-connecting-ip too, is what the agent's own code sent.
+ */
+export function withoutClientAddress(request: Request): Request {
+  const headers = new Headers(request.headers)
+  for (const name of ['cf-connecting-ip', 'x-forwarded-for', 'x-real-ip']) headers.delete(name)
   return new Request(request, { headers })
 }
 

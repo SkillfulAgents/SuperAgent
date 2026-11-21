@@ -29,6 +29,8 @@ import { CloudflareImageService } from './cloudflare-image-service'
 import { createCloudflareErrorReporter } from './lib/cloudflare-error-reporting'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './objects/cloudflare-task-manager'
+import { agentContainers } from './cloudflare-container-control'
+import { installCloudflareContainers } from '@shared/lib/container/cloudflare-container-runtime'
 import { seedSettings } from './lib/seed-settings'
 import type { Env } from './index'
 
@@ -90,6 +92,12 @@ export function serveInObject(request: Request, env: Env): Promise<Response> {
   return Promise.resolve(api.fetch(request, env))
 }
 
+/** A container's call to the host, from AgentContainerOutbound (index.ts), which holds the request lifetime. */
+export function serveContainerRequest(request: Request, env: Env): Promise<Response> {
+  return Promise.resolve(api.fetch(request, env))
+}
+
+/** The background services, minus the ones that watch local containers: each agent's object watches its own. */
 export function startBackgroundServices(): Promise<void> {
   return initializeServices()
 }
@@ -121,6 +129,8 @@ export async function migrateDatabase(env: Env): Promise<void> {
 
 async function start(env: Env): Promise<void> {
   startErrorReporting()
+  // Before anything can start a container: how SuperAgent's cloudflare-container runner reaches agents here.
+  installCloudflareContainers(agentContainers(env.AGENT))
   installFetch()
   // A Worker's disk does not outlive a request: blobs and the bytes of uploads in progress live in R2.
   setBlobStore(new CloudflareBlobStore(env.HOST_FILES))
@@ -137,11 +147,11 @@ async function start(env: Env): Promise<void> {
     tasks = new CloudflareTaskManager(env.TASK_MANAGER, env.VERSION?.timestamp)
     await initializeBackgroundWork(tasks)
   }
-  registerBackgroundWork()
+  registerBackgroundWork({ localContainers: false })
 }
 
 /**
- * The one place this isolate's fetch is replaced: every call goes out through errorOnRedirect.
+ * The one place this isolate's fetch is replaced, so every call goes through errorOnRedirect.
  * The platform attribution that the process setup installs later wraps this fetch.
  */
 function installFetch(): void {

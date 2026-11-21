@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Env } from '../index'
 import { nearStorage } from './object-location'
 
-const NAMESPACES = ['APP_STATE', 'TASK_MANAGER'] as const
+const NAMESPACES = ['AGENT', 'APP_STATE', 'TASK_MANAGER'] as const
 
 /** The bindings of one isolate, recording how each object was asked for. */
 function bindings(location?: string) {

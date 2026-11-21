@@ -955,8 +955,12 @@ export class ContainerRuntime {
     return this.host.agentIdleAlarms?.peek(this.slug)
   }
 
-  /** The agent's container watch, made with its actor if none is held: a runtime with a client always has one. */
+  /**
+   * The agent's container watch, made with its actor if none is held: a runtime with a client
+   * always has one. None when the client's runner hears the container exit itself.
+   */
   private containerWatch(): ContainerWatch | undefined {
+    if (this.client?.reportsExits) return undefined
     return this.host.agentContainerWatches?.get(this.slug)
   }
 

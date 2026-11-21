@@ -56,6 +56,7 @@ export const CONTAINER_RUNNER_IDS = [
   'wsl2',
   'kubernetes',
   'lambda-microvm',
+  'cloudflare-container',
 ] as const
 export type ContainerRunner = (typeof CONTAINER_RUNNER_IDS)[number]
 
@@ -264,6 +265,11 @@ export interface ContainerClient {
   start(options?: StartOptions): Promise<ContainerInfo | void>
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
+  /**
+   * True when the runner hears this container exit itself, where the container
+   * is held: the agent's actor then polls neither its status nor its health.
+   */
+  readonly reportsExits?: boolean
 
   // Run flags that let the container mount its volumes with FUSE, or null when this runtime can't.
   volumeRunFlags(): string | null

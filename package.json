@@ -16,7 +16,7 @@
     "dev:electron": "install-electron && cross-env SUPERAGENT_BASE_PORT=5000 electron-vite dev",
     "build": "npm run build:web && npm run build:api",
     "build:web": "node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
-    "deploy:cf": "cross-env AUTH_MODE=true npm run build:web && npx wrangler@4 deploy --config src/cf/wrangler.jsonc",
+    "deploy:cf": "cross-env AUTH_MODE=true npm run build:web && docker build --platform linux/amd64 -t superagent-container:linux-amd64 ./agent-container && npx wrangler@4.161.0 deploy --config src/cf/wrangler.jsonc",
     "build:api": "tsup && node scripts/check-runtime-dependencies.mjs web",
     "build:electron": "node --max-old-space-size=4096 node_modules/electron-vite/bin/electron-vite.js build && node scripts/check-runtime-dependencies.mjs electron",
     "check:runtime-deps": "node scripts/check-runtime-dependencies.mjs all",

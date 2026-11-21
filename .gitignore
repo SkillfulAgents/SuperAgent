@@ -73,3 +73,6 @@ docs/superpowers/
 # perf suite output (npm run test:perf)
 perf-results.jsonl
 perf-results.txt
+
+# Wrangler's local state
+.wrangler/
