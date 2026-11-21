@@ -4,6 +4,7 @@ import { useMessages, useStopBackgroundTask } from '@renderer/hooks/use-messages
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { useAgent } from '@renderer/hooks/use-agents'
+import { useTurnAgentCalls } from '@renderer/hooks/use-turn-agent-calls'
 import { usePendingUserRequests } from '@shared/lib/tools/requests/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
@@ -16,7 +17,9 @@ import { agentAvatarAccent } from '@shared/lib/types/agent-avatar-orbs'
 import { computerUsePreferences, type ComputerUseSettings } from '@shared/lib/computer-use/types'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
-import { ActivityCard, ActivityErrorCard, type ActivitySubagentItem } from './activity-card'
+import { ActivityCard, ActivityErrorCard, type ActivityAgentCall, type ActivityBackgroundTask, type ActivitySubagentItem } from './activity-card'
+import { useOptionalWorkflow } from '@renderer/context/workflow-context'
+import type { ApiToolCall } from '@shared/lib/types/api'
 import { deriveActivityStatus } from './activity-orb'
 
 interface AgentActivityIndicatorProps {
@@ -28,10 +31,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const {
     isActive, error, apiErrorCode, errorPresentation, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
-    isThinking,
+    isThinking, workflows,
   } = useMessageStream(sessionId, agentSlug, [
     'isActive', 'error', 'apiErrorCode', 'errorPresentation', 'activeStartTime', 'isCompacting', 'activeSubagents',
-    'completedSubagents', 'apiRetry', 'computerUseApp', 'computerUseAppIcon', 'backgroundTasks', 'isThinking',
+    'completedSubagents', 'apiRetry', 'computerUseApp', 'computerUseAppIcon', 'backgroundTasks', 'isThinking', 'workflows',
   ])
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
   const { data: agent } = useAgent(agentSlug)
@@ -75,6 +78,38 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const isAwaitingInput = isActive &&
     (pendingUserRequests ?? []).some((r) => r.blocking && !r.autoApproved)
   const { data: messages } = useMessages(sessionId, agentSlug)
+
+  // In a session, every row opens what it names in the side drawer: a subagent
+  // its transcript, a background command or monitor its task, a background
+  // workflow its run.
+  const tray = useOptionalWorkflow()
+  const openSubagentRow = useCallback((item: Pick<ActivitySubagentItem, 'id'>) => {
+    if (!tray) return
+    let call: ApiToolCall | undefined
+    for (const message of messages ?? []) {
+      if (message.type !== 'assistant') continue
+      call = (message.toolCalls as ApiToolCall[]).find(tc => (tc.name === 'Agent' || tc.name === 'Task') && (tc.subagent?.agentId === item.id || tc.id === item.id)) ?? call
+    }
+    // The tab finds the call's saved copy in the transcript; this stand-in covers the time before it has one.
+    tray.openSubagent(call ?? { id: item.id, name: 'Agent', input: {} })
+  }, [tray, messages])
+  const openTaskRow = useCallback((task: ActivityBackgroundTask) => {
+    if (!tray) return
+    if (task.isSubagent) return openSubagentRow({ id: task.taskId })
+    if (task.isWorkflow) {
+      const run = workflows.find(w => w.runId === task.taskId || w.toolUseId === task.taskId)
+      if (run) return tray.openWorkflow(run.runId, run.name)
+    }
+    tray.openBackgroundTask(task.taskId)
+  }, [tray, workflows, openSubagentRow])
+  const openAgentCallRow = useCallback((call: ActivityAgentCall) => {
+    const slug = call.agent?.slug
+    if (tray && slug && call.sessionId) tray.openAgentCall({ slug, sessionId: call.sessionId })
+  }, [tray])
+
+  // Other agents this turn asked to work, each shown while its own session works.
+  const agentCallRows = useTurnAgentCalls(messages, agentSlug)
+
 
   // Use activeStartTime from SSE (set when session_active fires) as primary source.
   // Falls back to last persisted user message timestamp (for page refresh recovery).
@@ -253,6 +288,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   return (
     <ActivityCard
+      onOpenSubagent={tray ? openSubagentRow : undefined}
+      onOpenTask={tray ? openTaskRow : undefined}
+      onOpenAgentCall={tray ? openAgentCallRow : undefined}
       statusText={statusText}
       orbState={orbState}
       agent={agent}
@@ -268,6 +306,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         onRevoke: handleRevokeComputerUse,
       } : null}
       subagents={subagentRows}
+      agentCalls={agentCallRows}
       backgroundTasks={labeledBackgroundTasks}
       todos={todos}
       onStopTask={handleStopTask}

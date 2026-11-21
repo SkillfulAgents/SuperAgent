@@ -1,5 +1,5 @@
 import { cn } from '@shared/lib/utils'
-import { ChevronDown, Circle, CircleCheckBig, Loader2, Monitor, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Circle, CircleCheckBig, Loader2, Monitor, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
@@ -11,6 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 import type { Todo } from '@shared/lib/utils/derive-task-list'
 import { AgentAvatar, type AvatarMotionState } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import type { ApiAgent } from '@shared/lib/types/api'
+import { CANVAS_FLOAT_SHADOW_CLASS } from './chat-composer-box'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
 /**
@@ -46,6 +47,21 @@ export interface ActivityBackgroundTask {
   detail?: string | null
 }
 
+/** A conversation this turn started or continued with another agent (invoke_agent). */
+export interface ActivityAgentCall {
+  key: string
+  /** The called agent's name. */
+  name: string
+  /** For its avatar beside the name. */
+  agent?: Pick<ApiAgent, 'slug' | 'avatar'> | null
+  /** What this session asked of it. */
+  prompt: string
+  /** Working while the called session is; completed once it has stopped. */
+  status: 'running' | 'completed'
+  /** The called session; null until the call has returned it, and the row cannot open before then. */
+  sessionId: string | null
+}
+
 export interface ActivityComputerUse {
   app: string
   /** base64 PNG of the app icon; falls back to a generic monitor glyph. */
@@ -73,6 +89,7 @@ export interface ActivityCardProps {
   detached?: boolean
   computerUse?: ActivityComputerUse | null
   subagents?: ActivitySubagentItem[]
+  agentCalls?: ActivityAgentCall[]
   backgroundTasks?: ActivityBackgroundTask[]
   todos?: Todo[] | null
   /**
@@ -80,6 +97,12 @@ export interface ActivityCardProps {
    * gets a stop control. Rejections surface as a retry state on the row.
    */
   onStopTask?: (taskId: string) => Promise<void>
+  /** Open a subagent's row in the side drawer. When absent the row's label shows its full text instead. */
+  onOpenSubagent?: (item: ActivitySubagentItem) => void
+  /** Open a background task's row in the side drawer. When absent the row is plain text. */
+  onOpenTask?: (task: ActivityBackgroundTask) => void
+  /** Open a conversation with another agent in the side drawer. When absent the row is plain text. */
+  onOpenAgentCall?: (call: ActivityAgentCall) => void
 }
 
 /** The avatar rolls round its rim as the transcript scrolls. */
@@ -99,9 +122,13 @@ export function ActivityCard({
   detached = false,
   computerUse,
   subagents = [],
+  agentCalls = [],
   backgroundTasks = [],
   todos,
   onStopTask,
+  onOpenSubagent,
+  onOpenTask,
+  onOpenAgentCall,
 }: ActivityCardProps) {
   const [showAllTodos, setShowAllTodos] = useState(false)
   const [isCollapsed, setIsCollapsed] = useState(false)
@@ -120,12 +147,14 @@ export function ActivityCard({
   const monitorCount = visibleBackgroundTasks.filter((task) => task.isMonitor).length
   const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount - backgroundAgentCount - monitorCount
   const activeSubagentCount = subagents.filter((item) => item.status === 'running').length + backgroundAgentCount
+  const runningAgentCallCount = agentCalls.filter((call) => call.status === 'running').length
   const pendingTaskCount = todos?.filter((todo) => todo.status !== 'completed').length ?? 0
   // The tree is live work only — things running right now, hanging off the orb.
   // The plan is a different kind of thing (intent, not activity), so it sits
   // below the tree under its own header rather than taking branches.
   const hasTreeRows = !!computerUse
     || subagents.length > 0
+    || agentCalls.length > 0
     || visibleBackgroundTasks.length > 0
   const hasPlan = !!todos && pendingTaskCount > 0
   const hasExpandableDetails = hasTreeRows || hasPlan
@@ -137,6 +166,7 @@ export function ActivityCard({
     formatActivityCount(monitorCount, 'monitor', 'monitors'),
     formatActivityCount(backgroundWorkflowCount, 'background workflow', 'background workflows'),
     formatActivityCount(activeSubagentCount, 'subagent', 'subagents'),
+    formatActivityCount(runningAgentCallCount, 'invoked agent', 'invoked agents'),
     formatActivityCount(pendingTaskCount, 'pending task', 'pending tasks'),
   ].filter(Boolean).join(', ')
 
@@ -157,7 +187,8 @@ export function ActivityCard({
           card until it pushes the chat history off screen. */}
       <div
         className={cn(
-          'relative max-h-[30vh] overflow-y-auto border border-border/70 bg-background/85 px-3 pt-3 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]',
+          'relative max-h-[30vh] overflow-y-auto border border-border/70 bg-background/85 px-3 pt-3 backdrop-blur-md supports-[backdrop-filter]:bg-background/65',
+          CANVAS_FLOAT_SHADOW_CLASS,
           isAwaitingInput || detached
             ? 'rounded-dialog pb-3'
             : 'rounded-t-dialog border-b-0 pb-8',
@@ -246,7 +277,7 @@ export function ActivityCard({
                   <RowMark>
                     {item.status === 'completed' ? <span>✓</span> : null}
                   </RowMark>
-                  <SubagentActivityLabel item={item} />
+                  <SubagentActivityLabel item={item} onOpen={onOpenSubagent && (() => onOpenSubagent(item))} />
                   {onStopTask && item.status === 'running' && item.taskId && (
                     <StopTaskButton
                       taskId={item.taskId}
@@ -258,12 +289,22 @@ export function ActivityCard({
               </li>
             ))}
 
+            {agentCalls.map((call, index) => (
+              <AgentCallActivityRow
+                key={call.key}
+                call={call}
+                tracerRow={computerUseRows + subagents.length + index}
+                onOpen={onOpenAgentCall && call.sessionId ? () => onOpenAgentCall(call) : undefined}
+              />
+            ))}
+
             {visibleBackgroundTasks.map((task, index) => (
               <BackgroundTaskRow
                 key={task.taskId}
                 task={task}
-                tracerRow={computerUseRows + subagents.length + index}
+                tracerRow={computerUseRows + subagents.length + agentCalls.length + index}
                 onStop={onStopTask}
+                onOpen={onOpenTask && (() => onOpenTask(task))}
               />
             ))}
           </ul>
@@ -306,13 +347,110 @@ function formatActivityCount(count: number, singular: string, plural: string): s
   return `${count} ${count === 1 ? singular : plural}`
 }
 
-function SubagentActivityLabel({ item }: { item: ActivitySubagentItem }) {
+/**
+ * A row that opens its work in the drawer: underlined on hover, with a chevron
+ * trailing the text (not the row's edge) to say it drills in.
+ */
+const OPEN_ROW_CLASS =
+  'group flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-sm text-left hover:underline hover:decoration-muted-foreground/40 hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
+function OpenRowChevron() {
+  return (
+    <ChevronRight
+      aria-hidden
+      className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+    />
+  )
+}
+
+/**
+ * Another agent this turn asked to work: its avatar and name, then what it was
+ * asked. A finished call recedes with a tick, as a finished subagent does.
+ */
+function AgentCallActivityRow({ call, tracerRow, onOpen }: {
+  call: ActivityAgentCall
+  tracerRow: number
+  onOpen?: () => void
+}) {
+  const running = call.status === 'running'
+  const fullText = call.prompt ? `${call.name} ${call.prompt}` : call.name
+  const content = (
+    <>
+      {call.agent?.avatar && <AgentAvatar agent={call.agent} size={12} state={running ? 'working' : 'idle'} still={!running} />}
+      <span className="min-w-0 truncate">
+        <span>{call.name}</span>
+        {call.prompt && <span className="text-muted-foreground">{' '}{call.prompt}</span>}
+      </span>
+    </>
+  )
+  return (
+    <li
+      style={tracerRowStyle(tracerRow)}
+      data-testid="agent-call-activity-row"
+      data-tracer-live={running ? 'true' : undefined}
+    >
+      <div className={cn('flex items-center gap-1.5', !running && 'text-muted-foreground')}>
+        <RowMark>{running ? null : <span>✓</span>}</RowMark>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className={OPEN_ROW_CLASS}
+            title={fullText}
+            aria-label={`Open ${fullText}`}
+            data-testid="agent-call-activity-open"
+          >
+            {content}
+            <OpenRowChevron />
+          </button>
+        ) : (
+          <span className="flex min-w-0 flex-1 items-center gap-1" title={fullText}>{content}</span>
+        )}
+      </div>
+    </li>
+  )
+}
+
+function SubagentActivityLabel({ item, onOpen }: { item: ActivitySubagentItem; onOpen?: () => void }) {
   const progressSummary = item.status === 'running' ? item.progressSummary : null
   const fullActivityText = [
     item.name,
     item.description,
     progressSummary ? `· ${progressSummary}` : '',
   ].filter(Boolean).join(' ')
+
+  const label = (
+    <HoverScrollText hoverTarget="parent" className={onOpen ? 'min-w-0' : undefined}>
+      <span className="font-mono">{item.name}</span>
+      {item.description && (
+        <span className="text-muted-foreground">{' '}{item.description}</span>
+      )}
+      {progressSummary && (
+        <>
+          <span className="text-muted-foreground" aria-hidden="true">{' · '}</span>
+          <span className="italic text-muted-foreground">{progressSummary}</span>
+        </>
+      )}
+    </HoverScrollText>
+  )
+
+  // In a session the row opens the subagent in the drawer, where its whole
+  // transcript is; the full text stays on the tooltip.
+  if (onOpen) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={OPEN_ROW_CLASS}
+        aria-label={`Open ${fullActivityText}`}
+        title={fullActivityText}
+        data-testid="subagent-activity-open"
+      >
+        {label}
+        <OpenRowChevron />
+      </button>
+    )
+  }
 
   return (
     <Popover>
@@ -561,10 +699,12 @@ function ComputerUseRow({ computerUse, tracerRow }: {
  * One tree row per background task, so each can carry its own stop control —
  * a runaway task is otherwise unstoppable short of stopping the whole session.
  */
-function BackgroundTaskRow({ task, tracerRow, onStop }: {
+function BackgroundTaskRow({ task, tracerRow, onStop, onOpen }: {
   task: ActivityBackgroundTask
   tracerRow: number
   onStop?: (taskId: string) => Promise<void>
+  /** Open the task in the side drawer. */
+  onOpen?: () => void
 }) {
   const elapsed = useElapsedTimer(new Date(task.startedAt))
   const title = task.title ?? (task.isWorkflow ? 'Background workflow' : 'Background command')
@@ -580,12 +720,31 @@ function BackgroundTaskRow({ task, tracerRow, onStop }: {
         {/* flex-1 like the subagent label, so the elapsed time and the stop
             control sit at the row's right edge in line with the subagent rows'
             instead of trailing the text. */}
-        <span className="min-w-0 flex-1 truncate" title={fullText}>
-          <span className="text-muted-foreground">{title}</span>
-          {task.detail && (
-            <span className={cn('text-muted-foreground/80', !task.isMonitor && 'font-mono')}>{' '}{task.detail}</span>
-          )}
-        </span>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className={OPEN_ROW_CLASS}
+            title={fullText}
+            aria-label={`Open ${fullText}`}
+            data-testid="background-task-open"
+          >
+            <span className="min-w-0 truncate">
+              <span className="text-muted-foreground">{title}</span>
+              {task.detail && (
+                <span className={cn('text-muted-foreground/80', !task.isMonitor && 'font-mono')}>{' '}{task.detail}</span>
+              )}
+            </span>
+            <OpenRowChevron />
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 truncate" title={fullText}>
+            <span className="text-muted-foreground">{title}</span>
+            {task.detail && (
+              <span className={cn('text-muted-foreground/80', !task.isMonitor && 'font-mono')}>{' '}{task.detail}</span>
+            )}
+          </span>
+        )}
         {elapsed && (
           <span className="shrink-0 text-muted-foreground tabular-nums">{elapsed}</span>
         )}

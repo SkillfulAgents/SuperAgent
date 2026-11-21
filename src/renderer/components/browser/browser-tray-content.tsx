@@ -1,9 +1,8 @@
-import { useState, useRef, useCallback } from 'react'
-import { PanelRight } from 'lucide-react'
+import { useEffect, useRef, type MutableRefObject } from 'react'
 import { BrowserViewport } from './browser-viewport'
 import { BrowserToolbar } from './browser-toolbar'
 import { BrowserActivityLog } from './browser-activity-log'
-import { BrowserTabBar } from './browser-tab-bar'
+import type { BrowserTabInfo } from './browser-tab-bar'
 import { FollowAgentToggle } from './follow-agent-toggle'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
@@ -13,6 +12,7 @@ import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useBrowserInputActions } from '@shared/lib/tools/request-browser-input/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
+import { TRAY_BODY_CLASS } from '@renderer/components/tray/tray-card'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,20 +24,40 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 
+/** The browser's pages, as the drawer's strip lists them. */
+export interface BrowserPages {
+  tabs: BrowserTabInfo[]
+  viewingTargetId: string | null
+}
+
+/** What the strip can ask of the browser: view a page, or close one. */
+export interface BrowserPageActions {
+  select: (targetId: string) => void
+  close: (targetId: string) => void
+}
+
 interface BrowserTrayContentProps {
   agentSlug: string
   sessionId: string
-  onClose: () => void
+  /** In front. Behind another tab it stays mounted, so the stream and the log keep their state. */
+  visible: boolean
+  /** Off while the drawer is hidden: the stream disconnects and reconnects when the drawer returns. */
+  connected: boolean
   isExpanded?: boolean
-  onToggleExpand?: () => void
+  /** The pages to list in the drawer's strip; null once the browser is gone. */
+  onPagesChange: (pages: BrowserPages | null) => void
+  /** Filled with the page actions while the browser is up. */
+  actionsRef: MutableRefObject<BrowserPageActions | null>
 }
 
 export function BrowserTrayContent({
   agentSlug,
   sessionId,
-  onClose,
+  visible,
+  connected,
   isExpanded = false,
-  onToggleExpand,
+  onPagesChange,
+  actionsRef,
 }: BrowserTrayContentProps) {
   const { browserActive, isActive } = useMessageStream(sessionId, agentSlug, ['browserActive', 'isActive'])
 
@@ -47,17 +67,25 @@ export function BrowserTrayContent({
     agentSlug,
     sessionId,
     browserActive,
-    isConnected: true,
+    isConnected: connected,
     isActive,
     canvasRef,
   })
 
-  // The body card squares off its top-left corner only while the viewed tab sits
-  // directly above it; the strip is the only thing that knows when that is.
-  const [leadingTabFlush, setLeadingTabFlush] = useState(false)
-  const onLeadingTabFlush = useCallback((flush: boolean) => setLeadingTabFlush(flush), [])
+  // The drawer's strip lists these pages beside its other tabs.
+  const { tabs, viewingTargetId, handleTabClick, handleCloseTab } = stream
+  useEffect(() => {
+    onPagesChange({ tabs, viewingTargetId })
+  }, [onPagesChange, tabs, viewingTargetId])
+  useEffect(() => {
+    actionsRef.current = { select: handleTabClick, close: handleCloseTab }
+  })
+  useEffect(() => () => {
+    onPagesChange(null)
+    actionsRef.current = null
+  }, [onPagesChange, actionsRef])
 
-  const { railRef, cardRef, viewportRef, maxCardWidth, maxStripWidth } = useBrowserCardSize(
+  const { railRef, cardRef, viewportRef, maxCardWidth } = useBrowserCardSize(
     isExpanded,
     stream.aspectRatio,
   )
@@ -86,44 +114,20 @@ export function BrowserTrayContent({
   const pageUrl = stream.pageUrl || viewingTab?.url || ''
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 overflow-hidden" data-testid="browser-drawer-panel">
-      {/* Page tabs, with the drawer's own hide control at the strip's right end. */}
-      <div className="shrink-0 bg-muted/60">
-        <div className={cn(isExpanded && 'mx-auto')} style={isExpanded ? { maxWidth: maxStripWidth } : undefined}>
-          <BrowserTabBar
-            tabs={stream.tabs}
-            viewingTargetId={stream.viewingTargetId}
-            onTabClick={stream.handleTabClick}
-            onCloseTab={stream.handleCloseTab}
-            onLeadingTabFlush={onLeadingTabFlush}
-            trailing={
-              // The drawer's own control, at the strip's right end like the file drawer's.
-              <button
-                type="button"
-                className="inline-flex p-0.5 rounded-icon hover:bg-muted transition-colors"
-                onClick={onClose}
-                title="Hide browser panel"
-                aria-label="Hide browser panel"
-              >
-                <PanelRight className="h-4 w-4" />
-              </button>
-            }
-          />
-        </div>
-      </div>
-
-      {/* Browser body, on the same gray as the tab rail: the page card inset 16px
-          on every side, with the activity log sitting directly on the rail below it. */}
+    <div
+      className={cn('flex flex-col flex-1 min-h-0 overflow-hidden', !visible && 'hidden')}
+      data-testid="browser-drawer-panel"
+    >
+      {/* Browser body, filling the drawer's card: the page with its toolbar, and the activity log below it. */}
       <div
-        className="flex flex-1 min-h-0 flex-col overflow-y-auto bg-muted/60 px-4 pb-4"
+        // 8px under the page or the log, so neither ends on the card's edge; the card size hook reads it.
+        className={cn(TRAY_BODY_CLASS, 'overflow-y-auto pb-2')}
         ref={railRef}
         data-testid="browser-tray-rail"
       >
         <div
           className={cn(
-            'flex w-full shrink-0 flex-col rounded-card border border-black/5 bg-background shadow-[0_1px_3px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.03)] dark:border-white/5 dark:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_2px_8px_rgba(0,0,0,0.15)]',
-            // Square only where a tab actually meets the corner.
-            leadingTabFlush && 'rounded-tl-none',
+            'flex w-full shrink-0 flex-col',
             isExpanded && 'self-center',
           )}
           ref={cardRef}
@@ -147,7 +151,6 @@ export function BrowserTrayContent({
             stream={stream}
             isActive={isActive}
             isExpanded={isExpanded}
-            onToggleExpand={onToggleExpand}
           />
 
           {/* Action bar */}
@@ -187,18 +190,18 @@ export function BrowserTrayContent({
 
         {/* Preserve subscriptions, expanded rows, and scroll position across full screen. */}
         <div
-          className={cn('flex flex-1 min-h-32 flex-col', isExpanded && 'hidden')}
+          className={cn('flex flex-1 min-h-32 flex-col px-2', isExpanded && 'hidden')}
           data-testid="browser-activity-region"
         >
-          {/* Activity log, on the rail rather than in the card. The log pads its own
-          rows 16px, so it is pulled back out to the rail's edge to line up with
-          the heading and the card. */}
-          <div className="flex items-center py-1 border-b border-border/60 shrink-0 mt-4">
+          {/* Activity log, below the page, in 8px. The log pads its own
+          rows 16px, so it is pulled back out to that 8px edge, and the heading
+          takes the same 16px to line up with the rows. */}
+          <div className="flex items-center px-2 py-1 border-b border-border/60 shrink-0 mt-4">
             <span className="flex-1 text-xs font-medium text-muted-foreground">Browser agent actions</span>
             {/* Follow changes the viewed browser tab when the agent switches pages. */}
             <FollowAgentToggle autoFollow={stream.autoFollow} onToggle={stream.toggleAutoFollow} className="-mr-1" />
           </div>
-          <div className="flex flex-1 min-h-0 flex-col -mx-4">
+          <div className="flex flex-1 min-h-0 flex-col -mx-2">
             <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
           </div>
         </div>

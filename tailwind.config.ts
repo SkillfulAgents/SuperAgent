@@ -30,6 +30,7 @@ const config: Config = {
 			ring: 'hsl(var(--ring))',
 			brand: 'hsl(var(--brand))',
 			background: 'hsl(var(--background))',
+			canvas: 'hsl(var(--canvas))',
 			foreground: 'hsl(var(--foreground))',
 			primary: {
 				DEFAULT: 'hsl(var(--primary))',

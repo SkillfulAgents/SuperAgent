@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
 import type { PreviewTab } from '@renderer/context/file-preview-context'
 
@@ -39,8 +38,8 @@ vi.mock('@renderer/context/user-context', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-file-size', () => ({ useFileSize: () => ({ data: 12_800 }) }))
-// The drawer's close controls ride in the tab bar's trailing slot; render just that.
-vi.mock('./file-tab-bar', () => ({ FileTabBar: ({ trailing }: { trailing?: ReactNode }) => <div>{trailing}</div> }))
+// The drawer's strip lists the tabs; the tray content must not draw a tab bar of its own.
+vi.mock('./file-tab-bar', () => ({ FileTabBar: () => <div data-testid="own-tab-bar" /> }))
 const { renderer } = vi.hoisted(() => ({ renderer: { agentSlug: undefined as string | undefined } }))
 vi.mock('./renderers/file-renderer', () => ({
   FileRenderer: ({ agentSlug }: { agentSlug?: string }) => {
@@ -51,10 +50,10 @@ vi.mock('./renderers/file-renderer', () => ({
 vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
 vi.mock('./comments/comment-bar', () => ({ CommentBar: () => <div data-testid="comment-bar" /> }))
 
-function renderTray(onClose = vi.fn()) {
+function renderTray() {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <FilePreviewTrayContent sessionId="test-session" onClose={onClose} />
+      <FilePreviewTrayContent sessionId="test-session" />
     </QueryClientProvider>,
   )
 }
@@ -77,21 +76,16 @@ describe('FilePreviewTrayContent', () => {
     expect(title).toHaveTextContent('report.md')
     expect(screen.getByTestId('file-preview-size')).toHaveTextContent('12.5 KB')
     expect(title.querySelector('[aria-label="Download file"]')).not.toBeNull()
-    expect(screen.getByTestId('file-preview-header').querySelector('[aria-label="Download file"]')).toBeNull()
   })
 
-  it('exposes container-responsive close controls after the tabs', () => {
-    const onClose = vi.fn()
-    renderTray(onClose)
-
-    const mobileClose = screen.getByRole('button', { name: 'Close file preview' })
-    const desktopClose = screen.getByRole('button', { name: 'Hide files panel' })
-    expect(mobileClose).toHaveClass('file-preview-compact-close', 'hidden')
-    expect(desktopClose).toHaveClass('file-preview-wide-close', 'inline-flex')
-
-    fireEvent.click(mobileClose)
-    fireEvent.click(desktopClose)
-    expect(onClose).toHaveBeenCalledTimes(2)
+  it('leaves the tabs, the hide control and the card to the drawer', () => {
+    renderTray()
+    expect(screen.queryByTestId('own-tab-bar')).toBeNull()
+    expect(screen.queryByRole('button', { name: /hide|close/i })).toBeNull()
+    // The drawer draws the card around its tabs and this body; the body draws none of its own.
+    const body = screen.getByTestId('file-preview-title').parentElement!
+    expect(body).not.toHaveClass('rounded-card')
+    expect(body).not.toHaveClass('border')
   })
 
   it('shows folder navigation without file-only download and comment actions', () => {

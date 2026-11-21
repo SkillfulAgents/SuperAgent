@@ -328,6 +328,20 @@ app.post('/sessions/:id/messages', async (c) => {
   }
 });
 
+// The session's full context breakdown (the drawer's Context tab). A session
+// that is not resident has none to give; one with no live query answers null.
+app.get('/sessions/:id/context', async (c) => {
+  const sessionId = c.req.param('id');
+  try {
+    const { found, breakdown } = await sessionManager.contextBreakdown(sessionId);
+    if (!found) return c.json({ error: 'Session not found' }, 404);
+    return c.json({ breakdown });
+  } catch (error: any) {
+    console.error('Error reading context breakdown:', error);
+    return c.json({ error: error.message || 'Failed to read context' }, 500);
+  }
+});
+
 // Stop one background task (backgrounded Bash, background subagent, workflow)
 // by the SDK task id. The CLI answers on the stream with a task_notification
 // of status 'stopped', which is what retires the task in the host UI.
@@ -4120,6 +4134,7 @@ console.log('  GET    /sessions/:id');
 console.log('  GET    /sessions');
 console.log('  DELETE /sessions/:id');
 console.log('  POST   /sessions/:id/interrupt');
+console.log('  GET    /sessions/:id/context');
 console.log('  POST   /sessions/:id/tasks/:taskId/stop');
 console.log('  POST   /sessions/:id/messages');
 console.log('  WS     /sessions/:id/stream');

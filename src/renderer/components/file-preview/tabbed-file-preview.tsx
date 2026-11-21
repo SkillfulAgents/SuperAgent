@@ -8,6 +8,7 @@ import { FileRenderer } from './renderers/file-renderer'
 import { UnsupportedRenderer } from './renderers/unsupported-renderer'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils/cn'
+import { TRAY_BODY_CLASS } from '@renderer/components/tray/tray-card'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
 
 interface TabbedFilePreviewProps<T extends FileBrowserTab> {
@@ -24,12 +25,15 @@ interface TabbedFilePreviewProps<T extends FileBrowserTab> {
   onPdfPageChange: (page: number) => void
   trailing?: ReactNode
   footer?: ReactNode
+  /** Off where the host lists these tabs in a strip of its own (the session drawer). */
+  showTabs?: boolean
 }
 
 /** The same tab rail, title actions and preview card for agent and volume files. */
 export function TabbedFilePreview<T extends FileBrowserTab>({
   tabs, getTabKey, activeTabIndex, onSelectTab, onCloseTab, file,
   folderContent, folderActions, fileActions, onPdfPageChange, trailing, footer,
+  showTabs = true,
 }: TabbedFilePreviewProps<T>) {
   const [leadingTabFlush, setLeadingTabFlush] = useState(false)
   const onLeadingTabFlush = useCallback((flush: boolean) => setLeadingTabFlush(flush), [])
@@ -38,20 +42,24 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
 
   return (
     <>
-      <FileTabBar
-        tabs={tabs} getTabKey={getTabKey} activeIndex={activeTabIndex}
-        onTabClick={onSelectTab} onCloseTab={onCloseTab}
-        onLeadingTabFlush={onLeadingTabFlush} trailing={trailing}
-      />
-      {/* File content: a card inset 8px on every side, on the same gray as the tab rail. */}
-      <div className="flex flex-1 min-h-0 flex-col bg-muted/60 px-2 pb-2">
+      {showTabs && (
+        <FileTabBar
+          tabs={tabs} getTabKey={getTabKey} activeIndex={activeTabIndex}
+          onTabClick={onSelectTab} onCloseTab={onCloseTab}
+          onLeadingTabFlush={onLeadingTabFlush} trailing={trailing}
+        />
+      )}
+      {/* File content. With its own tab bar it is a card inset 8px on the bar's gray rail; in the drawer, which
+          draws the tabs and the card, it just fills the card. */}
+      <div className={showTabs ? 'flex flex-1 min-h-0 flex-col bg-muted/60 px-2 pb-2' : TRAY_BODY_CLASS}>
         <div
           className={cn(
-            'flex flex-1 min-h-0 flex-col overflow-hidden rounded-card border border-black/5 bg-background dark:border-white/5',
+            'flex flex-1 min-h-0 flex-col overflow-hidden',
+            showTabs && 'rounded-card border border-black/5 bg-background dark:border-white/5',
             // Square only where a tab actually meets the corner. Under an inactive
             // tab — or a strip scrolled away from its first tab — the square edge
             // would be a corner cut for no one.
-            leadingTabFlush && 'rounded-tl-none',
+            showTabs && leadingTabFlush && 'rounded-tl-none',
           )}
         >
           <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2" data-testid="file-preview-title">

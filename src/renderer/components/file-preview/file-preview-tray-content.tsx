@@ -1,4 +1,4 @@
-import { FileDiff, PanelRight, X } from 'lucide-react'
+import { FileDiff } from 'lucide-react'
 import { getPreviewTabKey, useFilePreview } from '@renderer/context/file-preview-context'
 import { TabbedFilePreview } from './tabbed-file-preview'
 import { visibleBefore } from './file-edits'
@@ -14,10 +14,10 @@ import { cn } from '@shared/lib/utils/cn'
 
 interface FilePreviewTrayContentProps {
   sessionId: string
-  onClose: () => void
 }
 
-export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
+/** The file or folder tab in front, under the drawer's strip. The strip itself lists the tabs. */
+export function FilePreviewTrayContent({ sessionId }: FilePreviewTrayContentProps) {
   const { openTabs, activeTabIndex, setActiveTab, setPdfPage, setShowEdits, closeTab, commentsFor } = useFilePreview()
   const activeTab = openTabs[activeTabIndex]
   const activeFile = activeTab?.kind === 'file' ? activeTab : null
@@ -67,28 +67,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           </Tooltip>
         )}
         onPdfPageChange={page => { if (activeFile) setPdfPage(activeFile.filePath, activeFile.agentSlug, page) }}
-        trailing={
-          // The drawer's own controls. Compact layouts show the close button;
-          // wide layouts show the panel-hide button (see globals.css).
-          <div className="flex items-center gap-1" data-testid="file-preview-header">
-            <button
-              className="file-preview-compact-close hidden p-0.5 rounded-icon hover:bg-muted transition-colors"
-              onClick={onClose}
-              title="Close file preview"
-              aria-label="Close file preview"
-            >
-              <X className="h-4 w-4" />
-            </button>
-            <button
-              className="file-preview-wide-close inline-flex p-0.5 rounded-icon hover:bg-muted transition-colors"
-              onClick={onClose}
-              title="Hide files panel"
-              aria-label="Hide files panel"
-            >
-              <PanelRight className="h-4 w-4" />
-            </button>
-          </div>
-        }
+        showTabs={false}
         footer={activeFile && !activeFile.source && (
           <CommentBar
             comments={activeComments}

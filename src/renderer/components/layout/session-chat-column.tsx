@@ -187,7 +187,7 @@ export function SessionChatColumn({
 // gradient under a mask that faded out from 55%), sampled every tenth.
 const HINT_FADE_STOPS = [
   [1, 0], [0.75, 50], [0.675, 55], [0.533, 60], [0.3, 70], [0.133, 80], [0.033, 90], [0, 100],
-].map(([alpha, at]) => `hsl(var(--background) / ${alpha}) ${at}%`).join(', ')
+].map(([alpha, at]) => `hsl(var(--canvas) / ${alpha}) ${at}%`).join(', ')
 
 function SessionComposerHints({ contextPercent, isActive = false, voiceModeActive = false, notifiesOnly = null }: {
   contextPercent: number | null

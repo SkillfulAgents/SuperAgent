@@ -34,9 +34,9 @@ export function BrowserViewport({
       {/* Canvas viewport */}
       <div
         className={cn(
-          'col-start-1 row-start-1 relative overflow-hidden bg-background border-t border-border/40',
+          // The page is a square window in the drawer's card, with the same light line above and below it.
+          'col-start-1 row-start-1 relative overflow-hidden bg-background border-y border-border/40',
           isActive && !stream.needsAttention && 'browser-glow-container',
-          !(stream.needsAttention && stream.pendingBrowserInputRequests.length > 0) && 'rounded-b-card',
         )}
       >
         <canvas

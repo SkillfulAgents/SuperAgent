@@ -50,6 +50,7 @@ import { getPlatformProxyBaseUrl } from '../platform-auth/config'
 import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
 import { runsInAppSandbox } from '../facts/capabilities'
 import { getServerFacts } from '../facts/server-facts'
+import { contextBreakdownResponseSchema, type ContextBreakdown } from './context-breakdown-schema'
 import { dockerStoppedInspectSchema } from './container-stop-schema'
 
 /**
@@ -1793,6 +1794,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       return false
     }
     return true
+  }
+
+  async getContextBreakdown(sessionId: string): Promise<ContextBreakdown | null> {
+    const response = await this.fetch(`/sessions/${sessionId}/context`, { method: 'GET' })
+    if (!response.ok) {
+      // 404: the session is not resident, or the container predates the endpoint.
+      if (response.status !== 404) console.warn(`[ContainerClient] getContextBreakdown: container returned ${response.status}`)
+      return null
+    }
+    const body = contextBreakdownResponseSchema.safeParse(await response.json().catch(() => null))
+    if (!body.success) {
+      console.warn('[ContainerClient] getContextBreakdown: unexpected response', body.error.issues[0])
+      return null
+    }
+    return body.data.breakdown
   }
 
   async forkSession(sessionId: string): Promise<{ id: string } | null> {

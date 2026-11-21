@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { Workflow as WorkflowIcon, PanelRightClose, ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowLeft, ChevronRight } from 'lucide-react'
+import { WorkflowIcon } from './workflow-icon'
 import { cn } from '@shared/lib/utils/cn'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useMessageStream, type WorkflowAgentLive } from '@renderer/hooks/use-message-stream'
@@ -8,6 +9,7 @@ import { StatusIndicator } from '@renderer/components/messages/tool-call-item'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import { formatModelId } from '@renderer/lib/model-label'
 import { WorkflowAgentTranscript } from './workflow-agent-transcript'
+import { TRAY_BODY_CLASS } from '@renderer/components/tray/tray-card'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 
 function formatTokens(tokens: number): string {
@@ -17,7 +19,7 @@ function formatTokens(tokens: number): string {
 }
 
 /** Compact "12s · 3 tools · 1.2k tokens" line; omits empty parts. */
-function StatsLine({
+export function StatsLine({
   durationMs,
   toolCount,
   tokens,
@@ -39,7 +41,11 @@ function StatsLine({
 interface WorkflowTrayContentProps {
   agentSlug: string
   sessionId: string
-  onClose: () => void
+  runId: string
+  /** The one agent of the run to show in place of the run's own list. */
+  agentId?: string
+  /** The name the run was opened with, until the run's own is known. */
+  fallbackName?: string
 }
 
 interface PhaseGroup {
@@ -180,7 +186,7 @@ function WorkflowProgressBar({
   const segments = workflowProgressSegments(agents, expectedAgents, active)
   if (segments.length === 0) return null
   return (
-    <div className="px-4 pt-2.5 pb-2 shrink-0">
+    <div className="px-4 pt-1 pb-2 shrink-0">
       <div className="flex items-center gap-1">
         {segments.map((s, i) => (
           <div key={i} className={cn('h-1.5 flex-1 rounded-full transition-colors', SEGMENT_CLASS[s])} />
@@ -191,14 +197,17 @@ function WorkflowProgressBar({
   )
 }
 
-export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowTrayContentProps) {
-  const { openWorkflows, selectedRunId, selectWorkflow, expandedAgentId, setExpandedAgent } = useWorkflow()
+/**
+ * One run as the drawer shows it: the disk tree with live status laid over it.
+ * Shared by the run's own tab and by the tab of any one of its agents.
+ */
+export function useWorkflowRun(sessionId: string, agentSlug: string, runId: string) {
   const { workflows } = useMessageStream(sessionId, agentSlug, ['workflows'])
 
-  const liveRun = workflows.find((w) => w.runId === selectedRunId)
+  const liveRun = workflows.find((w) => w.runId === runId)
   const isActive = !!liveRun && liveRun.completedAt === undefined
   const hasLiveAgents = !!liveRun && Object.keys(liveRun.agents).length > 0
-  const treeQuery = useWorkflowTree(sessionId, agentSlug, selectedRunId, {
+  const treeQuery = useWorkflowTree(sessionId, agentSlug, runId, {
     active: isActive,
     hasLiveAgents,
   })
@@ -218,21 +227,31 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
   const reconciledCompletion = useRef<string | null>(null)
   const sawActiveRun = useRef<string | null>(null)
   useEffect(() => {
-    if (!selectedRunId) return
     if (completedAt === undefined) {
-      if (liveRun) sawActiveRun.current = selectedRunId
+      if (liveRun) sawActiveRun.current = runId
       return
     }
     if (isFetchingTree) return
-    const key = `${selectedRunId}:${completedAt}`
+    const key = `${runId}:${completedAt}`
     if (reconciledCompletion.current === key) return
     reconciledCompletion.current = key
     // Opened on an already-finished run: the mount fetch is already final.
-    if (sawActiveRun.current !== selectedRunId) return
+    if (sawActiveRun.current !== runId) return
     // Wait out any pre-completion request, then fetch a fresh snapshot. Simply
     // refetching during the initial load reuses that older in-flight request.
     refetchTree({ cancelRefetch: false })
-  }, [completedAt, selectedRunId, refetchTree, isFetchingTree, liveRun])
+  }, [completedAt, runId, refetchTree, isFetchingTree, liveRun])
+
+  return { liveRun, isActive, treeQuery, agents }
+}
+
+/**
+ * A workflow run's tab: its progress, then one row per agent. Picking a row
+ * shows that agent's transcript in place, with a way back to the run.
+ */
+export function WorkflowTrayContent({ agentSlug, sessionId, runId, agentId, fallbackName }: WorkflowTrayContentProps) {
+  const { viewWorkflowAgent } = useWorkflow()
+  const { liveRun, isActive, treeQuery, agents } = useWorkflowRun(sessionId, agentSlug, runId)
 
   const groups = useMemo<PhaseGroup[]>(() => {
     const phaseOrder = treeQuery.data?.phases ?? []
@@ -258,153 +277,194 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
     return ordered
   }, [agents, treeQuery.data])
 
-  // The script's own meta.name is authoritative; the name the drawer was opened with is
+  // The script's own meta.name is authoritative; the name the tab was opened with is
   // whatever the launching card had (for a scriptPath run, only a generic fallback).
-  const name = treeQuery.data?.name ?? openWorkflows.find((w) => w.runId === selectedRunId)?.name ?? 'Workflow'
+  const name = treeQuery.data?.name ?? fallbackName ?? 'Workflow'
   // Prefer the live wire usage (cumulative, accurate); fall back to the disk rollup.
   const totals = liveRun?.usage
     ? { durationMs: liveRun.usage.durationMs, toolCount: liveRun.usage.toolUses, tokens: liveRun.usage.totalTokens }
     : treeQuery.data?.totals ?? null
   const noAgentsYet =
     !treeQuery.isLoading && !treeQuery.isError && !!treeQuery.data && groups.every((g) => g.agents.length === 0)
-
-  if (!selectedRunId) return null
+  const viewed = agentId ? agents.find((a) => a.agentId === agentId) : undefined
 
   return (
-    <div className="contents" data-testid="workflow-tray">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground select-none shrink-0 border-b border-border/40">
-        <WorkflowIcon className="h-4 w-4 shrink-0" />
-        <span className="flex-1 text-xs truncate font-medium">{name}</span>
-        <button
-          className="p-0.5 rounded-icon hover:bg-muted transition-colors"
-          onClick={onClose}
-          title="Hide workflow panel"
-        >
-          <PanelRightClose className="h-4 w-4" />
-        </button>
-      </div>
-
-      <WorkflowProgressBar agents={agents} expectedAgents={treeQuery.data?.expectedAgents ?? 0} active={isActive} />
-
-      {openWorkflows.length > 1 && (
-        <div className="px-4 pb-2 shrink-0">
-          <select
-            value={selectedRunId}
-            onChange={(e) => selectWorkflow(e.target.value)}
-            className="w-full text-xs rounded-item border border-border bg-background px-2 py-1"
-          >
-            {openWorkflows.map((w) => (
-              <option key={w.runId} value={w.runId}>
-                {w.name ?? w.runId}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {/* Body */}
-      <div className="flex-1 min-h-0 overflow-auto px-3 py-3 space-y-4">
-        {treeQuery.isLoading && agents.length === 0 && (
-          <div className="text-xs text-muted-foreground italic px-1">Loading workflow…</div>
-        )}
-        {treeQuery.isError && isActive && (
-          <div className="text-xs text-muted-foreground italic px-1">
-            {agents.length > 0
-              ? 'Some workflow details are unavailable. Retrying…'
-              : 'Workflow is running. Retrying details…'}
-          </div>
-        )}
-        {treeQuery.isError && !isActive && (
-          <div className="text-xs text-destructive px-1">Couldn&apos;t load this workflow.</div>
-        )}
-        {treeQuery.data?.description && (
-          <p className="text-xs text-muted-foreground px-1">{treeQuery.data.description}</p>
-        )}
-        {totals && (
-          <StatsLine
-            className="px-1"
-            durationMs={totals.durationMs}
-            toolCount={totals.toolCount}
-            tokens={totals.tokens}
+    // The drawer's card holds it like a file or a page, so the run reads as one more tab.
+    <div className={TRAY_BODY_CLASS} data-testid="workflow-tray">
+      <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+        {agentId ? (
+          <WorkflowAgentDetail
+            key={agentId}
+            agent={viewed}
+            agentId={agentId}
+            runId={runId}
+            runName={name}
+            loading={treeQuery.isLoading}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            onBack={() => viewWorkflowAgent(runId, null)}
           />
-        )}
+        ) : (<>
+        <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2">
+          <WorkflowIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</h2>
+          {totals && (
+            <StatsLine
+              className="shrink-0"
+              durationMs={totals.durationMs}
+              toolCount={totals.toolCount}
+              tokens={totals.tokens}
+            />
+          )}
+        </div>
 
-        {groups.map((group, gi) => (
-          <div key={group.title ?? `__ungrouped-${gi}`} className="space-y-1.5" data-testid="workflow-phase-group" data-phase={group.title ?? undefined}>
-            {group.title && (
-              <div className="flex items-baseline gap-2 px-1">
-                <span className="text-xs font-medium text-foreground/80">{group.title}</span>
-                {group.detail && (
-                  <span className="text-[11px] text-muted-foreground truncate">{group.detail}</span>
-                )}
-                {phaseModels(group.agents).length > 0 && (
-                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70 whitespace-nowrap">
-                    {phaseModels(group.agents).join(' · ')}
-                  </span>
-                )}
-              </div>
-            )}
-            {group.agents.map((a) => (
-              <WorkflowAgentRow
-                key={a.agentId}
-                agent={a}
-                expanded={expandedAgentId === a.agentId}
-                onToggle={() => setExpandedAgent(expandedAgentId === a.agentId ? null : a.agentId)}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                runId={selectedRunId}
-              />
-            ))}
-          </div>
-        ))}
+        <WorkflowProgressBar agents={agents} expectedAgents={treeQuery.data?.expectedAgents ?? 0} active={isActive} />
 
-        {noAgentsYet && <div className="text-xs text-muted-foreground italic px-1">No agents have started yet.</div>}
+        <div className="flex-1 min-h-0 overflow-auto px-3 pb-3 space-y-4">
+          {treeQuery.isLoading && agents.length === 0 && (
+            <div className="text-xs text-muted-foreground italic px-1">Loading workflow…</div>
+          )}
+          {treeQuery.isError && isActive && (
+            <div className="text-xs text-muted-foreground italic px-1">
+              {agents.length > 0
+                ? 'Some workflow details are unavailable. Retrying…'
+                : 'Workflow is running. Retrying details…'}
+            </div>
+          )}
+          {treeQuery.isError && !isActive && (
+            <div className="text-xs text-destructive px-1">Couldn&apos;t load this workflow.</div>
+          )}
+          {treeQuery.data?.description && (
+            <p className="text-xs text-muted-foreground px-1">{treeQuery.data.description}</p>
+          )}
+
+          {groups.map((group, gi) => (
+            <div key={group.title ?? `__ungrouped-${gi}`} className="space-y-1.5" data-testid="workflow-phase-group" data-phase={group.title ?? undefined}>
+              {group.title && (
+                <div className="flex items-baseline gap-2 px-1">
+                  <span className="text-xs font-medium text-foreground/80">{group.title}</span>
+                  {group.detail && (
+                    <span className="text-[11px] text-muted-foreground truncate">{group.detail}</span>
+                  )}
+                  {phaseModels(group.agents).length > 0 && (
+                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70 whitespace-nowrap">
+                      {phaseModels(group.agents).join(' · ')}
+                    </span>
+                  )}
+                </div>
+              )}
+              {group.agents.map((a) => (
+                <WorkflowAgentRow
+                  key={a.agentId}
+                  agent={a}
+                  onOpen={() => viewWorkflowAgent(runId, a.agentId)}
+                />
+              ))}
+            </div>
+          ))}
+
+          {noAgentsYet && <div className="text-xs text-muted-foreground italic px-1">No agents have started yet.</div>}
+        </div>
+        </>)}
       </div>
     </div>
   )
 }
 
-function WorkflowAgentRow({
-  agent,
-  expanded,
-  onToggle,
-  sessionId,
-  agentSlug,
-  runId,
-}: {
-  agent: MergedAgentNode
-  expanded: boolean
-  onToggle: () => void
-  sessionId: string
-  agentSlug: string
-  runId: string
-}) {
+/** One agent of the run. The row says where it is; picking it shows its transcript in the run's tab. */
+function WorkflowAgentRow({ agent, onOpen }: { agent: MergedAgentNode; onOpen: () => void }) {
   const isRunning = agent.status === 'running'
   const indicatorStatus =
     agent.status === 'done' ? 'completed' : agent.status === 'failed' ? 'error' : 'running'
-  // Only the expanded row fetches (and only polls while still running).
-  const messages = useWorkflowAgentMessages(sessionId, agentSlug, runId, expanded ? agent.agentId : null, {
-    isRunning,
-  })
 
   return (
-    <div className="border border-border/70 rounded-card overflow-hidden">
-      <button
-        onClick={onToggle}
-        data-testid="workflow-agent-row"
-        data-agent-label={agent.label}
-        className={cn(
-          'flex w-full items-center gap-2 px-2 py-1.5 group hover:bg-muted/50 transition-colors',
-          expanded && 'bg-muted/50'
-        )}
-      >
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-          <StatusIndicator status={indicatorStatus} />
+    <button
+      type="button"
+      onClick={onOpen}
+      data-testid="workflow-agent-row"
+      data-agent-label={agent.label}
+      title="Open this agent's transcript"
+      className="flex w-full items-center gap-2 rounded-card border border-border/70 px-2 py-1.5 text-left group hover:bg-muted/50 transition-colors"
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+        <StatusIndicator status={indicatorStatus} />
+      </span>
+      {/* shrink-0 + cap: a long result/tool string must truncate itself, not crush the label to zero width */}
+      <span className="text-xs text-foreground/80 truncate shrink-0 max-w-[70%]">{agent.label}</span>
+      {agent.model && (
+        <span
+          className="shrink-0 rounded px-1 py-px text-[10px] leading-tight bg-muted text-muted-foreground/80"
+          title={agent.model}
+        >
+          {formatModelId(agent.model)}
         </span>
-        {/* shrink-0 + cap: a long result/tool string must truncate itself, not crush the label to zero width */}
-        <span className="text-xs text-foreground/80 truncate shrink-0 max-w-[70%]">{agent.label}</span>
-        {agent.model && (
+      )}
+      {/* While running, show the current tool (live from the wire). */}
+      {isRunning && agent.lastTool && (
+        <>
+          <span aria-hidden className="shrink-0 text-foreground/40 text-xs leading-none">→</span>
+          <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 font-mono">{agent.lastTool}</span>
+        </>
+      )}
+      {/* Terminal agents show their return value — or, for failed ones, the error. */}
+      {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
+        <span
+          className={cn(
+            'text-[11px] truncate min-w-0',
+            agent.status === 'failed' ? 'text-destructive/80' : 'text-muted-foreground/80'
+          )}
+        >
+          {agent.result}
+        </span>
+      )}
+      <span className="ml-auto shrink-0 text-muted-foreground/60 group-hover:text-foreground">
+        <ChevronRight className="h-3.5 w-3.5" />
+      </span>
+    </button>
+  )
+}
+
+/** One agent of a run, read closely: its task, its transcript and what it returned, with the way back to the run. */
+function WorkflowAgentDetail({
+  agent,
+  agentId,
+  runId,
+  runName,
+  loading,
+  sessionId,
+  agentSlug,
+  onBack,
+}: {
+  /** Absent until the run's tree or the live stream names this agent. */
+  agent: MergedAgentNode | undefined
+  agentId: string
+  runId: string
+  runName: string
+  loading: boolean
+  sessionId: string
+  agentSlug: string
+  onBack: () => void
+}) {
+  const isRunning = agent?.status === 'running'
+  const messages = useWorkflowAgentMessages(sessionId, agentSlug, runId, agentId, { isRunning })
+  const finished = agent?.status === 'done' || agent?.status === 'failed'
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col text-sm" data-testid="workflow-agent-transcript" data-status={agent?.status}>
+      <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="-ml-1 inline-flex shrink-0 rounded-icon p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          aria-label={`Back to ${runName}`}
+          title={`Back to ${runName}`}
+          data-testid="workflow-agent-back"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </button>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{agent?.label ?? 'Agent'}</h2>
+        {agent?.phase && <span className="shrink-0 truncate text-xs text-muted-foreground">{agent.phase}</span>}
+        {agent?.model && (
           <span
             className="shrink-0 rounded px-1 py-px text-[10px] leading-tight bg-muted text-muted-foreground/80"
             title={agent.model}
@@ -412,55 +472,35 @@ function WorkflowAgentRow({
             {formatModelId(agent.model)}
           </span>
         )}
-        {/* While running, show the current tool (live from the wire). */}
-        {isRunning && agent.lastTool && (
-          <>
-            <span aria-hidden className="shrink-0 text-foreground/40 text-xs leading-none">→</span>
-            <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 font-mono">{agent.lastTool}</span>
-          </>
-        )}
-        {/* Terminal agents show their return value — or, for failed ones, the error. */}
-        {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
-          <span
-            className={cn(
-              'text-[11px] truncate min-w-0',
-              agent.status === 'failed' ? 'text-destructive/80' : 'text-muted-foreground/80'
-            )}
-          >
-            {agent.result}
+        {agent && (
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+            <StatusIndicator status={agent.status === 'done' ? 'completed' : agent.status === 'failed' ? 'error' : 'running'} />
           </span>
         )}
-        <span className="ml-auto shrink-0 text-muted-foreground/60">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        </span>
-      </button>
-      {expanded && (
-        <div className="border-t border-border/70 bg-muted/40 px-3 py-3 space-y-3">
-          {agent.prompt && (
-            <div className="text-[11px] text-muted-foreground break-words">
-              <span className="font-medium text-foreground/70">Task: </span>
-              {agent.prompt}
+      </div>
+
+      <div className="min-h-0 flex-1 space-y-3 overflow-auto px-4 pb-4">
+        {agent?.prompt && (
+          <div className="rounded-item bg-muted/50 px-3 py-2 text-xs" data-testid="workflow-agent-task">
+            <div className="mb-1 text-2xs text-muted-foreground/70">Task</div>
+            <div className="whitespace-pre-wrap break-words text-foreground/80">{agent.prompt}</div>
+          </div>
+        )}
+        {!agent && loading && <div className="text-xs text-muted-foreground italic">Loading agent…</div>}
+        <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} />
+        {finished && agent?.result && (
+          <div className="rounded-item bg-muted/50 px-3 py-2 text-xs" data-testid="workflow-agent-result">
+            <div className="mb-1 text-2xs text-muted-foreground/70">{agent.status === 'failed' ? 'Error' : 'Result'}</div>
+            <div className={cn('whitespace-pre-wrap break-words', agent.status === 'failed' ? 'text-destructive' : 'text-foreground/80')}>
+              {agent.result}
             </div>
-          )}
-          <StatsLine durationMs={agent.durationMs} toolCount={agent.toolCount} tokens={agent.tokens} />
-          {agent.model && (
-            <div className="text-[11px] text-muted-foreground break-words">
-              <span className="font-medium text-foreground/70">Model: </span>
-              {formatModelId(agent.model)}
-              <span className="text-muted-foreground/60"> ({agent.model})</span>
-            </div>
-          )}
-          {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
-            <div className="text-[11px] break-words">
-              <span className="font-medium text-foreground/70">
-                {agent.status === 'failed' ? 'Error: ' : 'Result: '}
-              </span>
-              <span className={agent.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
-                {agent.result}
-              </span>
-            </div>
-          )}
-          <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} />
+          </div>
+        )}
+      </div>
+
+      {agent && (
+        <div className="shrink-0 border-t border-border/40 px-4 py-2">
+          <StatsLine durationMs={agent.durationMs} toolCount={agent.toolCount} tokens={agent.tokens} className="text-xs" />
         </div>
       )}
     </div>

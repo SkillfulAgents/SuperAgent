@@ -17,7 +17,7 @@ export type { BrowserTabInfo } from '@shared/lib/browser-stream-protocol'
  * The tab's favicon, or a globe when there is none or it fails to load. The
  * failure is remembered per URL so a dead icon does not retry on every render.
  */
-function TabIcon({ faviconUrl, title }: { faviconUrl?: string; title: string }) {
+export function BrowserTabIcon({ faviconUrl, title }: { faviconUrl?: string; title: string }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null)
   if (!faviconUrl || failedUrl === faviconUrl) {
     return <Globe className="h-3.5 w-3.5 text-inherit" data-testid="browser-tab-globe" />
@@ -50,7 +50,7 @@ interface BrowserTabBarProps {
   trailing?: ReactNode
 }
 
-function tabLabel(tab: BrowserTabInfo): string {
+export function browserTabLabel(tab: BrowserTabInfo): string {
   return tab.title || tab.url || `Tab ${tab.index + 1}`
 }
 
@@ -76,7 +76,7 @@ export function BrowserTabBar({
         tabs.map((tab, index) => {
           const isViewing = tab.targetId === viewingTargetId
           const isAgentActive = tab.active
-          const label = tabLabel(tab)
+          const label = browserTabLabel(tab)
 
           return (
             <ContextMenu key={tab.targetId}>
@@ -97,7 +97,7 @@ export function BrowserTabBar({
                     className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-3 pr-1 text-left"
                   >
                     <span className="relative shrink-0">
-                      <TabIcon faviconUrl={tab.faviconUrl} title={label} />
+                      <BrowserTabIcon faviconUrl={tab.faviconUrl} title={label} />
                       {isAgentActive && (
                         <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
                       )}

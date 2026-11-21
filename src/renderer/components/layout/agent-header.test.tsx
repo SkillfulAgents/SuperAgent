@@ -438,4 +438,26 @@ describe('AgentHeader breadcrumbs', () => {
     expect(startButton).toBeDisabled()
     expect(startButton.querySelector('.animate-spin')).not.toBeNull()
   })
+  it('gives a session the side drawer toggle in place of the status chip, and keeps the status readable', () => {
+    mocks.routeView = { kind: 'session', id: 'session-1' }
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(<AgentHeader slug="test-agent" isViewOnly={false} startAgent={mutation as never} stopAgent={mutation as never} />)
+
+    // No chip and no power button on a session; the drawer's toggle takes that place.
+    expect(screen.queryByTestId('agent-power-controls')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Stop Agent' })).toBeNull()
+    expect(screen.getByTestId('header-tray-slot')).toBeInTheDocument()
+    // The status itself is still there for assistive technology.
+    expect(screen.getAllByTestId('agent-status')[0].closest('.sr-only')).not.toBeNull()
+  })
+
+  it('keeps the status chip and power button on views that are not a session', () => {
+    mocks.routeView = { kind: 'dashboard', slug: 'nutrition' }
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(<AgentHeader slug="test-agent" isViewOnly={false} startAgent={mutation as never} stopAgent={mutation as never} />)
+
+    expect(screen.getByTestId('agent-power-controls')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop Agent' })).toBeInTheDocument()
+    expect(screen.queryByTestId('header-tray-slot')).toBeNull()
+  })
 })

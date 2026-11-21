@@ -198,6 +198,7 @@ export function AgentShell() {
       <DashboardHeaderProvider>
         <ContentShell
           needsTrafficLightPadding={needsTrafficLightPadding}
+          floatingHeader={!!activeSessionId}
           headerContent={
             slug ? (
               <AgentHeader slug={slug} isViewOnly={isViewOnly} startAgent={startAgent} stopAgent={stopAgent} />

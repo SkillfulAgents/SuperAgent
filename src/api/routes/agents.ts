@@ -3354,6 +3354,27 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/sessions/:sessionId/context - What fills the session's
+// context window, counted in full (the drawer's Context tab). `breakdown` is
+// null while the session has no live runtime to ask: a stopped agent, or a
+// session the runtime has not loaded.
+agents.get('/:id/sessions/:sessionId/context', AgentUser(), async (c) => {
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  const actor = agentRegistry.get(agentSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+  const info = await actor.container.status()
+  if (info.status !== 'running') return c.json({ breakdown: null })
+  try {
+    return c.json({ breakdown: await actor.sessions.contextBreakdown(sessionId) })
+  } catch (error) {
+    console.error('Failed to read context breakdown:', error)
+    return c.json({ error: 'Failed to read context' }, 500)
+  }
+})
+
 // POST /api/agents/:id/sessions/:sessionId/tasks/:taskId/stop - Stop one
 // background task (backgrounded Bash, background subagent, workflow) by the
 // id the stream reported in background_task_started. The runtime answers on

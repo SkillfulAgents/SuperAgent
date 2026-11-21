@@ -21,7 +21,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { HomeGlassPanel } from './home-glass-panel'
 import { AgentHomeComposer, type AgentHomeComposerHandle } from './agent-home-composer'
 import { HomeHalftoneBackdrop } from './home-halftone-backdrop'
-import { ContentBackdrop } from '@renderer/components/layout/content-shell'
+import { ContentBackdrop, ContentCanvas } from '@renderer/components/layout/content-shell'
 import { HomeSidePanel, SIDE_PANEL_BESIDE_PAGE } from './home-side-panel'
 import { useMediaQuery } from '@renderer/hooks/use-media-query'
 import { HomeBookmarks } from './home-bookmarks'
@@ -189,6 +189,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     <>
     {/* The background sits behind the scrolling page, and the header's glass above it, and stays put while the page scrolls. Its white buttons are glass. */}
     <div className="home-glass-controls relative flex min-h-0 min-w-0 flex-1 flex-col">
+    <ContentCanvas />
     <ContentBackdrop><HomeHalftoneBackdrop agent={agent} /></ContentBackdrop>
     <div
       data-testid="agent-home"

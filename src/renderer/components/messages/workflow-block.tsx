@@ -1,4 +1,4 @@
-import { Workflow } from 'lucide-react'
+import { WorkflowIcon } from '@renderer/components/workflow/workflow-icon'
 import { cn } from '@shared/lib/utils/cn'
 import { StatusIndicator } from './tool-call-item'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -116,7 +116,7 @@ export function WorkflowBlock({
   const resolvedRunId = runId ?? parseRunId(toolCall)
   const rowInner = (
     <>
-      <Workflow className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
+      <WorkflowIcon className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
       <span className={LABEL_CLASS}>Workflow:</span>
       <span className="text-muted-foreground/80 truncate text-xs leading-none">{label}</span>
       {currentAgent && (

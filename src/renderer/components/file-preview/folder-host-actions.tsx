@@ -1,4 +1,4 @@
-import { ClipboardCopy, FolderSearch } from 'lucide-react'
+import { ArrowUpRight, Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import type { FolderTab } from '@renderer/context/file-preview-context'
 import { useUser } from '@renderer/context/user-context'
@@ -88,7 +88,7 @@ export function FolderHostActions({ folder }: FolderHostActionsProps) {
         aria-label="Copy folder path"
         data-testid="folder-copy-path"
       >
-        <ClipboardCopy className="h-4 w-4" />
+        <Copy className="h-4 w-4" />
       </button>
       {electronRevealAvailable && (
         <button
@@ -99,7 +99,7 @@ export function FolderHostActions({ folder }: FolderHostActionsProps) {
           aria-label={revealFolderLabel()}
           data-testid="folder-reveal"
         >
-          <FolderSearch className="h-4 w-4" />
+          <ArrowUpRight className="h-4 w-4" />
         </button>
       )}
     </>

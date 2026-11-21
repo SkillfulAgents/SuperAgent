@@ -15,13 +15,7 @@ vi.mock('@renderer/components/messages/tool-call-item', () => ({
 }))
 vi.mock('./workflow-agent-transcript', () => ({ WorkflowAgentTranscript: () => null }))
 vi.mock('@renderer/context/workflow-context', () => ({
-  useWorkflow: () => ({
-    openWorkflows: [{ runId: 'wf_test', name: 'deep-research' }],
-    selectedRunId: 'wf_test',
-    expandedAgentId: null,
-    selectWorkflow: vi.fn(),
-    setExpandedAgent: vi.fn(),
-  }),
+  useWorkflow: () => ({ viewWorkflowAgent: vi.fn() }),
 }))
 let liveRun: WorkflowRunLive
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -61,7 +55,7 @@ afterEach(() => {
 function tray() {
   return (
     <QueryClientProvider client={queryClient}>
-      <WorkflowTrayContent agentSlug="researcher" sessionId="s1" onClose={() => {}} />
+      <WorkflowTrayContent agentSlug="researcher" sessionId="s1" runId="wf_test" fallbackName="deep-research" />
     </QueryClientProvider>
   )
 }

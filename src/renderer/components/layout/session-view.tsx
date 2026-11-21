@@ -4,6 +4,7 @@ import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { CalendarClock, GitFork, Plug, Wrench, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
+import { ContentCanvas } from './content-shell'
 import { useCallback, useEffect, useMemo } from 'react'
 import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
 import { HttpError } from '@renderer/lib/api'
@@ -126,6 +127,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
 
   return (
     <>
+      <ContentCanvas />
       {session?.scheduledTaskId && (
         <SessionProvenanceBanner
           icon={CalendarClock}
@@ -199,8 +201,8 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
         />
       )}
 
-      <FilePreviewProvider sessionAgentSlug={agentSlug} commentsEnabled={!isViewOnly}>
-        <WorkflowProvider>
+      <FilePreviewProvider sessionAgentSlug={agentSlug} commentsEnabled={!isViewOnly} rememberTabs>
+        <WorkflowProvider rememberTabs>
           <div className="flex-1 flex flex-col min-h-0">
             {sessionId && <SessionSearchBar search={search} />}
             <SessionChatColumn

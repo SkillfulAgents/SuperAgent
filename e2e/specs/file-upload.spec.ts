@@ -143,7 +143,7 @@ test.describe('File & Folder Upload', () => {
 
     // Clicking it opens the file preview pane with the file in a tab.
     await pill.click()
-    const tabBar = page.getByTestId('file-tab-bar')
+    const tabBar = page.getByTestId('tray-tab-bar')
     await expect(tabBar).toBeVisible({ timeout: 5000 })
     await expect(tabBar).toContainText(timestampedUploadNamePattern('report.pdf'))
   })

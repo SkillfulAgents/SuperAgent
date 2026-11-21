@@ -158,7 +158,7 @@ async function main() {
     await page.getByRole('button', { name: 'Next PDF page' }).click()
     await expectPage(page, 2)
     await expect(page.getByRole('button', { name: 'Next PDF page' })).toBeDisabled()
-    await page.getByRole('button', { name: 'Hide files panel' }).click()
+    await page.getByRole('button', { name: 'Hide panel' }).click()
     await expect(page.locator('[data-page-number]')).not.toBeVisible()
     await pill.click()
     await expectPage(page, 2)

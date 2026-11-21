@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { z } from 'zod'
 import { getPathName, toWorkspaceAbsolutePath } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
@@ -7,6 +7,7 @@ import type { CommentAnchor } from '@renderer/components/file-preview/comments/k
 import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
 import { useSessionTurn } from '@renderer/lib/session-turns'
 import { reconcileEdits, type FileEdits } from '@renderer/components/file-preview/file-edits'
+import { createSessionMemory, nextFocus, type TrayFocus } from '@renderer/lib/session-memory'
 import { AgentFileOpenerContext, type AgentFileOpener } from './agent-file-opener-context'
 
 /**
@@ -84,6 +85,8 @@ interface FilePreviewContextType {
   comments: Map<string, FileComment[]>
   isOpen: boolean
   commentsEnabled: boolean
+  /** The tab the last openFile or openFolder asked for, for the drawer to bring to the front. */
+  focus: TrayFocus | null
 
   openFile: (filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => void
   openFolder: (folderPath: string, agentSlug: string) => void
@@ -159,6 +162,15 @@ function takeReopenFile(): z.infer<typeof ReopenFile> | null {
   }
 }
 
+/** What one session's file tabs were when it was left. */
+interface PreviewSnapshot {
+  openTabs: PreviewTab[]
+  activeTabIndex: number
+  comments: Map<string, FileComment[]>
+  isOpen: boolean
+}
+const previewMemory = createSessionMemory<PreviewSnapshot>()
+
 /** One shared empty array: a fresh [] per call would change every consumer's deps. */
 const EMPTY_COMMENTS: FileComment[] = []
 
@@ -167,12 +179,15 @@ export function FilePreviewProvider({
   sessionId: sessionIdProp,
   sessionAgentSlug,
   commentsEnabled = false,
+  rememberTabs = false,
 }: {
   children: ReactNode
   sessionId?: string | null
   /** The session's agent. Its open markdown files highlight what changed since the last turn. */
   sessionAgentSlug?: string
   commentsEnabled?: boolean
+  /** Keep this session's tabs for when it is opened again. For real sessions, not a home page's preview. */
+  rememberTabs?: boolean
 }) {
   const { view } = useRouteLocation()
   // Views that own a session (e.g. chat integrations) can pass it explicitly so
@@ -187,13 +202,25 @@ export function FilePreviewProvider({
   const [comments, setComments] = useState<Map<string, FileComment[]>>(new Map())
   const [isOpen, setIsOpen] = useState(false)
 
-  // Clear state when session changes
+  const [focus, setFocus] = useState<TrayFocus | null>(null)
+
+  // Each session has its own tabs. Leaving one stores them and coming back
+  // restores them; a session seen for the first time starts empty.
+  const latest = useRef<PreviewSnapshot>({ openTabs, activeTabIndex, comments, isOpen })
   useEffect(() => {
-    setOpenTabs([])
-    setActiveTabIndex(0)
-    setComments(new Map())
-    setIsOpen(false)
-  }, [sessionId, setOpenTabs, setActiveTabIndex])
+    latest.current = { openTabs, activeTabIndex, comments, isOpen }
+  })
+  useEffect(() => {
+    const kept = rememberTabs && sessionId ? previewMemory.get(sessionId) : undefined
+    setOpenTabs(kept?.openTabs ?? [])
+    setActiveTabIndex(kept?.activeTabIndex ?? 0)
+    setComments(kept?.comments ?? new Map())
+    setIsOpen(kept?.isOpen ?? false)
+    setFocus(null)
+    return () => {
+      if (rememberTabs && sessionId) previewMemory.set(sessionId, latest.current)
+    }
+  }, [sessionId, rememberTabs, setOpenTabs, setActiveTabIndex])
 
   // A new turn makes the next change to a file start a new highlight.
   const turn = useSessionTurn(sessionAgentSlug ? sessionId : null)
@@ -206,11 +233,13 @@ export function FilePreviewProvider({
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => {
     const version = nextFileVersion()
     const path = previewPath(filePath)
-    openTab({
+    const tab: FileTab = {
       kind: 'file', filePath: path, agentSlug, displayName: getDisplayName(path),
       description, version, pdfPage: 1, source,
-    }, existing => ({ ...existing, version, source }))
+    }
+    openTab(tab, existing => ({ ...existing, version, source }))
     setIsOpen(true)
+    setFocus(previous => nextFocus(previous, getPreviewTabKey(tab)))
   }, [openTab])
 
   // A stale tab reloads itself when a view's files are gone after an upgrade. The file it
@@ -233,11 +262,13 @@ export function FilePreviewProvider({
 
   const openFolder = useCallback((folderPath: string, agentSlug: string) => {
     const rootPath = previewPath(folderPath)
-    openTab({
+    const tab: FolderTab = {
       kind: 'folder', rootPath, agentSlug, displayName: getDisplayName(rootPath),
       expandedPaths: [rootPath], query: '',
-    })
+    }
+    openTab(tab)
     setIsOpen(true)
+    setFocus(previous => nextFocus(previous, getPreviewTabKey(tab)))
   }, [openTab])
 
   const toggleFolder = useCallback((root: string, agentSlug: string, folder: string) => {
@@ -524,6 +555,7 @@ export function FilePreviewProvider({
     comments,
     isOpen,
     commentsEnabled,
+    focus,
     openFile,
     openFolder,
     toggleFolder,
@@ -545,7 +577,7 @@ export function FilePreviewProvider({
     addComment,
     removeComment,
     clearComments,
-  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, reloadIfChanged, setShowEdits, editsFor, recordShownText, close, commentsFor, addComment, removeComment, clearComments])
+  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, focus, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, reloadIfChanged, setShowEdits, editsFor, recordShownText, close, commentsFor, addComment, removeComment, clearComments])
 
   const opener = useMemo<AgentFileOpener>(() => ({ openFile, openFolder }), [openFile, openFolder])
 

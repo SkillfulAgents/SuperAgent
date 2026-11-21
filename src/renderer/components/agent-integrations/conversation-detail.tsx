@@ -155,10 +155,10 @@ export function ConversationDetail({
           No messages yet. The next message from {row.title} on {providerName} starts a new conversation.
         </div>
       ) : (
-        <FilePreviewProvider sessionId={openWindowId as string} sessionAgentSlug={agentSlug}>
+        <FilePreviewProvider sessionId={openWindowId as string} sessionAgentSlug={agentSlug} rememberTabs>
           {/* MessageList (via SessionThread) reads WorkflowContext, so provide it
               here as the live session view does - scoped to this window's session. */}
-          <WorkflowProvider sessionId={openWindowId as string}>
+          <WorkflowProvider sessionId={openWindowId as string} rememberTabs>
             {/* Read-only mirror cue: a muted, washed panel that reads as "not a live
                 chat". The opacity wash only works in light mode (it lightens content
                 toward the page); in dark mode it muddies contrast and hides bubbles,

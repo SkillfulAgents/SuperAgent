@@ -8,7 +8,8 @@ interface BrowserViewportControlsProps {
 }
 
 /**
- * The stop / full-screen pill floating over the bottom of the page.
+ * The stop pill floating over the bottom of the page, with full screen beside
+ * it where the caller has no other place for that control.
  * translateZ(0) forces it onto its own compositing layer so it paints above
  * the screencast <canvas> (which sets will-change: transform); without it
  * Safari/WebKit composites the canvas over the pill.
@@ -36,7 +37,7 @@ export function BrowserViewportControls({ isExpanded, onStop, onToggleExpand }: 
             </TooltipTrigger>
             <TooltipContent side="top">Stop browser agent</TooltipContent>
           </Tooltip>
-          <Tooltip>
+          {onToggleExpand && <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
@@ -49,7 +50,7 @@ export function BrowserViewportControls({ isExpanded, onStop, onToggleExpand }: 
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">{isExpanded ? 'Exit full screen' : 'Full screen'}</TooltipContent>
-          </Tooltip>
+          </Tooltip>}
         </div>
       </TooltipProvider>
     </div>

@@ -40,6 +40,15 @@ export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[56px] flex-1 items-cente
 export const FLOATING_COMPOSER_CLASS =
   'relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]'
 
+/**
+ * About half the floating shadow, for what floats on the off-white page (`bg-canvas`, ContentCanvas): a session's
+ * composer, its voice mode and the activity card docked on it, and Agent Home's composer and panels. On that page a
+ * white box already lifts off, and the full shadow read as heavy. Applied after FLOATING_COMPOSER_CLASS, whose shadow
+ * it replaces (tailwind-merge).
+ */
+export const CANVAS_FLOAT_SHADOW_CLASS =
+  'shadow-[0_0_12px_rgba(15,23,42,0.04),0_1px_6px_-3px_rgba(15,23,42,0.06)] dark:shadow-[0_0_14px_rgba(0,0,0,0.14),0_1px_6px_-3px_rgba(0,0,0,0.12)]'
+
 interface SecureSecretsProps {
   agentSlug: string
   potentialSecrets?: PotentialSecret[]
