@@ -64,6 +64,7 @@ import tokenExchange from './routes/token-exchange'
 import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
+import signedFiles from './routes/signed-files'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { WORKSPACE_UNAVAILABLE_HEADER } from '@shared/lib/workspace-unavailable-header'
 import { sql } from 'drizzle-orm'
@@ -227,6 +228,9 @@ app.get('/api/llm/anthropic-sdk.js', async (c) => {
 
 // Mount route handlers
 app.route('/api/agents', agents)
+// Signed, user-bound file URLs: the token in the path is the credential, so the
+// router has no Authenticated(); it re-checks the bound user's access itself.
+app.route('/api/signed-files', signedFiles)
 app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)

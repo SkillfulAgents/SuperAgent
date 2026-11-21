@@ -1090,8 +1090,12 @@ export interface FileOps {
    * that size even while the file grows. With `confined`, a path that leads
    * out of the workspace through a link is refused. Absent → `not-found`; a
    * directory → `not-a-file`. A caller that does not read the stream cancels it.
+   * With `range`, the stream is that inclusive slice of the same open file,
+   * cut at its size (empty when it starts past the end); `size` is still the
+   * whole file's, so a caller that chose the range from an earlier size can
+   * tell the file changed since.
    */
-  readSized(path: string, options?: { confined?: boolean }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }>
+  readSized(path: string, options?: { confined?: boolean; range?: ByteRange }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }>
 }
 
 /**

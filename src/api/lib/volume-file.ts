@@ -5,13 +5,21 @@ import { guessMimeType } from '@shared/lib/utils/mime'
 import type { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 
-/** A drive file's bytes, served by every route that reads a drive for a person. */
-export async function serveVolumeFile(c: Context, volume: BaseMountableVolume<unknown>, path: string): Promise<Response> {
+/**
+ * A drive file's bytes, served by every route that reads a drive for a person.
+ * `?inline=true` asks for an inline answer unless `attachmentOnly` is set.
+ */
+export async function serveVolumeFile(
+  c: Context,
+  volume: BaseMountableVolume<unknown>,
+  path: string,
+  options: { attachmentOnly?: boolean } = {},
+): Promise<Response> {
   if (!path) return c.json({ error: 'File path is required' }, 400)
   const file = await volume.read(path)
   try {
     const served = servedRange(c.req.header('range'), file.size)
-    const inline = c.req.query('inline') === 'true'
+    const inline = !options.attachmentOnly && c.req.query('inline') === 'true'
     const name = path.slice(path.lastIndexOf('/') + 1)
     const encoded = encodeURIComponent(name)
     c.header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${encoded}"; filename*=UTF-8''${encoded}`)

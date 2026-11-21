@@ -406,8 +406,8 @@ export class LocalFileOps implements StoreFileOps {
     }
   }
 
-  readSized(workspacePath: string, options?: { confined?: boolean }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
-    return readSized(this.open(workspacePath, options))
+  readSized(workspacePath: string, options?: { confined?: boolean; range?: ByteRange }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
+    return readSized(this.open(workspacePath, options), options?.range)
   }
 
   async read(workspacePath: string, range?: ByteRange): Promise<ReadableStream<Uint8Array>> {
