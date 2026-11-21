@@ -25,6 +25,7 @@ import { AgentWidgetRefreshes } from '@shared/lib/widgets/agent-widget-refreshes
 import { AgentMcpSessions } from '@shared/lib/mcp/agent-mcp-sessions'
 import { VolumeUploadGuard } from '@shared/lib/volumes/volume-upload-guard'
 import { IdleAlarm, type IdleAlarmDeps } from '@shared/lib/container/idle-alarm'
+import { ContainerWatch, type ContainerWatchDeps } from '@shared/lib/container/container-watch'
 import { AgentLocks } from './agent-locks'
 import { LiveSessions, type LiveSessionsDeps } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
@@ -60,6 +61,11 @@ export interface AgentState {
    * its live sessions is active or awaiting input.
    */
   readonly idleAlarm: IdleAlarm
+  /**
+   * Checks the agent's container: whether it runs, from the time the
+   * container runtime has a client, and its health while it is seen running.
+   */
+  readonly containerWatch: ContainerWatch
 }
 
 export interface AgentStateHooks {
@@ -67,6 +73,8 @@ export interface AgentStateHooks {
   sessions: Pick<LiveSessionsDeps, 'store' | 'host' | 'runtime' | 'capture'>
   /** What the agent's idle alarm reads and does outside the agent; whether it is busy is the state's own. */
   idle: Omit<IdleAlarmDeps, 'isBusy'>
+  /** The checks the agent's container watch runs. */
+  watch: ContainerWatchDeps
 }
 
 export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): AgentState {
@@ -125,6 +133,7 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
     volumeUploads: new VolumeUploadGuard(),
     deferredNaming: new Set(),
     idleAlarm: new IdleAlarm({ ...hooks.idle, isBusy: () => live.hasActive() || live.hasAwaitingInput() }),
+    containerWatch: new ContainerWatch(slug, hooks.watch),
   }
 }
 
@@ -153,7 +162,7 @@ export function settleStoppedSession(state: AgentState, sessionId: string): void
  * sessions' streams and timers. The requests go first, so their resolved
  * events still reach the sessions' listeners. Waiters on a lock are turned
  * away, joiners of a widget refresh hear it will not end here, and the idle
- * alarm is disarmed (the container is not stopped); the rest of the host's
+ * alarm and the container watch stop (the container is not stopped); the rest of the host's
  * per-agent memory is dropped with the state. The persisted
  * computer-use grants are left where they are; they belong to the agent's
  * settings entry, not to the process.
@@ -171,4 +180,5 @@ export function releaseAgentState(state: AgentState): void {
   state.mcpSessions.clear()
   state.deferredNaming.clear()
   state.idleAlarm.cancel()
+  state.containerWatch.stop()
 }

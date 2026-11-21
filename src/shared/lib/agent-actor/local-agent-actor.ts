@@ -159,6 +159,7 @@ export class LocalAgentActor implements AgentActor {
           capture: subagentCapture,
         },
         idle: createIdleAlarmHooks(slug, deps),
+        watch: createContainerWatchHooks(slug, deps),
       })
     this.store = this.state.store
     this.files = this.store.files
@@ -202,6 +203,31 @@ function createIdleAlarmHooks(slug: AgentSlug, deps: LocalActorDeps): AgentState
     lastActivityAt: () => runtime().sleepableSince(),
     sleep: (timeoutMs) => runtime().sleepIdle(timeoutMs),
     timer: () => deps.idleTimer?.(slug) ?? processIdleTimer(),
+  }
+}
+
+/** What the agent's container watch checks: the agent's container runtime. A failed check is logged, and the next pass runs as usual. */
+function createContainerWatchHooks(slug: AgentSlug, deps: LocalActorDeps): AgentStateHooks['watch'] {
+  const runtime = () => deps.containerHost.runtime(slug)
+  return {
+    checkHealth: async () => {
+      try {
+        await runtime().runHealthCheck()
+      } catch (error) {
+        console.error(`[ContainerWatch] Health check failed for ${slug}:`, error)
+      }
+    },
+    checkStatus: async () => {
+      const current = runtime()
+      // A stop in flight sets the status itself; a runtime whose client was reset builds the next one on its next use.
+      if (current.isStopping() || !current.hasClient()) return
+      try {
+        await current.syncAgentStatus()
+      } catch (error) {
+        console.error(`[ContainerWatch] Failed to sync status for ${slug}:`, error)
+        current.markAsStopped()
+      }
+    },
   }
 }
 
