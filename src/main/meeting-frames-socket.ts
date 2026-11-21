@@ -13,7 +13,7 @@
 import type { IncomingMessage } from 'http'
 import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
-import { WebSocketServer, type WebSocket } from 'ws'
+import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import { meetingScreenFrameReceiver } from '@shared/lib/meeting-integrations/bot-events'
 import { captureException } from '@shared/lib/error-reporting'
 import { isTerminalMeetingStatus } from '@shared/lib/meeting-integrations/schemas'
@@ -36,19 +36,35 @@ function deny(socket: Duplex, status: string): void {
 export async function admitMeetingFrames(
   meetingIdInUrl: string,
   token: string | null,
-): Promise<{ meeting: MeetingRecord; receive: (message: unknown) => Promise<void> } | { status: 401 | 404 | 410 }> {
+): Promise<{ meeting: MeetingRecord; receive: (message: unknown) => Promise<void> } | { status: 401 | 404 | 410 | 502 }> {
   if (!token) return { status: 401 }
   let meetingId: string
   try { meetingId = decodeURIComponent(meetingIdInUrl) } catch { return { status: 404 } }
-  const meeting = await verifyParticipantToken(meetingId, token)
-  if (!meeting) return { status: 404 }
-  if (isTerminalMeetingStatus(meeting.status)) return { status: 410 }
-  const receive = await meetingScreenFrameReceiver(meeting)
-  if (!receive) return { status: 404 }
-  return { meeting, receive }
+  try {
+    const meeting = await verifyParticipantToken(meetingId, token)
+    if (!meeting) return { status: 404 }
+    if (isTerminalMeetingStatus(meeting.status)) return { status: 410 }
+    const receive = await meetingScreenFrameReceiver(meeting)
+    if (!receive) return { status: 404 }
+    return { meeting, receive }
+  } catch (error) {
+    captureException(error, {
+      tags: { component: 'meeting-frames-socket', operation: 'authorize' },
+      extra: { meetingId },
+    })
+    return { status: 502 }
+  }
 }
 
-const DENIED: Record<number, string> = { 401: '401 Unauthorized', 404: '404 Not Found', 410: '410 Gone' }
+const DENIED: Record<number, string> = { 401: '401 Unauthorized', 404: '404 Not Found', 410: '410 Gone', 502: '502 Bad Gateway' }
+
+/** The message as one Buffer: a socket can deliver an ArrayBuffer or fragments, by its binaryType, or a string. */
+function messageBytes(data: RawData | string): Buffer {
+  if (Buffer.isBuffer(data)) return data
+  if (Array.isArray(data)) return Buffer.concat(data)
+  if (typeof data === 'string') return Buffer.from(data)
+  return Buffer.from(data)
+}
 
 export function setupMeetingFramesSocket(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -81,13 +97,14 @@ export function receiveMeetingFrames(ws: WebSocket, meeting: MeetingRecord, rece
   })
   ws.on('message', (data, isBinary) => {
     if (isBinary) return
+    const bytes = messageBytes(data)
     // The server's maxPayload refuses these first; a socket accepted without one is held to the same limit.
-    if ((data as Buffer).length > MAX_MESSAGE_BYTES) {
+    if (bytes.length > MAX_MESSAGE_BYTES) {
       ws.close(1009, 'Message too big')
       return
     }
     let message: unknown
-    try { message = JSON.parse(data.toString()) } catch { return }
+    try { message = JSON.parse(bytes.toString()) } catch { return }
     receive(message).catch(error => captureException(error, {
       tags: { component: 'meeting-frames-socket', operation: 'save-frame' },
       extra: { meetingId: meeting.id },

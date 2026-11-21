@@ -1,4 +1,4 @@
-import { once } from 'node:events'
+import { EventEmitter, once } from 'node:events'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
@@ -9,7 +9,7 @@ vi.mock('@shared/lib/meeting-integrations/bot-events', () => ({ meetingScreenFra
 vi.mock('@shared/lib/meeting-integrations/store', () => ({ verifyParticipantToken: mocks.verifyParticipantToken }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: mocks.captureException }))
 
-import { setupMeetingFramesSocket } from './meeting-frames-socket'
+import { receiveMeetingFrames, setupMeetingFramesSocket } from './meeting-frames-socket'
 
 const meeting = { id: 'meeting-1', integrationId: 'integration-1', agentSlug: 'ada', status: 'in_call' }
 let server: Server
@@ -75,5 +75,19 @@ describe('meeting frames socket', () => {
     healthyClient.send(JSON.stringify({ event: 'video_separate_png.data' }))
     await vi.waitFor(() => expect(mocks.receiveScreenFrame).toHaveBeenCalledOnce())
     expect(healthyClient.readyState).toBe(WebSocket.OPEN)
+  })
+
+  it('holds a socket that delivers text as strings to the byte limit', () => {
+    // A runtime that accepts sockets another way (a Worker's WebSocketPair) delivers text as a string, with no maxPayload.
+    const socket = Object.assign(new EventEmitter(), { ping: vi.fn(), close: vi.fn(), terminate: vi.fn() })
+    receiveMeetingFrames(socket as unknown as WebSocket, meeting as never, mocks.receiveScreenFrame)
+
+    socket.emit('message', JSON.stringify({ event: 'video_separate_png.data' }), false)
+    expect(mocks.receiveScreenFrame).toHaveBeenCalledWith({ event: 'video_separate_png.data' })
+
+    // 1.5 Mi characters of 3 bytes each: under the limit in UTF-16 units, over it in bytes.
+    socket.emit('message', '\u20ac'.repeat(1.5 * 1024 * 1024), false)
+    expect(socket.close).toHaveBeenCalledWith(1009, 'Message too big')
+    socket.emit('close')
   })
 })

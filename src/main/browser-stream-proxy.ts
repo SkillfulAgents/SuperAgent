@@ -41,19 +41,29 @@ export async function admitBrowserStream(
   slugInUrl: string,
   url: URL,
   request: UpgradeRequest,
-): Promise<BrowserStreamViewer | { status: 403 | 404 }> {
-  // The URL carries the display slug ({name}-{id}); resolve to the canonical id
-  // before any ACL check or container lookup. This WS upgrade bypasses the Hono
-  // /:id/* ResolveAgent middleware, so it must resolve itself.
-  const agentSlug = await agentCatalog.resolve(slugInUrl)
-  if (!agentSlug) return { status: 404 }
-  // Viewer+ can watch, but input is filtered per-role in serveBrowserStream.
-  if (!(await authenticateAgentWebSocket(request, agentSlug, 'viewer'))) return { status: 403 }
-  const canInput = await authenticateAgentWebSocket(request, agentSlug, 'user')
-  // Only the width goes on to the container, not the rest of the viewer's URL.
-  const width = url.searchParams.get('width')
-  return { agentSlug, canInput, upstreamSearch: width && /^\d+$/.test(width) ? `?width=${width}` : '' }
+): Promise<BrowserStreamViewer | { status: 403 | 404 | 502 }> {
+  try {
+    // The URL carries the display slug ({name}-{id}); resolve to the canonical id
+    // before any ACL check or container lookup. This WS upgrade bypasses the Hono
+    // /:id/* ResolveAgent middleware, so it must resolve itself.
+    const agentSlug = await agentCatalog.resolve(slugInUrl)
+    if (!agentSlug) return { status: 404 }
+    // Viewer+ can watch, but input is filtered per-role in serveBrowserStream.
+    if (!(await authenticateAgentWebSocket(request, agentSlug, 'viewer'))) return { status: 403 }
+    const canInput = await authenticateAgentWebSocket(request, agentSlug, 'user')
+    // Only the width goes on to the container, not the rest of the viewer's URL.
+    const width = url.searchParams.get('width')
+    return { agentSlug, canInput, upstreamSearch: width && /^\d+$/.test(width) ? `?width=${width}` : '' }
+  } catch (error) {
+    captureException(error, {
+      tags: { component: 'browser-proxy', operation: 'authorize' },
+      extra: { slugInUrl },
+    })
+    return { status: 502 }
+  }
 }
+
+const DENIED: Record<number, string> = { 403: '403 Forbidden', 404: '404 Not Found', 502: '502 Bad Gateway' }
 
 /** Proxies an accepted client socket to the agent container's browser stream. */
 export async function serveBrowserStream(ws: WebSocket, viewer: BrowserStreamViewer, connect: ConnectToContainer): Promise<void> {
@@ -81,6 +91,8 @@ export async function serveBrowserStream(ws: WebSocket, viewer: BrowserStreamVie
     const target = await actor.container.webSocketTarget('/browser/stream', {
       search: viewer.upstreamSearch,
     })
+    // The viewer can leave while the target is read, before the close handler below exists.
+    if (ws.readyState !== WebSocket.OPEN) return
     if (!target) {
       ws.close(1011, 'Agent container is not running')
       return
@@ -88,8 +100,14 @@ export async function serveBrowserStream(ws: WebSocket, viewer: BrowserStreamVie
 
     console.log(`[BrowserProxy] Connecting upstream to /browser/stream for agent ${agentSlug}`)
     const upstream = connect(target)
+    // Set when the viewer left while upstream was connecting: the error that ending the connect raises is expected.
+    let abandoned = false
 
     upstream.on('open', () => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        upstream.close()
+        return
+      }
       console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)
       openUpstream = upstream
       if (pendingViewport) upstream.send(pendingViewport, { binary: false })
@@ -109,7 +127,8 @@ export async function serveBrowserStream(ws: WebSocket, viewer: BrowserStreamVie
     upstream.on('message', (data, isBinary) => relay.forward(data as Buffer, isBinary))
 
     upstream.on('close', () => {
-      trackServerEvent('browser_closed')
+      // Paired with browser_opened: a connection that never opened is not a closed browser.
+      if (openUpstream) trackServerEvent('browser_closed')
       if (ws.readyState === WebSocket.OPEN) {
         ws.close()
       }
@@ -119,10 +138,14 @@ export async function serveBrowserStream(ws: WebSocket, viewer: BrowserStreamVie
       relay.close()
       if (upstream.readyState === WebSocket.OPEN) {
         upstream.close()
+      } else if (upstream.readyState === WebSocket.CONNECTING) {
+        abandoned = true
+        upstream.terminate()
       }
     })
 
     upstream.on('error', (error) => {
+      if (abandoned) return
       console.error(`[BrowserProxy] Upstream error for agent ${agentSlug}:`, error)
       if (ws.readyState === WebSocket.OPEN) {
         ws.close(1011, 'Upstream connection error')
@@ -175,7 +198,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
     admitBrowserStream(match[1], url, request).then((admitted) => {
       if ('status' in admitted) {
-        socket.write(admitted.status === 404 ? 'HTTP/1.1 404 Not Found\r\n\r\n' : 'HTTP/1.1 403 Forbidden\r\n\r\n')
+        socket.write(`HTTP/1.1 ${DENIED[admitted.status]}\r\n\r\n`)
         socket.destroy()
         return
       }
